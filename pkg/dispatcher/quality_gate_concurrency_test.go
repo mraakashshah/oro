@@ -2,6 +2,7 @@ package dispatcher //nolint:testpackage // white-box: shares serial-lane test he
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -236,6 +237,363 @@ func TestConcurrentQualityGatesUseDistinctGoCaches(t *testing.T) {
 	for _, signature := range []string{"could not import", "could not load export data", "no such cache file"} {
 		if strings.Contains(logs, signature) {
 			t.Errorf("concurrent gate logs contain %q:\n%s", signature, logs)
+		}
+	}
+}
+
+const fullGateCacheProbeChildEnv = "ORO_QG_FULL_CACHE_PROBE_CHILD"
+
+type fullGateCacheEvidence struct {
+	qgDir     string
+	goCache   string
+	lintCache string
+	goCalls   int
+	lintCalls int
+}
+
+type fullGateProbeResult struct {
+	id            string
+	exit          int
+	worktree      string
+	output        string
+	trackedStatus string
+	evidence      fullGateCacheEvidence
+}
+
+type startedFullGateProbe struct {
+	id          string
+	repoRoot    string
+	worktree    string
+	evidenceDir string
+	cmd         *exec.Cmd
+	output      *bytes.Buffer
+	cleanupOnce sync.Once
+	cleanupErr  error
+}
+
+func startFullGateProbe(
+	ctx context.Context,
+	t *testing.T,
+	repoRoot, worktreeParent, proxyDir, evidenceRoot, oroHomeRoot, lockRoot, qgTmp, ambientGo, ambientLint, id string,
+) *startedFullGateProbe {
+	t.Helper()
+	worktree := filepath.Join(worktreeParent, id)
+	cmd := exec.Command("git", "-C", repoRoot, "worktree", "add", "--detach", worktree, "HEAD")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("create full-gate worktree %s: %v\n%s", id, err, out)
+	}
+
+	writeFullGateProxies(t, proxyDir)
+	realGo, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatalf("resolve real go: %v", err)
+	}
+	realLint, err := exec.LookPath("golangci-lint")
+	if err != nil {
+		t.Fatalf("resolve real golangci-lint: %v", err)
+	}
+	evidenceDir := filepath.Join(evidenceRoot, id)
+	if err := os.MkdirAll(evidenceDir, 0o755); err != nil {
+		t.Fatalf("create evidence directory for %s: %v", id, err)
+	}
+	oroHome := prepareFullGateOroHome(t, repoRoot, oroHomeRoot, id)
+
+	env := cleanQGEnv()
+	env = append(env,
+		"PATH="+proxyDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"TMPDIR="+qgTmp,
+		"GOCACHE="+ambientGo,
+		"GOLANGCI_LINT_CACHE="+ambientLint,
+		"ORO_HOME="+oroHome,
+		"ORO_QG_REPO_ROOT_OVERRIDE="+lockRoot,
+		"ORO_QG_LOCK_TIMEOUT_SECONDS=900",
+		fullGateCacheProbeChildEnv+"=1",
+		"ORO_QG_FULL_CACHE_EVIDENCE="+evidenceDir,
+		"ORO_QG_REAL_GO="+realGo,
+		"ORO_QG_REAL_GOLANGCI_LINT="+realLint,
+	)
+	gate := exec.CommandContext(ctx, "bash", filepath.Join(worktree, "scripts", "quality_gate.sh"))
+	gate.Dir = worktree
+	gate.Env = env
+	gate.WaitDelay = 15 * time.Second
+	output := &bytes.Buffer{}
+	gate.Stdout = output
+	gate.Stderr = output
+	if err := gate.Start(); err != nil {
+		t.Fatalf("start full quality gate %s: %v", id, err)
+	}
+	probe := &startedFullGateProbe{
+		id:          id,
+		repoRoot:    repoRoot,
+		worktree:    worktree,
+		evidenceDir: evidenceDir,
+		cmd:         gate,
+		output:      output,
+	}
+	t.Cleanup(func() {
+		if err := probe.cleanup(); err != nil {
+			t.Errorf("fallback cleanup for full gate %s: %v", id, err)
+		}
+	})
+	return probe
+}
+
+func prepareFullGateSharedRoot(t *testing.T, repoRoot, lockRoot string) {
+	t.Helper()
+	cmd := exec.Command("git", "-C", repoRoot, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("resolve common checkout root: %v\n%s", err, output)
+	}
+	commonRoot := filepath.Dir(strings.TrimSpace(string(output)))
+	for _, name := range []string{"node_modules", ".venv"} {
+		source := filepath.Join(commonRoot, name)
+		if _, err := os.Stat(source); err != nil {
+			t.Fatalf("full quality gate dependency %s: %v", source, err)
+		}
+		if err := os.Symlink(source, filepath.Join(lockRoot, name)); err != nil {
+			t.Fatalf("link full quality gate dependency %s: %v", name, err)
+		}
+	}
+}
+
+func prepareFullGateOroHome(t *testing.T, repoRoot, oroHomeRoot, id string) string {
+	t.Helper()
+	oroHome := filepath.Join(oroHomeRoot, id)
+	if err := os.MkdirAll(oroHome, 0o755); err != nil {
+		t.Fatalf("create ORO_HOME for %s: %v", id, err)
+	}
+	for _, name := range []string{"hooks", "beacons"} {
+		source := filepath.Join(repoRoot, "assets", name)
+		if _, err := os.Stat(source); err != nil {
+			t.Fatalf("full quality gate ORO_HOME source %s: %v", source, err)
+		}
+		if err := os.Symlink(source, filepath.Join(oroHome, name)); err != nil {
+			t.Fatalf("link full quality gate ORO_HOME %s for %s: %v", name, id, err)
+		}
+	}
+	return oroHome
+}
+
+func (p *startedFullGateProbe) wait(t *testing.T) fullGateProbeResult {
+	t.Helper()
+	err := p.cmd.Wait()
+	exit := 0
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			exit = exitErr.ExitCode()
+		} else {
+			t.Fatalf("wait for full quality gate %s: %v", p.id, err)
+		}
+	}
+	status, statusErr := exec.Command("git", "-C", p.worktree, "status", "--porcelain", "--untracked-files=no").CombinedOutput()
+	if statusErr != nil {
+		t.Errorf("read tracked status for full gate %s: %v\n%s", p.id, statusErr, status)
+	}
+	return fullGateProbeResult{
+		id:            p.id,
+		exit:          exit,
+		worktree:      p.worktree,
+		output:        p.output.String(),
+		trackedStatus: strings.TrimSpace(string(status)),
+		evidence:      collectFullGateEvidence(t, p.evidenceDir),
+	}
+}
+
+func (p *startedFullGateProbe) cleanup() error {
+	p.cleanupOnce.Do(func() {
+		if p.cmd != nil && p.cmd.Process != nil && p.cmd.ProcessState == nil {
+			_ = p.cmd.Process.Kill()
+			_ = p.cmd.Wait()
+		}
+		remove := exec.Command("git", "-C", p.repoRoot, "worktree", "remove", "--force", p.worktree)
+		if out, err := remove.CombinedOutput(); err != nil {
+			p.cleanupErr = errors.New(err.Error() + ": " + strings.TrimSpace(string(out)))
+		}
+	})
+	return p.cleanupErr
+}
+
+func writeFullGateProxies(t *testing.T, proxyDir string) {
+	t.Helper()
+	proxy := func(tool, realToolEnv string) string {
+		return `#!/bin/sh
+set -eu
+evidence_dir="$ORO_QG_FULL_CACHE_EVIDENCE"
+mkdir -p "$evidence_dir"
+record="$evidence_dir/` + tool + `.$$.env"
+{
+	printf 'QG_DIR=%s\n' "${GOCACHE%/go-build-cache}"
+	printf 'GOCACHE=%s\n' "$GOCACHE"
+	printf 'GOLANGCI_LINT_CACHE=%s\n' "$GOLANGCI_LINT_CACHE"
+	printf 'ARGS='; printf '%s ' "$@"; printf '\n'
+} >"$record"
+exec "$` + realToolEnv + `" "$@"
+`
+	}
+	for _, spec := range []struct {
+		name    string
+		realEnv string
+	}{
+		{name: "go", realEnv: "ORO_QG_REAL_GO"},
+		{name: "golangci-lint", realEnv: "ORO_QG_REAL_GOLANGCI_LINT"},
+	} {
+		if err := os.WriteFile(filepath.Join(proxyDir, spec.name), []byte(proxy(spec.name, spec.realEnv)), 0o755); err != nil {
+			t.Fatalf("write %s proxy: %v", spec.name, err)
+		}
+	}
+}
+
+func collectFullGateEvidence(t *testing.T, evidenceDir string) fullGateCacheEvidence {
+	t.Helper()
+	entries, err := os.ReadDir(evidenceDir)
+	if err != nil {
+		t.Errorf("read full-gate evidence %s: %v", evidenceDir, err)
+		return fullGateCacheEvidence{}
+	}
+	var evidence fullGateCacheEvidence
+	setPath := func(label string, dst *string, value string) {
+		t.Helper()
+		if *dst != "" && *dst != value {
+			t.Errorf("full-gate evidence changed %s from %q to %q", label, *dst, value)
+			return
+		}
+		*dst = value
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		switch {
+		case strings.HasPrefix(name, "go."):
+			evidence.goCalls++
+		case strings.HasPrefix(name, "golangci-lint."):
+			evidence.lintCalls++
+		default:
+			continue
+		}
+		content, readErr := os.ReadFile(filepath.Join(evidenceDir, name))
+		if readErr != nil {
+			t.Errorf("read proxy evidence %s: %v", name, readErr)
+			continue
+		}
+		for _, line := range strings.Split(string(content), "\n") {
+			key, value, ok := strings.Cut(line, "=")
+			if !ok {
+				continue
+			}
+			switch key {
+			case "QG_DIR":
+				setPath("QG_DIR", &evidence.qgDir, value)
+			case "GOCACHE":
+				setPath("GOCACHE", &evidence.goCache, value)
+			case "GOLANGCI_LINT_CACHE":
+				setPath("GOLANGCI_LINT_CACHE", &evidence.lintCache, value)
+			}
+		}
+	}
+	return evidence
+}
+
+func TestConcurrentFullQualityGatesUseIsolatedGoCaches(t *testing.T) {
+	if os.Getenv(fullGateCacheProbeChildEnv) == "1" {
+		t.Skip("nested full quality gate")
+	}
+	for _, tool := range []string{"bash", "git", "go", "golangci-lint"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s not available", tool)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
+	defer cancel()
+	root := t.TempDir()
+	worktreeParent := filepath.Join(root, "worktrees")
+	proxyDir := filepath.Join(root, "proxy")
+	evidenceRoot := filepath.Join(root, "evidence")
+	oroHomeRoot := filepath.Join(root, "oro-home")
+	lockRoot := filepath.Join(root, "locks")
+	qgTmp := filepath.Join(root, "qg-tmp")
+	ambientGo := filepath.Join(root, "ambient", "go-build")
+	ambientLint := filepath.Join(root, "ambient", "golangci-lint")
+	for _, dir := range []string{worktreeParent, proxyDir, evidenceRoot, oroHomeRoot, lockRoot, qgTmp, ambientGo, ambientLint} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("create full-gate fixture directory %s: %v", dir, err)
+		}
+	}
+
+	repoRoot := worktreeRoot(t)
+	prepareFullGateSharedRoot(t, repoRoot, lockRoot)
+	first := startFullGateProbe(ctx, t, repoRoot, worktreeParent, proxyDir, evidenceRoot, oroHomeRoot, lockRoot, qgTmp, ambientGo, ambientLint, "full-a")
+	second := startFullGateProbe(ctx, t, repoRoot, worktreeParent, proxyDir, evidenceRoot, oroHomeRoot, lockRoot, qgTmp, ambientGo, ambientLint, "full-b")
+	results := []fullGateProbeResult{first.wait(t), second.wait(t)}
+
+	for _, result := range results {
+		if result.exit != 0 {
+			t.Fatalf("full gate %s failed: exit=%d\n%s", result.id, result.exit, result.output)
+		}
+		t.Logf("full gate %s worktree=%s QG_DIR=%s GOCACHE=%s GOLANGCI_LINT_CACHE=%s\n%s", result.id, result.worktree, result.evidence.qgDir, result.evidence.goCache, result.evidence.lintCache, result.output)
+		for _, marker := range []string{"GO TIER 2", "golangci-lint", "GO TIER 3", "go test + coverage", "Quality gate PASSED"} {
+			if !strings.Contains(result.output, marker) {
+				t.Errorf("full gate %s did not execute marker %q", result.id, marker)
+			}
+		}
+		if result.evidence.goCalls == 0 || result.evidence.lintCalls == 0 {
+			t.Errorf("full gate %s proxy calls: go=%d lint=%d, want both nonzero", result.id, result.evidence.goCalls, result.evidence.lintCalls)
+		}
+		if result.evidence.qgDir == "" || result.evidence.goCache != filepath.Join(result.evidence.qgDir, "go-build-cache") ||
+			result.evidence.lintCache != filepath.Join(result.evidence.qgDir, "golangci-lint-cache") {
+			t.Errorf("full gate %s caches outside QG_DIR: %#v", result.id, result.evidence)
+		}
+		if result.trackedStatus != "" {
+			t.Errorf("full gate %s changed tracked files:\n%s", result.id, result.trackedStatus)
+		}
+		if _, err := os.Stat(result.evidence.qgDir); !os.IsNotExist(err) {
+			t.Errorf("full gate %s left QG_DIR %s: %v", result.id, result.evidence.qgDir, err)
+		}
+		logs := strings.ToLower(result.output)
+		for _, signature := range []string{"could not import", "could not load export data", "no such cache file"} {
+			if strings.Contains(logs, signature) {
+				t.Errorf("full gate %s log contains %q", result.id, signature)
+			}
+		}
+	}
+	if results[0].worktree == results[1].worktree || filepath.Dir(results[0].worktree) != worktreeParent ||
+		filepath.Dir(results[1].worktree) != worktreeParent {
+		t.Errorf("full gates did not use distinct sibling worktrees: %q and %q", results[0].worktree, results[1].worktree)
+	}
+	if results[0].evidence.qgDir == results[1].evidence.qgDir ||
+		results[0].evidence.goCache == results[1].evidence.goCache ||
+		results[0].evidence.lintCache == results[1].evidence.lintCache {
+		t.Errorf("full gates reused cache paths: %#v / %#v", results[0].evidence, results[1].evidence)
+	}
+	for _, dir := range []string{ambientGo, ambientLint} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("read hostile ambient cache %s: %v", dir, err)
+		}
+		if len(entries) != 0 {
+			t.Errorf("hostile ambient cache %s was modified: %v", dir, entries)
+		}
+	}
+
+	for _, probe := range []*startedFullGateProbe{first, second} {
+		if err := probe.cleanup(); err != nil {
+			t.Errorf("clean up full gate %s: %v", probe.id, err)
+		}
+		if probe.cmd.ProcessState == nil || !probe.cmd.ProcessState.Exited() {
+			t.Errorf("full gate %s process did not exit", probe.id)
+		}
+		if _, err := os.Stat(probe.worktree); !os.IsNotExist(err) {
+			t.Errorf("full gate %s left worktree %s: %v", probe.id, probe.worktree, err)
+		}
+	}
+	registry, err := exec.Command("git", "-C", repoRoot, "worktree", "list", "--porcelain").CombinedOutput()
+	if err != nil {
+		t.Fatalf("list worktree registry: %v\n%s", err, registry)
+	}
+	for _, result := range results {
+		if strings.Contains(string(registry), result.worktree) {
+			t.Errorf("worktree registry retained %s", result.worktree)
 		}
 	}
 }
