@@ -140,6 +140,7 @@ type AssignPayload struct {
 type ReviewRecoveryArtifactRef struct {
 	Path         string `json:"path"`
 	SHA256       string `json:"sha256"`
+	Bytes        int64  `json:"bytes"`
 	FindingCount int    `json:"finding_count"`
 }
 

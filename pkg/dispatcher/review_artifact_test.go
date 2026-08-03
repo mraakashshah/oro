@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"oro/pkg/protocol"
 	"oro/pkg/reviewcontract"
@@ -29,7 +30,7 @@ func TestReviewArtifactAndFindingOverflow(t *testing.T) {
 
 	t.Run("inline stays inline and bounded", func(t *testing.T) {
 		findings := []reviewcontract.Finding{reviewOverflowFinding("inline", "small")}
-		recovery, err := PrepareReviewRecovery(artifactDir, checkpoint.ID, "rejected-head", "acceptance", 1, findings)
+		recovery, err := prepareReviewRecovery(artifactDir, checkpoint.ID, "rejected-head", "acceptance", 1, findings)
 		if err != nil {
 			t.Fatalf("prepare inline recovery: %v", err)
 		}
@@ -46,7 +47,7 @@ func TestReviewArtifactAndFindingOverflow(t *testing.T) {
 		reviewOverflowFinding("critical-overflow", strings.Repeat("lossless-detail-", 20_000)),
 		reviewOverflowFinding("important-overflow", strings.Repeat("exact-required-action-", 8_000)),
 	}
-	recovery, err := PrepareReviewRecovery(artifactDir, checkpoint.ID, "rejected-head", "acceptance", 2, findings)
+	recovery, err := prepareReviewRecovery(artifactDir, checkpoint.ID, "rejected-head", "acceptance", 2, findings)
 	if err != nil {
 		t.Fatalf("prepare overflow recovery: %v", err)
 	}
@@ -83,6 +84,56 @@ func TestReviewArtifactAndFindingOverflow(t *testing.T) {
 	if !reflect.DeepEqual(reloadedFindings, findings) {
 		t.Fatalf("reloaded findings changed: got %#v want %#v", reloadedFindings, findings)
 	}
+	artifactInfo, err := os.Stat(recovery.FindingsRef.Path)
+	if err != nil {
+		t.Fatalf("stat recovery artifact: %v", err)
+	}
+	if artifactInfo.Mode().Perm() != recoveryArtifactFileMode {
+		t.Fatalf("artifact mode = %o, want %o", artifactInfo.Mode().Perm(), recoveryArtifactFileMode)
+	}
+
+	t.Run("canonical payload builder preserves the exact bounded reference", func(t *testing.T) {
+		d, beadSource, _, _, _, _ := newTestDispatcher(t)
+		beadSource.shown["oro-overflow"] = &protocol.BeadDetail{Title: "overflow correction"}
+		d.shutdownRunner = &mockCommandRunner{}
+		payload := d.buildAssignPayload(ctx, &trackedWorker{
+			beadID:   "oro-overflow",
+			worktree: "/tmp/oro-overflow",
+		}, 2, "bounded compatibility summary", "", WorkerExecutionContext{
+			AssignmentID:   19,
+			Generation:     1,
+			ActorRole:      "execution_worker",
+			Project:        "oro",
+			ReviewRecovery: &loadedRecovery,
+		})
+		if payload.ReviewRecovery == nil || !reflect.DeepEqual(payload.ReviewRecovery.FindingsRef, recovery.FindingsRef) {
+			t.Fatalf("built recovery = %#v, want exact reference %#v", payload.ReviewRecovery, recovery.FindingsRef)
+		}
+		assertReviewRecoveryPayloadBounded(t, *payload.ReviewRecovery)
+	})
+
+	t.Run("rejected retention and mismatched replacement are fail closed", func(t *testing.T) {
+		prunable, err := restarted.ListPrunableArtifacts(ctx, time.Now().Add(24*time.Hour))
+		if err != nil {
+			t.Fatalf("list prunable artifacts: %v", err)
+		}
+		if len(prunable) != 0 {
+			t.Fatalf("rejected recovery artifact is prunable: %#v", prunable)
+		}
+
+		mismatched := append([]reviewcontract.Finding(nil), findings...)
+		mismatched[0].Detail += " changed"
+		if err := restarted.SaveRejectedFindings(ctx, checkpoint.ID, mismatched, recovery.FindingsRef); err == nil {
+			t.Fatal("mismatched findings committed against existing artifact reference")
+		}
+		stillLoaded, err := restarted.LoadReviewRecovery(ctx, checkpoint.ID)
+		if err != nil {
+			t.Fatalf("reload after rejected replacement: %v", err)
+		}
+		if !reflect.DeepEqual(stillLoaded.FindingsRef, recovery.FindingsRef) {
+			t.Fatalf("reference after rejected replacement = %#v, want %#v", stillLoaded.FindingsRef, recovery.FindingsRef)
+		}
+	})
 
 	t.Run("idempotent concurrent persistence keeps one exact artifact", func(t *testing.T) {
 		const writers = 8
@@ -120,11 +171,23 @@ func TestReviewArtifactAndFindingOverflow(t *testing.T) {
 		got, err := LoadRecoveryArtifact(missing)
 		assertTypedRecoveryFailure(t, got, err, RecoveryArtifactMissing)
 
+		movedPath := recovery.FindingsRef.Path + ".moved"
+		if err := os.Rename(recovery.FindingsRef.Path, movedPath); err != nil {
+			t.Fatalf("move recovery artifact: %v", err)
+		}
+		loaded, err := restarted.LoadReviewRecovery(ctx, checkpoint.ID)
+		assertTypedStoredRecoveryFailure(t, loaded, err, RecoveryArtifactMissing)
+		if err := os.Rename(movedPath, recovery.FindingsRef.Path); err != nil {
+			t.Fatalf("restore recovery artifact: %v", err)
+		}
+
 		if err := os.WriteFile(recovery.FindingsRef.Path, []byte("corrupt"), 0o600); err != nil {
 			t.Fatalf("corrupt recovery artifact: %v", err)
 		}
 		got, err = LoadRecoveryArtifact(*recovery.FindingsRef)
 		assertTypedRecoveryFailure(t, got, err, RecoveryArtifactCorrupt)
+		loaded, err = restarted.LoadReviewRecovery(ctx, checkpoint.ID)
+		assertTypedStoredRecoveryFailure(t, loaded, err, RecoveryArtifactCorrupt)
 	})
 }
 
@@ -156,8 +219,8 @@ func assertReviewRecoveryPayloadBounded(t *testing.T, recovery protocol.ReviewRe
 	messageJSON, err := json.Marshal(protocol.Message{
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
-			BeadID:        "oro-overflow",
-			Worktree:      "/tmp/oro-overflow",
+			BeadID:         "oro-overflow",
+			Worktree:       "/tmp/oro-overflow",
 			ReviewRecovery: &recovery,
 		},
 	})
@@ -180,5 +243,19 @@ func assertTypedRecoveryFailure(t *testing.T, findings []reviewcontract.Finding,
 	}
 	if typed.Kind != kind {
 		t.Fatalf("recovery error kind = %q, want %q", typed.Kind, kind)
+	}
+}
+
+func assertTypedStoredRecoveryFailure(t *testing.T, recovery protocol.ReviewRecovery, err error, kind RecoveryArtifactErrorKind) {
+	t.Helper()
+	if recovery.Findings != nil || recovery.FindingsRef != nil {
+		t.Fatalf("failed stored recovery returned partial context: %#v", recovery)
+	}
+	var typed *RecoveryArtifactError
+	if !errors.As(err, &typed) {
+		t.Fatalf("stored recovery error = %T %v, want *RecoveryArtifactError", err, err)
+	}
+	if typed.Kind != kind {
+		t.Fatalf("stored recovery error kind = %q, want %q", typed.Kind, kind)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"oro/pkg/protocol"
 	"oro/pkg/reviewcontract"
 )
 
@@ -141,15 +142,24 @@ WHERE id = ? AND state = ?`, to, id, from)
 	return nil
 }
 
-// SaveRejectedFindings atomically replaces the structured findings persisted for a rejected checkpoint.
+// SaveRejectedFindings atomically replaces the structured findings and their
+// optional lossless recovery artifact identity for a rejected checkpoint.
 //
 //oro:testonly
-func (s *ReviewCheckpointStore) SaveRejectedFindings(ctx context.Context, checkpointID int64, findings []reviewcontract.Finding) error {
+func (s *ReviewCheckpointStore) SaveRejectedFindings(
+	ctx context.Context,
+	checkpointID int64,
+	findings []reviewcontract.Finding,
+	ref *ReviewRecoveryArtifactRef,
+) error {
 	if s == nil || s.db == nil {
 		return errors.New("save rejected findings: db is nil")
 	}
 	if checkpointID <= 0 {
 		return fmt.Errorf("save rejected findings: invalid checkpoint ID %d", checkpointID)
+	}
+	if err := validateRejectedFindingsArtifact(findings, ref); err != nil {
+		return err
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -165,7 +175,16 @@ func (s *ReviewCheckpointStore) SaveRejectedFindings(ctx context.Context, checkp
 			return err
 		}
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE review_checkpoints SET updated_at = datetime('now') WHERE id = ?`, checkpointID)
+	path, sha, bytes, count := recoveryArtifactColumns(ref)
+	result, err := tx.ExecContext(ctx, `
+UPDATE review_checkpoints
+SET state = ?,
+    recovery_artifact_path = ?,
+    recovery_artifact_sha256 = ?,
+    recovery_artifact_bytes = ?,
+    recovery_artifact_finding_count = ?,
+    updated_at = datetime('now')
+WHERE id = ?`, ReviewCheckpointStateRejected, path, sha, bytes, count, checkpointID)
 	if err != nil {
 		return fmt.Errorf("touch review checkpoint after rejected findings: %w", err)
 	}
@@ -180,6 +199,133 @@ func (s *ReviewCheckpointStore) SaveRejectedFindings(ctx context.Context, checkp
 		return fmt.Errorf("commit rejected findings: %w", err)
 	}
 	return nil
+}
+
+func validateRejectedFindingsArtifact(findings []reviewcontract.Finding, ref *ReviewRecoveryArtifactRef) error {
+	if ref == nil {
+		recovery := protocolReviewRecoveryForSize(findings)
+		encoded, err := json.Marshal(recovery)
+		if err != nil {
+			return fmt.Errorf("marshal inline rejected findings: %w", err)
+		}
+		if len(encoded) > maxReviewRecoveryInlineBytes {
+			return fmt.Errorf("save rejected findings: %d-byte inline recovery exceeds %d-byte cap without artifact", len(encoded), maxReviewRecoveryInlineBytes)
+		}
+		return nil
+	}
+	loaded, err := LoadRecoveryArtifact(*ref)
+	if err != nil {
+		return fmt.Errorf("save rejected findings: %w", err)
+	}
+	if !equalFindingsJSON(loaded, findings) {
+		return errors.New("save rejected findings: recovery artifact findings do not match committed findings")
+	}
+	return nil
+}
+
+func protocolReviewRecoveryForSize(findings []reviewcontract.Finding) any {
+	return struct {
+		Findings []reviewcontract.Finding `json:"findings,omitempty"`
+	}{Findings: findings}
+}
+
+func equalFindingsJSON(left, right []reviewcontract.Finding) bool {
+	leftJSON, leftErr := json.Marshal(left)
+	rightJSON, rightErr := json.Marshal(right)
+	return leftErr == nil && rightErr == nil && string(leftJSON) == string(rightJSON)
+}
+
+func recoveryArtifactColumns(ref *ReviewRecoveryArtifactRef) (path, sha any, bytes int64, count int) {
+	if ref == nil {
+		return nil, nil, 0, 0
+	}
+	return ref.Path, ref.SHA256, ref.Bytes, ref.FindingCount
+}
+
+// LoadReviewRecovery reconstructs correction context from durable checkpoint
+// state. Referenced findings are validated but never regenerated from compact rows.
+func (s *ReviewCheckpointStore) LoadReviewRecovery(ctx context.Context, checkpointID int64) (protocol.ReviewRecovery, error) {
+	if s == nil || s.db == nil {
+		return protocol.ReviewRecovery{}, errors.New("load review recovery: db is nil")
+	}
+	if checkpointID <= 0 {
+		return protocol.ReviewRecovery{}, fmt.Errorf("load review recovery: invalid checkpoint ID %d", checkpointID)
+	}
+
+	var recovery protocol.ReviewRecovery
+	var path, sha sql.NullString
+	var bytes int64
+	var findingCount int
+	if err := s.db.QueryRowContext(ctx, `
+SELECT id, head_sha, recovery_attempt, acceptance_hash,
+       recovery_artifact_path, recovery_artifact_sha256,
+       recovery_artifact_bytes, recovery_artifact_finding_count
+FROM review_checkpoints
+WHERE id = ?`, checkpointID).Scan(
+		&recovery.CheckpointID,
+		&recovery.RejectedHeadSHA,
+		&recovery.Attempt,
+		&recovery.AcceptanceHash,
+		&path,
+		&sha,
+		&bytes,
+		&findingCount,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return protocol.ReviewRecovery{}, fmt.Errorf("load review recovery: checkpoint %d not found", checkpointID)
+		}
+		return protocol.ReviewRecovery{}, fmt.Errorf("load review recovery checkpoint %d: %w", checkpointID, err)
+	}
+
+	if path.Valid || sha.Valid || bytes != 0 || findingCount != 0 {
+		ref := ReviewRecoveryArtifactRef{
+			Path:         path.String,
+			SHA256:       sha.String,
+			Bytes:        bytes,
+			FindingCount: findingCount,
+		}
+		if _, err := LoadRecoveryArtifact(ref); err != nil {
+			return protocol.ReviewRecovery{}, fmt.Errorf("load review recovery: %w", err)
+		}
+		recovery.FindingsRef = &ref
+		return recovery, nil
+	}
+
+	findings, err := s.loadInlineRejectedFindings(ctx, checkpointID)
+	if err != nil {
+		return protocol.ReviewRecovery{}, err
+	}
+	recovery.Findings = findings
+	return recovery, nil
+}
+
+func (s *ReviewCheckpointStore) loadInlineRejectedFindings(ctx context.Context, checkpointID int64) ([]reviewcontract.Finding, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT compact_json
+FROM review_checkpoint_findings
+WHERE checkpoint_id = ?
+ORDER BY rowid`, checkpointID)
+	if err != nil {
+		return nil, fmt.Errorf("query review recovery findings: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var findings []reviewcontract.Finding
+	for rows.Next() {
+		var compact []byte
+		if err := rows.Scan(&compact); err != nil {
+			return nil, fmt.Errorf("scan review recovery finding: %w", err)
+		}
+		var finding reviewcontract.Finding
+		if err := json.Unmarshal(compact, &finding); err != nil {
+			return nil, fmt.Errorf("decode review recovery finding: %w", err)
+		}
+		findings = append(findings, finding)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate review recovery findings: %w", err)
+	}
+	return findings, nil
 }
 
 func insertRejectedFinding(ctx context.Context, tx *sql.Tx, checkpointID int64, finding reviewcontract.Finding) error {

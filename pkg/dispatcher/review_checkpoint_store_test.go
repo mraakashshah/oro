@@ -80,7 +80,7 @@ func TestReviewCheckpointStoreSaveRejectedFindings(t *testing.T) {
 	}
 
 	saver, ok := any(store).(interface {
-		SaveRejectedFindings(context.Context, int64, []ops.Finding) error
+		SaveRejectedFindings(context.Context, int64, []ops.Finding, *ReviewRecoveryArtifactRef) error
 	})
 	if !ok {
 		t.Fatal("ReviewCheckpointStore does not expose SaveRejectedFindings")
@@ -92,7 +92,7 @@ func TestReviewCheckpointStoreSaveRejectedFindings(t *testing.T) {
 		ContractImpact: ops.ContractAcceptanceGap,
 		RequiredAction: "update acceptance",
 	}}
-	if err := saver.SaveRejectedFindings(ctx, checkpoint.ID, findings); err != nil {
+	if err := saver.SaveRejectedFindings(ctx, checkpoint.ID, findings, nil); err != nil {
 		t.Fatalf("save rejected findings: %v", err)
 	}
 	if err := store.db.Close(); err != nil {
@@ -131,7 +131,7 @@ func TestReviewCheckpointStoreSaveRejectedFindingsRejectsUnknownCheckpoint(t *te
 	ctx := context.Background()
 	store := openReviewCheckpointStore(ctx, t, filepath.Join(t.TempDir(), "unknown-checkpoint.sqlite"))
 
-	err := store.SaveRejectedFindings(ctx, 999, []ops.Finding{{ID: "finding-1", Severity: ops.SevImportant}})
+	err := store.SaveRejectedFindings(ctx, 999, []ops.Finding{{ID: "finding-1", Severity: ops.SevImportant}}, nil)
 	if err == nil {
 		t.Fatal("save findings for unknown checkpoint succeeded")
 	}

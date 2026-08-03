@@ -31,11 +31,12 @@ const gitLogTimeout = 2 * time.Second
 // It stays separate from the worker's mutable runtime state so retry and
 // handoff payloads can preserve the exact issued identity.
 type WorkerExecutionContext struct {
-	AssignmentID int64
-	Generation   int64
-	ActorRole    string
-	Project      string
-	Capability   string
+	AssignmentID   int64
+	Generation     int64
+	ActorRole      string
+	Project        string
+	Capability     string
+	ReviewRecovery *protocol.ReviewRecovery
 }
 
 func workerExecutionContext(assignmentID int64, isEpicDecomp bool, project string) WorkerExecutionContext {
@@ -137,6 +138,7 @@ func applyExecutionContext(payload *protocol.AssignPayload, execution WorkerExec
 	payload.ActorRole = execution.ActorRole
 	payload.Project = execution.Project
 	payload.Capability = execution.Capability
+	payload.ReviewRecovery = execution.ReviewRecovery
 }
 
 func (d *Dispatcher) buildCardContext(ctx context.Context, bead protocol.Bead) cards.RelevantCards {
