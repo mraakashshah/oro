@@ -47,6 +47,16 @@ func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, 
 		d.notifyAssignLoop()
 		return nil
 	}
+	checkpointBlocked, checkpointErr := d.reviewCheckpointBlocksAssignment(ctx, bead.ID)
+	if checkpointErr != nil {
+		_ = d.logEvent(ctx, "review_checkpoint_assignment_recheck_failed", "dispatcher", bead.ID, w.id, checkpointErr.Error())
+		return nil
+	}
+	if checkpointBlocked {
+		_ = d.logEvent(ctx, "review_checkpoint_assignment_blocked", "dispatcher", bead.ID, w.id,
+			`{"reason":"durable_nonterminal_review_checkpoint","stage":"final_recheck"}`)
+		return nil
+	}
 
 	// Atomically claim this bead for assignment (oro-ptp2: prevents race condition).
 	// If another concurrent assignBead call already claimed it, abort.

@@ -195,13 +195,14 @@ func (d *Dispatcher) tryRecoverExternalCloseWork(ctx context.Context, workerID, 
 // filterAssignable returns beads eligible for assignment: excludes closed beads,
 // beads with status in_progress or blocked, beads with recent worktree creation
 // failures (within cooldown window), beads currently in-flight (assigningBeads),
-// beads with unresolved blocking dependencies, and beads whose agent branch is
-// already merged to main.
+// beads with unresolved blocking dependencies, beads with a durable nonterminal
+// review checkpoint, and beads whose agent branch is already merged to main.
 // Epics are allowed through; assignBead performs the HasChildren check.
 func (d *Dispatcher) filterAssignable(ctx context.Context, allBeads []protocol.Bead) []protocol.Bead {
 	now := d.nowFunc()
 
 	allBeads = d.filterExecutableBeads(ctx, allBeads)
+	allBeads = d.filterReviewCheckpointBlockedBeads(ctx, allBeads)
 	allBeads = d.filterRecoveryQuarantinedBeads(ctx, allBeads)
 
 	d.mu.Lock()
@@ -209,6 +210,71 @@ func (d *Dispatcher) filterAssignable(ctx context.Context, allBeads []protocol.B
 	d.mu.Unlock()
 
 	return d.filterAlreadyMergedBranches(ctx, candidates)
+}
+
+func (d *Dispatcher) filterReviewCheckpointBlockedBeads(ctx context.Context, allBeads []protocol.Bead) []protocol.Bead {
+	if len(allBeads) == 0 || d.db == nil {
+		return allBeads
+	}
+	blockedBeads, err := d.reviewCheckpointBlockedBeads(ctx)
+	if err != nil {
+		_ = d.logEvent(ctx, "review_checkpoint_assignment_filter_failed", "dispatcher", "", "", err.Error())
+		return nil
+	}
+	filtered := make([]protocol.Bead, 0, len(allBeads))
+	for _, bead := range allBeads {
+		if blockedBeads[bead.ID] {
+			_ = d.logEvent(ctx, "review_checkpoint_assignment_blocked", "dispatcher", bead.ID, "",
+				`{"reason":"durable_nonterminal_review_checkpoint"}`)
+			continue
+		}
+		filtered = append(filtered, bead)
+	}
+	return filtered
+}
+
+func (d *Dispatcher) reviewCheckpointBlockedBeads(ctx context.Context) (map[string]bool, error) {
+	rows, err := d.db.QueryContext(ctx, `SELECT DISTINCT bead_id FROM review_checkpoints_blocking_assignment`)
+	if err != nil {
+		if tableMissingErr(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("query blocking review checkpoint beads: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	blocked := make(map[string]bool)
+	for rows.Next() {
+		var beadID string
+		if err := rows.Scan(&beadID); err != nil {
+			return nil, fmt.Errorf("scan blocking review checkpoint bead: %w", err)
+		}
+		blocked[beadID] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate blocking review checkpoint beads: %w", err)
+	}
+	return blocked, nil
+}
+
+func (d *Dispatcher) reviewCheckpointBlocksAssignment(ctx context.Context, beadID string) (bool, error) {
+	if d.db == nil {
+		return false, nil
+	}
+	var blocked bool
+	if err := d.db.QueryRowContext(ctx, `
+SELECT EXISTS(
+    SELECT 1
+    FROM review_checkpoints_blocking_assignment
+    WHERE bead_id = ?
+)`, beadID).Scan(&blocked); err != nil {
+		// Direct unit construction can intentionally omit the native bead schema.
+		// Production assignment starts only after startupRecovery migrates it.
+		if tableMissingErr(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("query blocking review checkpoint: %w", err)
+	}
+	return blocked, nil
 }
 
 func (d *Dispatcher) filterExecutableBeads(ctx context.Context, allBeads []protocol.Bead) []protocol.Bead {

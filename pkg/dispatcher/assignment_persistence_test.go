@@ -33,8 +33,13 @@ func TestAssignBeadDoesNotSendWhenCreateAssignmentFails(t *testing.T) {
 	}
 	beadSrc.mu.Unlock()
 
-	if err := d.db.Close(); err != nil {
-		t.Fatalf("close db: %v", err)
+	if _, err := d.db.Exec(`
+CREATE TRIGGER fail_assignment_insert
+BEFORE INSERT ON assignments
+BEGIN
+    SELECT RAISE(FAIL, 'injected assignment persistence failure');
+END`); err != nil {
+		t.Fatalf("install assignment persistence failure: %v", err)
 	}
 
 	if err := d.assignBead(context.Background(), w, protocol.Bead{ID: beadID, Title: "DB failure bead", Priority: 1, Type: "task"}); err != nil {
@@ -102,8 +107,13 @@ func TestAssignBeadRollsBackStatusWithoutDeletingReusedWorktreeOnPersistenceFail
 	}
 	beadSrc.mu.Unlock()
 
-	if err := d.db.Close(); err != nil {
-		t.Fatalf("close db: %v", err)
+	if _, err := d.db.Exec(`
+CREATE TRIGGER fail_assignment_insert
+BEFORE INSERT ON assignments
+BEGIN
+    SELECT RAISE(FAIL, 'injected assignment persistence failure');
+END`); err != nil {
+		t.Fatalf("install assignment persistence failure: %v", err)
 	}
 
 	if err := d.assignBead(context.Background(), w, protocol.Bead{ID: "bead-db-reuse", Title: "DB reuse bead", Priority: 1, Type: "task"}); err != nil {

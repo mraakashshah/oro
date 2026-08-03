@@ -611,6 +611,14 @@ END;
 
 DROP VIEW IF EXISTS beads_ready;
 DROP VIEW IF EXISTS beads_blocked;
+DROP VIEW IF EXISTS review_checkpoints_blocking_assignment;
+
+-- This view is the single durable predicate for ordinary assignment admission.
+-- Every checkpoint state blocks until review lifecycle ownership is terminal.
+CREATE VIEW review_checkpoints_blocking_assignment AS
+SELECT id, bead_id
+FROM review_checkpoints
+WHERE state NOT IN ('integrated', 'superseded');
 
 CREATE VIEW IF NOT EXISTS beads_ready AS
 SELECT b.*
@@ -623,6 +631,10 @@ WHERE b.deleted = 0
     SELECT 1 FROM assignments a
     WHERE a.bead_id = b.id
       AND a.status = 'active'
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM review_checkpoints_blocking_assignment checkpoint
+    WHERE checkpoint.bead_id = b.id
   )
   AND NOT EXISTS (
     SELECT 1 FROM bead_deps d
@@ -1141,6 +1153,16 @@ func rebuildReviewCheckpoints(ctx context.Context, db *sql.DB, columns map[strin
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// The assignment-admission views depend on review_checkpoints. Drop them
+	// inside the rebuild transaction so SQLite does not retarget the durable
+	// predicate at review_checkpoints_legacy during ALTER TABLE. beadSchemaDDL
+	// recreates both views after the checkpoint migration completes.
+	if _, err := tx.ExecContext(ctx, `DROP VIEW IF EXISTS beads_ready`); err != nil {
+		return fmt.Errorf("drop ready view before review checkpoint rebuild: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DROP VIEW IF EXISTS review_checkpoints_blocking_assignment`); err != nil {
+		return fmt.Errorf("drop assignment admission view before review checkpoint rebuild: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `ALTER TABLE review_checkpoints RENAME TO review_checkpoints_legacy`); err != nil {
 		return fmt.Errorf("rename legacy review checkpoints: %w", err)
 	}
