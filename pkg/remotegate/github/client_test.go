@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -137,6 +138,61 @@ func TestGitHubChangeLifecycle(t *testing.T) {
 	}
 }
 
+func TestNewClientRejectsCredentialScopeMismatchBeforeMutation(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name       string
+		clientCred func(remotegate.RuntimeCredentialProvider) remotegate.RuntimeCredentialProvider
+		gitCred    func(remotegate.RuntimeCredentialProvider) remotegate.RuntimeCredentialProvider
+	}{
+		{name: "zero provider", clientCred: func(remotegate.RuntimeCredentialProvider) remotegate.RuntimeCredentialProvider {
+			return remotegate.RuntimeCredentialProvider{}
+		}},
+		{name: "foreign repository", clientCred: func(remotegate.RuntimeCredentialProvider) remotegate.RuntimeCredentialProvider {
+			target := lifecycleCredentialTarget()
+			target.Name = "other"
+			return runtimeProviderForTarget(target)
+		}},
+		{name: "wrong app and installation", clientCred: func(remotegate.RuntimeCredentialProvider) remotegate.RuntimeCredentialProvider {
+			target := lifecycleCredentialTarget()
+			target.Identity.AppID++
+			target.Identity.InstallationID++
+			return runtimeProviderForTarget(target)
+		}},
+		{name: "split API provider", clientCred: func(remotegate.RuntimeCredentialProvider) remotegate.RuntimeCredentialProvider {
+			return runtimeProviderForTarget(lifecycleCredentialTarget())
+		}},
+		{name: "split Git provider", gitCred: func(remotegate.RuntimeCredentialProvider) remotegate.RuntimeCredentialProvider {
+			return runtimeProviderForTarget(lifecycleCredentialTarget())
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			fixture := newChangeLifecycleFixture(t)
+			clientCredentials := fixture.credentials
+			gitCredentials := fixture.credentials
+			if test.clientCred != nil {
+				clientCredentials = test.clientCred(fixture.credentials)
+			}
+			if test.gitCred != nil {
+				gitCredentials = test.gitCred(fixture.credentials)
+			}
+			fixture.git.credentials = gitCredentials
+			_, err := NewClient(Config{
+				Repository:     remotegate.Repository{Host: "github.example", Owner: "acme", Name: "oro"},
+				RequiredChecks: []string{"quality-gate"},
+			}, fixture.runner, &fixture.git, clientCredentials)
+			if !errors.Is(err, remotegate.ErrConfig) {
+				t.Fatalf("NewClient() error = %v, want ErrConfig", err)
+			}
+			if len(fixture.git.requests) != 0 || fixture.countCalls("") != 0 {
+				t.Fatalf("constructor mismatch performed mutation: pushes=%d calls=%d", len(fixture.git.requests), fixture.countCalls(""))
+			}
+		})
+	}
+}
+
 func readyEvidence(evidence remotegate.Evidence, change remotegate.Change) remotegate.Evidence {
 	evidence.Change = change
 	return evidence
@@ -164,12 +220,17 @@ func reconciliationRequest(change remotegate.RemoteChange, evidence remotegate.E
 }
 
 type recordingGitTransport struct {
-	requests []remotegate.GitPushRequest
+	credentials remotegate.RuntimeCredentialProvider
+	requests    []remotegate.GitPushRequest
 }
 
 func (transport *recordingGitTransport) Push(_ context.Context, request remotegate.GitPushRequest) error {
 	transport.requests = append(transport.requests, request)
 	return nil
+}
+
+func (transport *recordingGitTransport) RuntimeCredentialProvider() remotegate.RuntimeCredentialProvider {
+	return transport.credentials
 }
 
 type changeLifecycleFixture struct {
@@ -254,7 +315,7 @@ esac
 	if err != nil {
 		t.Fatalf("NewGHRunner() error = %v", err)
 	}
-	return changeLifecycleFixture{runner: runner, credentials: credentials, calls: calls, graphqlBody: graphqlBody, mismatch: mismatch}
+	return changeLifecycleFixture{runner: runner, credentials: credentials, git: recordingGitTransport{credentials: credentials}, calls: calls, graphqlBody: graphqlBody, mismatch: mismatch}
 }
 
 func (fixture changeLifecycleFixture) countCalls(fragment string) int {
@@ -299,11 +360,19 @@ func (source lifecycleCredentialSource) Resolve(_ context.Context, request remot
 }
 
 func lifecycleCredentials() remotegate.RuntimeCredentialProvider {
-	target := remotegate.CredentialTarget{
+	return runtimeProviderForTarget(lifecycleCredentialTarget())
+}
+
+func lifecycleCredentialTarget() remotegate.CredentialTarget {
+	return remotegate.CredentialTarget{
 		Identity: config.GitHubAppIdentityConfig{
 			Type: "github-app", AppID: 1, InstallationID: 2, PrivateKeyRef: "keychain:oro/test",
 		},
 		Host: "github.example", Owner: "acme", Name: "oro",
 	}
+
+}
+
+func runtimeProviderForTarget(target remotegate.CredentialTarget) remotegate.RuntimeCredentialProvider {
 	return remotegate.NewRuntimeCredentialProvider(target, lifecycleCredentialSource{target: target})
 }

@@ -29,6 +29,10 @@ type GitTransport interface {
 	Push(context.Context, remotegate.GitPushRequest) error
 }
 
+type credentialBoundGitTransport interface {
+	RuntimeCredentialProvider() remotegate.RuntimeCredentialProvider
+}
+
 // Client adapts GitHub pull requests and checks to the provider-neutral remote
 // gate lifecycle.
 //
@@ -48,6 +52,11 @@ func NewClient(cfg Config, gh *GHRunner, git GitTransport, creds remotegate.Runt
 		return nil, err
 	}
 	if gh == nil || git == nil || gh.config.Host != cfg.Repository.Host {
+		return nil, fmt.Errorf("construct GitHub change adapter: %w", remotegate.ErrConfig)
+	}
+	boundGit, ok := git.(credentialBoundGitTransport)
+	if !ok || !creds.MatchesRepository(cfg.Repository) || !creds.SameActorScope(gh.credentials) ||
+		!creds.SameActorScope(boundGit.RuntimeCredentialProvider()) {
 		return nil, fmt.Errorf("construct GitHub change adapter: %w", remotegate.ErrConfig)
 	}
 	cfg.RequiredChecks = append([]string(nil), cfg.RequiredChecks...)

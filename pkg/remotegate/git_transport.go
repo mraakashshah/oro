@@ -61,6 +61,15 @@ func newInternalGitTransport(cap Capabilities, creds RuntimeCredentialProvider) 
 	return &internalGitTransport{capabilities: cap, credentials: creds, remoteURL: internalGitRemoteURL(cap.Repository)}
 }
 
+// RuntimeCredentialProvider exposes only the opaque provider binding needed
+// to prove API and Git mutations share one actor scope.
+func (transport *internalGitTransport) RuntimeCredentialProvider() RuntimeCredentialProvider {
+	if transport == nil {
+		return RuntimeCredentialProvider{}
+	}
+	return transport.credentials
+}
+
 // Push updates one dispatcher-owned ref with an exact force-with-lease.
 func (transport *internalGitTransport) Push(ctx context.Context, request GitPushRequest) error {
 	if transport == nil {

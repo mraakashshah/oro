@@ -80,9 +80,12 @@ type CredentialSource interface {
 //
 //oro:testonly — credential providers are wired by subsequent remote-gate tasks.
 type RuntimeCredentialProvider struct {
-	target CredentialTarget
-	source CredentialSource
+	target   CredentialTarget
+	source   CredentialSource
+	identity *runtimeCredentialProviderIdentity
 }
+
+type runtimeCredentialProviderIdentity struct{ allocated byte }
 
 // MaintenanceCredentialProvider resolves only policy-maintenance credentials.
 //
@@ -97,7 +100,7 @@ type MaintenanceCredentialProvider struct {
 //
 //oro:testonly — credential providers are wired by subsequent remote-gate tasks.
 func NewRuntimeCredentialProvider(target CredentialTarget, source CredentialSource) RuntimeCredentialProvider {
-	return RuntimeCredentialProvider{target: target, source: source}
+	return RuntimeCredentialProvider{target: target, source: source, identity: &runtimeCredentialProviderIdentity{allocated: 1}}
 }
 
 // NewMaintenanceCredentialProvider constructs a provider with fixed
@@ -111,6 +114,20 @@ func NewMaintenanceCredentialProvider(target CredentialTarget, source Credential
 // Resolve returns the exact runtime credential or a token-safe invalid error.
 func (provider RuntimeCredentialProvider) Resolve(ctx context.Context) (Credential, error) {
 	return resolveCredential(ctx, provider.target, provider.source, CredentialRoleRuntime, runtimeCredentialPermissions())
+}
+
+// MatchesRepository reports whether this non-zero runtime provider is bound
+// to exactly the supplied repository.
+func (provider RuntimeCredentialProvider) MatchesRepository(repository Repository) bool {
+	return provider.identity != nil && provider.source != nil && validCredentialTarget(provider.target) &&
+		provider.target.Host == repository.Host && provider.target.Owner == repository.Owner && provider.target.Name == repository.Name
+}
+
+// SameActorScope reports whether two components carry the same provider
+// instance. Copies of one provider retain identity; separately constructed
+// providers do not, even when their public repository coordinates match.
+func (provider RuntimeCredentialProvider) SameActorScope(other RuntimeCredentialProvider) bool {
+	return provider.identity != nil && provider.identity == other.identity
 }
 
 // Resolve returns the exact maintenance credential or a token-safe invalid error.
