@@ -473,7 +473,6 @@ func lifecycleCredentialTarget() remotegate.CredentialTarget {
 		},
 		Host: "github.example", Owner: "acme", Name: "oro",
 	}
-
 }
 
 func runtimeProviderForTarget(target remotegate.CredentialTarget) remotegate.RuntimeCredentialProvider {
