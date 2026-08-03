@@ -447,6 +447,12 @@ func (d *Dispatcher) supersedeAndRerouteOpsRun(ctx context.Context, rec OpsRunRe
 		return nil
 	}
 	routed := d.routeOpsRun(ctx, created)
+	if !routed {
+		const diagnostic = "orphaned ops run replacement could not be routed on dispatcher startup"
+		if err := CompleteOpsRun(ctx, d.db, created.ID, opsRunStatusFailed, "", "", diagnostic); err != nil {
+			return fmt.Errorf("fail unroutable replacement ops run %d: %w", created.ID, err)
+		}
+	}
 	_ = d.logEvent(ctx, "ops_run_superseded", "dispatcher", rec.BeadID, rec.WorkerID,
 		fmt.Sprintf(`{"ops_run_id":%d,"new_ops_run_id":%d,"type":%q,"routed":%t}`, rec.ID, created.ID, rec.Type, routed))
 	return nil

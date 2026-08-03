@@ -5,12 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"oro/pkg/beadstore"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
+	"oro/pkg/storage"
 )
 
 // TestReviewCheckpointStartupOrdering ensures startup restores checkpoint work
@@ -138,6 +141,196 @@ func TestReviewCheckpointStartupOrdering(t *testing.T) {
 	tryAssignAndWait(t, d, ctx)
 	if got := countActiveAssignmentsForBead(t, d, beadID); got != 0 {
 		t.Fatalf("ordinary active assignments after startup = %d, want 0", got)
+	}
+}
+
+func TestReviewCheckpointStartupQuarantineFailsUnroutableReplacementDurably(t *testing.T) {
+	ctx := context.Background()
+	d, beadSrc, wtMgr, _, _, spawnMock := newTestDispatcher(t)
+
+	const (
+		beadID   = "review-checkpoint-quarantined-startup"
+		workerID = "review-checkpoint-quarantined-worker"
+		worktree = "/tmp/missing-review-checkpoint-quarantined-startup"
+	)
+	beadSrc.shown[beadID] = &protocol.BeadDetail{
+		ID:                 beadID,
+		Title:              "Quarantine unsafe checkpoint review",
+		Status:             "open",
+		AcceptanceCriteria: "Assert: an unsafe recovered worktree cannot launch review",
+	}
+	wtMgr.existsFn = func(_ context.Context, path string) bool { return path != worktree }
+	seedReviewCheckpointBead(ctx, t, d, beadID, beadSrc.shown[beadID].Title)
+
+	assignmentID, err := d.createAssignment(ctx, beadID, workerID, worktree)
+	if err != nil {
+		t.Fatalf("create checkpoint assignment: %v", err)
+	}
+	if err := d.requeueAssignment(ctx, assignmentID); err != nil {
+		t.Fatalf("requeue checkpoint assignment: %v", err)
+	}
+	checkpoint := seedDurableReviewCheckpoint(t, d, beadID, assignmentID, worktree, ReviewCheckpointStateReviewRunning)
+	orphaned := seedOrphanedReviewRun(ctx, t, d, beadID, workerID)
+
+	if err := d.startupRecovery(ctx); err != nil {
+		t.Fatalf("startupRecovery: %v", err)
+	}
+
+	var assignmentStatus, quarantineReason string
+	if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&assignmentStatus); err != nil {
+		t.Fatalf("query recovered assignment: %v", err)
+	}
+	if assignmentStatus != "quarantined" {
+		t.Fatalf("recovered assignment status = %q, want quarantined", assignmentStatus)
+	}
+	if err := d.db.QueryRowContext(ctx, `
+SELECT reason FROM recovery_quarantines
+WHERE assignment_id=? AND bead_id=? AND status='open'`, assignmentID, beadID).Scan(&quarantineReason); err != nil {
+		t.Fatalf("query recovery quarantine: %v", err)
+	}
+	if quarantineReason != "missing_worktree_path" {
+		t.Fatalf("recovery quarantine reason = %q, want missing_worktree_path", quarantineReason)
+	}
+	if checkpoint.State != ReviewCheckpointStateReviewRunning {
+		t.Fatalf("seeded checkpoint state = %q, want %q", checkpoint.State, ReviewCheckpointStateReviewRunning)
+	}
+	assertUnroutableStartupReviewFailedDurably(t, d, orphaned)
+	if got := spawnMock.SpawnCount(); got != 0 {
+		t.Fatalf("review spawns = %d, want 0", got)
+	}
+}
+
+func TestReviewCheckpointStartupStoragePauseFailsUnroutableReplacementDurably(t *testing.T) {
+	ctx := context.Background()
+	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
+
+	const (
+		beadID   = "review-checkpoint-storage-paused-startup"
+		workerID = "review-checkpoint-storage-paused-worker"
+		worktree = "/tmp/worktree-review-checkpoint-storage-paused-startup"
+	)
+	beadSrc.shown[beadID] = &protocol.BeadDetail{
+		ID:                 beadID,
+		Title:              "Pause checkpoint review admission",
+		Status:             "open",
+		AcceptanceCriteria: "Assert: storage admission denial cannot strand a replacement run",
+	}
+	seedReviewCheckpointBead(ctx, t, d, beadID, beadSrc.shown[beadID].Title)
+
+	assignmentID, err := d.createAssignment(ctx, beadID, workerID, worktree)
+	if err != nil {
+		t.Fatalf("create checkpoint assignment: %v", err)
+	}
+	if err := d.requeueAssignment(ctx, assignmentID); err != nil {
+		t.Fatalf("requeue checkpoint assignment: %v", err)
+	}
+	seedDurableReviewCheckpoint(t, d, beadID, assignmentID, worktree, ReviewCheckpointStateReviewRunning)
+	orphaned := seedOrphanedReviewRun(ctx, t, d, beadID, workerID)
+	configurePausedStorageAdmission(ctx, t, d)
+
+	if err := d.startupRecovery(ctx); err != nil {
+		t.Fatalf("startupRecovery: %v", err)
+	}
+
+	d.mu.Lock()
+	restoredWorktree := d.worktreeByBead[beadID]
+	d.mu.Unlock()
+	if restoredWorktree != worktree {
+		t.Fatalf("restored worktree = %q, want %q", restoredWorktree, worktree)
+	}
+	assertUnroutableStartupReviewFailedDurably(t, d, orphaned)
+	if got := spawnMock.SpawnCount(); got != 0 {
+		t.Fatalf("review spawns = %d, want 0", got)
+	}
+}
+
+func seedReviewCheckpointBead(ctx context.Context, t *testing.T, d *Dispatcher, beadID, title string) {
+	t.Helper()
+	if err := protocol.MigrateBeadSchema(ctx, d.db); err != nil {
+		t.Fatalf("migrate bead schema: %v", err)
+	}
+	if _, err := d.db.ExecContext(ctx,
+		`INSERT INTO beads (id, title, status) VALUES (?, ?, 'open')`, beadID, title); err != nil {
+		t.Fatalf("seed checkpoint bead: %v", err)
+	}
+}
+
+func seedOrphanedReviewRun(ctx context.Context, t *testing.T, d *Dispatcher, beadID, workerID string) OpsRunRecord {
+	t.Helper()
+	orphaned, _, err := CreateOpsRun(ctx, d.db, OpsRunRecord{
+		Type:          string(ops.OpsReview),
+		BeadID:        beadID,
+		WorkerID:      workerID,
+		DispatcherPID: -1,
+		ProcessPID:    -1,
+	})
+	if err != nil {
+		t.Fatalf("create orphaned review run: %v", err)
+	}
+	return orphaned
+}
+
+func assertUnroutableStartupReviewFailedDurably(t *testing.T, d *Dispatcher, orphaned OpsRunRecord) {
+	t.Helper()
+	ctx := context.Background()
+	if got := fetchOpsRunForTest(t, d.db, orphaned.ID).Status; got != opsRunStatusSuperseded {
+		t.Fatalf("orphaned review status = %q, want %q", got, opsRunStatusSuperseded)
+	}
+
+	var replacementID int64
+	if err := d.db.QueryRowContext(ctx, `
+SELECT id FROM ops_runs
+WHERE type=? AND bead_id=? AND id<>?
+ORDER BY id DESC LIMIT 1`, orphaned.Type, orphaned.BeadID, orphaned.ID).Scan(&replacementID); err != nil {
+		t.Fatalf("query replacement review run: %v", err)
+	}
+	replacement := fetchOpsRunForTest(t, d.db, replacementID)
+	if replacement.Status != opsRunStatusFailed {
+		t.Fatalf("replacement review status = %q, want %q", replacement.Status, opsRunStatusFailed)
+	}
+	if replacement.CompletedAt == "" {
+		t.Fatal("failed replacement review completed_at is empty")
+	}
+	if !strings.Contains(replacement.Error, "could not be routed on dispatcher startup") {
+		t.Fatalf("failed replacement review error = %q, want durable startup routing diagnostic", replacement.Error)
+	}
+
+	var processlessRunning int
+	if err := d.db.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM ops_runs
+WHERE type=? AND bead_id=? AND status='running' AND process_pid=0`, orphaned.Type, orphaned.BeadID).Scan(&processlessRunning); err != nil {
+		t.Fatalf("count processless running replacements: %v", err)
+	}
+	if processlessRunning != 0 {
+		t.Fatalf("processless running replacements = %d, want 0", processlessRunning)
+	}
+}
+
+func configurePausedStorageAdmission(ctx context.Context, t *testing.T, d *Dispatcher) {
+	t.Helper()
+	now := time.Date(2026, time.August, 3, 12, 0, 0, 0, time.UTC)
+	catalog, err := storage.OpenCatalog(ctx, filepath.Join(t.TempDir(), "catalog.db"))
+	if err != nil {
+		t.Fatalf("open storage catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = catalog.Close() })
+	if err := catalog.UpsertController(ctx, storage.Controller{
+		ID: "dispatcher", OwnerID: "test", PID: 101, ProcessStart: now.Add(-time.Minute), HeartbeatAt: now,
+		Identity: storage.ProcessIdentity{PID: 101, StartMarker: "start", Executable: "oro", ProcessGroup: 101},
+	}); err != nil {
+		t.Fatalf("register storage controller: %v", err)
+	}
+	controller, err := storage.NewController(storage.ControllerConfig{
+		Catalog: catalog,
+		ID:      "dispatcher",
+		Drain:   func(context.Context) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("new storage controller: %v", err)
+	}
+	d.cfg.StorageController = controller
+	if _, err := storage.NewPauseEpochProtocol(catalog, nil).RequestPause(ctx, now); err != nil {
+		t.Fatalf("request storage pause: %v", err)
 	}
 }
 

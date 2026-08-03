@@ -340,6 +340,42 @@ func TestDispatcherStartupMarksOrphanedOpsRunsStale(t *testing.T) {
 	}, time.Second)
 }
 
+func TestDispatcherStartupReturnsUnroutableReplacementFailureWriteError(t *testing.T) {
+	ctx := context.Background()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	orphaned, _, err := CreateOpsRun(ctx, d.db, OpsRunRecord{
+		Type:          string(ops.OpsReview),
+		BeadID:        "oro-review-replacement-failure-write",
+		WorkerID:      "w-review-replacement-failure-write",
+		DispatcherPID: -1,
+		ProcessPID:    -1,
+	})
+	if err != nil {
+		t.Fatalf("CreateOpsRun orphaned review: %v", err)
+	}
+	if _, err := d.db.ExecContext(ctx, fmt.Sprintf(`
+CREATE TRIGGER fail_unroutable_replacement_terminal_write
+BEFORE UPDATE OF status ON ops_runs
+WHEN OLD.id <> %d AND NEW.status = 'failed'
+BEGIN
+    SELECT RAISE(FAIL, 'injected replacement failure write');
+END`, orphaned.ID)); err != nil {
+		t.Fatalf("create failure-write trigger: %v", err)
+	}
+
+	err = d.reconcileOpsRunsOnStartup(ctx)
+	if err == nil {
+		t.Fatal("reconcileOpsRunsOnStartup error = nil, want replacement failure-write error")
+	}
+	if !strings.Contains(err.Error(), "injected replacement failure write") {
+		t.Fatalf("reconcileOpsRunsOnStartup error = %q, want injected replacement failure write", err)
+	}
+	if got := fetchOpsRunForTest(t, d.db, orphaned.ID).Status; got != opsRunStatusSuperseded {
+		t.Fatalf("orphaned review status = %q, want %q", got, opsRunStatusSuperseded)
+	}
+}
+
 func TestRouteOpsRunRoutesReviewOpsRun(t *testing.T) {
 	ctx := context.Background()
 	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
