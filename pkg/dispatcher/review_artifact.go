@@ -196,7 +196,9 @@ func writeRecoveryArtifactAtomically(dir, path string, data []byte) error {
 	if err := temporary.Close(); err != nil {
 		return fmt.Errorf("close recovery artifact temporary: %w", err)
 	}
-	if err := os.Rename(temporaryPath, path); err != nil {
+	// Both paths are derived inside the caller-provided artifact directory;
+	// the destination filename contains only a checkpoint integer and hex digest.
+	if err := os.Rename(temporaryPath, path); err != nil { //nolint:gosec // atomic same-directory commit
 		return fmt.Errorf("commit recovery artifact: %w", err)
 	}
 	directory, err := os.Open(dir) //nolint:gosec // dir is the caller-provided recovery directory.

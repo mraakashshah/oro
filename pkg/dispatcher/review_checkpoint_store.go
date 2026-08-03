@@ -1,6 +1,7 @@
 package dispatcher
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -175,7 +176,7 @@ func (s *ReviewCheckpointStore) SaveRejectedFindings(
 			return err
 		}
 	}
-	path, sha, bytes, count := recoveryArtifactColumns(ref)
+	path, sha, byteCount, count := recoveryArtifactColumns(ref)
 	result, err := tx.ExecContext(ctx, `
 UPDATE review_checkpoints
 SET state = ?,
@@ -184,7 +185,7 @@ SET state = ?,
     recovery_artifact_bytes = ?,
     recovery_artifact_finding_count = ?,
     updated_at = datetime('now')
-WHERE id = ?`, ReviewCheckpointStateRejected, path, sha, bytes, count, checkpointID)
+WHERE id = ?`, ReviewCheckpointStateRejected, path, sha, byteCount, count, checkpointID)
 	if err != nil {
 		return fmt.Errorf("touch review checkpoint after rejected findings: %w", err)
 	}
@@ -232,10 +233,10 @@ func protocolReviewRecoveryForSize(findings []reviewcontract.Finding) any {
 func equalFindingsJSON(left, right []reviewcontract.Finding) bool {
 	leftJSON, leftErr := json.Marshal(left)
 	rightJSON, rightErr := json.Marshal(right)
-	return leftErr == nil && rightErr == nil && string(leftJSON) == string(rightJSON)
+	return leftErr == nil && rightErr == nil && bytes.Equal(leftJSON, rightJSON)
 }
 
-func recoveryArtifactColumns(ref *ReviewRecoveryArtifactRef) (path, sha any, bytes int64, count int) {
+func recoveryArtifactColumns(ref *ReviewRecoveryArtifactRef) (path, sha any, byteCount int64, count int) {
 	if ref == nil {
 		return nil, nil, 0, 0
 	}
@@ -254,7 +255,7 @@ func (s *ReviewCheckpointStore) LoadReviewRecovery(ctx context.Context, checkpoi
 
 	var recovery protocol.ReviewRecovery
 	var path, sha sql.NullString
-	var bytes int64
+	var byteCount int64
 	var findingCount int
 	if err := s.db.QueryRowContext(ctx, `
 SELECT id, head_sha, recovery_attempt, acceptance_hash,
@@ -268,7 +269,7 @@ WHERE id = ?`, checkpointID).Scan(
 		&recovery.AcceptanceHash,
 		&path,
 		&sha,
-		&bytes,
+		&byteCount,
 		&findingCount,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -277,11 +278,11 @@ WHERE id = ?`, checkpointID).Scan(
 		return protocol.ReviewRecovery{}, fmt.Errorf("load review recovery checkpoint %d: %w", checkpointID, err)
 	}
 
-	if path.Valid || sha.Valid || bytes != 0 || findingCount != 0 {
+	if path.Valid || sha.Valid || byteCount != 0 || findingCount != 0 {
 		ref := ReviewRecoveryArtifactRef{
 			Path:         path.String,
 			SHA256:       sha.String,
-			Bytes:        bytes,
+			Bytes:        byteCount,
 			FindingCount: findingCount,
 		}
 		if _, err := LoadRecoveryArtifact(ref); err != nil {
