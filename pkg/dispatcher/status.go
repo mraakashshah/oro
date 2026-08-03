@@ -318,6 +318,8 @@ func (d *Dispatcher) buildStatusJSONWithStorage(ctx context.Context, storageHeal
 		heartbeatTimeoutSecs:         heartbeatTimeoutSecs,
 		storage:                      storageHealth,
 	})
+	resp.EpicBranchBlocksOpen = health.Metrics.EpicBranchBlocksOpen
+	resp.EpicBranchLeasesActive = health.Metrics.EpicBranchLeasesActive
 	resp.Health = &health
 
 	data, err := json.Marshal(resp)

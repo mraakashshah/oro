@@ -347,6 +347,57 @@ VALUES ('oro-status-q', 'agent/oro-status-q', 'missing_worktree_path', 'missing 
 	}
 }
 
+func TestBuildStatusJSONReportsEpicBranchAdmissionMetrics(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+
+	if _, err := d.db.ExecContext(ctx, `
+CREATE TABLE IF NOT EXISTS epic_branch_admissions (
+    branch TEXT PRIMARY KEY,
+    epic_id TEXT NOT NULL,
+    target_branch TEXT NOT NULL,
+    state TEXT NOT NULL,
+    generation INTEGER NOT NULL DEFAULT 1,
+    lease_token TEXT,
+    lease_owner TEXT,
+    lease_expires_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+INSERT INTO epic_branch_admissions
+    (branch, epic_id, target_branch, state, generation, lease_token, lease_owner,
+     lease_expires_at, created_at, updated_at)
+VALUES
+    ('epic/oro-status-blocked', 'oro-status-blocked', 'main', 'blocked', 2,
+     NULL, NULL, NULL, '2026-08-03T00:00:00Z', '2026-08-03T00:00:00Z'),
+    ('epic/oro-status-leased', 'oro-status-leased', 'main', 'leased', 3,
+     'active-token', 'dispatcher-a', '2099-01-01T00:00:00Z',
+     '2026-08-03T00:00:00Z', '2026-08-03T00:00:00Z'),
+    ('epic/oro-status-expired', 'oro-status-expired', 'main', 'leased', 4,
+     'expired-token', 'dispatcher-b', '2000-01-01T00:00:00Z',
+     '2026-08-03T00:00:00Z', '2026-08-03T00:00:00Z');
+`); err != nil {
+		t.Fatalf("insert epic branch admissions: %v", err)
+	}
+
+	var status statusResponse
+	if err := json.Unmarshal([]byte(d.buildStatusJSON()), &status); err != nil {
+		t.Fatalf("unmarshal status JSON: %v", err)
+	}
+	if status.EpicBranchBlocksOpen != 1 || status.EpicBranchLeasesActive != 1 {
+		t.Fatalf("top-level epic branch metrics = blocks:%d leases:%d, want 1/1", status.EpicBranchBlocksOpen, status.EpicBranchLeasesActive)
+	}
+	if status.Health == nil {
+		t.Fatal("status health missing")
+	}
+	if status.Health.Metrics.EpicBranchBlocksOpen != 1 || status.Health.Metrics.EpicBranchLeasesActive != 1 {
+		t.Fatalf("nested epic branch metrics = blocks:%d leases:%d, want 1/1", status.Health.Metrics.EpicBranchBlocksOpen, status.Health.Metrics.EpicBranchLeasesActive)
+	}
+	if status.AssignmentFrozenByQuarantine || status.Health.Metrics.AssignmentFrozenByQuarantine {
+		t.Fatalf("branch-scoped block changed global assignment freeze: %+v", status)
+	}
+}
+
 func TestStatusReportsAssignmentFrozenByQuarantine(t *testing.T) {
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()

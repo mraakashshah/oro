@@ -135,6 +135,199 @@ VALUES ('oro-q', 12, 'w1', '/tmp/wt-q', 'agent/oro-q', 'missing_worktree_path', 
 	}
 }
 
+func TestEpicBranchAdmissionMetricsAreAdditiveToHealthAndStatus(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("ORO_HOME", t.TempDir())
+	t.Setenv("ORO_PROJECT", "")
+	t.Setenv("ORO_PID_PATH", filepath.Join(tmpDir, "oro.pid"))
+	t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
+	t.Setenv("ORO_DB_PATH", filepath.Join(tmpDir, "state.db"))
+
+	d, db, err := buildDispatcherWithReviewTimeouts(0, 0, 0, 0, 0, false, "", false, false, "")
+	if err != nil {
+		t.Fatalf("build dispatcher: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO epic_branch_admissions
+    (branch, epic_id, target_branch, state, generation, lease_token, lease_owner,
+     lease_expires_at, created_at, updated_at)
+VALUES
+    ('epic/oro-blocked', 'oro-blocked', 'main', 'blocked', 2, NULL, NULL,
+     NULL, '2026-08-03T00:00:00Z', '2026-08-03T00:00:00Z'),
+    ('epic/oro-leased', 'oro-leased', 'main', 'leased', 3, 'active-token', 'dispatcher-a',
+     '2099-01-01T00:00:00Z', '2026-08-03T00:00:00Z', '2026-08-03T00:00:00Z'),
+    ('epic/oro-expired', 'oro-expired', 'main', 'leased', 4, 'expired-token', 'dispatcher-b',
+     '2000-01-01T00:00:00Z', '2026-08-03T00:00:00Z', '2026-08-03T00:00:00Z'),
+    ('epic/oro-resolved', 'oro-resolved', 'main', 'resolved', 5, NULL, NULL,
+     NULL, '2026-08-03T00:00:00Z', '2026-08-03T00:00:00Z');
+`); err != nil {
+		t.Fatalf("seed epic branch admissions: %v", err)
+	}
+
+	live, err := d.Health()
+	if err != nil {
+		t.Fatalf("load live health: %v", err)
+	}
+	paths, err := ResolveDaemonPaths()
+	if err != nil {
+		t.Fatalf("resolve daemon paths: %v", err)
+	}
+	offline, err := loadLocalFactoryHealth(ctx, paths.StateDBPath, false, 0, "stopped")
+	if err != nil {
+		t.Fatalf("load offline health: %v", err)
+	}
+	assertEpicBranchHealthMetrics(t, live)
+	assertEpicBranchHealthMetrics(t, offline)
+	if live.Metrics.EpicBranchBlocksOpen != offline.Metrics.EpicBranchBlocksOpen ||
+		live.Metrics.EpicBranchLeasesActive != offline.Metrics.EpicBranchLeasesActive {
+		t.Fatalf("live/offline epic branch metrics differ: live=%+v offline=%+v", live.Metrics, offline.Metrics)
+	}
+
+	healthJSON := executeEpicBranchHealthJSON(t, "health", "--json")
+	assertEpicBranchJSONNumber(t, healthJSON, []string{"metrics", "epic_branch_blocks_open"}, 1)
+	assertEpicBranchJSONNumber(t, healthJSON, []string{"metrics", "epic_branch_leases_active"}, 1)
+
+	statusJSON := executeEpicBranchHealthJSON(t, "status", "--json")
+	assertEpicBranchJSONNumber(t, statusJSON, []string{"epic_branch_blocks_open"}, 1)
+	assertEpicBranchJSONNumber(t, statusJSON, []string{"epic_branch_leases_active"}, 1)
+	assertEpicBranchJSONNumber(t, statusJSON, []string{"health", "metrics", "epic_branch_blocks_open"}, 1)
+	assertEpicBranchJSONNumber(t, statusJSON, []string{"health", "metrics", "epic_branch_leases_active"}, 1)
+
+	var legacy struct {
+		State   string `json:"state"`
+		Metrics struct {
+			DaemonRunning     bool `json:"daemon_running"`
+			WorkerCount       int  `json:"worker_count"`
+			ReadyQueue        int  `json:"ready_queue"`
+			ActiveAssignments int  `json:"active_assignments"`
+		} `json:"metrics"`
+	}
+	healthBytes, err := json.Marshal(healthJSON)
+	if err != nil {
+		t.Fatalf("marshal health map: %v", err)
+	}
+	if err := json.Unmarshal(healthBytes, &legacy); err != nil {
+		t.Fatalf("legacy health consumer failed to decode additive JSON: %v", err)
+	}
+	if legacy.Metrics.DaemonRunning || legacy.Metrics.WorkerCount != 0 ||
+		legacy.Metrics.ReadyQueue != 0 || legacy.Metrics.ActiveAssignments != 0 {
+		t.Fatalf("preexisting health values changed: %+v", legacy)
+	}
+
+	healthHuman := executeEpicBranchHealthHuman(t, "health")
+	for _, want := range []string{"health:", "posture:", "workers:", "queue:", "assignments:", "findings:", "epic_branch_admission_blocked"} {
+		if !strings.Contains(healthHuman, want) {
+			t.Fatalf("health human output missing %q:\n%s", want, healthHuman)
+		}
+	}
+	if got := executeEpicBranchHealthHuman(t, "status"); got != "dispatcher: stopped\n" {
+		t.Fatalf("stopped status human output changed: %q", got)
+	}
+
+	t.Run("missing table reports additive zeros", func(t *testing.T) {
+		legacyDB, err := openDB(filepath.Join(t.TempDir(), "legacy.db"))
+		if err != nil {
+			t.Fatalf("open legacy db: %v", err)
+		}
+		defer legacyDB.Close()
+
+		metrics, err := factoryhealth.LoadEpicBranchAdmissionMetrics(ctx, legacyDB, time.Now())
+		if err != nil {
+			t.Fatalf("missing table must be rolling-upgrade safe: %v", err)
+		}
+		if metrics.Blocked != 0 || metrics.ActiveLeases != 0 {
+			t.Fatalf("missing-table metrics = %+v, want zero", metrics)
+		}
+		zeroHealth := factoryhealth.Evaluate(factoryhealth.Snapshot{EpicBranchAdmissions: metrics})
+		zeroJSON, err := json.Marshal(zeroHealth)
+		if err != nil {
+			t.Fatalf("marshal zero health: %v", err)
+		}
+		var raw map[string]any
+		if err := json.Unmarshal(zeroJSON, &raw); err != nil {
+			t.Fatalf("decode zero health: %v", err)
+		}
+		assertEpicBranchJSONNumber(t, raw, []string{"metrics", "epic_branch_blocks_open"}, 0)
+		assertEpicBranchJSONNumber(t, raw, []string{"metrics", "epic_branch_leases_active"}, 0)
+	})
+}
+
+func assertEpicBranchHealthMetrics(t *testing.T, health factoryhealth.FactoryHealth) {
+	t.Helper()
+	if health.Metrics.EpicBranchBlocksOpen != 1 || health.Metrics.EpicBranchLeasesActive != 1 {
+		t.Fatalf("epic branch metrics = blocks:%d leases:%d, want 1/1", health.Metrics.EpicBranchBlocksOpen, health.Metrics.EpicBranchLeasesActive)
+	}
+	var branchFindings int
+	for _, finding := range health.Findings {
+		if finding.Code == factoryhealth.FindingAssignmentFrozenByQuarantine {
+			t.Fatalf("branch block must not claim global assignment freeze: %+v", finding)
+		}
+		if finding.Code != factoryhealth.FindingEpicBranchAdmissionBlocked {
+			continue
+		}
+		branchFindings++
+		if finding.Severity != factoryhealth.SeverityWarning || finding.Component != "epic_branch" {
+			t.Fatalf("epic branch finding scope = %+v, want warning/epic_branch", finding)
+		}
+	}
+	if branchFindings != 1 {
+		t.Fatalf("epic branch findings = %d, want 1: %+v", branchFindings, health.Findings)
+	}
+	if health.Metrics.AssignmentFrozenByQuarantine || health.Metrics.BlockingRecoveryQuarantines != 0 || health.Metrics.AssignmentFreezeReason != "" {
+		t.Fatalf("epic branch block changed global freeze metrics: %+v", health.Metrics)
+	}
+}
+
+func executeEpicBranchHealthJSON(t *testing.T, args ...string) map[string]any {
+	t.Helper()
+	root := newRootCmd()
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetArgs(args)
+	if err := root.Execute(); err != nil {
+		t.Fatalf("oro %s failed: %v", strings.Join(args, " "), err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("oro %s invalid JSON: %v\nraw: %s", strings.Join(args, " "), err, buf.String())
+	}
+	return got
+}
+
+func executeEpicBranchHealthHuman(t *testing.T, args ...string) string {
+	t.Helper()
+	root := newRootCmd()
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetArgs(args)
+	if err := root.Execute(); err != nil {
+		t.Fatalf("oro %s failed: %v", strings.Join(args, " "), err)
+	}
+	return buf.String()
+}
+
+func assertEpicBranchJSONNumber(t *testing.T, raw map[string]any, path []string, want float64) {
+	t.Helper()
+	var current any = raw
+	for _, key := range path {
+		object, ok := current.(map[string]any)
+		if !ok {
+			t.Fatalf("JSON path %s parent = %T, want object", strings.Join(path, "."), current)
+		}
+		current, ok = object[key]
+		if !ok {
+			t.Fatalf("JSON missing additive field %s: %+v", strings.Join(path, "."), raw)
+		}
+	}
+	got, ok := current.(float64)
+	if !ok || got != want {
+		t.Fatalf("JSON %s = %#v, want %v", strings.Join(path, "."), current, want)
+	}
+}
+
 func TestHealthCmdJSONReconcilesClosedQGIncidentBeads(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("ORO_PID_PATH", filepath.Join(tmpDir, "oro.pid"))

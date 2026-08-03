@@ -51,6 +51,7 @@ const (
 	FindingQGIncidentIncrease                 = "qg_incident_increase"
 	FindingRecoveryQuarantineOpen             = "recovery_quarantine_open"
 	FindingAssignmentFrozenByQuarantine       = "assignment_frozen_by_quarantine"
+	FindingEpicBranchAdmissionBlocked         = "epic_branch_admission_blocked"
 	FindingOpsRunFailed                       = "ops_run_failed"
 	FindingOpsRunStale                        = "ops_run_stale"
 	FindingPendingEscalationUnrouted          = "pending_escalation_unrouted"
@@ -107,6 +108,8 @@ type Metrics struct {
 	OpenQGIncidents              int               `json:"open_qg_incidents"`
 	QGOccurrences30m             int               `json:"qg_occurrences_30m"`
 	OpenRecoveryQuarantines      int               `json:"recovery_quarantines_open"`
+	EpicBranchBlocksOpen         int               `json:"epic_branch_blocks_open"`
+	EpicBranchLeasesActive       int               `json:"epic_branch_leases_active"`
 	AssignmentFrozenByQuarantine bool              `json:"assignment_frozen_by_quarantine"`
 	BlockingRecoveryQuarantines  int               `json:"blocking_recovery_quarantines,omitempty"`
 	AssignmentFreezeReason       string            `json:"assignment_freeze_reason,omitempty"`
@@ -116,6 +119,12 @@ type Metrics struct {
 	Storage                      *StorageHealth    `json:"storage,omitempty"`
 	PendingWorkerCount           int               `json:"pending_worker_count,omitempty"`
 	PendingHandoffCount          int               `json:"pending_handoff_count,omitempty"`
+}
+
+// EpicBranchAdmissionMetrics summarizes branch-scoped dispatcher admission state.
+type EpicBranchAdmissionMetrics struct {
+	Blocked      int
+	ActiveLeases int
 }
 
 // ThroughputMetrics summarizes recent assignment and closure activity.
@@ -218,6 +227,7 @@ type Snapshot struct {
 	QGOccurrences30m             int
 	QGTopFingerprints            []string
 	OpenRecoveryQuarantines      int
+	EpicBranchAdmissions         EpicBranchAdmissionMetrics
 	AssignmentFrozenByQuarantine bool
 	BlockingRecoveryQuarantines  int
 	AssignmentFreezeReason       string
@@ -257,6 +267,8 @@ func metricsFromSnapshot(snapshot Snapshot) Metrics {
 		OpenQGIncidents:              snapshot.OpenQGIncidents,
 		QGOccurrences30m:             snapshot.QGOccurrences30m,
 		OpenRecoveryQuarantines:      snapshot.OpenRecoveryQuarantines,
+		EpicBranchBlocksOpen:         snapshot.EpicBranchAdmissions.Blocked,
+		EpicBranchLeasesActive:       snapshot.EpicBranchAdmissions.ActiveLeases,
 		AssignmentFrozenByQuarantine: snapshot.AssignmentFrozenByQuarantine,
 		BlockingRecoveryQuarantines:  snapshot.BlockingRecoveryQuarantines,
 		AssignmentFreezeReason:       snapshot.AssignmentFreezeReason,
@@ -287,6 +299,15 @@ func evaluateFindings(snapshot Snapshot, metrics *Metrics) []Finding {
 			Component:         "recovery",
 			Message:           fmt.Sprintf("%d recovery quarantine(s) are open", snapshot.OpenRecoveryQuarantines),
 			RecommendedAction: "run oro health --json, inspect recovery_quarantines and preserved worktrees/branches, then resolve after preserving or merging work",
+		})
+	}
+	if snapshot.EpicBranchAdmissions.Blocked > 0 {
+		findings = append(findings, Finding{
+			Code:              FindingEpicBranchAdmissionBlocked,
+			Severity:          SeverityWarning,
+			Component:         "epic_branch",
+			Message:           fmt.Sprintf("%d epic branch admission block(s) are open", snapshot.EpicBranchAdmissions.Blocked),
+			RecommendedAction: "run oro epic-branch list --json, then resolve a branch only after fresh Git inspection proves it is safe",
 		})
 	}
 	if snapshot.AssignmentFrozenByQuarantine {
@@ -788,6 +809,28 @@ func LoadRecoveryQuarantineMetrics(ctx context.Context, db *sql.DB) (openQuarant
 		return 0, fmt.Errorf("count open recovery quarantines: %w", err)
 	}
 	return openQuarantines, nil
+}
+
+// LoadEpicBranchAdmissionMetrics reads branch-scoped blocks and unexpired leases.
+func LoadEpicBranchAdmissionMetrics(ctx context.Context, db *sql.DB, now time.Time) (EpicBranchAdmissionMetrics, error) {
+	var metrics EpicBranchAdmissionMetrics
+	if db == nil {
+		return metrics, nil
+	}
+	if err := db.QueryRowContext(ctx, `
+SELECT COALESCE(SUM(CASE WHEN state = 'blocked' THEN 1 ELSE 0 END), 0),
+       COALESCE(SUM(CASE
+           WHEN state = 'leased'
+            AND lease_expires_at IS NOT NULL
+            AND julianday(lease_expires_at) > julianday(?)
+           THEN 1 ELSE 0 END), 0)
+  FROM epic_branch_admissions`, now.UTC().Format(time.RFC3339Nano)).Scan(&metrics.Blocked, &metrics.ActiveLeases); err != nil {
+		if tableMissing(err) {
+			return EpicBranchAdmissionMetrics{}, nil
+		}
+		return EpicBranchAdmissionMetrics{}, fmt.Errorf("load epic branch admission metrics: %w", err)
+	}
+	return metrics, nil
 }
 
 // LoadThroughputMetrics reads recent throughput counters from the state database.

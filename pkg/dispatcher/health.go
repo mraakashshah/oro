@@ -104,6 +104,10 @@ func (d *Dispatcher) evaluateFactoryHealth(ctx context.Context, now time.Time, i
 	if err != nil {
 		_ = d.logEvent(ctx, "factory_health_pending_escalations_load_failed", "dispatcher", "", "", err.Error())
 	}
+	epicBranchAdmissions, err := factoryhealth.LoadEpicBranchAdmissionMetrics(ctx, d.db, now)
+	if err != nil {
+		_ = d.logEvent(ctx, "factory_health_epic_branch_admission_load_failed", "dispatcher", "", "", err.Error())
+	}
 	qgFingerprints := input.qgStatus.RecentFingerprints
 	if len(qgFingerprints) == 0 {
 		qgFingerprints = input.qgStatus.TopFingerprints
@@ -125,6 +129,7 @@ func (d *Dispatcher) evaluateFactoryHealth(ctx context.Context, now time.Time, i
 		QGOccurrences30m:             input.qgStatus.Occurrences30m,
 		QGTopFingerprints:            qgFingerprints,
 		OpenRecoveryQuarantines:      input.openRecoveryQuarantines,
+		EpicBranchAdmissions:         epicBranchAdmissions,
 		AssignmentFrozenByQuarantine: input.assignmentFrozenByQuarantine,
 		BlockingRecoveryQuarantines:  input.blockingRecoveryQuarantines,
 		AssignmentFreezeReason:       input.assignmentFreezeReason,

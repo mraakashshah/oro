@@ -102,6 +102,10 @@ func loadLocalFactoryHealth(ctx context.Context, stateDBPath string, daemonRunni
 	if err != nil {
 		return factoryhealth.FactoryHealth{}, fmt.Errorf("load recovery quarantine metrics: %w", err)
 	}
+	epicBranchAdmissions, err := factoryhealth.LoadEpicBranchAdmissionMetrics(ctx, db, now)
+	if err != nil {
+		return factoryhealth.FactoryHealth{}, fmt.Errorf("load epic branch admission metrics: %w", err)
+	}
 	throughput, err := factoryhealth.LoadThroughputMetrics(ctx, db, now, 30*time.Minute)
 	if err != nil {
 		return factoryhealth.FactoryHealth{}, fmt.Errorf("load throughput metrics: %w", err)
@@ -128,6 +132,7 @@ func loadLocalFactoryHealth(ctx context.Context, stateDBPath string, daemonRunni
 		QGOccurrences30m:        qgOccurrences,
 		QGTopFingerprints:       topFingerprints,
 		OpenRecoveryQuarantines: openRecoveryQuarantines,
+		EpicBranchAdmissions:    epicBranchAdmissions,
 		Throughput:              throughput,
 		OpsRuns:                 opsRuns,
 		Storage:                 loadFactoryStorageHealth(ctx, oroHome),

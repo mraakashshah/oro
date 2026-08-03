@@ -54,6 +54,8 @@ type statusResponse struct {
 	QGFailureIncidentsOpen       int                          `json:"qg_failure_incidents_open"`
 	QGFailureOccurrences30m      int                          `json:"qg_failure_occurrences_30m"`
 	QGFailureTopFingerprints     []string                     `json:"qg_failure_top_fingerprints,omitempty"`
+	EpicBranchBlocksOpen         int                          `json:"epic_branch_blocks_open"`
+	EpicBranchLeasesActive       int                          `json:"epic_branch_leases_active"`
 	AssignmentFrozenByQuarantine bool                         `json:"assignment_frozen_by_quarantine"`
 	BlockingRecoveryQuarantines  int                          `json:"blocking_recovery_quarantines,omitempty"`
 	AssignmentFreezeReason       string                       `json:"assignment_freeze_reason,omitempty"`
@@ -145,6 +147,8 @@ func printStatusJSONFromLocalHealth(ctx context.Context, w io.Writer, stateDBPat
 		QueueDepth:              health.Metrics.ReadyQueue,
 		QGFailureIncidentsOpen:  health.Metrics.OpenQGIncidents,
 		QGFailureOccurrences30m: health.Metrics.QGOccurrences30m,
+		EpicBranchBlocksOpen:    health.Metrics.EpicBranchBlocksOpen,
+		EpicBranchLeasesActive:  health.Metrics.EpicBranchLeasesActive,
 		Health:                  &health,
 	})
 	return nil
