@@ -439,6 +439,37 @@ func TestShadowStore(t *testing.T) {
 		}
 	})
 
+	t.Run("dependency writes go to primary only", func(t *testing.T) {
+		ctx := context.Background()
+		primary := beadstore.NewFakeStore(
+			protocol.Bead{ID: "dependent", Status: "open"},
+			protocol.Bead{ID: "blocker", Status: "open"},
+		)
+		secondary := beadstore.NewFakeStore(
+			protocol.Bead{ID: "dependent", Status: "open"},
+			protocol.Bead{ID: "blocker", Status: "open"},
+		)
+		store := beadstore.NewShadowStore(primary, secondary)
+
+		if err := store.AddDependency(ctx, "dependent", "blocker", "blocks"); err != nil {
+			t.Fatalf("AddDependency: %v", err)
+		}
+		primaryDependent, err := primary.Show(ctx, "dependent")
+		if err != nil {
+			t.Fatalf("primary Show: %v", err)
+		}
+		secondaryDependent, err := secondary.Show(ctx, "dependent")
+		if err != nil {
+			t.Fatalf("secondary Show: %v", err)
+		}
+		if len(primaryDependent.Dependencies) != 1 || primaryDependent.Dependencies[0].DependsOnID != "blocker" {
+			t.Fatalf("primary dependencies = %+v, want blocker", primaryDependent.Dependencies)
+		}
+		if len(secondaryDependent.Dependencies) != 0 {
+			t.Fatalf("secondary dependencies = %+v, want unchanged", secondaryDependent.Dependencies)
+		}
+	})
+
 	t.Run("defer operations require primary support", func(t *testing.T) {
 		ctx := context.Background()
 		store := beadstore.NewShadowStore(

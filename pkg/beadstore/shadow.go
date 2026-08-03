@@ -78,6 +78,10 @@ type deferredStore interface {
 	Undefer(ctx context.Context, id string) error
 }
 
+type dependencyWriter interface {
+	AddDependency(ctx context.Context, beadID, dependsOnID, depType string) error
+}
+
 // NewShadowStore returns a Store that dual-reads primary and secondary stores.
 func NewShadowStore(primary, secondary Store, opts ...ShadowStoreOption) *ShadowStore {
 	store := &ShadowStore{
@@ -233,6 +237,19 @@ func (s *ShadowStore) Undefer(ctx context.Context, id string) error {
 	}
 	if err := primary.Undefer(ctx, id); err != nil {
 		return fmt.Errorf("shadow primary undefer bead: %w", err)
+	}
+	return nil
+}
+
+// AddDependency writes to primary only when the primary store supports
+// dependency edges.
+func (s *ShadowStore) AddDependency(ctx context.Context, beadID, dependsOnID, depType string) error {
+	primary, ok := s.primary.(dependencyWriter)
+	if !ok {
+		return fmt.Errorf("primary store does not support dependencies")
+	}
+	if err := primary.AddDependency(ctx, beadID, dependsOnID, depType); err != nil {
+		return fmt.Errorf("shadow primary add dependency: %w", err)
 	}
 	return nil
 }

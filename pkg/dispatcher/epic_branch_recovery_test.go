@@ -20,6 +20,7 @@ type observingEpicRecoveryStore struct {
 
 	mu                          sync.Mutex
 	createCalls                 int
+	updateCalls                 map[string]int
 	blockedBeforeRecoveryCreate bool
 }
 
@@ -38,7 +39,34 @@ WHERE branch=?`, params.Metadata["epic_branch_recovery_branch"]).Scan(&state, &r
 	return s.FakeStore.Create(ctx, params)
 }
 
+func (s *observingEpicRecoveryStore) Update(ctx context.Context, id string, params beadstore.UpdateParams) error {
+	s.mu.Lock()
+	if s.updateCalls == nil {
+		s.updateCalls = make(map[string]int)
+	}
+	s.updateCalls[id]++
+	s.mu.Unlock()
+	return s.FakeStore.Update(ctx, id, params)
+}
+
 func TestEpicBranchBlockCreatesOneCrashSafeCanonicalRecoveryChild(t *testing.T) {
+	t.Run("scheduler remains compatible before admission migration", func(t *testing.T) {
+		ctx := context.Background()
+		d, _, _, _, _, _ := newTestDispatcher(t)
+		beads := beadstore.NewFakeStore(protocol.Bead{
+			ID: "oro-pre-migration-ready", Title: "Pre-migration ready", Type: "task", Status: "open",
+			AcceptanceCriteria: "Test: pre-migration scheduling | Assert: ready bead remains visible",
+		})
+		d.beads = beads
+		ready, err := d.readyBeadsForScheduling(ctx)
+		if err != nil {
+			t.Fatalf("ready beads before admission migration: %v", err)
+		}
+		if len(ready) != 1 || ready[0].ID != "oro-pre-migration-ready" {
+			t.Fatalf("pre-migration ready beads = %+v, want one ready bead", ready)
+		}
+	})
+
 	t.Run("checked out and diverged pipeline blocks materialize one canonical child", func(t *testing.T) {
 		for _, tt := range []struct {
 			name       string
@@ -127,6 +155,75 @@ func TestEpicBranchBlockCreatesOneCrashSafeCanonicalRecoveryChild(t *testing.T) 
 		}
 		if len(children) != 1 || children[0].ID != linked.recoveryBeadID {
 			t.Fatalf("restart repair children = %+v, want only %q", children, linked.recoveryBeadID)
+		}
+	})
+
+	t.Run("shadow mode forwards the dependency and restart repair stays healthy", func(t *testing.T) {
+		ctx := context.Background()
+		d, primary, manager, worker, epicID, beadID, branch := newEpicRecoveryPipeline(t, epicBranchInspection{
+			BranchOID: "shadow-diverged", BaseOID: "shadow-target", Relation: branchDiverged,
+		})
+		shadow, err := selectStore(ctx, "shadow", primary, d.db)
+		if err != nil {
+			t.Fatalf("select shadow store: %v", err)
+		}
+		d.beads = shadow
+		bead := protocol.Bead{ID: beadID, Title: "Shadow blocked child", Type: "task", Epic: epicID}
+		if err := d.assignBead(ctx, worker, bead); err != nil {
+			t.Fatalf("assign shadow blocked child: %v", err)
+		}
+		admission := loadRecoveryAdmission(t, d, branch)
+		if admission.recoveryBeadID == "" {
+			t.Fatal("shadow recovery link is empty")
+		}
+		assertCanonicalEpicRecovery(ctx, t, d, primary, admission)
+		if err := d.startupRecovery(ctx); err != nil {
+			t.Fatalf("restart shadow recovery: %v", err)
+		}
+		manager.mu.Lock()
+		inspectionCalls := manager.inspectionCalls
+		manager.mu.Unlock()
+		if inspectionCalls != 1 {
+			t.Fatalf("shadow restart Git inspections = %d, want 1", inspectionCalls)
+		}
+	})
+
+	t.Run("scheduler offers only the linked recovery while siblings stay unchanged", func(t *testing.T) {
+		ctx := context.Background()
+		d, beads, _, worker, epicID, beadID, branch := newEpicRecoveryPipeline(t, epicBranchInspection{
+			BranchOID: "scheduler-diverged", BaseOID: "scheduler-target", Relation: branchDiverged,
+		})
+		if err := d.assignBead(ctx, worker, protocol.Bead{ID: beadID, Title: "Initial blocked child", Type: "task", Epic: epicID}); err != nil {
+			t.Fatalf("establish blocked admission: %v", err)
+		}
+		admission := loadRecoveryAdmission(t, d, branch)
+		const siblingID = "oro-aaa-blocked-sibling"
+		if _, err := beads.Create(ctx, beadstore.CreateParams{
+			ID: siblingID, Title: "Earlier blocked sibling", Type: "task", Priority: 0, ParentID: epicID,
+			AcceptanceCriteria: "Test: blocked sibling stays out of the scheduler | Assert: no status churn",
+		}); err != nil {
+			t.Fatalf("create blocked sibling: %v", err)
+		}
+		beads.mu.Lock()
+		siblingUpdates := beads.updateCalls[siblingID]
+		beads.mu.Unlock()
+		d.setState(StateRunning)
+
+		tryAssignAndWait(t, d, ctx)
+		d.mu.Lock()
+		gotState, gotBeadID := worker.state, worker.beadID
+		d.mu.Unlock()
+		if gotState != protocol.WorkerBusy || gotBeadID != admission.recoveryBeadID {
+			t.Fatalf("scheduled worker = state %q bead %q, want busy recovery %q", gotState, gotBeadID, admission.recoveryBeadID)
+		}
+		for range 3 {
+			tryAssignAndWait(t, d, ctx)
+		}
+		beads.mu.Lock()
+		gotSiblingUpdates := beads.updateCalls[siblingID]
+		beads.mu.Unlock()
+		if gotSiblingUpdates != siblingUpdates {
+			t.Fatalf("blocked sibling status updates = %d, want unchanged %d", gotSiblingUpdates, siblingUpdates)
 		}
 	})
 
@@ -313,6 +410,15 @@ func TestEpicBranchBlockCreatesOneCrashSafeCanonicalRecoveryChild(t *testing.T) 
 		}
 		if stable.ID != replacement.ID {
 			t.Fatalf("sqlite repeat repair child = %q, want %q", stable.ID, replacement.ID)
+		}
+		var dependencyEvents int
+		if err := d.db.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM events
+WHERE type='bead_dependency_added' AND bead_id=?`, epicID).Scan(&dependencyEvents); err != nil {
+			t.Fatalf("count sqlite dependency events: %v", err)
+		}
+		if dependencyEvents != 2 {
+			t.Fatalf("sqlite dependency events = %d, want 2 distinct edges", dependencyEvents)
 		}
 		var active int
 		if err := d.db.QueryRowContext(ctx, `

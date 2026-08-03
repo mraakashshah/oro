@@ -368,11 +368,10 @@ func (d *Dispatcher) tryAssignBatch(ctx context.Context) []<-chan struct{} {
 	d.mu.Unlock()
 
 	// Poll for ready beads.
-	allBeads, err := d.beads.Ready(ctx)
+	allBeads, err := d.readyBeadsForScheduling(ctx)
 	if err != nil {
 		return nil
 	}
-
 	// Cache queue depth for status reporting.
 	d.mu.Lock()
 	d.cachedQueueDepth = len(allBeads)
@@ -412,6 +411,14 @@ func (d *Dispatcher) tryAssignBatch(ctx context.Context) []<-chan struct{} {
 
 	assignedBeads := d.assignTargetedIdleWorkers(ctx, idle, beads, focusVersion)
 	return d.assignGeneralIdleWorkers(ctx, idle, plan, pbSnapshot, assignedBeads, reservedTargets, focusVersion)
+}
+
+func (d *Dispatcher) readyBeadsForScheduling(ctx context.Context) ([]protocol.Bead, error) {
+	beads, err := d.beads.Ready(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("load ready beads for scheduling: %w", err)
+	}
+	return d.filterBlockedEpicBranchReady(ctx, beads)
 }
 
 func filterBeadsByID(beads []protocol.Bead, ids map[string]bool) []protocol.Bead {

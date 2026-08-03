@@ -272,3 +272,81 @@ func (d *Dispatcher) repairBlockedEpicBranchRecoveries(ctx context.Context) erro
 	}
 	return nil
 }
+
+func (d *Dispatcher) filterBlockedEpicBranchReady(ctx context.Context, beads []protocol.Bead) ([]protocol.Bead, error) {
+	if d.db == nil || len(beads) == 0 {
+		return beads, nil
+	}
+	store := newEpicBranchAdmissionStore(d.db)
+	exists, err := store.schemaExists(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("filter blocked epic branch ready beads: %w", err)
+	}
+	if !exists {
+		return beads, nil
+	}
+	admissions, err := store.blocked(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("filter blocked epic branch ready beads: %w", err)
+	}
+	if len(admissions) == 0 {
+		return beads, nil
+	}
+	blockedEpics := make(map[string]bool, len(admissions))
+	recoveryIDs := make(map[string]bool, len(admissions))
+	for i := range admissions {
+		blockedEpics[admissions[i].epicID] = true
+		if admissions[i].recoveryBeadID != "" {
+			recoveryIDs[admissions[i].recoveryBeadID] = true
+		}
+	}
+	filtered := make([]protocol.Bead, 0, len(beads))
+	parentCache := make(map[string]string)
+	for i := range beads {
+		if recoveryIDs[beads[i].ID] {
+			filtered = append(filtered, beads[i])
+			continue
+		}
+		blocked, err := d.hasBlockedEpicAncestor(ctx, beads[i].Epic, blockedEpics, parentCache)
+		if err != nil {
+			return nil, err
+		}
+		if !blocked {
+			filtered = append(filtered, beads[i])
+		}
+	}
+	return filtered, nil
+}
+
+func (d *Dispatcher) hasBlockedEpicAncestor(
+	ctx context.Context,
+	parentID string,
+	blockedEpics map[string]bool,
+	parentCache map[string]string,
+) (bool, error) {
+	seen := make(map[string]bool)
+	for parentID != "" {
+		if blockedEpics[parentID] {
+			return true, nil
+		}
+		if seen[parentID] {
+			return false, fmt.Errorf("filter blocked epic branch ready beads: parent cycle at %s", parentID)
+		}
+		seen[parentID] = true
+		if cached, ok := parentCache[parentID]; ok {
+			parentID = cached
+			continue
+		}
+		parent, err := d.beads.Show(ctx, parentID)
+		if err != nil {
+			return false, fmt.Errorf("filter blocked epic branch ready bead parent %s: %w", parentID, err)
+		}
+		if parent == nil {
+			parentCache[parentID] = ""
+			return false, nil
+		}
+		parentCache[parentID] = parent.Epic
+		parentID = parent.Epic
+	}
+	return false, nil
+}

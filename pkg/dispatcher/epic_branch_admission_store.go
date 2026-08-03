@@ -423,6 +423,20 @@ ORDER BY branch`)
 	return admissions, nil
 }
 
+func (s *epicBranchAdmissionStore) schemaExists(ctx context.Context) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, errors.New("check epic branch admission schema: store is nil")
+	}
+	var count int
+	if err := s.db.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM sqlite_master
+WHERE type='table' AND name='epic_branch_admissions'`).Scan(&count); err != nil {
+		return false, fmt.Errorf("check epic branch admission schema: %w", err)
+	}
+	return count == 1, nil
+}
+
 func (s *epicBranchAdmissionStore) isIdempotentBlockedResolve(ctx context.Context, branch string, generation int64) (bool, error) {
 	var state string
 	var currentGeneration int64

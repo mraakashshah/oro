@@ -456,16 +456,23 @@ func (s *SQLiteStore) AddDependency(ctx context.Context, beadID, dependsOnID, de
 			}
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `
+	result, err := tx.ExecContext(ctx, `
 INSERT OR IGNORE INTO bead_deps (bead_id, depends_on_id, type, created_by)
-VALUES (?, ?, ?, 'oro')`, beadID, dependsOnID, depType); err != nil {
+VALUES (?, ?, ?, 'oro')`, beadID, dependsOnID, depType)
+	if err != nil {
 		return fmt.Errorf("beadstore: add dependency %s -> %s: %w", beadID, dependsOnID, err)
 	}
-	if err := insertEvent(ctx, tx, "bead_dependency_added", beadID, map[string]any{
-		"depends_on_id": dependsOnID,
-		"type":          depType,
-	}); err != nil {
-		return err
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("beadstore: count dependency insert %s -> %s: %w", beadID, dependsOnID, err)
+	}
+	if changed == 1 {
+		if err := insertEvent(ctx, tx, "bead_dependency_added", beadID, map[string]any{
+			"depends_on_id": dependsOnID,
+			"type":          depType,
+		}); err != nil {
+			return err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("beadstore: commit add dependency %s -> %s: %w", beadID, dependsOnID, err)
