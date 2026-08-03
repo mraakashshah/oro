@@ -1,6 +1,7 @@
 package dispatcher
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -654,7 +655,7 @@ func localBranchRef(branch string) string {
 }
 
 func (g *GitWorktreeManager) checkedOutBranchPaths(ctx context.Context, branch string) ([]string, error) {
-	out, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "worktree", "list", "--porcelain")
+	out, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "worktree", "list", "--porcelain", "-z")
 	if err != nil {
 		return nil, fmt.Errorf("list worktrees for epic branch %s: %w", branch, err)
 	}
@@ -671,18 +672,18 @@ func checkedOutPathsFromPorcelain(out []byte, branchRef string) []string {
 		}
 		path, recordBranch, detached = "", "", false
 	}
-	for _, line := range strings.Split(string(out), "\n") {
+	for _, field := range bytes.Split(out, []byte{0}) {
 		switch {
-		case line == "":
+		case len(field) == 0:
 			flush()
-		case strings.HasPrefix(line, "worktree "):
+		case bytes.HasPrefix(field, []byte("worktree ")):
 			if path != "" {
 				flush()
 			}
-			path = strings.TrimPrefix(line, "worktree ")
-		case strings.HasPrefix(line, "branch "):
-			recordBranch = strings.TrimPrefix(line, "branch ")
-		case line == "detached":
+			path = string(field[len("worktree "):])
+		case bytes.HasPrefix(field, []byte("branch ")):
+			recordBranch = string(field[len("branch "):])
+		case bytes.Equal(field, []byte("detached")):
 			detached = true
 		}
 	}
