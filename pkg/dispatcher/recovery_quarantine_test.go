@@ -470,14 +470,21 @@ func TestProcessQuarantinedRollsBackWhenEventInsertFails(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
 	const (
-		beadID   = "oro-recovery-event-failure"
-		workerID = "worker-recovery-event-failure"
-		worktree = "/tmp/missing-oro-recovery-event-failure"
+		beadID              = "oro-recovery-event-failure"
+		workerID            = "worker-recovery-event-failure"
+		worktree            = "/tmp/missing-oro-recovery-event-failure"
+		originalCompletedAt = "2026-08-02 20:00:00"
 	)
+	var successBroadcasts int
+	d.sseBroadcaster = &callbackSSEBroadcaster{send: func(eventType, _, _ string) {
+		if eventType == "startup_recovery_quarantined" {
+			successBroadcasts++
+		}
+	}}
 
 	res, err := d.db.ExecContext(ctx, `
 INSERT INTO assignments (bead_id, worker_id, worktree, status, completed_at)
-VALUES (?, ?, ?, 'requeued', datetime('now'))`, beadID, workerID, worktree)
+VALUES (?, ?, ?, 'requeued', ?)`, beadID, workerID, worktree, originalCompletedAt)
 	if err != nil {
 		t.Fatalf("insert requeued assignment: %v", err)
 	}
@@ -488,8 +495,9 @@ VALUES (?, ?, ?, 'requeued', datetime('now'))`, beadID, workerID, worktree)
 	if _, err := d.db.ExecContext(ctx, `
 CREATE TRIGGER reject_recovery_event
 BEFORE INSERT ON events
+WHEN NEW.type='startup_recovery_quarantined'
 BEGIN
-    SELECT RAISE(ABORT, 'forced recovery event failure');
+	SELECT RAISE(ABORT, 'forced recovery event failure');
 END;`); err != nil {
 		t.Fatalf("install event failure trigger: %v", err)
 	}
@@ -504,7 +512,7 @@ END;`); err != nil {
 	}})
 
 	var status string
-	var completedAt any
+	var completedAt string
 	if err := d.db.QueryRowContext(ctx,
 		`SELECT status, completed_at FROM assignments WHERE id=?`, assignmentID,
 	).Scan(&status, &completedAt); err != nil {
@@ -513,23 +521,30 @@ END;`); err != nil {
 	if status != "requeued" {
 		t.Fatalf("assignment status = %q, want requeued after rollback", status)
 	}
-	if completedAt == nil {
-		t.Fatal("assignment completed_at = NULL, want original completion after rollback")
+	if completedAt != originalCompletedAt {
+		t.Fatalf("assignment completed_at = %q, want original %q after rollback", completedAt, originalCompletedAt)
 	}
 
-	var quarantines, events int
+	var quarantines, successEvents, failureEvents int
 	if err := d.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM recovery_quarantines WHERE assignment_id=?`, assignmentID,
 	).Scan(&quarantines); err != nil {
 		t.Fatalf("count recovery quarantines: %v", err)
 	}
-	if err := d.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM events WHERE bead_id=?`, beadID,
-	).Scan(&events); err != nil {
+	if err := d.db.QueryRowContext(ctx, `
+SELECT
+	SUM(CASE WHEN type='startup_recovery_quarantined' THEN 1 ELSE 0 END),
+	SUM(CASE WHEN type='startup_recovery_quarantine_failed' THEN 1 ELSE 0 END)
+FROM events
+WHERE bead_id=?`, beadID).Scan(&successEvents, &failureEvents); err != nil {
 		t.Fatalf("count recovery events: %v", err)
 	}
-	if quarantines != 0 || events != 0 {
-		t.Fatalf("recovery state after event failure = quarantines %d events %d, want 0/0", quarantines, events)
+	if quarantines != 0 || successEvents != 0 || failureEvents != 1 {
+		t.Fatalf("recovery state after event failure = quarantines %d success events %d failure events %d, want 0/0/1",
+			quarantines, successEvents, failureEvents)
+	}
+	if successBroadcasts != 0 {
+		t.Fatalf("success broadcasts = %d, want 0", successBroadcasts)
 	}
 }
 
