@@ -44,6 +44,7 @@ func rootSubcommands(root *cobra.Command) []*cobra.Command {
 		newHealthCmd(),
 		newOpsCmd(),
 		newRecoveryCmd(),
+		newEpicBranchCmd(),
 		newMonitorCmd(),
 		newThroughputCmd(),
 		newDashboardCmd(),

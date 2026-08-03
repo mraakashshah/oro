@@ -615,6 +615,24 @@ func (g *GitWorktreeManager) inspectEpicBranch(
 	}, nil
 }
 
+// InspectEpicBranch verifies that a durable epic-branch blocker can be safely
+// resolved. It performs a fresh ref and worktree inspection and fails closed
+// when either ref is missing, the epic branch is checked out, or its history
+// has diverged from the target branch.
+func (g *GitWorktreeManager) InspectEpicBranch(ctx context.Context, branch, baseBranch string) error {
+	inspection, err := g.inspectEpicBranch(ctx, branch, baseBranch)
+	if err != nil {
+		return err
+	}
+	if len(inspection.CheckedOutPaths) != 0 {
+		return &epicBranchCheckedOutError{Branch: branch, CheckedOutPaths: inspection.CheckedOutPaths}
+	}
+	if inspection.Relation == branchDiverged {
+		return fmt.Errorf("epic branch %s has diverged from %s", branch, baseBranch)
+	}
+	return nil
+}
+
 func (g *GitWorktreeManager) compareAndSwapBranch(ctx context.Context, branch, oldOID, newOID string) error {
 	checkedOutPaths, err := g.checkedOutBranchPaths(ctx, branch)
 	if err != nil {

@@ -34,6 +34,7 @@ Knowledge:
 Control:
   directive  Send a directive to the dispatcher (scale, focus, pause, resume)
   ops        Inspect and recover dispatcher ops runs
+  epic-branch Inspect and safely resolve durable epic-branch blockers
 
 Search:
   index      Semantic code search (build, search)
