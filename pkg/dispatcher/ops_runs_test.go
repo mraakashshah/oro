@@ -98,7 +98,7 @@ func TestCreateOpsRunPropagatesNonUniqueInsertFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateOpsRun original: %v", err)
 	}
-	installOpsRunInsertFailureTrigger(t, ctx, db, beadID)
+	installOpsRunInsertFailureTrigger(ctx, t, db, beadID)
 
 	_, wasCreated, err := CreateOpsRun(ctx, db, OpsRunRecord{Type: string(ops.OpsDecompose), BeadID: beadID})
 	if err == nil {
@@ -129,7 +129,7 @@ func TestStartupOpsRunReplacementInsertFailureRollsBackSupersede(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateOpsRun original: %v", err)
 	}
-	installOpsRunInsertFailureTrigger(t, ctx, d.db, beadID)
+	installOpsRunInsertFailureTrigger(ctx, t, d.db, beadID)
 
 	err = d.reconcileOpsRunsOnStartup(ctx)
 	if err == nil {
@@ -161,7 +161,7 @@ func TestManualOpsRunReplacementInsertFailureRollsBackSupersede(t *testing.T) {
 		t.Fatalf("CompleteOpsRun original: %v", err)
 	}
 	before := fetchOpsRunForTest(t, d.db, original.ID)
-	installOpsRunInsertFailureTrigger(t, ctx, d.db, beadID)
+	installOpsRunInsertFailureTrigger(ctx, t, d.db, beadID)
 
 	_, _, err = d.supersedeOpsRunForRetry(before)
 	if err == nil {
@@ -177,7 +177,7 @@ func TestManualOpsRunReplacementInsertFailureRollsBackSupersede(t *testing.T) {
 	assertOpsRunCount(t, d.db, string(ops.OpsDecompose), beadID, 1)
 }
 
-func installOpsRunInsertFailureTrigger(t *testing.T, ctx context.Context, db *sql.DB, beadID string) {
+func installOpsRunInsertFailureTrigger(ctx context.Context, t *testing.T, db *sql.DB, beadID string) {
 	t.Helper()
 	if _, err := db.ExecContext(ctx, fmt.Sprintf(`
 CREATE TRIGGER fail_ops_run_replacement_insert
