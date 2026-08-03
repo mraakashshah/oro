@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"maps"
 	"slices"
 	"sync"
 	"testing"
@@ -35,7 +36,7 @@ func TestEpicBranchAdmissionPersistsAcrossRestartWithoutRetrySpam(t *testing.T) 
 	d1.db = db
 	d1.worktrees = manager
 	d1.nowFunc = clock.Now
-	d1.epicAdmissionRenewEvery = 5 * time.Millisecond
+	d1.epicAdmissionRenewEvery = 250 * time.Millisecond
 	beads.db = db
 	manager.mu.Lock()
 	manager.inspectionStarted = make(chan struct{})
@@ -85,6 +86,13 @@ func TestEpicBranchAdmissionPersistsAcrossRestartWithoutRetrySpam(t *testing.T) 
 		ID: unrelatedID, Title: "Unrelated runnable work", Type: "task", Status: "open", ParentID: unrelatedEpicID,
 		AcceptanceCriteria: "Test: unrelated work | Assert: assignment proceeds",
 	})
+	recoveryCreate := &epicBranchAdmissionE2ERecoveryBarrier{
+		observingEpicRecoveryStore: beads,
+		clock:                      clock,
+		started:                    make(chan context.Context, 1),
+		proceed:                    make(chan struct{}),
+	}
+	d1.beads = recoveryCreate
 
 	type assignmentResult struct {
 		beadID string
@@ -136,18 +144,28 @@ WHERE branch=? AND state='leased'`, branch).Scan(&leasedGeneration, &leasedToken
 		t.Fatalf("admission timing = TTL %s renewal %s, want 2m/30s",
 			epicBranchAdmissionLeaseTTL, epicBranchAdmissionLeaseRenewInterval)
 	}
-	clock.Advance(epicBranchAdmissionLeaseRenewInterval)
-	waitFor(t, func() bool {
-		var expiry string
-		if err := db.QueryRowContext(ctx, `SELECT lease_expires_at FROM epic_branch_admissions WHERE branch=?`, branch).Scan(&expiry); err != nil {
-			return false
-		}
-		want := clock.Now().Add(epicBranchAdmissionLeaseTTL)
-		got, err := time.Parse(time.RFC3339Nano, expiry)
-		return err == nil && got.Equal(want)
-	}, time.Second)
-
 	close(manager.continueInspection)
+	var recoveryCtx context.Context
+	select {
+	case recoveryCtx = <-recoveryCreate.started:
+	case <-time.After(time.Second):
+		t.Fatal("blocked admission did not reach recovery materialization")
+	}
+	blockedBeforeRecovery := loadEpicBranchAdmissionE2E(t, db, branch)
+	if blockedBeforeRecovery.state != "blocked" || blockedBeforeRecovery.recoveryBeadID != "" {
+		t.Fatalf("admission before recovery materialization = %+v, want durable unlinked block", blockedBeforeRecovery)
+	}
+	clock.Advance(epicBranchAdmissionLeaseRenewInterval)
+	waitFor(t, func() bool { return clock.BlockedRenewals() > 0 || recoveryCtx.Err() != nil }, time.Second)
+	select {
+	case <-recoveryCtx.Done():
+		t.Fatalf("owned blocked transition canceled recovery materialization after renewal: %v", context.Cause(recoveryCtx))
+	case <-time.After(25 * time.Millisecond):
+	}
+	if clock.BlockedRenewals() == 0 {
+		t.Fatal("recovery materialization continued without observing a blocked-state renewal")
+	}
+	close(recoveryCreate.proceed)
 	select {
 	case result := <-results:
 		if result.beadID != directID || result.err != nil {
@@ -172,16 +190,26 @@ WHERE branch=? AND state='leased'`, branch).Scan(&leasedGeneration, &leasedToken
 	assertEpicBranchAdmissionE2ECounts(ctx, t, db, beads, epicID, wantRecoveryID, 1, 1)
 
 	store := newEpicBranchAdmissionStore(db)
-	if _, err := store.block(ctx, branch, leasedToken, leasedGeneration, "diverged", "", "stale", "stale", "stale-child", "stale holder", clock.Now()); !errors.Is(err, ErrEpicBranchAdmissionCAS) {
+	const reclaimedToken = "reclaimed-by-another-dispatcher"
+	if reclaimedToken == leasedToken {
+		t.Fatal("stale-token fixture unexpectedly equals the current lease token")
+	}
+	if _, err := store.block(ctx, branch, reclaimedToken, blocked.generation, "diverged", "", "stale", "stale", "stale-child", "stale holder", clock.Now()); !errors.Is(err, ErrEpicBranchAdmissionCAS) {
 		t.Fatalf("stale lease block error = %v, want ErrEpicBranchAdmissionCAS", err)
+	}
+	if got := loadEpicBranchAdmissionE2E(t, db, branch); got != blocked {
+		t.Fatalf("stale token mutated admission:\ngot:  %+v\nwant: %+v", got, blocked)
 	}
 	if err := store.resolve(ctx, branch, blocked.generation+1, clock.Now()); !errors.Is(err, ErrEpicBranchAdmissionCAS) {
 		t.Fatalf("stale generation resolve error = %v, want ErrEpicBranchAdmissionCAS", err)
 	}
 	if got := loadEpicBranchAdmissionE2E(t, db, branch); got != blocked {
-		t.Fatalf("stale CAS mutated admission:\ngot:  %+v\nwant: %+v", got, blocked)
+		t.Fatalf("stale generation mutated admission:\ngot:  %+v\nwant: %+v", got, blocked)
 	}
 
+	trackedIDs := []string{directID, middleID, nestedID, titleLookalike, tagLookalike, wantRecoveryID}
+	preCrash := snapshotEpicBranchAdmissionE2E(t, db, beads, manager, d1, branch, trackedIDs)
+	assertEpicBranchAdmissionE2EForbiddenRetryState(t, preCrash)
 	beads.mu.Lock()
 	createCallsBeforeCrash := beads.createCalls
 	beads.mu.Unlock()
@@ -220,8 +248,11 @@ WHERE branch=? AND state='blocked' AND generation=?`, branch, blocked.generation
 		t.Fatalf("restart recovery create calls = %d, want unchanged %d", createCallsAfterRestart, createCallsBeforeCrash)
 	}
 	assertEpicBranchAdmissionE2ECounts(ctx, t, restartedDB, beads, epicID, wantRecoveryID, 1, 1)
+	afterStartup := snapshotEpicBranchAdmissionE2E(t, restartedDB, beads, manager, d3, branch, trackedIDs)
+	assertEpicBranchAdmissionE2ENoRetrySideEffects(t, afterStartup, preCrash)
+	assertEpicBranchAdmissionE2EForbiddenRetryState(t, afterStartup)
 
-	quiet := snapshotEpicBranchAdmissionE2E(t, restartedDB, beads, manager, d3, branch)
+	quiet := afterStartup
 	for cycle := 1; cycle <= 3; cycle++ {
 		ready, err := d3.readyBeadsForScheduling(ctx)
 		if err != nil {
@@ -238,7 +269,7 @@ WHERE branch=? AND state='blocked' AND generation=?`, branch, blocked.generation
 				t.Fatalf("scheduler cycle %d omitted admitted bead %q: %v", cycle, admittedID, ids)
 			}
 		}
-		assertEpicBranchAdmissionE2EQuiet(t, restartedDB, beads, manager, d3, branch, quiet)
+		assertEpicBranchAdmissionE2EQuiet(t, restartedDB, beads, manager, d3, branch, trackedIDs, quiet)
 	}
 
 	metrics, err := factoryhealth.LoadEpicBranchAdmissionMetrics(ctx, restartedDB, clock.Now())
@@ -310,8 +341,18 @@ WHERE branch=? AND state='blocked' AND generation=?`, branch, blocked.generation
 }
 
 type epicBranchAdmissionE2EClock struct {
-	mu  sync.Mutex
-	now time.Time
+	mu                    sync.Mutex
+	now                   time.Time
+	recoveryBarrierActive bool
+	blockedRenewals       int
+}
+
+type epicBranchAdmissionE2ERecoveryBarrier struct {
+	*observingEpicRecoveryStore
+	clock   *epicBranchAdmissionE2EClock
+	started chan context.Context
+	proceed chan struct{}
+	once    sync.Once
 }
 
 type epicBranchAdmissionE2EManager struct {
@@ -332,6 +373,9 @@ func (m *epicBranchAdmissionE2EManager) inspectEpicBranch(
 func (c *epicBranchAdmissionE2EClock) Now() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.recoveryBarrierActive {
+		c.blockedRenewals++
+	}
 	return c.now
 }
 
@@ -341,13 +385,42 @@ func (c *epicBranchAdmissionE2EClock) Advance(delta time.Duration) {
 	c.mu.Unlock()
 }
 
+func (c *epicBranchAdmissionE2EClock) BlockedRenewals() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.blockedRenewals
+}
+
+func (c *epicBranchAdmissionE2EClock) StartRecoveryBarrier() {
+	c.mu.Lock()
+	c.recoveryBarrierActive = true
+	c.mu.Unlock()
+}
+
+func (s *epicBranchAdmissionE2ERecoveryBarrier) Create(
+	ctx context.Context,
+	params beadstore.CreateParams,
+) (*protocol.Bead, error) {
+	if params.Metadata["epic_branch_recovery_branch"] != "" {
+		s.once.Do(func() {
+			s.clock.StartRecoveryBarrier()
+			s.started <- ctx
+			<-s.proceed
+		})
+	}
+	return s.observingEpicRecoveryStore.Create(ctx, params)
+}
+
 type epicBranchAdmissionE2ESnapshot struct {
 	admission       epicBranchAdmission
 	createCalls     int
-	dependencies    int
-	events          int
+	children        []string
+	dependencies    []string
+	events          map[string]int
 	inspectionCalls int
 	attempts        map[string]int
+	cooldowns       map[string]time.Time
+	assignments     map[string]int
 }
 
 func snapshotEpicBranchAdmissionE2E(
@@ -357,6 +430,7 @@ func snapshotEpicBranchAdmissionE2E(
 	manager *epicBranchAdmissionE2EManager,
 	d *Dispatcher,
 	branch string,
+	trackedIDs []string,
 ) epicBranchAdmissionE2ESnapshot {
 	t.Helper()
 	beads.mu.Lock()
@@ -370,22 +444,59 @@ func snapshotEpicBranchAdmissionE2E(
 	if err != nil || epic == nil {
 		t.Fatalf("load epic dependencies: epic=%+v err=%v", epic, err)
 	}
-	dependencies := len(epic.Dependencies)
-	var events int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM events WHERE type LIKE 'epic_branch_%'`).Scan(&events); err != nil {
-		t.Fatalf("count epic branch events: %v", err)
+	dependencies := make([]string, 0, len(epic.Dependencies))
+	for _, dependency := range epic.Dependencies {
+		dependencies = append(dependencies, dependency.DependsOnID+"\x00"+dependency.Type)
+	}
+	slices.Sort(dependencies)
+	children, err := beads.FindByParentAndTag(context.Background(), admission.epicID, epicBranchRecoveryTag)
+	if err != nil {
+		t.Fatalf("load epic recovery children: %v", err)
+	}
+	childState := make([]string, 0, len(children))
+	for _, child := range children {
+		childState = append(childState, child.ID+"\x00"+child.Status)
+	}
+	slices.Sort(childState)
+	events := epicBranchAdmissionE2EEventCounts(t, db)
+	tracked := make(map[string]bool, len(trackedIDs))
+	for _, beadID := range trackedIDs {
+		tracked[beadID] = true
 	}
 	d.mu.Lock()
-	attempts := map[string]int{
-		"oro-recovery-seeded-child":     d.attemptCounts["oro-recovery-seeded-child"],
-		"oro-admission-nested":          d.attemptCounts["oro-admission-nested"],
-		"oro-admission-title-lookalike": d.attemptCounts["oro-admission-title-lookalike"],
-		"oro-admission-tag-lookalike":   d.attemptCounts["oro-admission-tag-lookalike"],
+	attempts := make(map[string]int)
+	cooldowns := make(map[string]time.Time)
+	for _, beadID := range trackedIDs {
+		if attempt, ok := d.attemptCounts[beadID]; ok {
+			attempts[beadID] = attempt
+		}
+		if cooldown, ok := d.worktreeFailures[beadID]; ok {
+			cooldowns[beadID] = cooldown
+		}
 	}
 	d.mu.Unlock()
+	assignments := make(map[string]int)
+	rows, err := db.Query(`SELECT bead_id, status FROM assignments`)
+	if err != nil {
+		t.Fatalf("load tracked assignments: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var beadID, status string
+		if err := rows.Scan(&beadID, &status); err != nil {
+			t.Fatalf("scan tracked assignment: %v", err)
+		}
+		if tracked[beadID] {
+			assignments[beadID+"\x00"+status]++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate tracked assignments: %v", err)
+	}
 	return epicBranchAdmissionE2ESnapshot{
 		admission: admission, createCalls: createCalls,
-		dependencies: dependencies, events: events, inspectionCalls: inspectionCalls, attempts: attempts,
+		children: childState, dependencies: dependencies, events: events,
+		inspectionCalls: inspectionCalls, attempts: attempts, cooldowns: cooldowns, assignments: assignments,
 	}
 }
 
@@ -396,20 +507,63 @@ func assertEpicBranchAdmissionE2EQuiet(
 	manager *epicBranchAdmissionE2EManager,
 	d *Dispatcher,
 	branch string,
+	trackedIDs []string,
 	want epicBranchAdmissionE2ESnapshot,
 ) {
 	t.Helper()
-	got := snapshotEpicBranchAdmissionE2E(t, db, beads, manager, d, branch)
-	if got.admission != want.admission || got.createCalls != want.createCalls ||
-		got.dependencies != want.dependencies || got.events != want.events ||
-		got.inspectionCalls != want.inspectionCalls {
+	got := snapshotEpicBranchAdmissionE2E(t, db, beads, manager, d, branch, trackedIDs)
+	if got.admission != want.admission {
 		t.Fatalf("quiet scheduler state changed:\ngot:  %+v\nwant: %+v", got, want)
 	}
-	for beadID, attempts := range want.attempts {
-		if got.attempts[beadID] != attempts {
-			t.Fatalf("quiet scheduler attempts for %s = %d, want %d", beadID, got.attempts[beadID], attempts)
+	assertEpicBranchAdmissionE2ENoRetrySideEffects(t, got, want)
+	assertEpicBranchAdmissionE2EForbiddenRetryState(t, got)
+}
+
+func assertEpicBranchAdmissionE2ENoRetrySideEffects(
+	t *testing.T,
+	got, want epicBranchAdmissionE2ESnapshot,
+) {
+	t.Helper()
+	if got.createCalls != want.createCalls || !slices.Equal(got.children, want.children) ||
+		!slices.Equal(got.dependencies, want.dependencies) || !maps.Equal(got.events, want.events) ||
+		got.inspectionCalls != want.inspectionCalls || !maps.Equal(got.attempts, want.attempts) ||
+		!maps.Equal(got.cooldowns, want.cooldowns) || !maps.Equal(got.assignments, want.assignments) {
+		t.Fatalf("retry side effects changed:\ngot:  %+v\nwant: %+v", got, want)
+	}
+}
+
+func assertEpicBranchAdmissionE2EForbiddenRetryState(t *testing.T, got epicBranchAdmissionE2ESnapshot) {
+	t.Helper()
+	for eventType, count := range got.events {
+		if count != 0 {
+			t.Fatalf("forbidden retry event %s count = %d, want 0", eventType, count)
 		}
 	}
+	if len(got.attempts) != 0 || len(got.cooldowns) != 0 || len(got.assignments) != 0 {
+		t.Fatalf("forbidden retry state = attempts %v cooldowns %v assignments %v, want all absent",
+			got.attempts, got.cooldowns, got.assignments)
+	}
+}
+
+func epicBranchAdmissionE2EEventCounts(t *testing.T, db *sql.DB) map[string]int {
+	t.Helper()
+	events := map[string]int{
+		"assignment_persist_failed":          0,
+		"assignment_race_detected":           0,
+		"epic_branch_admission_block_failed": 0,
+		"epic_branch_admission_renew_failed": 0,
+		"epic_branch_missing":                0,
+		"epic_branch_prepare_failed":         0,
+		"epic_branch_recovery_ensure_failed": 0,
+	}
+	for eventType := range events {
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM events WHERE type=?`, eventType).Scan(&count); err != nil {
+			t.Fatalf("count forbidden retry event %s: %v", eventType, err)
+		}
+		events[eventType] = count
+	}
+	return events
 }
 
 func createEpicBranchAdmissionE2EBead(t *testing.T, beads *observingEpicRecoveryStore, params beadstore.CreateParams) {
@@ -454,6 +608,16 @@ func assertEpicBranchAdmissionE2ECounts(
 	}
 	if rows != wantRows {
 		t.Fatalf("admission rows = %d, want %d", rows, wantRows)
+	}
+	var links int
+	if err := db.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM epic_branch_admissions
+WHERE epic_id=? AND recovery_bead_id=?`, epicID, recoveryID).Scan(&links); err != nil {
+		t.Fatalf("count admission recovery links: %v", err)
+	}
+	if links != wantChildren {
+		t.Fatalf("admission recovery links = %d, want %d exact link to %q", links, wantChildren, recoveryID)
 	}
 	children, err := beads.FindByParentAndTag(ctx, epicID, epicBranchRecoveryTag)
 	if err != nil {
