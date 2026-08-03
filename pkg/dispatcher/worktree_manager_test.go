@@ -41,17 +41,43 @@ func TestInspectEpicBranchReportsCheckoutRelationAndCAS(t *testing.T) {
 	checkedB := filepath.Join(checkoutParent, "z checked path")
 	checkedA := filepath.Join(checkoutParent, "a checked path")
 	detached := filepath.Join(checkoutParent, "detached path")
+	divergedCheckout := filepath.Join(checkoutParent, "diverged checked path")
 	runAssignmentTestGit(t, repo, "worktree", "add", "--force", checkedB, "epic/checked")
 	runAssignmentTestGit(t, repo, "worktree", "add", "--force", checkedA, "epic/checked")
 	runAssignmentTestGit(t, repo, "worktree", "add", "--detach", detached, "epic/checked")
+	runAssignmentTestGit(t, repo, "worktree", "add", divergedCheckout, "epic/diverged")
 	canonicalCheckoutParent, err := filepath.EvalSymlinks(checkoutParent)
 	if err != nil {
 		t.Fatalf("canonicalize checkout parent: %v", err)
 	}
 	checkedA = filepath.Join(canonicalCheckoutParent, filepath.Base(checkedA))
 	checkedB = filepath.Join(canonicalCheckoutParent, filepath.Base(checkedB))
+	divergedCheckout = filepath.Join(canonicalCheckoutParent, filepath.Base(divergedCheckout))
 
 	mgr := NewGitWorktreeManager(repo, "", "", &ExecCommandRunner{})
+	t.Run("requests NUL-delimited worktree porcelain", func(t *testing.T) {
+		runner := &mockCommandRunner{output: []byte("worktree /tmp/checked path\x00HEAD deadbeef\x00branch refs/heads/epic/checked\x00\x00")}
+		mockMgr := NewGitWorktreeManager("/repo/root", "", "", runner)
+		if _, listErr := mockMgr.checkedOutBranchPaths(ctx, "epic/checked"); listErr != nil {
+			t.Fatalf("checkedOutBranchPaths: %v", listErr)
+		}
+		wantArgs := []string{"-C", "/repo/root", "worktree", "list", "--porcelain", "-z"}
+		if len(runner.calls) != 1 || runner.calls[0].Name != "git" || !slices.Equal(runner.calls[0].Args, wantArgs) {
+			t.Fatalf("worktree list call = %#v, want git %q", runner.calls, wantArgs)
+		}
+	})
+
+	t.Run("parses exact NUL-framed paths and excludes detached worktrees", func(t *testing.T) {
+		porcelain := []byte(
+			"worktree /tmp/z checked path\x00HEAD 1111111\x00branch refs/heads/epic/checked\x00\x00" +
+				"worktree /tmp/detached path\x00HEAD 2222222\x00detached\x00\x00" +
+				"worktree /tmp/a checked path\x00HEAD 3333333\x00branch refs/heads/epic/checked\x00\x00",
+		)
+		want := []string{"/tmp/a checked path", "/tmp/z checked path"}
+		if got := checkedOutPathsFromPorcelain(porcelain, "refs/heads/epic/checked"); !slices.Equal(got, want) {
+			t.Fatalf("checkedOutPathsFromPorcelain = %q, want %q", got, want)
+		}
+	})
 
 	_, err = mgr.inspectEpicBranch(ctx, "epic/missing", "main")
 	var refErr *epicBranchRefError
@@ -69,7 +95,10 @@ func TestInspectEpicBranchReportsCheckoutRelationAndCAS(t *testing.T) {
 		{name: "equal", branch: "epic/equal", wantOID: baseOID, want: branchSame},
 		{name: "behind", branch: "epic/behind", wantOID: rootOID, want: branchStrictlyBehind},
 		{name: "ahead", branch: "epic/ahead", wantOID: aheadOID, want: branchContainsBase},
-		{name: "diverged", branch: "epic/diverged", wantOID: divergedOID, want: branchDiverged},
+		{
+			name: "diverged", branch: "epic/diverged", wantOID: divergedOID,
+			want: branchDiverged, wantPaths: []string{divergedCheckout},
+		},
 		{
 			name: "checked out paths are sorted and detached is ignored", branch: "epic/checked", wantOID: rootOID,
 			want: branchStrictlyBehind, wantPaths: []string{checkedA, checkedB},
@@ -105,6 +134,15 @@ func TestInspectEpicBranchReportsCheckoutRelationAndCAS(t *testing.T) {
 	}
 	if got := gitOut(t, repo, "rev-parse", "epic/checked"); got != rootOID {
 		t.Fatalf("checked branch moved to %s, want %s", got, rootOID)
+	}
+
+	err = mgr.compareAndSwapBranch(ctx, "epic/diverged", divergedOID, baseOID)
+	checkedOutErr = nil
+	if !errors.As(err, &checkedOutErr) || !slices.Equal(checkedOutErr.CheckedOutPaths, []string{divergedCheckout}) {
+		t.Fatalf("checked-out diverged CAS error = %v, want *epicBranchCheckedOutError for %q", err, divergedCheckout)
+	}
+	if got := gitOut(t, repo, "rev-parse", "epic/diverged"); got != divergedOID {
+		t.Fatalf("checked-out diverged CAS moved ref to %s, want %s", got, divergedOID)
 	}
 
 	behind, err := mgr.inspectEpicBranch(ctx, "epic/behind", "main")
