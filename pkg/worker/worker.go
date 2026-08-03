@@ -612,18 +612,9 @@ func (w *Worker) handlePrepareShutdown(ctx context.Context, msg protocol.Message
 // handleAssign processes an ASSIGN message: stores state, spawns subprocess,
 // starts context watcher, and pipes stdout through memory extraction.
 func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
-	if msg.Assign == nil {
-		return fmt.Errorf("assign message missing payload")
-	}
-	if err := msg.Assign.Validate(); err != nil {
-		return fmt.Errorf("invalid assign payload: %w", err)
-	}
-	if err := validateAssignmentEvidenceIdentity(msg.Assign); err != nil {
-		return fmt.Errorf("invalid assign evidence identity: %w", err)
-	}
-	execution, err := executionContextForAssign(msg.Assign, w.ID, w.socketPath)
+	execution, err := w.validateAssignMessage(msg)
 	if err != nil {
-		return fmt.Errorf("invalid assign execution context: %w", err)
+		return err
 	}
 
 	if msg.Assign.Attempt > 0 {
@@ -675,6 +666,23 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	go w.watchContext(ctx)
 	go w.awaitSubprocessAndReport(ctx) // wait for exit, run QG, send DONE
 	return nil
+}
+
+func (w *Worker) validateAssignMessage(msg protocol.Message) (WorkerExecutionContext, error) {
+	if msg.Assign == nil {
+		return WorkerExecutionContext{}, fmt.Errorf("assign message missing payload")
+	}
+	if err := msg.Assign.Validate(); err != nil {
+		return WorkerExecutionContext{}, fmt.Errorf("invalid assign payload: %w", err)
+	}
+	if err := validateAssignmentEvidenceIdentity(msg.Assign); err != nil {
+		return WorkerExecutionContext{}, fmt.Errorf("invalid assign evidence identity: %w", err)
+	}
+	execution, err := executionContextForAssign(msg.Assign, w.ID, w.socketPath)
+	if err != nil {
+		return WorkerExecutionContext{}, fmt.Errorf("invalid assign execution context: %w", err)
+	}
+	return execution, nil
 }
 
 func (w *Worker) startSpawnHeartbeat(ctx context.Context) func() {

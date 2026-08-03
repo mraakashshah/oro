@@ -25,8 +25,8 @@ func (d *Dispatcher) createAssignment(ctx context.Context, beadID, workerID, wor
 	return id, nil
 }
 
-func (d *Dispatcher) createAssignmentWithEvidence(ctx context.Context, beadID, workerID, worktree, targetBranch string) (int64, string, error) {
-	targetSHA, err := d.worktrees.BranchHead(ctx, targetBranch)
+func (d *Dispatcher) createAssignmentWithEvidence(ctx context.Context, beadID, workerID, worktree, targetBranch string) (assignmentID int64, targetSHA string, err error) {
+	targetSHA, err = d.worktrees.BranchHead(ctx, targetBranch)
 	if err != nil {
 		return 0, "", fmt.Errorf("resolve assignment target SHA: %w", err)
 	}
@@ -40,11 +40,11 @@ func (d *Dispatcher) createAssignmentWithEvidence(ctx context.Context, beadID, w
 	if err != nil {
 		return 0, "", fmt.Errorf("create assignment: %w", err)
 	}
-	id, err := res.LastInsertId()
+	assignmentID, err = res.LastInsertId()
 	if err != nil {
 		return 0, "", fmt.Errorf("create assignment last insert id: %w", err)
 	}
-	return id, targetSHA, nil
+	return assignmentID, targetSHA, nil
 }
 
 // persistBeadCount updates a counter column on the active assignment row for a bead.

@@ -35,33 +35,12 @@ func (d *Dispatcher) markWorkerReviewing(workerID string, assignmentID int64) (w
 }
 
 func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, msg protocol.Message) {
-	if msg.ReadyForReview == nil {
+	admission, admitted := d.admitReadyForReview(ctx, workerID, msg.ReadyForReview)
+	if !admitted {
 		return
 	}
-	if err := d.observeStorageController(ctx); err != nil || !d.storageAdmissionAllowed() {
-		return
-	}
-	ready := msg.ReadyForReview
-	if !d.acceptReadyEvidence(ctx, workerID, ready) {
-		return
-	}
-	beadID := ready.BeadID
-	assignmentID := ready.AssignmentID
-	legacyReady := legacyReadyEvidenceIdentity(ready)
-	if legacyReady {
-		d.touchProgress(workerID)
-		d.recordWorkerProgress(ctx, workerID, beadID, "ready_for_review")
-		_ = d.logEvent(ctx, "ready_for_review", workerID, beadID, workerID, "")
-	}
-	worktree, targetBranch, marked := d.markWorkerReviewing(workerID, assignmentID)
-	if !marked {
-		return
-	}
-	if !legacyReady {
-		d.touchProgress(workerID)
-		d.recordWorkerProgress(ctx, workerID, beadID, "ready_for_review")
-		_ = d.logEvent(ctx, "ready_for_review", workerID, beadID, workerID, "")
-	}
+	beadID, assignmentID := admission.beadID, admission.assignmentID
+	worktree, targetBranch := admission.worktree, admission.targetBranch
 
 	blocked, err := d.blockReviewForDependency(ctx, workerID, beadID, "ready_for_review")
 	if blocked {
@@ -109,6 +88,46 @@ func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, 
 	d.safeGo(func() {
 		d.handleReviewResultForAssignment(ctx, workerID, beadID, assignmentID, resultCh)
 	})
+}
+
+type readyReviewAdmission struct {
+	beadID       string
+	assignmentID int64
+	worktree     string
+	targetBranch string
+}
+
+func (d *Dispatcher) admitReadyForReview(ctx context.Context, workerID string, ready *protocol.ReadyForReviewPayload) (readyReviewAdmission, bool) {
+	if ready == nil {
+		return readyReviewAdmission{}, false
+	}
+	if err := d.observeStorageController(ctx); err != nil || !d.storageAdmissionAllowed() {
+		return readyReviewAdmission{}, false
+	}
+	if !d.acceptReadyEvidence(ctx, workerID, ready) {
+		return readyReviewAdmission{}, false
+	}
+	legacyReady := legacyReadyEvidenceIdentity(ready)
+	if legacyReady {
+		d.recordReadyForReviewProgress(ctx, workerID, ready.BeadID)
+	}
+	worktree, targetBranch, marked := d.markWorkerReviewing(workerID, ready.AssignmentID)
+	if !marked {
+		return readyReviewAdmission{}, false
+	}
+	if !legacyReady {
+		d.recordReadyForReviewProgress(ctx, workerID, ready.BeadID)
+	}
+	return readyReviewAdmission{
+		beadID: ready.BeadID, assignmentID: ready.AssignmentID,
+		worktree: worktree, targetBranch: targetBranch,
+	}, true
+}
+
+func (d *Dispatcher) recordReadyForReviewProgress(ctx context.Context, workerID, beadID string) {
+	d.touchProgress(workerID)
+	d.recordWorkerProgress(ctx, workerID, beadID, "ready_for_review")
+	_ = d.logEvent(ctx, "ready_for_review", workerID, beadID, workerID, "")
 }
 
 // PreReviewGitHygieneResult describes whether a worker worktree is clean

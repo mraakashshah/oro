@@ -97,7 +97,7 @@ func writeEvidenceAtomically(path string, data []byte) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close QG evidence: %w", err)
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := os.Rename(tmpPath, path); err != nil { //nolint:gosec // both paths are confined to the validated canonical assignment directory.
 		return fmt.Errorf("publish QG evidence: %w", err)
 	}
 	return nil

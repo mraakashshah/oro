@@ -1,4 +1,4 @@
-package worker
+package worker //nolint:testpackage // Evidence construction requires assignment-local worker state.
 
 import (
 	"context"

@@ -159,9 +159,6 @@ func (c *Config) withDefaults() Config {
 // durations, non-negative counts, and compatible feature flags. Call this
 // AFTER withDefaults().
 func (c Config) validate() error {
-	if c.ReviewEvidenceDir != "" && !filepath.IsAbs(c.ReviewEvidenceDir) {
-		return fmt.Errorf("ReviewEvidenceDir must be absolute, got %q", c.ReviewEvidenceDir)
-	}
 	if c.MaxWorkers < 0 {
 		return fmt.Errorf("MaxWorkers must be non-negative, got %d", c.MaxWorkers)
 	}
@@ -197,6 +194,13 @@ func (c Config) validate() error {
 	}
 	if c.ShutdownTimeout <= 0 {
 		return fmt.Errorf("ShutdownTimeout must be positive, got %v", c.ShutdownTimeout)
+	}
+	return c.validateReviewEvidenceDir()
+}
+
+func (c Config) validateReviewEvidenceDir() error {
+	if c.ReviewEvidenceDir != "" && !filepath.IsAbs(c.ReviewEvidenceDir) {
+		return fmt.Errorf("ReviewEvidenceDir must be absolute, got %q", c.ReviewEvidenceDir)
 	}
 	return nil
 }
