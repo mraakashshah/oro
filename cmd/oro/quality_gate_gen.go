@@ -499,7 +499,10 @@ NC='\033[0m'
 
 # Temp directory for all check outputs (cleaned up on exit)
 QG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/qg-$$-XXXXXX")
-QG_STAGE_ASSETS_LOCK=""
+{{if .HasGo}}export GOCACHE="$QG_DIR/go-build-cache"
+export GOLANGCI_LINT_CACHE="$QG_DIR/golangci-lint-cache"
+mkdir -p "$GOCACHE" "$GOLANGCI_LINT_CACHE"
+{{end}}QG_STAGE_ASSETS_LOCK=""
 QG_RUN_LOCK=""
 QG_RUN_LOCK_TOKEN=""
 QG_RUN_QUEUE_TICKET=""
@@ -556,8 +559,8 @@ trap cleanup_qg EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# Tool caches deliberately inherit their environment (or each tool's standard
-# external default). Only QG scratch data belongs under TMPDIR/QG_DIR.
+# Module and package-manager caches deliberately inherit their environment (or
+# each tool's standard external default). Mutable Go caches are run-scoped above.
 export GOMAXPROCS="${ORO_QG_GOMAXPROCS:-2}"
 
 # Resolve repo root node_modules (works from worktrees too). Non-git harness
@@ -1331,9 +1334,7 @@ ensure_stage_assets() {
 # entries can contain absolute source paths from sibling worktrees.
 # shellcheck disable=SC2317,SC2329
 run_golangci_lint() {
-    local lint_cache="$QG_DIR/golangci-lint-cache"
-    mkdir -p "$lint_cache"
-    GOLANGCI_LINT_CACHE="$lint_cache" GOFLAGS=-buildvcs=false \
+    GOFLAGS=-buildvcs=false \
         golangci-lint run --timeout 10m --allow-parallel-runners ./cmd/... ./internal/... ./pkg/...
 }
 

@@ -290,17 +290,17 @@ func TestGenerateQualityGateScript(t *testing.T) {
 			`expected_rc_files=(`,
 			`FAIL: missing lane result`,
 			`export GOMAXPROCS="${ORO_QG_GOMAXPROCS:-2}"`,
+			`export GOCACHE="$QG_DIR/go-build-cache"`,
+			`export GOLANGCI_LINT_CACHE="$QG_DIR/golangci-lint-cache"`,
+			`mkdir -p "$GOCACHE" "$GOLANGCI_LINT_CACHE"`,
 		} {
 			if !strings.Contains(script, want) {
 				t.Errorf("generated Go script missing %q", want)
 			}
 		}
 		for _, forbidden := range []string{
-			`export GOCACHE=`,
 			`export GOMODCACHE=`,
-			`export GOLANGCI_LINT_CACHE=`,
 			`export UV_CACHE_DIR=`,
-			`GOCACHE=$QG_DIR/`,
 		} {
 			if strings.Contains(script, forbidden) {
 				t.Errorf("generated Go script overrides shared cache via %q", forbidden)
@@ -2025,44 +2025,59 @@ func checkBashSyntax(t *testing.T, script string) {
 	}
 }
 
-// TestGeneratedQualityGateScopesLintCache proves the generated quality gate
-// retains shared Go, uv, and module caches while isolating golangci-lint.
-// The lint cache can retain absolute paths from sibling worktrees, unlike the
-// other caches that should remain shared to avoid cold-compiling each gate.
-func TestGeneratedQualityGateScopesLintCache(t *testing.T) {
-	cfg := &langprofile.Config{
+// TestGeneratedQualityGateScopesGoCaches proves Go gates isolate their mutable
+// build and lint caches per run while non-Go gates retain ambient Go caches.
+func TestGeneratedQualityGateScopesGoCaches(t *testing.T) {
+	goCfg := &langprofile.Config{
 		Languages: map[string]langprofile.LanguageConfig{
 			"go":     {TestCmd: "go test ./...", Linters: []string{"golangci-lint"}},
 			"python": {TestCmd: "uv run pytest", Linters: []string{"ruff"}},
 		},
 	}
-	generated, err := generateQualityGateScript(cfg)
+	generated, err := generateQualityGateScript(goCfg)
 	if err != nil {
 		t.Fatalf("generate quality gate: %v", err)
+	}
+	pythonOnly, err := generateQualityGateScript(&langprofile.Config{
+		Languages: map[string]langprofile.LanguageConfig{
+			"python": {TestCmd: "uv run pytest", Linters: []string{"ruff"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("generate Python-only quality gate: %v", err)
 	}
 	checkedIn, err := os.ReadFile(filepath.Join("..", "..", "scripts", "quality_gate.sh"))
 	if err != nil {
 		t.Fatalf("read checked-in quality gate: %v", err)
 	}
 
-	// Only the lint cache may be redirected under QG_DIR. Fresh Go and uv
-	// caches would cold-compile or reinstall dependencies for every gate.
-	forbidden := regexp.MustCompile(`\$QG_DIR/(go-build-cache|golangci-go-cache|uv-cache)|QG_DIR.*(go-build-cache|golangci-go-cache|uv-cache)`)
+	want := []string{
+		`export GOCACHE="$QG_DIR/go-build-cache"`,
+		`export GOLANGCI_LINT_CACHE="$QG_DIR/golangci-lint-cache"`,
+		`mkdir -p "$GOCACHE" "$GOLANGCI_LINT_CACHE"`,
+	}
 	for name, script := range map[string]string{
 		"generated":  generated,
 		"checked-in": string(checkedIn),
 	} {
 		t.Run(name, func(t *testing.T) {
-			if loc := forbidden.FindString(script); loc != "" {
-				t.Errorf("quality gate redirects a shared tool cache under QG_DIR (%q)", loc)
+			for _, snippet := range want {
+				if !strings.Contains(script, snippet) {
+					t.Errorf("quality gate missing per-run Go cache initialization %q", snippet)
+				}
 			}
-			if !strings.Contains(script, `GOLANGCI_LINT_CACHE="$lint_cache"`) {
-				t.Error("quality gate does not scope golangci-lint cache")
-			}
-			if !strings.Contains(script, "Tool caches deliberately inherit their environment") {
-				t.Error("quality gate missing the shared-cache inheritance contract")
+			for _, sharedCache := range []string{`export GOMODCACHE=`, `export GOPATH=`, `export UV_CACHE_DIR=`} {
+				if strings.Contains(script, sharedCache) {
+					t.Errorf("quality gate redirects shared cache via %q", sharedCache)
+				}
 			}
 		})
+	}
+
+	for _, snippet := range want[:2] {
+		if strings.Contains(pythonOnly, snippet) {
+			t.Errorf("Python-only gate contains Go cache export %q", snippet)
+		}
 	}
 }
 
