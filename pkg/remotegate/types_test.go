@@ -127,13 +127,13 @@ func TestRemoteGateLifecycleContract(t *testing.T) {
 		ObservedOperation: "create_ephemeral_target", ObservedAttemptID: "attempt-create", ObservedOutcome: "accepted",
 		Lease: remotegate.Lease{Owner: ephemeral.Owner, Generation: ephemeral.Generation, ExpectedAbsent: true},
 	}
-	delete := remotegate.ReconcileChangeRequest{
+	deleteRequest := remotegate.ReconcileChangeRequest{
 		EphemeralTarget: ephemeral, FinalSHA: ephemeral.Target.SHA,
 		AttemptedOperation: "delete_ephemeral_target", AttemptID: "attempt-delete",
 		ObservedOperation: "delete_ephemeral_target", ObservedAttemptID: "attempt-delete", ObservedOutcome: "accepted",
 		Lease: remotegate.Lease{Owner: ephemeral.Owner, Generation: ephemeral.Generation, ExpectedSHA: ephemeral.Target.SHA},
 	}
-	for name, request := range map[string]remotegate.ReconcileChangeRequest{"create": create, "delete": delete} {
+	for name, request := range map[string]remotegate.ReconcileChangeRequest{"create": create, "delete": deleteRequest} {
 		if err := remotegate.ValidateRequest(request); err != nil {
 			t.Errorf("valid %s reconciliation rejected: %v", name, err)
 		}
@@ -235,7 +235,7 @@ func TestRemoteGateLifecycleContract(t *testing.T) {
 	missingEpicID := create
 	missingEpicID.EphemeralTarget.EpicID = ""
 	reject("missing ephemeral target epic ID", missingEpicID)
-	deleteExpectedAbsent := delete
+	deleteExpectedAbsent := deleteRequest
 	deleteExpectedAbsent.Lease.ExpectedAbsent = true
 	deleteExpectedAbsent.Lease.ExpectedSHA = ""
 	reject("delete reconciliation expected absent", deleteExpectedAbsent)
@@ -245,14 +245,14 @@ func TestRemoteGateLifecycleContract(t *testing.T) {
 	wrongSeed := create
 	wrongSeed.SeedSHA = "wrong-seed"
 	reject("wrong seed", wrongSeed)
-	wrongFinal := delete
+	wrongFinal := deleteRequest
 	wrongFinal.FinalSHA = "wrong-final"
 	reject("wrong final", wrongFinal)
 	wrongCreateLease := create
 	wrongCreateLease.Lease.ExpectedAbsent = false
 	wrongCreateLease.Lease.ExpectedSHA = "seed-sha"
 	reject("wrong create lease", wrongCreateLease)
-	wrongDeleteLease := delete
+	wrongDeleteLease := deleteRequest
 	wrongDeleteLease.Lease.ExpectedSHA = "wrong-final"
 	reject("wrong delete lease", wrongDeleteLease)
 	alternate := pr
