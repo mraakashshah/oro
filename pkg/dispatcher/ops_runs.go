@@ -641,24 +641,7 @@ func (d *Dispatcher) watchReroutedOpsRunResult(
 ) {
 	d.safeGo(func() {
 		result := <-resultCh
-		status := opsRunStatusResolved
-		verdict := string(result.Verdict)
-		errorText := ""
-		if result.Err != nil || result.Verdict == ops.VerdictFailed {
-			status = opsRunStatusFailed
-			if result.Err != nil {
-				errorText = result.Err.Error()
-			} else {
-				errorText = result.Feedback
-			}
-		}
-		if verdict == "" {
-			if status == opsRunStatusFailed {
-				verdict = string(ops.VerdictFailed)
-			} else {
-				verdict = string(ops.VerdictResolved)
-			}
-		}
+		status, verdict, errorText := terminalOpsRunResult(result)
 		if rec.ID <= 0 {
 			return
 		}
@@ -677,6 +660,27 @@ func (d *Dispatcher) watchReroutedOpsRunResult(
 			afterComplete(result)
 		}
 	})
+}
+
+func terminalOpsRunResult(result ops.Result) (status, verdict, errorText string) {
+	status = opsRunStatusResolved
+	verdict = string(result.Verdict)
+	if result.Err != nil {
+		status = opsRunStatusFailed
+		errorText = result.Err.Error()
+	} else if result.Verdict == ops.VerdictFailed {
+		status = opsRunStatusFailed
+		errorText = result.Feedback
+	}
+	if verdict != "" {
+		return status, verdict, errorText
+	}
+	if status == opsRunStatusFailed {
+		verdict = string(ops.VerdictFailed)
+	} else {
+		verdict = string(ops.VerdictResolved)
+	}
+	return status, verdict, errorText
 }
 
 func (d *Dispatcher) reviewContextForOpsRun(rec OpsRunRecord) (worktree, targetBranch string) {

@@ -85,7 +85,7 @@ func TestSpawnOneShot_MissingAC_UsesWriteAC(t *testing.T) {
 	}
 
 	msg := protocol.FormatEscalation(protocol.EscMissingAC, beadID, "no acceptance criteria — spawning AC writer", "")
-	d.spawnEscalationOneShot(ctx, 0, string(protocol.EscMissingAC), beadID, "w1", msg)
+	d.spawnEscalationOneShot(ctx, 0, 0, string(protocol.EscMissingAC), beadID, "w1", msg)
 
 	// Wait for the async spawn to happen (ops.Spawner.run launches a goroutine).
 	waitFor(t, func() bool {
@@ -280,7 +280,7 @@ func TestMissingACOpsFailureAcksAndCooldown(t *testing.T) {
 		Err:     errors.New("codex unsupported model"),
 	}
 
-	d.handleEscalationResult(ctx, escalationID, string(protocol.EscMissingAC), beadID, workerID, resultCh)
+	d.handleEscalationResult(ctx, 0, escalationID, string(protocol.EscMissingAC), beadID, workerID, resultCh)
 
 	var failedCount int
 	if err := d.db.QueryRowContext(ctx,

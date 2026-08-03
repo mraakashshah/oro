@@ -448,7 +448,7 @@ func TestDecomposeOpsRunPersistsTerminalOutcome(t *testing.T) {
 		Feedback: feedback,
 	}
 
-	d.handleEscalationResult(ctx, escalationID, string(protocol.EscOversizedBead), beadID, workerID, resultCh)
+	d.handleEscalationResult(ctx, runID, escalationID, string(protocol.EscOversizedBead), beadID, workerID, resultCh)
 
 	afterResult := fetchOpsRunForTest(t, d.db, runID)
 	if afterResult.Status != opsRunStatusResolved {
@@ -501,7 +501,7 @@ func TestDecomposeOpsRunPersistsFailedVerdict(t *testing.T) {
 		Feedback: feedback,
 	}
 
-	d.handleEscalationResult(ctx, escalationID, string(protocol.EscOversizedBead), beadID, workerID, resultCh)
+	d.handleEscalationResult(ctx, runID, escalationID, string(protocol.EscOversizedBead), beadID, workerID, resultCh)
 
 	afterResult := fetchOpsRunForTest(t, d.db, runID)
 	if afterResult.Status != opsRunStatusFailed {
@@ -522,6 +522,146 @@ func TestDecomposeOpsRunPersistsFailedVerdict(t *testing.T) {
 	}
 	if blocking == nil || blocking.ID != runID {
 		t.Fatalf("failed verdict blocking ops_run = %#v, want run %d", blocking, runID)
+	}
+}
+
+func TestEscalationResultCannotCompleteOrAcknowledgeReplacementOpsRun(t *testing.T) {
+	tests := []struct {
+		name    string
+		escType protocol.EscalationType
+		runType ops.Type
+	}{
+		{name: "decompose", escType: protocol.EscOversizedBead, runType: ops.OpsDecompose},
+		{name: "write_ac", escType: protocol.EscMissingAC, runType: ops.OpsWriteAC},
+		{name: "escalation", escType: protocol.EscStuckWorker, runType: ops.OpsEscalation},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			d, _, _, _, _, _ := newTestDispatcher(t)
+			beadID := "oro-late-" + tt.name
+			workerID := "w-late-" + tt.name
+			escalationID := insertDispatcherTestEscalation(t, d.db, tt.escType, beadID, workerID)
+
+			original, created, err := CreateOpsRun(ctx, d.db, OpsRunRecord{
+				EscalationID:  escalationID,
+				Type:          string(tt.runType),
+				BeadID:        beadID,
+				WorkerID:      workerID,
+				DispatcherPID: os.Getpid(),
+				Status:        opsRunStatusRunning,
+			})
+			if err != nil || !created {
+				t.Fatalf("create original ops run: created=%t err=%v", created, err)
+			}
+			next := original
+			next.ID = 0
+			next.Status = opsRunStatusRunning
+			next.Verdict = ""
+			next.Feedback = ""
+			next.Error = ""
+			next.StartedAt = ""
+			next.CompletedAt = ""
+			replacement, replaced, err := replaceOpsRun(ctx, d.db, original, next, "test replacement before late result")
+			if err != nil || !replaced {
+				t.Fatalf("replace original ops run: replaced=%t err=%v", replaced, err)
+			}
+
+			originalBefore := fetchOpsRunForTest(t, d.db, original.ID)
+			replacementBefore := fetchOpsRunForTest(t, d.db, replacement.ID)
+			resultCh := make(chan ops.Result, 1)
+			resultCh <- ops.Result{
+				Type:    tt.runType,
+				BeadID:  beadID,
+				Verdict: ops.VerdictFailed,
+				Err:     errors.New("late process failed after replacement"),
+			}
+
+			d.handleEscalationResult(ctx, original.ID, escalationID, string(tt.escType), beadID, workerID, resultCh)
+
+			if got := fetchOpsRunForTest(t, d.db, original.ID); got != originalBefore {
+				t.Fatalf("late result changed superseded original\n got: %#v\nwant: %#v", got, originalBefore)
+			}
+			if got := fetchOpsRunForTest(t, d.db, replacement.ID); got != replacementBefore {
+				t.Fatalf("late result changed replacement\n got: %#v\nwant: %#v", got, replacementBefore)
+			}
+			if got := dispatcherTestEscalationStatus(t, d.db, escalationID); got != "pending" {
+				t.Fatalf("late result escalation status = %q, want pending", got)
+			}
+			d.mu.Lock()
+			_, inCooldown := d.worktreeFailures[beadID]
+			d.mu.Unlock()
+			if inCooldown {
+				t.Fatalf("late result changed assignment cooldown for %s", beadID)
+			}
+		})
+	}
+}
+
+func TestRouteExistingRoutableEscalationCarriesExactOpsRunIDToCompletion(t *testing.T) {
+	ctx := context.Background()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	spawner := &slowBatchSpawner{}
+	d.ops = ops.NewSpawner(spawner)
+
+	const (
+		beadID   = "oro-routed-exact-owner"
+		workerID = "w-routed-exact-owner"
+	)
+	escalationID := insertDispatcherTestEscalation(t, d.db, protocol.EscOversizedBead, beadID, workerID)
+	msg := protocol.FormatEscalation(protocol.EscOversizedBead, beadID, "needs decomposition", "")
+	if err := d.routeExistingRoutableEscalation(ctx, escalationID, protocol.EscOversizedBead, beadID, workerID, msg); err != nil {
+		t.Fatalf("route existing escalation: %v", err)
+	}
+
+	waitFor(t, func() bool {
+		spawner.mu.Lock()
+		defer spawner.mu.Unlock()
+		return len(spawner.processes) == 1
+	}, time.Second)
+	original, err := FindBlockingOpsRun(ctx, d.db, string(ops.OpsDecompose), beadID)
+	if err != nil || original == nil {
+		t.Fatalf("find routed original: rec=%#v err=%v", original, err)
+	}
+	next := *original
+	next.ID = 0
+	next.Status = opsRunStatusRunning
+	next.ProcessPID = 0
+	next.Verdict = ""
+	next.Feedback = ""
+	next.Error = ""
+	next.StartedAt = ""
+	next.CompletedAt = ""
+	replacement, created, err := replaceOpsRun(ctx, d.db, *original, next, "test replacement while routed process is live")
+	if err != nil || !created {
+		t.Fatalf("replace routed original: created=%t err=%v", created, err)
+	}
+	originalBefore := fetchOpsRunForTest(t, d.db, original.ID)
+	replacementBefore := fetchOpsRunForTest(t, d.db, replacement.ID)
+
+	spawner.mu.Lock()
+	process := spawner.processes[0]
+	spawner.mu.Unlock()
+	if err := process.Kill(); err != nil {
+		t.Fatalf("release original process: %v", err)
+	}
+	d.wg.Wait()
+
+	if got := fetchOpsRunForTest(t, d.db, original.ID); got != originalBefore {
+		t.Fatalf("routed late result changed original\n got: %#v\nwant: %#v", got, originalBefore)
+	}
+	if got := fetchOpsRunForTest(t, d.db, replacement.ID); got != replacementBefore {
+		t.Fatalf("routed late result changed replacement\n got: %#v\nwant: %#v", got, replacementBefore)
+	}
+	if got := dispatcherTestEscalationStatus(t, d.db, escalationID); got != "pending" {
+		t.Fatalf("routed late result escalation status = %q, want pending", got)
+	}
+	d.mu.Lock()
+	_, inCooldown := d.worktreeFailures[beadID]
+	d.mu.Unlock()
+	if inCooldown {
+		t.Fatalf("routed late result changed assignment cooldown for %s", beadID)
 	}
 }
 

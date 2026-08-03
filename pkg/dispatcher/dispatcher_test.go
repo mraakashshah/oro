@@ -4578,7 +4578,7 @@ func TestSpawnEscalationOneShotRoutesOversizedToDecompose(t *testing.T) {
 	d.mu.Unlock()
 
 	msg := protocol.FormatEscalation(protocol.EscOversizedBead, beadID, "touches 3 modules — needs decomposition", "")
-	d.spawnEscalationOneShot(ctx, 0, string(protocol.EscOversizedBead), beadID, "w1", msg)
+	d.spawnEscalationOneShot(ctx, 0, 0, string(protocol.EscOversizedBead), beadID, "w1", msg)
 
 	waitFor(t, func() bool {
 		return spawnMock.SpawnCount() > 0
@@ -4792,7 +4792,7 @@ func TestOneShotFailureCreatesOpsRunFailureWithoutManagerFallback(t *testing.T) 
 		Err:      errors.New("write-ac agent exited 1"),
 	}
 
-	d.handleEscalationResult(ctx, escalationID, string(protocol.EscMissingAC), beadID, workerID, resultCh)
+	d.handleEscalationResult(ctx, 0, escalationID, string(protocol.EscMissingAC), beadID, workerID, resultCh)
 
 	if got := len(esc.Messages()); got != 0 {
 		t.Fatalf("one-shot failure pasted fallback to manager, got %d messages: %v", got, esc.Messages())
@@ -4843,7 +4843,7 @@ func TestOneShotEscalationFailureCreatesFailedOpsRunWithMetadata(t *testing.T) {
 		Err:    errors.New(spawnFailure),
 	}
 
-	d.handleEscalationResult(ctx, escalationID, string(protocol.EscStuckWorker), beadID, workerID, resultCh)
+	d.handleEscalationResult(ctx, 0, escalationID, string(protocol.EscStuckWorker), beadID, workerID, resultCh)
 
 	if got := len(esc.Messages()); got != 0 {
 		t.Fatalf("one-shot spawn failure pasted fallback to manager, got %d messages: %v", got, esc.Messages())
@@ -4907,7 +4907,7 @@ func TestEscalationSpawnFailureKeepsEmptyIdentifiers(t *testing.T) {
 			Err: errors.New(spawnFailure),
 		}
 
-		d.handleEscalationResult(ctx, escalationID, string(protocol.EscStuckWorker), "", "", resultCh)
+		d.handleEscalationResult(ctx, 0, escalationID, string(protocol.EscStuckWorker), "", "", resultCh)
 	}
 
 	if got := len(esc.Messages()); got != 0 {
@@ -4967,7 +4967,7 @@ func TestDecomposeOpsRunSpawnFailureCreatesFailedIncident(t *testing.T) {
 		Err:    errors.New("spawn failed: executable not found"),
 	}
 
-	d.handleEscalationResult(ctx, escalationID, string(protocol.EscOversizedBead), beadID, workerID, resultCh)
+	d.handleEscalationResult(ctx, 0, escalationID, string(protocol.EscOversizedBead), beadID, workerID, resultCh)
 
 	if got := len(esc.Messages()); got != 0 {
 		t.Fatalf("decompose spawn failure pasted fallback to manager, got %d messages: %v", got, esc.Messages())
@@ -5036,7 +5036,7 @@ func TestDecomposeOpsRunSpawnFailureCompletesExistingRunningRow(t *testing.T) {
 		Err:      errors.New("spawn failed: executable not found"),
 	}
 
-	d.handleEscalationResult(ctx, escalationID, string(protocol.EscOversizedBead), beadID, workerID, resultCh)
+	d.handleEscalationResult(ctx, existingRunID, escalationID, string(protocol.EscOversizedBead), beadID, workerID, resultCh)
 
 	if got := len(esc.Messages()); got != 0 {
 		t.Fatalf("decompose spawn failure pasted fallback to manager, got %d messages: %v", got, esc.Messages())
@@ -5110,12 +5110,12 @@ func TestOversizedDecomposeResultAcksOnlyAfterValidation(t *testing.T) {
 
 	insertDispatcherTestBead(t, d.db, beadID, "task", "", tddAcceptanceForTest())
 	invalidEscID := insertDispatcherTestEscalation(t, d.db, protocol.EscOversizedBead, beadID, workerID)
-	insertDispatcherTestOpsRun(t, d, ops.OpsDecompose, beadID, workerID)
+	invalidRunID := insertDispatcherTestOpsRun(t, d, ops.OpsDecompose, beadID, workerID)
 
 	invalidResultCh := make(chan ops.Result, 1)
 	invalidResultCh <- ops.Result{Type: ops.OpsDecompose, BeadID: beadID, Verdict: ops.VerdictResolved}
 
-	d.handleEscalationResult(ctx, invalidEscID, string(protocol.EscOversizedBead), beadID, workerID, invalidResultCh)
+	d.handleEscalationResult(ctx, invalidRunID, invalidEscID, string(protocol.EscOversizedBead), beadID, workerID, invalidResultCh)
 
 	if got := dispatcherTestEscalationStatus(t, d.db, invalidEscID); got != "pending" {
 		t.Fatalf("invalid decompose escalation status = %q, want pending", got)
@@ -5138,7 +5138,8 @@ func TestOversizedDecomposeResultAcksOnlyAfterValidation(t *testing.T) {
 	next.Error = ""
 	next.StartedAt = ""
 	next.CompletedAt = ""
-	if _, created, err := replaceOpsRun(ctx, d.db, *failed, next, "test retry after invalid decompose result"); err != nil {
+	replacement, created, err := replaceOpsRun(ctx, d.db, *failed, next, "test retry after invalid decompose result")
+	if err != nil {
 		t.Fatalf("replace failed decompose run: %v", err)
 	} else if !created {
 		t.Fatal("replace failed decompose run created = false, want a new running owner")
@@ -5151,7 +5152,7 @@ func TestOversizedDecomposeResultAcksOnlyAfterValidation(t *testing.T) {
 	validResultCh := make(chan ops.Result, 1)
 	validResultCh <- ops.Result{Type: ops.OpsDecompose, BeadID: beadID, Verdict: ops.VerdictResolved}
 
-	d.handleEscalationResult(ctx, validEscID, string(protocol.EscOversizedBead), beadID, workerID, validResultCh)
+	d.handleEscalationResult(ctx, replacement.ID, validEscID, string(protocol.EscOversizedBead), beadID, workerID, validResultCh)
 
 	if got := dispatcherTestEscalationStatus(t, d.db, validEscID); got != "acked" {
 		t.Fatalf("valid decompose escalation status = %q, want acked", got)
@@ -5363,12 +5364,12 @@ func TestHandleEscalationResult_OversizedFailsOpsRunOnMissingChildren(t *testing
 
 	insertDispatcherTestBead(t, d.db, beadID, "task", "", tddAcceptanceForTest())
 	escalationID := insertDispatcherTestEscalation(t, d.db, protocol.EscOversizedBead, beadID, workerID)
-	insertDispatcherTestOpsRun(t, d, ops.OpsDecompose, beadID, workerID)
+	runID := insertDispatcherTestOpsRun(t, d, ops.OpsDecompose, beadID, workerID)
 
 	resultCh := make(chan ops.Result, 1)
 	resultCh <- ops.Result{Type: ops.OpsDecompose, BeadID: beadID, Verdict: ops.VerdictResolved}
 
-	d.handleEscalationResult(ctx, escalationID, string(protocol.EscOversizedBead), beadID, workerID, resultCh)
+	d.handleEscalationResult(ctx, runID, escalationID, string(protocol.EscOversizedBead), beadID, workerID, resultCh)
 
 	if got := dispatcherTestEscalationStatus(t, d.db, escalationID); got != "pending" {
 		t.Fatalf("escalation status = %q, want pending until validation passes", got)
@@ -5437,7 +5438,7 @@ func TestFailedDecomposeOpsRunSetsAssignmentCooldown(t *testing.T) {
 	)
 
 	escalationID := insertDispatcherTestEscalation(t, d.db, protocol.EscOversizedBead, beadID, workerID)
-	insertDispatcherTestOpsRun(t, d, ops.OpsDecompose, beadID, workerID)
+	runID := insertDispatcherTestOpsRun(t, d, ops.OpsDecompose, beadID, workerID)
 
 	resultCh := make(chan ops.Result, 1)
 	resultCh <- ops.Result{
@@ -5447,7 +5448,7 @@ func TestFailedDecomposeOpsRunSetsAssignmentCooldown(t *testing.T) {
 		Err:     errors.New("decompose agent failed"),
 	}
 
-	d.handleEscalationResult(ctx, escalationID, string(protocol.EscOversizedBead), beadID, workerID, resultCh)
+	d.handleEscalationResult(ctx, runID, escalationID, string(protocol.EscOversizedBead), beadID, workerID, resultCh)
 
 	if got := dispatcherTestOpsRunStatus(t, d.db, ops.OpsDecompose, beadID); got != opsRunStatusFailed {
 		t.Fatalf("decompose ops_run status = %q, want %q", got, opsRunStatusFailed)
