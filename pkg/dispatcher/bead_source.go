@@ -22,6 +22,10 @@ type dependencyStore interface {
 	AddDependency(ctx context.Context, beadID, dependsOnID, depType string) error
 }
 
+type dependencyRemovalStore interface {
+	RemoveDependency(ctx context.Context, beadID, dependsOnID string) error
+}
+
 func selectStore(ctx context.Context, mode string, primary DeferredStore, db *sql.DB) (DeferredStore, error) {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case "", "cli":

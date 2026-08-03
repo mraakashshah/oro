@@ -82,6 +82,10 @@ type dependencyWriter interface {
 	AddDependency(ctx context.Context, beadID, dependsOnID, depType string) error
 }
 
+type dependencyRemover interface {
+	RemoveDependency(ctx context.Context, beadID, dependsOnID string) error
+}
+
 // NewShadowStore returns a Store that dual-reads primary and secondary stores.
 func NewShadowStore(primary, secondary Store, opts ...ShadowStoreOption) *ShadowStore {
 	store := &ShadowStore{
@@ -250,6 +254,19 @@ func (s *ShadowStore) AddDependency(ctx context.Context, beadID, dependsOnID, de
 	}
 	if err := primary.AddDependency(ctx, beadID, dependsOnID, depType); err != nil {
 		return fmt.Errorf("shadow primary add dependency: %w", err)
+	}
+	return nil
+}
+
+// RemoveDependency writes to primary only when the primary store supports
+// dependency edges.
+func (s *ShadowStore) RemoveDependency(ctx context.Context, beadID, dependsOnID string) error {
+	primary, ok := s.primary.(dependencyRemover)
+	if !ok {
+		return fmt.Errorf("primary store does not support dependencies")
+	}
+	if err := primary.RemoveDependency(ctx, beadID, dependsOnID); err != nil {
+		return fmt.Errorf("shadow primary remove dependency: %w", err)
 	}
 	return nil
 }

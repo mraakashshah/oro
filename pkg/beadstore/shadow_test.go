@@ -468,6 +468,16 @@ func TestShadowStore(t *testing.T) {
 		if len(secondaryDependent.Dependencies) != 0 {
 			t.Fatalf("secondary dependencies = %+v, want unchanged", secondaryDependent.Dependencies)
 		}
+		if err := store.RemoveDependency(ctx, "dependent", "blocker"); err != nil {
+			t.Fatalf("RemoveDependency: %v", err)
+		}
+		primaryDependent, err = primary.Show(ctx, "dependent")
+		if err != nil {
+			t.Fatalf("primary Show after removal: %v", err)
+		}
+		if len(primaryDependent.Dependencies) != 0 {
+			t.Fatalf("primary dependencies after removal = %+v, want empty", primaryDependent.Dependencies)
+		}
 	})
 
 	t.Run("defer operations require primary support", func(t *testing.T) {

@@ -46,21 +46,47 @@ func (d *Dispatcher) ensureEpicBranchBlockRecovery(ctx context.Context, admissio
 		if child == nil {
 			return nil, fmt.Errorf("create or reuse epic branch recovery child: store returned nil bead")
 		}
-		linked, err := store.linkRecovery(ctx, admission.branch, admission.generation,
-			admission.recoveryBeadID, child.ID, d.nowFunc())
-		if err == nil {
-			if linked.recoveryBeadID != child.ID {
-				return nil, fmt.Errorf("link epic branch recovery child: stored %q, want %q", linked.recoveryBeadID, child.ID)
-			}
-			return child, nil
-		}
-		admission, err = d.reloadEpicBranchRecoveryLinkConflict(ctx, admission, err)
+		next, linked, err := d.linkEpicBranchRecoveryCandidate(ctx, store, admission, child)
 		if err != nil {
 			return nil, err
 		}
+		if linked {
+			return child, nil
+		}
+		admission = next
 	}
 	return nil, fmt.Errorf("ensure epic branch recovery for %s generation %d: candidate limit exceeded",
 		admission.branch, admission.generation)
+}
+
+func (d *Dispatcher) linkEpicBranchRecoveryCandidate(
+	ctx context.Context,
+	store *epicBranchAdmissionStore,
+	admission epicBranchAdmission,
+	child *protocol.Bead,
+) (epicBranchAdmission, bool, error) {
+	linked, err := store.linkRecovery(ctx, admission.branch, admission.generation,
+		admission.recoveryBeadID, child.ID, d.nowFunc())
+	if err == nil {
+		if linked.recoveryBeadID != child.ID {
+			return epicBranchAdmission{}, false,
+				fmt.Errorf("link epic branch recovery child: stored %q, want %q", linked.recoveryBeadID, child.ID)
+		}
+		if err := d.retireEpicBranchRecoveryPredecessors(ctx, linked, child); err != nil {
+			return epicBranchAdmission{}, false, err
+		}
+		return linked, true, nil
+	}
+	next, superseded, err := d.reloadEpicBranchRecoveryLinkConflict(ctx, admission, err)
+	if err != nil {
+		return epicBranchAdmission{}, false, err
+	}
+	if !superseded {
+		return next, false, nil
+	}
+	cleanupErr := d.retireEpicBranchRecovery(ctx, admission.epicID, child,
+		"epic branch recovery admission generation advanced before link")
+	return epicBranchAdmission{}, false, errors.Join(ErrEpicBranchAdmissionCAS, cleanupErr)
 }
 
 func (d *Dispatcher) findLinkedEpicBranchRecoveryChild(
@@ -80,6 +106,9 @@ func (d *Dispatcher) findLinkedEpicBranchRecoveryChild(
 	if err := d.addEpicBranchRecoveryDependency(ctx, admission.epicID, child.ID); err != nil {
 		return nil, false, err
 	}
+	if err := d.retireEpicBranchRecoveryPredecessors(ctx, admission, child); err != nil {
+		return nil, false, err
+	}
 	return child, true, nil
 }
 
@@ -87,18 +116,18 @@ func (d *Dispatcher) reloadEpicBranchRecoveryLinkConflict(
 	ctx context.Context,
 	admission epicBranchAdmission,
 	linkErr error,
-) (epicBranchAdmission, error) {
+) (epicBranchAdmission, bool, error) {
 	if !errors.Is(linkErr, ErrEpicBranchAdmissionCAS) {
-		return epicBranchAdmission{}, linkErr
+		return epicBranchAdmission{}, false, linkErr
 	}
 	current, err := loadEpicBranchAdmission(ctx, d.db, admission.branch)
 	if err != nil {
-		return epicBranchAdmission{}, fmt.Errorf("reload epic branch recovery link conflict: %w", err)
+		return epicBranchAdmission{}, false, fmt.Errorf("reload epic branch recovery link conflict: %w", err)
 	}
 	if current.state != "blocked" || current.generation != admission.generation {
-		return epicBranchAdmission{}, linkErr
+		return admission, true, nil
 	}
-	return current, nil
+	return current, false, nil
 }
 
 func (d *Dispatcher) createOrReuseEpicBranchRecoveryChild(ctx context.Context, admission epicBranchAdmission) (*protocol.Bead, error) {
@@ -107,7 +136,7 @@ func (d *Dispatcher) createOrReuseEpicBranchRecoveryChild(ctx context.Context, a
 		candidateID := epicBranchRecoveryBeadID(admission, predecessor)
 		candidateAdmission := admission
 		candidateAdmission.recoveryBeadID = candidateID
-		child, available, err := d.loadOrCreateEpicBranchRecoveryCandidate(ctx, candidateAdmission)
+		child, available, err := d.loadOrCreateEpicBranchRecoveryCandidate(ctx, candidateAdmission, predecessor)
 		if err != nil {
 			return nil, err
 		}
@@ -130,6 +159,7 @@ func (d *Dispatcher) createOrReuseEpicBranchRecoveryChild(ctx context.Context, a
 func (d *Dispatcher) loadOrCreateEpicBranchRecoveryCandidate(
 	ctx context.Context,
 	admission epicBranchAdmission,
+	predecessor string,
 ) (*protocol.Bead, bool, error) {
 	child, err := d.beads.Show(ctx, admission.recoveryBeadID)
 	if err != nil {
@@ -138,7 +168,7 @@ func (d *Dispatcher) loadOrCreateEpicBranchRecoveryCandidate(
 	if child != nil {
 		return child, isExactEpicBranchRecoveryChild(child, admission), nil
 	}
-	child, createErr := d.beads.Create(ctx, epicBranchRecoveryCreateParams(ctx, d, admission))
+	child, createErr := d.beads.Create(ctx, epicBranchRecoveryCreateParams(ctx, d, admission, predecessor))
 	if createErr == nil {
 		if child == nil || !isExactEpicBranchRecoveryChild(child, admission) {
 			return nil, false, fmt.Errorf("epic branch recovery store returned non-canonical child %s", admission.recoveryBeadID)
@@ -173,7 +203,12 @@ func epicBranchRecoveryBeadID(admission epicBranchAdmission, predecessor string)
 	return fmt.Sprintf("oro-ebr-%x", digest[:8])
 }
 
-func epicBranchRecoveryCreateParams(ctx context.Context, d *Dispatcher, admission epicBranchAdmission) beadstore.CreateParams {
+func epicBranchRecoveryCreateParams(
+	ctx context.Context,
+	d *Dispatcher,
+	admission epicBranchAdmission,
+	predecessor string,
+) beadstore.CreateParams {
 	return beadstore.CreateParams{
 		ID:                 admission.recoveryBeadID,
 		Title:              epicBranchRecoveryTitle(admission),
@@ -184,10 +219,11 @@ func epicBranchRecoveryCreateParams(ctx context.Context, d *Dispatcher, admissio
 		AcceptanceCriteria: epicBranchRecoveryAcceptance(admission),
 		Tags:               []string{epicBranchRecoveryTagName},
 		Metadata: map[string]string{
-			"epic_branch_recovery":            "true",
-			"epic_branch_recovery_branch":     admission.branch,
-			"epic_branch_recovery_generation": strconv.FormatInt(admission.generation, 10),
-			"epic_branch_recovery_blocker":    admission.blockerKind,
+			"epic_branch_recovery":             "true",
+			"epic_branch_recovery_branch":      admission.branch,
+			"epic_branch_recovery_generation":  strconv.FormatInt(admission.generation, 10),
+			"epic_branch_recovery_blocker":     admission.blockerKind,
+			"epic_branch_recovery_predecessor": predecessor,
 		},
 		Tier: parentTierForCreate(ctx, d.beads, admission.epicID),
 	}
@@ -260,6 +296,69 @@ func (d *Dispatcher) addEpicBranchRecoveryDependency(ctx context.Context, epicID
 	return nil
 }
 
+func (d *Dispatcher) retireEpicBranchRecoveryPredecessors(
+	ctx context.Context,
+	admission epicBranchAdmission,
+	child *protocol.Bead,
+) error {
+	predecessor := epicBranchRecoveryPredecessor(child)
+	seen := make(map[string]bool)
+	for predecessor != "" {
+		if seen[predecessor] {
+			return fmt.Errorf("retire epic branch recovery predecessors: cycle at %s", predecessor)
+		}
+		seen[predecessor] = true
+		candidate, err := d.beads.Show(ctx, predecessor)
+		if err != nil {
+			return fmt.Errorf("show epic branch recovery predecessor %s: %w", predecessor, err)
+		}
+		if candidate == nil {
+			return nil
+		}
+		next := epicBranchRecoveryPredecessor(candidate)
+		if err := d.retireEpicBranchRecovery(ctx, admission.epicID, candidate,
+			"superseded by canonical epic branch recovery "+child.ID); err != nil {
+			return err
+		}
+		predecessor = next
+	}
+	return nil
+}
+
+func epicBranchRecoveryPredecessor(child *protocol.Bead) string {
+	if child == nil || child.Metadata == nil {
+		return ""
+	}
+	predecessor, _ := child.Metadata["epic_branch_recovery_predecessor"].(string)
+	return predecessor
+}
+
+func (d *Dispatcher) retireEpicBranchRecovery(
+	ctx context.Context,
+	epicID string,
+	child *protocol.Bead,
+	reason string,
+) error {
+	if child == nil {
+		return nil
+	}
+	var errs []error
+	if child.Status == "open" || child.Status == "in_progress" {
+		if err := d.CloseBead(ctx, child.ID, reason); err != nil {
+			errs = append(errs, fmt.Errorf("close superseded epic branch recovery %s: %w", child.ID, err))
+		}
+	}
+	if store, ok := d.beads.(dependencyRemovalStore); ok {
+		if err := store.RemoveDependency(ctx, epicID, child.ID); err != nil {
+			errs = append(errs, fmt.Errorf("remove superseded epic branch recovery dependency %s: %w", child.ID, err))
+		}
+	}
+	if err := d.beads.Delete(ctx, child.ID, reason); err != nil {
+		errs = append(errs, fmt.Errorf("delete superseded epic branch recovery %s: %w", child.ID, err))
+	}
+	return errors.Join(errs...)
+}
+
 func (d *Dispatcher) repairBlockedEpicBranchRecoveries(ctx context.Context) error {
 	admissions, err := newEpicBranchAdmissionStore(d.db).blocked(ctx)
 	if err != nil {
@@ -292,22 +391,14 @@ func (d *Dispatcher) filterBlockedEpicBranchReady(ctx context.Context, beads []p
 	if len(admissions) == 0 {
 		return beads, nil
 	}
-	blockedEpics := make(map[string]bool, len(admissions))
-	recoveryIDs := make(map[string]bool, len(admissions))
+	blockedRecoveries := make(map[string]string, len(admissions))
 	for i := range admissions {
-		blockedEpics[admissions[i].epicID] = true
-		if admissions[i].recoveryBeadID != "" {
-			recoveryIDs[admissions[i].recoveryBeadID] = true
-		}
+		blockedRecoveries[admissions[i].epicID] = admissions[i].recoveryBeadID
 	}
 	filtered := make([]protocol.Bead, 0, len(beads))
 	parentCache := make(map[string]string)
 	for i := range beads {
-		if recoveryIDs[beads[i].ID] {
-			filtered = append(filtered, beads[i])
-			continue
-		}
-		blocked, err := d.hasBlockedEpicAncestor(ctx, beads[i].Epic, blockedEpics, parentCache)
+		blocked, err := d.hasBlockingEpicAncestor(ctx, beads[i].ID, beads[i].Epic, blockedRecoveries, parentCache)
 		if err != nil {
 			return nil, err
 		}
@@ -318,15 +409,16 @@ func (d *Dispatcher) filterBlockedEpicBranchReady(ctx context.Context, beads []p
 	return filtered, nil
 }
 
-func (d *Dispatcher) hasBlockedEpicAncestor(
+func (d *Dispatcher) hasBlockingEpicAncestor(
 	ctx context.Context,
+	beadID string,
 	parentID string,
-	blockedEpics map[string]bool,
+	blockedRecoveries map[string]string,
 	parentCache map[string]string,
 ) (bool, error) {
 	seen := make(map[string]bool)
 	for parentID != "" {
-		if blockedEpics[parentID] {
+		if recoveryID, blocked := blockedRecoveries[parentID]; blocked && recoveryID != beadID {
 			return true, nil
 		}
 		if seen[parentID] {
@@ -342,8 +434,7 @@ func (d *Dispatcher) hasBlockedEpicAncestor(
 			return false, fmt.Errorf("filter blocked epic branch ready bead parent %s: %w", parentID, err)
 		}
 		if parent == nil {
-			parentCache[parentID] = ""
-			return false, nil
+			return false, fmt.Errorf("filter blocked epic branch ready bead: parent %s not found", parentID)
 		}
 		parentCache[parentID] = parent.Epic
 		parentID = parent.Epic
