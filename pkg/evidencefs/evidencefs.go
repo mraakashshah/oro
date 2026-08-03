@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
@@ -19,7 +20,6 @@ const (
 )
 
 type directoryOperations interface {
-	lstat(path string) (os.FileMode, error)
 	open(path string, flags int, mode uint32) (int, error)
 	openat(parentFD int, name string, flags int, mode uint32) (int, error)
 	mkdirat(parentFD int, name string, mode uint32) error
@@ -29,14 +29,6 @@ type directoryOperations interface {
 }
 
 type unixDirectoryOperations struct{}
-
-func (unixDirectoryOperations) lstat(path string) (os.FileMode, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return 0, fmt.Errorf("lstat directory: %w", err)
-	}
-	return info.Mode(), nil
-}
 
 func (unixDirectoryOperations) open(path string, flags int, mode uint32) (int, error) {
 	fd, err := unix.Open(path, flags, mode)
@@ -198,15 +190,15 @@ func openEvidenceRootWithOps(root string, create bool, ops directoryOperations) 
 	if cleanRoot == string(filepath.Separator) {
 		return -1, errors.New("evidence root must not be the filesystem root")
 	}
-	existingRoot, missing, err := existingEvidenceRootParent(cleanRoot, ops)
+	anchor, components, err := trustedEvidenceRootTraversal(cleanRoot)
 	if err != nil {
 		return -1, err
 	}
-	fd, err := ops.open(existingRoot, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	fd, err := ops.open(anchor, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return -1, fmt.Errorf("open evidence root parent: %w", err)
 	}
-	for _, component := range missing {
+	for _, component := range components {
 		nextFD, openErr := openRootComponentWithOps(fd, component, create, ops)
 		if openErr != nil {
 			_ = ops.close(fd)
@@ -227,26 +219,30 @@ func openEvidenceRootWithOps(root string, create bool, ops directoryOperations) 
 	return fd, nil
 }
 
-func existingEvidenceRootParent(root string, ops directoryOperations) (existing string, missing []string, err error) {
-	existing = root
-	for {
-		mode, statErr := ops.lstat(existing)
-		if statErr == nil {
-			if mode&os.ModeSymlink != 0 || !mode.IsDir() {
-				return "", nil, errors.New("evidence root ancestor is not a directory")
-			}
-			return existing, missing, nil
+func trustedEvidenceRootTraversal(root string) (anchor string, components []string, err error) {
+	temporaryRoot := filepath.Clean(os.TempDir())
+	if relative, err := filepath.Rel(temporaryRoot, root); err == nil && confinedRelativePath(relative) {
+		resolvedTemporaryRoot, resolveErr := filepath.EvalSymlinks(temporaryRoot)
+		if resolveErr != nil {
+			return "", nil, fmt.Errorf("resolve trusted temporary root: %w", resolveErr)
 		}
-		if !errors.Is(statErr, os.ErrNotExist) {
-			return "", nil, fmt.Errorf("inspect evidence root: %w", statErr)
-		}
-		parent := filepath.Dir(existing)
-		if parent == existing {
-			return "", nil, fmt.Errorf("locate evidence root parent: %w", statErr)
-		}
-		missing = append([]string{filepath.Base(existing)}, missing...)
-		existing = parent
+		return resolvedTemporaryRoot, splitRelativePath(relative), nil
 	}
+	volumeRoot := filepath.VolumeName(root) + string(filepath.Separator)
+	relative, err := filepath.Rel(volumeRoot, root)
+	if err != nil || !confinedRelativePath(relative) {
+		return "", nil, errors.New("evidence root cannot be confined to its volume")
+	}
+	return volumeRoot, splitRelativePath(relative), nil
+}
+
+func confinedRelativePath(path string) bool {
+	return path != "" && path != "." && path != ".." && !filepath.IsAbs(path) &&
+		!strings.HasPrefix(path, ".."+string(filepath.Separator))
+}
+
+func splitRelativePath(path string) []string {
+	return strings.Split(path, string(filepath.Separator))
 }
 
 func openEvidenceDir(parentFD int, name string, create bool) (int, error) {
@@ -295,10 +291,7 @@ func openRootComponentWithOps(parentFD int, name string, create bool, ops direct
 }
 
 func createDirectoryEntry(parentFD int, name, kind string, ops directoryOperations) error {
-	if err := ops.mkdirat(parentFD, name, privateDirMode); err != nil {
-		if errors.Is(err, unix.EEXIST) {
-			return nil
-		}
+	if err := ops.mkdirat(parentFD, name, privateDirMode); err != nil && !errors.Is(err, unix.EEXIST) {
 		return fmt.Errorf("create %s %q: %w", kind, name, err)
 	}
 	if err := ops.fsync(parentFD); err != nil {
