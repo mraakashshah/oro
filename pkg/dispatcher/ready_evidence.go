@@ -33,10 +33,11 @@ func (d *Dispatcher) acceptReadyEvidence(ctx context.Context, workerID string, r
 	defer d.mu.Unlock()
 
 	identity, accepted := d.acceptReadyEvidenceLocked(ctx, workerID, ready)
-	if !accepted || !trackedReadyIdentityMatches(d.workers[workerID], identity) {
+	w := d.workers[workerID]
+	if !accepted || w == nil || !trackedReadyIdentityMatches(w, identity) {
 		return durableReadyIdentity{}, false
 	}
-	d.workers[workerID].state = protocol.WorkerReviewing
+	w.state = protocol.WorkerReviewing
 	return identity, true
 }
 
