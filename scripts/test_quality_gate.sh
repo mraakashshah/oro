@@ -956,6 +956,7 @@ test_quality_gate_stage_assets_fail_closed() {
 		QG_DIR=\"$tmpdir/qg\"
 		QG_STAGE_ASSETS_LOCK=\"$lockdir\"
 		mkdir -p \"\$QG_DIR\"
+		$(sed -n '/^cleanup_quality_gate_queue_staging()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh")
 		$(sed -n '/^cleanup_qg()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh")
 		cleanup_qg
 		[ ! -d \"$lockdir\" ]
@@ -1216,7 +1217,11 @@ test_quality_gate_run_lock_timeout_preserves_holder() {
 		echo 'QG_RUN_LOCK=""'
 		echo 'ORO_QG_LOCK_TIMEOUT_SECONDS=1'
 		echo 'mkdir -p "$QG_DIR"'
+		sed -n '/^cleanup_quality_gate_queue_staging()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^cleanup_qg()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^quality_gate_lock_age_seconds()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^quality_gate_lock_stale()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
+		sed -n '/^cleanup_archived_stale_quality_gate_locks()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^quality_gate_lock_poll_seconds()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^quality_gate_lock_timeout_reached()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^create_quality_gate_queue_ticket()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
@@ -1231,6 +1236,13 @@ test_quality_gate_run_lock_timeout_preserves_holder() {
 
 	if bash "$harness" >/dev/null 2>"$tmpdir/err"; then
 		echo "FAIL: acquire_quality_gate_lock unexpectedly succeeded against a held lock"
+		rm -rf "$tmpdir"
+		return 1
+	fi
+	if ! grep -q 'FAIL: timed out waiting for quality gate' "$tmpdir/err" ||
+		grep -q 'command not found' "$tmpdir/err"; then
+		echo "FAIL: acquire_quality_gate_lock did not report the expected timeout"
+		cat "$tmpdir/err"
 		rm -rf "$tmpdir"
 		return 1
 	fi
@@ -1271,6 +1283,7 @@ test_quality_gate_run_lock_archives_stale_legacy_lock() {
 		echo 'ORO_QG_LOCK_TIMEOUT_SECONDS=3'
 		echo 'ORO_QG_STALE_LOCK_SECONDS=1'
 		echo 'mkdir -p "$QG_DIR"'
+		sed -n '/^cleanup_quality_gate_queue_staging()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^cleanup_qg()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^quality_gate_lock_age_seconds()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^quality_gate_process_start_time()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
@@ -1335,6 +1348,7 @@ test_quality_gate_archived_stale_locks_are_garbage_collected() {
 		echo 'QG_RUN_LOCK=""'
 		echo 'ORO_QG_STALE_LOCK_SECONDS=10'
 		echo 'mkdir -p "$QG_DIR"'
+		sed -n '/^cleanup_quality_gate_queue_staging()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^cleanup_qg()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^quality_gate_lock_age_seconds()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
 		sed -n '/^cleanup_archived_stale_quality_gate_locks()/,/^}/p' "$SCRIPT_DIR/quality_gate.sh"
