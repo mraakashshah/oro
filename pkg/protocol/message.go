@@ -109,6 +109,8 @@ type AssignPayload struct {
 	BeadID               string              `json:"bead_id"`
 	Worktree             string              `json:"worktree"`
 	AssignmentID         int64               `json:"assignment_id"`
+	QGEvidenceDir        string              `json:"qg_evidence_dir,omitempty"`
+	TargetSHA            string              `json:"target_sha,omitempty"`
 	Generation           int64               `json:"generation"`
 	ActorRole            string              `json:"actor_role"`
 	Project              string              `json:"project"`
@@ -244,8 +246,25 @@ type CheckpointAckPayload struct {
 
 // ReadyForReviewPayload is sent by a worker when its bead is ready for review.
 type ReadyForReviewPayload struct {
-	BeadID   string `json:"bead_id"`
-	WorkerID string `json:"worker_id"`
+	BeadID         string `json:"bead_id"`
+	WorkerID       string `json:"worker_id"`
+	AssignmentID   int64  `json:"assignment_id"`
+	Worktree       string `json:"worktree"`
+	QGEvidencePath string `json:"qg_evidence_path"`
+	TargetSHA      string `json:"target_sha"`
+}
+
+// Validate checks that a READY_FOR_REVIEW message carries the complete
+// assignment-scoped evidence identity.
+func (r *ReadyForReviewPayload) Validate() error {
+	if r == nil {
+		return fmt.Errorf("ready-for-review payload cannot be nil")
+	}
+	if r.BeadID == "" || r.WorkerID == "" || r.AssignmentID <= 0 || r.Worktree == "" ||
+		r.QGEvidencePath == "" || r.TargetSHA == "" {
+		return fmt.Errorf("bead ID, worker ID, assignment ID, worktree, evidence path, and target SHA are required")
+	}
+	return nil
 }
 
 // ReviewResultPayload is sent by the dispatcher to a worker after a review

@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"oro/pkg/factoryhealth"
@@ -42,6 +43,7 @@ type Config struct {
 	PaneInactivityTimeout   time.Duration // Manager inactivity duration before restart (default 10m).
 	ReviewTimeout           time.Duration // Max time a reviewing worker can stall before STUCK_WORKER escalation (default 15m).
 	ReviewDeadGrace         time.Duration // Grace period before removing a reviewing worker whose ops review subprocess has exited (default 30s).
+	ReviewEvidenceDir       string        // Absolute directory for assignment-scoped QG evidence.
 	ManualIntegration       bool          // If true, completed worker branches wait for manual coordinator integration instead of auto-merge.
 	MutationTesting         bool          // If true, dispatcher quality gates run mutation-testing tiers. Defaults false.
 	RegressionRevert        bool          // If true, QG retries capture a pre-retry baseline for regression-revert checks. Defaults true.
@@ -157,6 +159,9 @@ func (c *Config) withDefaults() Config {
 // durations, non-negative counts, and compatible feature flags. Call this
 // AFTER withDefaults().
 func (c Config) validate() error {
+	if c.ReviewEvidenceDir != "" && !filepath.IsAbs(c.ReviewEvidenceDir) {
+		return fmt.Errorf("ReviewEvidenceDir must be absolute, got %q", c.ReviewEvidenceDir)
+	}
 	if c.MaxWorkers < 0 {
 		return fmt.Errorf("MaxWorkers must be non-negative, got %d", c.MaxWorkers)
 	}

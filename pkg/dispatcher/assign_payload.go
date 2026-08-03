@@ -67,6 +67,8 @@ func (d *Dispatcher) buildAssignPayload(ctx context.Context, w *trackedWorker, a
 	p := &protocol.AssignPayload{
 		BeadID:              w.beadID,
 		Worktree:            w.worktree,
+		QGEvidenceDir:       w.qgEvidenceDir,
+		TargetSHA:           w.targetSHA,
 		Runtime:             w.runtime,
 		Model:               w.model,
 		Reasoning:           w.reasoning,

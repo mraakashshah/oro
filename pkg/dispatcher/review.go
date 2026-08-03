@@ -19,16 +19,19 @@ import (
 	workerstream "oro/pkg/worker"
 )
 
-func (d *Dispatcher) markWorkerReviewing(workerID string) (worktree, targetBranch string, assignmentID int64) {
+func (d *Dispatcher) markWorkerReviewing(workerID string, assignmentID int64) (worktree, targetBranch string, ok bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	w, ok := d.workers[workerID]
 	if !ok {
-		return "", "", 0
+		return "", "", false
+	}
+	if assignmentID > 0 && (w.assignmentID != assignmentID || w.state != protocol.WorkerBusy) {
+		return "", "", false
 	}
 	w.state = protocol.WorkerReviewing
-	return w.worktree, w.targetBranch, w.assignmentID
+	return w.worktree, w.targetBranch, true
 }
 
 func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, msg protocol.Message) {
@@ -38,13 +41,27 @@ func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, 
 	if err := d.observeStorageController(ctx); err != nil || !d.storageAdmissionAllowed() {
 		return
 	}
-	beadID := msg.ReadyForReview.BeadID
-
-	d.touchProgress(workerID)
-	d.recordWorkerProgress(ctx, workerID, beadID, "ready_for_review")
-	_ = d.logEvent(ctx, "ready_for_review", workerID, beadID, workerID, "")
-
-	worktree, targetBranch, assignmentID := d.markWorkerReviewing(workerID)
+	ready := msg.ReadyForReview
+	if !d.acceptReadyEvidence(ctx, workerID, ready) {
+		return
+	}
+	beadID := ready.BeadID
+	assignmentID := ready.AssignmentID
+	legacyReady := legacyReadyEvidenceIdentity(ready)
+	if legacyReady {
+		d.touchProgress(workerID)
+		d.recordWorkerProgress(ctx, workerID, beadID, "ready_for_review")
+		_ = d.logEvent(ctx, "ready_for_review", workerID, beadID, workerID, "")
+	}
+	worktree, targetBranch, marked := d.markWorkerReviewing(workerID, assignmentID)
+	if !marked {
+		return
+	}
+	if !legacyReady {
+		d.touchProgress(workerID)
+		d.recordWorkerProgress(ctx, workerID, beadID, "ready_for_review")
+		_ = d.logEvent(ctx, "ready_for_review", workerID, beadID, workerID, "")
+	}
 
 	blocked, err := d.blockReviewForDependency(ctx, workerID, beadID, "ready_for_review")
 	if blocked {

@@ -190,14 +190,16 @@ func (d *Dispatcher) detachWorkerForCheckpoint(workerID string) workerAssignment
 		return workerAssignmentSnapshot{}
 	}
 	snap := workerAssignmentSnapshot{
-		execution:    w.execution,
-		worktree:     w.worktree,
-		runtime:      w.runtime,
-		model:        w.model,
-		reasoning:    w.reasoning,
-		epicID:       w.epicID,
-		baseBranch:   w.baseBranch,
-		targetBranch: w.targetBranch,
+		execution:     w.execution,
+		worktree:      w.worktree,
+		runtime:       w.runtime,
+		model:         w.model,
+		reasoning:     w.reasoning,
+		epicID:        w.epicID,
+		baseBranch:    w.baseBranch,
+		targetBranch:  w.targetBranch,
+		qgEvidenceDir: w.qgEvidenceDir,
+		targetSHA:     w.targetSHA,
 	}
 	w.state = protocol.WorkerShuttingDown
 	w.assignmentID = 0
@@ -235,6 +237,8 @@ func (d *Dispatcher) enqueueCheckpointHandoff(beadID string, assignmentID int64,
 		worktree:       snap.worktree,
 		baseBranch:     snap.baseBranch,
 		targetBranch:   snap.targetBranch,
+		qgEvidenceDir:  snap.qgEvidenceDir,
+		targetSHA:      snap.targetSHA,
 		runtime:        snap.runtime,
 		model:          snap.model,
 		reasoning:      snap.reasoning,

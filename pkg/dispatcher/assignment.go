@@ -178,7 +178,7 @@ func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, 
 		return nil
 	}
 
-	assignmentID, assignErr := d.createAssignment(ctx, bead.ID, w.id, worktree)
+	assignmentID, targetSHA, assignErr := d.createAssignmentWithEvidence(ctx, bead.ID, w.id, worktree, targetBranch)
 	if assignErr != nil {
 		_ = d.logEvent(ctx, "assignment_persist_failed", "dispatcher", bead.ID, w.id, assignErr.Error())
 		d.recordAssignmentFailure(bead.ID)
@@ -256,14 +256,16 @@ func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, 
 	}
 	execution.Capability = capability.Token
 	payload := d.buildAssignPayload(ctx, &trackedWorker{
-		id:           w.id,
-		beadID:       bead.ID,
-		worktree:     worktree,
-		runtime:      resolvedRuntime,
-		model:        resolvedModel,
-		reasoning:    resolvedReasoning,
-		isEpicDecomp: isEpicDecomp,
-		targetBranch: targetBranch,
+		id:            w.id,
+		beadID:        bead.ID,
+		worktree:      worktree,
+		runtime:       resolvedRuntime,
+		model:         resolvedModel,
+		reasoning:     resolvedReasoning,
+		isEpicDecomp:  isEpicDecomp,
+		targetBranch:  targetBranch,
+		qgEvidenceDir: d.cfg.ReviewEvidenceDir,
+		targetSHA:     targetSHA,
 	}, 0, "", "", execution)
 	if payload.Title == "" {
 		payload.Title = title
@@ -296,6 +298,8 @@ func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, 
 	w.worktree = worktree
 	w.baseBranch = baseBranch
 	w.targetBranch = targetBranch
+	w.qgEvidenceDir = payload.QGEvidenceDir
+	w.targetSHA = payload.TargetSHA
 	w.runtime = resolvedRuntime
 	w.model = resolvedModel
 	w.reasoning = resolvedReasoning

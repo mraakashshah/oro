@@ -59,6 +59,8 @@ type trackedWorker struct {
 	worktree         string
 	baseBranch       string // branch the worktree was created from (main or epic/<epicID>)
 	targetBranch     string // branch the worker's changes should merge into (same as baseBranch)
+	qgEvidenceDir    string // immutable evidence root supplied with the assignment
+	targetSHA        string // immutable target revision supplied with the assignment
 	runtime          string // resolved runtime for the current bead assignment
 	model            string // resolved model for the current bead assignment
 	reasoning        string // resolved Codex reasoning effort for the current bead assignment
@@ -135,6 +137,8 @@ type pendingHandoff struct {
 	worktree       string
 	baseBranch     string // branch the worktree was created from (main or epic/<epicID>)
 	targetBranch   string // branch the worker's changes should merge into (same as baseBranch)
+	qgEvidenceDir  string
+	targetSHA      string
 	runtime        string
 	model          string
 	reasoning      string
@@ -147,14 +151,16 @@ type pendingHandoff struct {
 }
 
 type workerAssignmentSnapshot struct {
-	execution    WorkerExecutionContext
-	worktree     string
-	runtime      string
-	model        string
-	reasoning    string
-	epicID       string
-	baseBranch   string
-	targetBranch string
+	execution     WorkerExecutionContext
+	worktree      string
+	runtime       string
+	model         string
+	reasoning     string
+	epicID        string
+	baseBranch    string
+	targetBranch  string
+	qgEvidenceDir string
+	targetSHA     string
 }
 
 // --- Worker lifecycle ---
@@ -322,6 +328,8 @@ func (d *Dispatcher) reserveWorkerForHandoff(w *trackedWorker, h *pendingHandoff
 	w.epicID = h.epicID
 	w.baseBranch = h.baseBranch
 	w.targetBranch = h.targetBranch
+	w.qgEvidenceDir = h.qgEvidenceDir
+	w.targetSHA = h.targetSHA
 	w.lastProgress = d.nowFunc()
 }
 
@@ -331,20 +339,22 @@ func handoffAssignMessage(h *pendingHandoff, cardsCtx cards.RelevantCards) proto
 	return protocol.Message{
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
-			BeadID:       h.beadID,
-			Worktree:     h.worktree,
-			AssignmentID: h.execution.AssignmentID,
-			Generation:   h.execution.Generation,
-			ActorRole:    h.execution.ActorRole,
-			Project:      h.execution.Project,
-			Capability:   h.execution.Capability,
-			Runtime:      h.runtime,
-			Model:        h.model,
-			Reasoning:    h.reasoning,
-			Cards:        cardsCtx,
-			TargetBranch: h.targetBranch,
-			Feedback:     firstNonEmptyQGRetryFeedback(h.feedback, h.nextAction),
-			Attempt:      max(h.attempt, h.checkpointTurn),
+			BeadID:        h.beadID,
+			Worktree:      h.worktree,
+			AssignmentID:  h.execution.AssignmentID,
+			Generation:    h.execution.Generation,
+			ActorRole:     h.execution.ActorRole,
+			Project:       h.execution.Project,
+			Capability:    h.execution.Capability,
+			Runtime:       h.runtime,
+			Model:         h.model,
+			Reasoning:     h.reasoning,
+			Cards:         cardsCtx,
+			TargetBranch:  h.targetBranch,
+			QGEvidenceDir: h.qgEvidenceDir,
+			TargetSHA:     h.targetSHA,
+			Feedback:      firstNonEmptyQGRetryFeedback(h.feedback, h.nextAction),
+			Attempt:       max(h.attempt, h.checkpointTurn),
 		},
 	}
 }

@@ -25,6 +25,28 @@ func (d *Dispatcher) createAssignment(ctx context.Context, beadID, workerID, wor
 	return id, nil
 }
 
+func (d *Dispatcher) createAssignmentWithEvidence(ctx context.Context, beadID, workerID, worktree, targetBranch string) (int64, string, error) {
+	targetSHA, err := d.worktrees.BranchHead(ctx, targetBranch)
+	if err != nil {
+		return 0, "", fmt.Errorf("resolve assignment target SHA: %w", err)
+	}
+	targetSHA = strings.TrimSpace(targetSHA)
+	if targetSHA == "" {
+		return 0, "", errors.New("resolve assignment target SHA: empty SHA")
+	}
+	res, err := d.db.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree, qg_evidence_dir, target_sha) VALUES (?, ?, ?, ?, ?)`,
+		beadID, workerID, worktree, d.cfg.ReviewEvidenceDir, targetSHA)
+	if err != nil {
+		return 0, "", fmt.Errorf("create assignment: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, "", fmt.Errorf("create assignment last insert id: %w", err)
+	}
+	return id, targetSHA, nil
+}
+
 // persistBeadCount updates a counter column on the active assignment row for a bead.
 // column must be one of "attempt_count" or "handoff_count". This is a best-effort
 // operation: errors are logged but do not propagate.

@@ -439,6 +439,9 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 	if rootDir == "" {
 		rootDir, _ = os.Getwd()
 	}
+	if resolved.ReviewEvidenceDir == "" {
+		resolved.ReviewEvidenceDir, _ = filepath.Abs(filepath.Join(rootDir, protocol.OroDir, "review-evidence"))
+	}
 	if beadsDir == "" {
 		beadsDir = protocol.BeadsDir
 	}

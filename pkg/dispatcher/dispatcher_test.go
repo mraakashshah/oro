@@ -1921,8 +1921,11 @@ func connectWorker(t *testing.T, socketPath string) (net.Conn, *bufio.Scanner) {
 }
 
 // sendMsg sends a protocol.Message as line-delimited JSON over the connection.
+var testAssignPayloadByConn sync.Map
+
 func sendMsg(t *testing.T, conn net.Conn, msg protocol.Message) {
 	t.Helper()
+	hydrateReadyEvidenceTestMessage(t, conn, &msg)
 	data, err := json.Marshal(msg)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -1945,7 +1948,45 @@ func readMsg(t *testing.T, conn net.Conn, timeout time.Duration) (protocol.Messa
 	if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
+	if msg.Assign != nil {
+		assign := *msg.Assign
+		testAssignPayloadByConn.Store(conn, assign)
+	}
 	return msg, true
+}
+
+func hydrateReadyEvidenceTestMessage(t *testing.T, conn net.Conn, msg *protocol.Message) {
+	t.Helper()
+	if msg == nil || !legacyReadyEvidenceIdentity(msg.ReadyForReview) {
+		return
+	}
+	value, ok := testAssignPayloadByConn.Load(conn)
+	if !ok {
+		return
+	}
+	assign := value.(protocol.AssignPayload)
+	ready := msg.ReadyForReview
+	if ready.BeadID != assign.BeadID || assign.AssignmentID <= 0 || assign.QGEvidenceDir == "" || assign.TargetSHA == "" {
+		return
+	}
+	path, err := canonicalReadyEvidencePath(assign.QGEvidenceDir, assign.BeadID, assign.AssignmentID)
+	if err != nil {
+		t.Fatalf("canonical READY evidence path: %v", err)
+	}
+	ready.AssignmentID = assign.AssignmentID
+	ready.Worktree = assign.Worktree
+	ready.QGEvidencePath = path
+	ready.TargetSHA = assign.TargetSHA
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("create READY evidence directory: %v", err)
+	}
+	data, err := json.Marshal(ready)
+	if err != nil {
+		t.Fatalf("marshal READY evidence: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write READY evidence: %v", err)
+	}
 }
 
 // sendDirective sends a DIRECTIVE message to the dispatcher via UDS.

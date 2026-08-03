@@ -222,6 +222,10 @@ type Worker struct {
 	proc                   Process
 	beadID                 string
 	worktree               string
+	assignmentID           int64
+	qgEvidenceDir          string
+	targetSHA              string
+	qgEvidencePath         string
 	runtime                string
 	model                  string
 	streamFormat           StreamFormat
@@ -614,6 +618,9 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	if err := msg.Assign.Validate(); err != nil {
 		return fmt.Errorf("invalid assign payload: %w", err)
 	}
+	if err := validateAssignmentEvidenceIdentity(msg.Assign); err != nil {
+		return fmt.Errorf("invalid assign evidence identity: %w", err)
+	}
 	execution, err := executionContextForAssign(msg.Assign, w.ID, w.socketPath)
 	if err != nil {
 		return fmt.Errorf("invalid assign execution context: %w", err)
@@ -728,6 +735,10 @@ func (w *Worker) resetForNewAssignment(a *protocol.AssignPayload, execution Work
 	atomic.StoreInt32(&w.streamContextPct, 0)
 	w.beadID = a.BeadID
 	w.worktree = a.Worktree
+	w.assignmentID = a.AssignmentID
+	w.qgEvidenceDir = a.QGEvidenceDir
+	w.targetSHA = a.TargetSHA
+	w.qgEvidencePath = ""
 	w.tier = a.Tier
 	w.targetBranch = target
 	w.sessionText.Reset()
@@ -965,6 +976,10 @@ func (w *Worker) runQGAndReport(ctx context.Context) {
 	w.mu.Lock()
 	w.pendingQGOutput = output
 	w.mu.Unlock()
+	if err := w.writeQGEvidence(); err != nil {
+		_ = w.SendDone(ctx, false, err.Error())
+		return
+	}
 
 	_ = w.SendReadyForReview(ctx)
 }
@@ -1825,15 +1840,19 @@ func (w *Worker) SendShutdownApproved(_ context.Context) error {
 //oro:testonly
 func (w *Worker) SendReadyForReview(_ context.Context) error {
 	w.mu.Lock()
-	beadID := w.beadID
+	ready := &protocol.ReadyForReviewPayload{
+		BeadID:         w.beadID,
+		WorkerID:       w.ID,
+		AssignmentID:   w.assignmentID,
+		Worktree:       w.worktree,
+		QGEvidencePath: w.qgEvidencePath,
+		TargetSHA:      w.targetSHA,
+	}
 	w.mu.Unlock()
 
 	return w.sendMessage(protocol.Message{
-		Type: protocol.MsgReadyForReview,
-		ReadyForReview: &protocol.ReadyForReviewPayload{
-			BeadID:   beadID,
-			WorkerID: w.ID,
-		},
+		Type:           protocol.MsgReadyForReview,
+		ReadyForReview: ready,
 	})
 }
 
