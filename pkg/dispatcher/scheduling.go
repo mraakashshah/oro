@@ -419,6 +419,7 @@ func (d *Dispatcher) readyBeadsForScheduling(ctx context.Context) ([]protocol.Be
 	// filtering still admits unrelated work.
 	_ = d.reconcileEpicBranchAdmissions(ctx, d.nowFunc())
 	beads, err := d.beads.Ready(ctx)
+	d.recordAssignmentObservation("ready", err)
 	if err != nil {
 		return nil, fmt.Errorf("load ready beads for scheduling: %w", err)
 	}

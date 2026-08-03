@@ -3,6 +3,7 @@ package dispatcher //nolint:testpackage // white-box test needs internal access
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -88,6 +89,106 @@ func TestApplyHealthReportsStorageUnavailableWithoutObservation(t *testing.T) {
 	if !hasHealthFinding(health, factoryhealth.FindingStorageUnavailable) {
 		t.Fatalf("missing storage unavailable finding: %+v", health.Findings)
 	}
+}
+
+func TestReadyObservationFailureBlocksAssignmentAndDegradesHealthAndStatus(t *testing.T) {
+	d, beads, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	beads.readyErr = errors.New("injected ready observation failure")
+	beads.beads = []protocol.Bead{{ID: "oro-ready-observation", Title: "Ready observation", Status: "open", Type: "task"}}
+	d.cfg.StorageHealth = func(context.Context) *factoryhealth.StorageHealth {
+		return &factoryhealth.StorageHealth{Available: true}
+	}
+	conn := newMockConn()
+	d.mu.Lock()
+	d.state = StateRunning
+	d.workers["idle-ready-observation"] = &trackedWorker{
+		id: "idle-ready-observation", conn: conn, encoder: json.NewEncoder(conn), state: protocol.WorkerIdle,
+	}
+	d.mu.Unlock()
+
+	tryAssignAndWait(t, d, ctx)
+	assertNoAssignmentMessage(t, conn)
+	assertAssignmentObservationDegraded(t, d, "ready", "injected ready observation failure")
+}
+
+func TestCheckpointObservationFailureBlocksAssignmentAndDegradesHealthAndStatus(t *testing.T) {
+	d, beads, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const beadID = "oro-checkpoint-observation"
+	beads.beads = []protocol.Bead{{ID: beadID, Title: "Checkpoint observation", Status: "open", Type: "task"}}
+	beads.shown[beadID] = &protocol.BeadDetail{ID: beadID, Title: "Checkpoint observation", Status: "open"}
+	d.cfg.StorageHealth = func(context.Context) *factoryhealth.StorageHealth {
+		return &factoryhealth.StorageHealth{Available: true}
+	}
+	if err := protocol.MigrateBeadSchema(ctx, d.db); err != nil {
+		t.Fatalf("migrate bead schema: %v", err)
+	}
+	if _, err := d.db.ExecContext(ctx, `
+DROP VIEW review_checkpoints_blocking_assignment;
+CREATE VIEW review_checkpoints_blocking_assignment AS
+SELECT id, bead_id FROM review_checkpoints WHERE missing_checkpoint_state = 1;`); err != nil {
+		t.Fatalf("install failing checkpoint observation view: %v", err)
+	}
+	conn := newMockConn()
+	d.mu.Lock()
+	d.state = StateRunning
+	d.workers["idle-checkpoint-observation"] = &trackedWorker{
+		id: "idle-checkpoint-observation", conn: conn, encoder: json.NewEncoder(conn), state: protocol.WorkerIdle,
+	}
+	d.mu.Unlock()
+
+	tryAssignAndWait(t, d, ctx)
+	assertNoAssignmentMessage(t, conn)
+	assertAssignmentObservationDegraded(t, d, "review_checkpoint", "missing_checkpoint_state")
+}
+
+func assertNoAssignmentMessage(t *testing.T, conn *mockConn) {
+	t.Helper()
+	conn.mu.Lock()
+	writes := len(conn.written)
+	conn.mu.Unlock()
+	if writes != 0 {
+		t.Fatalf("worker messages = %d, want no ASSIGN", writes)
+	}
+}
+
+func assertAssignmentObservationDegraded(t *testing.T, d *Dispatcher, source, detail string) {
+	t.Helper()
+	healthJSON, err := d.applyHealth()
+	if err != nil {
+		t.Fatalf("applyHealth: %v", err)
+	}
+	var health SwarmHealth
+	if err := json.Unmarshal([]byte(healthJSON), &health); err != nil {
+		t.Fatalf("unmarshal health: %v", err)
+	}
+	assertAssignmentObservationFinding(t, health, source, detail)
+
+	var status statusResponse
+	if err := json.Unmarshal([]byte(d.buildStatusJSON()), &status); err != nil {
+		t.Fatalf("unmarshal status: %v", err)
+	}
+	if status.Health == nil {
+		t.Fatal("status health = nil, want degraded health")
+	}
+	assertAssignmentObservationFinding(t, *status.Health, source, detail)
+}
+
+func assertAssignmentObservationFinding(t *testing.T, health SwarmHealth, source, detail string) {
+	t.Helper()
+	if health.State == factoryhealth.StateHealthy {
+		t.Fatalf("health state = %q with unknown assignment admission, want non-healthy", health.State)
+	}
+	for _, finding := range health.Findings {
+		if finding.Code == "assignment_admission_unknown" {
+			if !strings.Contains(finding.Message, source) || !strings.Contains(finding.Message, detail) {
+				t.Fatalf("assignment observation finding = %+v, want source %q detail %q", finding, source, detail)
+			}
+			return
+		}
+	}
+	t.Fatalf("missing assignment admission unknown finding: %+v", health.Findings)
 }
 
 func TestDirectiveStatusStorageHealthMatchesHealthDirective(t *testing.T) {

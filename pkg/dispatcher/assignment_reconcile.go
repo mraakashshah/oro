@@ -217,6 +217,7 @@ func (d *Dispatcher) filterReviewCheckpointBlockedBeads(ctx context.Context, all
 		return allBeads
 	}
 	blockedBeads, err := d.reviewCheckpointBlockedBeads(ctx)
+	d.recordAssignmentObservation("review_checkpoint", err)
 	if err != nil {
 		_ = d.logEvent(ctx, "review_checkpoint_assignment_filter_failed", "dispatcher", "", "", err.Error())
 		return nil

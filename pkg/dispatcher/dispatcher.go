@@ -283,10 +283,12 @@ type Dispatcher struct {
 	checkpoints *checkpointTracker
 
 	// cachedQueueDepth stores the last-known count from beads.Ready() in the assign loop.
-	cachedQueueDepth  int
-	cachedIdleWorkers int
-	lastCycleScanAt   time.Time
-	escalatedCycles   map[string]bool
+	cachedQueueDepth           int
+	cachedIdleWorkers          int
+	readyObservationError      string
+	checkpointObservationError string
+	lastCycleScanAt            time.Time
+	escalatedCycles            map[string]bool
 
 	// lastRecoveryAssignmentBlockLog throttles noisy assignment-block events while
 	// open recovery quarantines keep automation stopped.

@@ -33,6 +33,7 @@ type factoryHealthInput struct {
 	assignmentFreezeReason       string
 	progressTimeoutSecs          float64
 	heartbeatTimeoutSecs         float64
+	assignmentObservationErrors  []string
 	storage                      *factoryhealth.StorageHealth
 }
 
@@ -43,6 +44,7 @@ func (d *Dispatcher) applyHealth() (string, error) {
 	storage := d.storageHealth(ctx)
 
 	readyBeads, err := d.beads.Ready(ctx)
+	d.recordAssignmentObservation("ready", err)
 	if err != nil {
 		readyBeads = nil
 	}
@@ -75,6 +77,7 @@ func (d *Dispatcher) applyHealth() (string, error) {
 		assignmentFreezeReason:       d.assignmentFreezeReason,
 		progressTimeoutSecs:          d.cfg.ProgressTimeout.Seconds(),
 		heartbeatTimeoutSecs:         d.cfg.HeartbeatTimeout.Seconds(),
+		assignmentObservationErrors:  d.assignmentObservationErrorsLocked(),
 		storage:                      storage,
 	}
 	d.mu.Unlock()
@@ -135,11 +138,41 @@ func (d *Dispatcher) evaluateFactoryHealth(ctx context.Context, now time.Time, i
 		AssignmentFreezeReason:       input.assignmentFreezeReason,
 		ProgressTimeoutSecs:          input.progressTimeoutSecs,
 		HeartbeatTimeoutSecs:         input.heartbeatTimeoutSecs,
+		AssignmentObservationErrors:  input.assignmentObservationErrors,
 		Throughput:                   throughput,
 		OpsRuns:                      opsRuns,
 		PendingEscalations:           pendingEscalations,
 		Storage:                      input.storage,
 	})
+}
+
+func (d *Dispatcher) recordAssignmentObservation(source string, err error) {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	message := ""
+	if err != nil {
+		message = source + ": " + err.Error()
+	}
+	switch source {
+	case "ready":
+		d.readyObservationError = message
+	case "review_checkpoint":
+		d.checkpointObservationError = message
+	}
+}
+
+func (d *Dispatcher) assignmentObservationErrorsLocked() []string {
+	errors := make([]string, 0, 2)
+	if d.readyObservationError != "" {
+		errors = append(errors, d.readyObservationError)
+	}
+	if d.checkpointObservationError != "" {
+		errors = append(errors, d.checkpointObservationError)
+	}
+	return errors
 }
 
 func (d *Dispatcher) storageHealth(ctx context.Context) *factoryhealth.StorageHealth {
