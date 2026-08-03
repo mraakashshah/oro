@@ -314,7 +314,7 @@ func (d *Dispatcher) preservedWorktreeUnownedLocked(beadID, worktree string, all
 // command so the two paths cannot drift.
 func markAssignmentQuarantinedExec(ctx context.Context, ex execer, assignmentID int64) error {
 	res, err := ex.ExecContext(ctx,
-		`UPDATE assignments SET status='quarantined', completed_at=NULL WHERE id=? AND status IN ('active', 'quarantined')`,
+		`UPDATE assignments SET status='quarantined', completed_at=NULL WHERE id=? AND status IN ('active', 'requeued', 'quarantined')`,
 		assignmentID)
 	if err != nil {
 		return fmt.Errorf("mark assignment quarantined: %w", err)
