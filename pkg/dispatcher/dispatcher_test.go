@@ -3234,10 +3234,12 @@ func TestReadyForReviewRejectsUntrackedTaskFilesBeforeOpsReview(t *testing.T) {
 		AcceptanceCriteria: "Test: dirty | Assert: no ops review",
 	}
 
+	assignmentID := seedReviewAssignment(t, d, "bead-dirty", "w1", worktree)
 	d.mu.Lock()
 	w := d.workers["w1"]
 	w.state = protocol.WorkerBusy
 	w.beadID = "bead-dirty"
+	w.assignmentID = assignmentID
 	w.worktree = worktree
 	w.targetBranch = "main"
 	d.mu.Unlock()
@@ -3468,11 +3470,12 @@ func TestReadyForReviewRechecksManagedAssignmentCapabilityWithoutReassignment(t 
 		Title:              "Capability hygiene retry",
 		AcceptanceCriteria: "Test: review proceeds | Assert: no replacement assignment",
 	}
+	assignmentID := seedReviewAssignment(t, d, "bead-capability", "w1", worktree)
 	d.mu.Lock()
 	w := d.workers["w1"]
 	w.state = protocol.WorkerBusy
 	w.beadID = "bead-capability"
-	w.assignmentID = 42
+	w.assignmentID = assignmentID
 	w.worktree = worktree
 	w.targetBranch = "main"
 	d.mu.Unlock()
@@ -7601,8 +7604,8 @@ func TestHandleReadyForReview_UnknownWorker(t *testing.T) {
 		ReadyForReview: &protocol.ReadyForReviewPayload{BeadID: "bead-ghost", WorkerID: "w-ghost"},
 	})
 
-	if eventCount(t, d.db, "ready_for_review") == 0 {
-		t.Fatal("expected 'ready_for_review' event even for unknown worker")
+	if eventCount(t, d.db, "ready_for_review") != 0 {
+		t.Fatal("unexpected 'ready_for_review' event for unknown worker")
 	}
 }
 
@@ -16524,14 +16527,17 @@ func TestProgressUpdatedOnMeaningfulEvents(t *testing.T) {
 
 		workerID := "w-rfr"
 		beadID := "bead-rfr"
+		worktree := t.TempDir()
+		assignmentID := seedReviewAssignment(t, d, beadID, workerID, worktree)
 
 		d.mu.Lock()
 		d.workers[workerID] = &trackedWorker{
 			id:           workerID,
 			conn:         server,
 			state:        protocol.WorkerBusy,
+			assignmentID: assignmentID,
 			beadID:       beadID,
-			worktree:     "/tmp/worktree-rfr",
+			worktree:     worktree,
 			lastSeen:     baseTime,
 			lastProgress: baseTime,
 			encoder:      json.NewEncoder(server),

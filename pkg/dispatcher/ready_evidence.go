@@ -19,6 +19,7 @@ import (
 const readyEvidenceAttempt = "1.json"
 
 type durableReadyIdentity struct {
+	assignmentID int64
 	beadID       string
 	workerID     string
 	worktree     string
@@ -27,18 +28,18 @@ type durableReadyIdentity struct {
 	targetBranch string
 }
 
-func (d *Dispatcher) acceptReadyEvidence(ctx context.Context, workerID string, ready *protocol.ReadyForReviewPayload) bool {
+func (d *Dispatcher) acceptReadyEvidence(ctx context.Context, workerID string, ready *protocol.ReadyForReviewPayload) (durableReadyIdentity, bool) {
 	if legacyReadyEvidenceIdentity(ready) {
-		return !d.productionReadyEvidenceRequired(ctx, workerID, ready.BeadID)
+		return d.validateLegacyReadyEvidence(ctx, workerID, ready)
 	}
 	identity, evidence, evidenceSHA, ok := d.validateReadyEvidence(ctx, workerID, ready)
 	if !ok {
-		return false
+		return durableReadyIdentity{}, false
 	}
 	branch := protocol.BranchPrefix + identity.beadID
 	headSHA, err := d.worktrees.BranchHead(ctx, branch)
 	if err != nil || strings.TrimSpace(headSHA) == "" {
-		return false
+		return durableReadyIdentity{}, false
 	}
 	_, acceptance, _ := d.lookupBeadDetail(ctx, identity.beadID, workerID)
 	checkpointInput := CheckpointInput{
@@ -62,7 +63,7 @@ func (d *Dispatcher) acceptReadyEvidence(ctx context.Context, workerID string, r
 	}
 	checkpoint, err := NewReviewCheckpointStore(d.db).CreateOrReuse(ctx, checkpointInput)
 	if err != nil || checkpoint.CheckpointInput != checkpointInput {
-		return false
+		return durableReadyIdentity{}, false
 	}
 	result, err := d.db.ExecContext(ctx, `
 UPDATE review_checkpoints
@@ -73,10 +74,10 @@ WHERE id = ? AND state = ?
 		evidence.QGEvidencePath, evidenceSHA, checkpoint.ID, ReviewCheckpointStateQGPassed,
 		evidence.QGEvidencePath, evidenceSHA)
 	if err != nil {
-		return false
+		return durableReadyIdentity{}, false
 	}
 	rows, err := result.RowsAffected()
-	return err == nil && rows == 1
+	return identity, err == nil && rows == 1
 }
 
 func legacyReadyEvidenceIdentity(ready *protocol.ReadyForReviewPayload) bool {
@@ -84,28 +85,49 @@ func legacyReadyEvidenceIdentity(ready *protocol.ReadyForReviewPayload) bool {
 		ready.QGEvidencePath == "" && ready.TargetSHA == ""
 }
 
-func (d *Dispatcher) productionReadyEvidenceRequired(ctx context.Context, workerID, beadID string) bool {
-	if d.db == nil {
-		return false
+func (d *Dispatcher) validateLegacyReadyEvidence(
+	ctx context.Context,
+	workerID string,
+	ready *protocol.ReadyForReviewPayload,
+) (durableReadyIdentity, bool) {
+	if !legacyReadyEvidenceIdentity(ready) || ready.WorkerID != workerID || ready.BeadID == "" || d.db == nil {
+		return durableReadyIdentity{}, false
 	}
 	d.mu.Lock()
-	assignmentID := int64(0)
-	if w := d.workers[workerID]; w != nil && w.beadID == beadID {
-		assignmentID = w.assignmentID
+	w := d.workers[workerID]
+	if w == nil || w.state != protocol.WorkerBusy || w.assignmentID <= 0 ||
+		w.beadID != ready.BeadID || w.worktree == "" {
+		d.mu.Unlock()
+		return durableReadyIdentity{}, false
+	}
+	identity := durableReadyIdentity{
+		assignmentID: w.assignmentID,
+		beadID:       w.beadID,
+		workerID:     workerID,
+		worktree:     w.worktree,
+		targetBranch: w.targetBranch,
 	}
 	d.mu.Unlock()
-	if assignmentID <= 0 {
-		return false
-	}
-	var count int
+
+	var durable durableReadyIdentity
+	durable.assignmentID = identity.assignmentID
 	if err := d.db.QueryRowContext(ctx, `
-SELECT COUNT(*)
+SELECT bead_id, worker_id, worktree, qg_evidence_dir, target_sha
 FROM assignments
-WHERE id = ? AND bead_id = ? AND status = 'active'
-  AND (qg_evidence_dir <> '' OR target_sha <> '')`, assignmentID, beadID).Scan(&count); err != nil {
-		return true
+WHERE id = ? AND status = 'active'`, identity.assignmentID).Scan(
+		&durable.beadID, &durable.workerID, &durable.worktree, &durable.evidenceRoot, &durable.targetSHA,
+	); err != nil {
+		return durableReadyIdentity{}, false
 	}
-	return count > 0
+	if durable.beadID != identity.beadID || durable.workerID != identity.workerID ||
+		durable.worktree != identity.worktree || durable.evidenceRoot != "" || durable.targetSHA != "" {
+		return durableReadyIdentity{}, false
+	}
+	durable.targetBranch = identity.targetBranch
+	if durable.targetBranch == "" {
+		durable.targetBranch = d.cfg.DefaultBranch
+	}
+	return durable, true
 }
 
 func (d *Dispatcher) validateReadyEvidence(
@@ -121,7 +143,7 @@ func (d *Dispatcher) validateReadyEvidence(
 		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, "", false
 	}
 	wantPath, err := canonicalReadyEvidencePath(identity.evidenceRoot, identity.beadID, ready.AssignmentID)
-	if err != nil || filepath.Clean(ready.QGEvidencePath) != wantPath {
+	if err != nil || ready.QGEvidencePath != wantPath {
 		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, "", false
 	}
 	data, err := os.ReadFile(wantPath) //nolint:gosec // exact path is derived from the durable assignment identity.
@@ -136,7 +158,7 @@ func (d *Dispatcher) validateReadyEvidence(
 }
 
 func (d *Dispatcher) loadDurableReadyIdentity(ctx context.Context, assignmentID int64, workerID string) (durableReadyIdentity, error) {
-	var identity durableReadyIdentity
+	identity := durableReadyIdentity{assignmentID: assignmentID}
 	err := d.db.QueryRowContext(ctx, `
 SELECT bead_id, worker_id, worktree, qg_evidence_dir, target_sha
 FROM assignments
@@ -165,7 +187,8 @@ WHERE id = ? AND status = 'active'`, assignmentID).Scan(
 }
 
 func readyMatchesDurableIdentity(workerID string, ready *protocol.ReadyForReviewPayload, identity durableReadyIdentity) bool {
-	return identity.beadID != "" && ready.BeadID == identity.beadID && ready.WorkerID == workerID &&
+	return identity.assignmentID == ready.AssignmentID && identity.beadID != "" && ready.BeadID == identity.beadID &&
+		identity.workerID == workerID && ready.WorkerID == workerID &&
 		ready.Worktree == identity.worktree &&
 		identity.evidenceRoot != "" && ready.TargetSHA == identity.targetSHA
 }

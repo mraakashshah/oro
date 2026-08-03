@@ -24,7 +24,8 @@ func TestReviewLifecycleStopsWhenBeadGainsBlocker(t *testing.T) {
 			workerID  = "worker-review-parent"
 		)
 
-		assignmentID := seedReviewAssignment(t, d, beadID, workerID)
+		worktree := t.TempDir()
+		assignmentID := seedReviewAssignment(t, d, beadID, workerID, worktree)
 		beads.mu.Lock()
 		beads.beads = []protocol.Bead{{ID: blockerID, Status: "open"}}
 		beads.shown[beadID] = &protocol.BeadDetail{
@@ -37,7 +38,7 @@ func TestReviewLifecycleStopsWhenBeadGainsBlocker(t *testing.T) {
 		beads.shown[blockerID] = &protocol.BeadDetail{ID: blockerID, Status: "open"}
 		beads.mu.Unlock()
 
-		installReviewingWorker(d, workerID, beadID, assignmentID, t.TempDir())
+		installReviewingWorker(d, workerID, beadID, assignmentID, worktree)
 		d.handleReadyForReview(context.Background(), workerID, protocol.Message{
 			Type: protocol.MsgReadyForReview,
 			ReadyForReview: &protocol.ReadyForReviewPayload{
@@ -59,13 +60,14 @@ func TestReviewLifecycleStopsWhenBeadGainsBlocker(t *testing.T) {
 			workerID  = "worker-approval-parent"
 		)
 
-		assignmentID := seedReviewAssignment(t, d, beadID, workerID)
+		worktree := t.TempDir()
+		assignmentID := seedReviewAssignment(t, d, beadID, workerID, worktree)
 		beads.mu.Lock()
 		beads.beads = []protocol.Bead{{ID: blockerID, Status: "open"}}
 		beads.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress"}
 		beads.shown[blockerID] = &protocol.BeadDetail{ID: blockerID, Status: "open"}
 		beads.mu.Unlock()
-		installReviewingWorker(d, workerID, beadID, assignmentID, t.TempDir())
+		installReviewingWorker(d, workerID, beadID, assignmentID, worktree)
 		d.mu.Lock()
 		d.workers[workerID].state = protocol.WorkerReviewing
 		d.mu.Unlock()
@@ -100,14 +102,15 @@ func TestReviewLifecycleStopsWhenBeadGainsBlocker(t *testing.T) {
 			workerID  = "worker-concurrent-parent"
 		)
 
-		assignmentID := seedReviewAssignment(t, d, beadID, workerID)
+		worktree := t.TempDir()
+		assignmentID := seedReviewAssignment(t, d, beadID, workerID, worktree)
 		beads.mu.Lock()
 		beads.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress", Dependencies: []protocol.Dependency{{
 			IssueID: beadID, DependsOnID: blockerID, Type: "blocks",
 		}}}
 		beads.shown[blockerID] = &protocol.BeadDetail{ID: blockerID, Status: "open"}
 		beads.mu.Unlock()
-		installReviewingWorker(d, workerID, beadID, assignmentID, t.TempDir())
+		installReviewingWorker(d, workerID, beadID, assignmentID, worktree)
 		d.mu.Lock()
 		d.workers[workerID].state = protocol.WorkerReserved
 		d.mu.Unlock()
@@ -130,14 +133,15 @@ func TestReviewLifecycleStopsWhenBeadGainsBlocker(t *testing.T) {
 			workerID  = "worker-closed-parent"
 		)
 
-		assignmentID := seedReviewAssignment(t, d, beadID, workerID)
+		worktree := t.TempDir()
+		assignmentID := seedReviewAssignment(t, d, beadID, workerID, worktree)
 		beads.mu.Lock()
 		beads.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress", Dependencies: []protocol.Dependency{{
 			IssueID: beadID, DependsOnID: blockerID, Type: "blocks",
 		}}}
 		beads.shown[blockerID] = &protocol.BeadDetail{ID: blockerID, Status: "closed"}
 		beads.mu.Unlock()
-		installReviewingWorker(d, workerID, beadID, assignmentID, t.TempDir())
+		installReviewingWorker(d, workerID, beadID, assignmentID, worktree)
 		d.mu.Lock()
 		d.workers[workerID].state = protocol.WorkerReviewing
 		d.mu.Unlock()
@@ -159,11 +163,12 @@ func TestReviewLifecycleStopsWhenBeadGainsBlocker(t *testing.T) {
 			workerID = "worker-edge-parent"
 		)
 
-		assignmentID := seedReviewAssignment(t, d, beadID, workerID)
+		worktree := t.TempDir()
+		assignmentID := seedReviewAssignment(t, d, beadID, workerID, worktree)
 		beads.mu.Lock()
 		beads.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress"}
 		beads.mu.Unlock()
-		installReviewingWorker(d, workerID, beadID, assignmentID, t.TempDir())
+		installReviewingWorker(d, workerID, beadID, assignmentID, worktree)
 
 		d.handleReadyForReview(context.Background(), workerID, protocol.Message{
 			Type: protocol.MsgReadyForReview,
@@ -184,14 +189,15 @@ func TestReviewLifecycleStopsWhenBeadGainsBlocker(t *testing.T) {
 			workerID  = "worker-error-parent"
 		)
 
-		assignmentID := seedReviewAssignment(t, d, beadID, workerID)
+		worktree := t.TempDir()
+		assignmentID := seedReviewAssignment(t, d, beadID, workerID, worktree)
 		beads.mu.Lock()
 		beads.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress", Dependencies: []protocol.Dependency{{
 			IssueID: beadID, DependsOnID: blockerID, Type: "blocks",
 		}}}
 		beads.showErrFn = map[string]error{blockerID: errors.New("store unavailable")}
 		beads.mu.Unlock()
-		installReviewingWorker(d, workerID, beadID, assignmentID, t.TempDir())
+		installReviewingWorker(d, workerID, beadID, assignmentID, worktree)
 
 		d.handleReadyForReview(context.Background(), workerID, protocol.Message{
 			Type: protocol.MsgReadyForReview,
@@ -211,11 +217,11 @@ func TestReviewLifecycleStopsWhenBeadGainsBlocker(t *testing.T) {
 	})
 }
 
-func seedReviewAssignment(t *testing.T, d *Dispatcher, beadID, workerID string) int64 {
+func seedReviewAssignment(t *testing.T, d *Dispatcher, beadID, workerID, worktree string) int64 {
 	t.Helper()
 	result, err := d.db.ExecContext(context.Background(),
 		`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES (?, ?, ?, 'active')`,
-		beadID, workerID, "/tmp/review-admission")
+		beadID, workerID, worktree)
 	if err != nil {
 		t.Fatalf("insert assignment: %v", err)
 	}

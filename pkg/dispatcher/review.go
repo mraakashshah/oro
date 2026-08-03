@@ -19,15 +19,16 @@ import (
 	workerstream "oro/pkg/worker"
 )
 
-func (d *Dispatcher) markWorkerReviewing(workerID string, assignmentID int64) (worktree, targetBranch string, ok bool) {
+func (d *Dispatcher) markWorkerReviewing(workerID string, identity durableReadyIdentity) (worktree, targetBranch string, ok bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	w, ok := d.workers[workerID]
-	if !ok {
+	if !ok || identity.assignmentID <= 0 {
 		return "", "", false
 	}
-	if assignmentID > 0 && (w.assignmentID != assignmentID || w.state != protocol.WorkerBusy) {
+	if w.assignmentID != identity.assignmentID || w.state != protocol.WorkerBusy ||
+		w.beadID != identity.beadID || w.worktree != identity.worktree {
 		return "", "", false
 	}
 	w.state = protocol.WorkerReviewing
@@ -104,22 +105,17 @@ func (d *Dispatcher) admitReadyForReview(ctx context.Context, workerID string, r
 	if err := d.observeStorageController(ctx); err != nil || !d.storageAdmissionAllowed() {
 		return readyReviewAdmission{}, false
 	}
-	if !d.acceptReadyEvidence(ctx, workerID, ready) {
+	identity, accepted := d.acceptReadyEvidence(ctx, workerID, ready)
+	if !accepted {
 		return readyReviewAdmission{}, false
 	}
-	legacyReady := legacyReadyEvidenceIdentity(ready)
-	if legacyReady {
-		d.recordReadyForReviewProgress(ctx, workerID, ready.BeadID)
-	}
-	worktree, targetBranch, marked := d.markWorkerReviewing(workerID, ready.AssignmentID)
+	worktree, targetBranch, marked := d.markWorkerReviewing(workerID, identity)
 	if !marked {
 		return readyReviewAdmission{}, false
 	}
-	if !legacyReady {
-		d.recordReadyForReviewProgress(ctx, workerID, ready.BeadID)
-	}
+	d.recordReadyForReviewProgress(ctx, workerID, identity.beadID)
 	return readyReviewAdmission{
-		beadID: ready.BeadID, assignmentID: ready.AssignmentID,
+		beadID: identity.beadID, assignmentID: identity.assignmentID,
 		worktree: worktree, targetBranch: targetBranch,
 	}, true
 }

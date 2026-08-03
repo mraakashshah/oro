@@ -16,13 +16,17 @@ func TestMeaningfulProgressEventsPersisted(t *testing.T) {
 		beadID   = "oro-progress"
 		workerID = "worker-progress"
 	)
+	worktree := t.TempDir()
+	assignmentID := seedReviewAssignment(t, d, beadID, workerID, worktree)
 
 	d.mu.Lock()
 	d.workers[workerID] = &trackedWorker{
-		id:         workerID,
-		state:      protocol.WorkerBusy,
-		beadID:     beadID,
-		contextPct: 25,
+		id:           workerID,
+		state:        protocol.WorkerBusy,
+		assignmentID: assignmentID,
+		beadID:       beadID,
+		worktree:     worktree,
+		contextPct:   25,
 	}
 	d.mu.Unlock()
 
@@ -33,7 +37,7 @@ func TestMeaningfulProgressEventsPersisted(t *testing.T) {
 	d.handleReadyForReview(ctx, workerID, protocol.Message{
 		Type: protocol.MsgReadyForReview,
 		ReadyForReview: &protocol.ReadyForReviewPayload{
-			BeadID: beadID,
+			BeadID: beadID, WorkerID: workerID,
 		},
 	})
 
