@@ -125,6 +125,10 @@ func (d *Dispatcher) renewEpicBranchAdmission(ctx context.Context, lease epicBra
 			return
 		case <-ticker.C:
 			if err := store.renew(ctx, lease.branch, lease.leaseToken, lease.generation, d.nowFunc()); err != nil {
+				if errors.Is(err, ErrEpicBranchAdmissionCAS) &&
+					isOwnedBlockedEpicBranchAdmission(ctx, store, lease) {
+					return
+				}
 				_ = d.logEvent(ctx, "epic_branch_admission_renew_failed", "dispatcher", lease.epicID, lease.leaseOwner, err.Error())
 				if lease.operation != nil {
 					lease.operation.cancel(fmt.Errorf("renew epic branch admission: %w", err))
@@ -133,6 +137,19 @@ func (d *Dispatcher) renewEpicBranchAdmission(ctx context.Context, lease epicBra
 			}
 		}
 	}
+}
+
+func isOwnedBlockedEpicBranchAdmission(
+	ctx context.Context,
+	store *epicBranchAdmissionStore,
+	lease epicBranchAdmission,
+) bool {
+	if store == nil || store.db == nil {
+		return false
+	}
+	current, err := loadEpicBranchAdmission(ctx, store.db, lease.branch)
+	return err == nil && current.state == "blocked" && current.generation == lease.generation &&
+		current.leaseToken == lease.leaseToken
 }
 
 func (d *Dispatcher) prepareFreshEpicBranchAdmission(ctx context.Context, bead protocol.Bead, workerID string, lease epicBranchAdmission) bool {
