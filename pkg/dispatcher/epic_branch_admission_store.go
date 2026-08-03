@@ -356,6 +356,73 @@ WHERE branch = ?
 	return epicBranchAdmissionCASError("resolve", branch)
 }
 
+func (s *epicBranchAdmissionStore) linkRecovery(
+	ctx context.Context,
+	branch string,
+	generation int64,
+	expectedRecoveryBeadID, recoveryBeadID string,
+	now time.Time,
+) (epicBranchAdmission, error) {
+	if s == nil || s.db == nil {
+		return epicBranchAdmission{}, errors.New("link epic branch recovery: store is nil")
+	}
+	if blank(branch, recoveryBeadID) || generation <= 0 || now.IsZero() {
+		return epicBranchAdmission{}, errors.New("link epic branch recovery: missing blocker identity")
+	}
+	result, err := s.db.ExecContext(ctx, `
+UPDATE epic_branch_admissions
+SET recovery_bead_id = ?, updated_at = ?
+WHERE branch = ?
+  AND state = 'blocked'
+  AND generation = ?
+  AND COALESCE(recovery_bead_id, '') = ?`,
+		recoveryBeadID, formatEpicBranchAdmissionTime(now), branch, generation, expectedRecoveryBeadID)
+	if err != nil {
+		return epicBranchAdmission{}, fmt.Errorf("link epic branch recovery %q: %w", branch, err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return epicBranchAdmission{}, fmt.Errorf("link epic branch recovery %q: count update: %w", branch, err)
+	}
+	admission, err := loadEpicBranchAdmission(ctx, s.db, branch)
+	if err != nil {
+		return epicBranchAdmission{}, fmt.Errorf("link epic branch recovery %q: load: %w", branch, err)
+	}
+	if changed == 1 || (admission.state == "blocked" && admission.generation == generation && admission.recoveryBeadID == recoveryBeadID) {
+		return admission, nil
+	}
+	return epicBranchAdmission{}, epicBranchAdmissionCASError("link recovery", branch)
+}
+
+func (s *epicBranchAdmissionStore) blocked(ctx context.Context) ([]epicBranchAdmission, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("list blocked epic branch admissions: store is nil")
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT branch, epic_id, target_branch, state, generation,
+       lease_token, lease_owner, lease_expires_at, blocker_kind, checkout_path,
+       branch_sha, target_sha, recovery_bead_id, details, created_at, updated_at, resolved_at
+FROM epic_branch_admissions
+WHERE state = 'blocked'
+ORDER BY branch`)
+	if err != nil {
+		return nil, fmt.Errorf("list blocked epic branch admissions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var admissions []epicBranchAdmission
+	for rows.Next() {
+		admission, scanErr := scanEpicBranchAdmission(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		admissions = append(admissions, admission)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate blocked epic branch admissions: %w", err)
+	}
+	return admissions, nil
+}
+
 func (s *epicBranchAdmissionStore) isIdempotentBlockedResolve(ctx context.Context, branch string, generation int64) (bool, error) {
 	var state string
 	var currentGeneration int64

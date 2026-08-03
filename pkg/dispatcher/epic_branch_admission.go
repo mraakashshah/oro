@@ -44,7 +44,7 @@ func (d *Dispatcher) withEpicBranchAdmission(
 		return d.rejectEpicBranchPreparation(ctx, bead.ID, workerID, branch, err)
 	}
 	if !acquired {
-		return false
+		return d.admitLinkedEpicBranchRecovery(ctx, bead.ID, workerID, lease)
 	}
 
 	operationCtx, cancelOperation := context.WithCancelCause(ctx)
@@ -75,6 +75,22 @@ func (d *Dispatcher) withEpicBranchAdmission(
 		return d.rejectEpicBranchPreparation(ctx, bead.ID, workerID, branch, releaseErr)
 	}
 	return true
+}
+
+func (d *Dispatcher) admitLinkedEpicBranchRecovery(
+	ctx context.Context,
+	beadID, workerID string,
+	admission epicBranchAdmission,
+) bool {
+	if admission.state != "blocked" {
+		return false
+	}
+	recovery, err := d.ensureEpicBranchBlockRecovery(ctx, admission)
+	if err != nil {
+		_ = d.logEvent(ctx, "epic_branch_recovery_ensure_failed", "dispatcher", admission.epicID, workerID, err.Error())
+		return false
+	}
+	return recovery != nil && beadID == recovery.ID
 }
 
 func epicBranchAdmissionCleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -227,13 +243,17 @@ func (d *Dispatcher) blockEpicBranchAdmission(
 	details string,
 ) bool {
 	store := newEpicBranchAdmissionStore(d.db)
-	if _, err := store.block(ctx, lease.branch, lease.leaseToken, lease.generation, blockerKind, checkoutPath,
-		inspection.BranchOID, inspection.BaseOID, "", details, d.nowFunc()); err != nil {
+	admission, err := store.block(ctx, lease.branch, lease.leaseToken, lease.generation, blockerKind, checkoutPath,
+		inspection.BranchOID, inspection.BaseOID, "", details, d.nowFunc())
+	if err != nil {
 		if ctx.Err() != nil || errors.Is(err, ErrEpicBranchAdmissionCAS) {
 			return false
 		}
 		_ = d.logEvent(ctx, "epic_branch_admission_block_failed", "dispatcher", lease.epicID, lease.leaseOwner, err.Error())
 		return d.rejectEpicBranchPreparation(ctx, beadID, lease.leaseOwner, lease.branch, err)
+	}
+	if _, err := d.ensureEpicBranchBlockRecovery(ctx, admission); err != nil {
+		_ = d.logEvent(ctx, "epic_branch_recovery_ensure_failed", "dispatcher", lease.epicID, lease.leaseOwner, err.Error())
 	}
 	return false
 }

@@ -120,6 +120,9 @@ func (d *Dispatcher) startupRecovery(ctx context.Context) error {
 	if err := protocol.MigrateBeadSchema(ctx, d.db); err != nil {
 		return fmt.Errorf("init bead schema: %w", err)
 	}
+	if err := d.repairBlockedEpicBranchRecoveries(ctx); err != nil {
+		return fmt.Errorf("repair blocked epic branch recoveries: %w", err)
+	}
 	if pruneErr := d.worktrees.Prune(ctx); pruneErr != nil {
 		_ = d.logEvent(ctx, "worktree_prune_failed", "dispatcher", "", "", pruneErr.Error())
 	}

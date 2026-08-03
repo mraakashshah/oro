@@ -298,3 +298,10 @@ Hook inventory (same in both files):
 **Context:** A durable storage pause must stop assignment, review, and quality-gate starts while active managed work drains.
 **Decision:** Keep pause state in `storage.Controller`; observe it before every admission boundary and in a background polling loop. A nil controller preserves existing behavior. The controller remains responsible for fail-closed draining and acknowledges its epoch only after its configured drain callback succeeds.
 **Implications:** New dispatcher admission paths must call the storage admission guard before starting work; they must not independently acknowledge or reopen a storage pause.
+
+## 2026-08-03: Canonical epic-branch blockers use deterministic recovery identities
+
+**Tags:** #dispatcher #epics #recovery #durability
+**Context:** A checked-out or diverged epic branch must remain durably blocked across crashes and concurrent repair, while one designated recovery bead can still be leased. A crash can occur after persisting the block but before linking its recovery bead, and a linked bead can later be closed or deleted.
+**Decision:** Persist the blocked admission first, then materialize a deterministic P0 recovery bead, add its blocking dependency, and compare-and-swap its ID into the matching branch generation. Only that exact stored ID bypasses the block. Startup repairs missing links, and unusable linked beads advance through a deterministic successor chain.
+**Implications:** Retried or concurrent repair reuses the same bead and dependency without spam; title, tag, branch, or generation lookalikes cannot bypass admission. A durable blocked row remains authoritative even when materialization is interrupted, and restart repairs the incomplete transition.
