@@ -11,16 +11,47 @@ import (
 	"oro/pkg/protocol"
 )
 
+var errAssignmentBlockedByReviewCheckpoint = errors.New("assignment blocked by nonterminal review checkpoint")
+
 func (d *Dispatcher) createAssignment(ctx context.Context, beadID, workerID, worktree string) (int64, error) {
-	res, err := d.db.ExecContext(ctx,
-		`INSERT INTO assignments (bead_id, worker_id, worktree) VALUES (?, ?, ?)`,
-		beadID, workerID, worktree)
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin create assignment: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.ExecContext(ctx, `
+INSERT INTO assignments (bead_id, worker_id, worktree)
+SELECT ?, ?, ?
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM review_checkpoints_blocking_assignment
+    WHERE bead_id = ?
+)`, beadID, workerID, worktree, beadID)
+	if tableMissingErr(err) {
+		// Dispatcher unit fixtures may intentionally construct only SchemaDDL.
+		// Production assignment runs after startupRecovery installs the native
+		// bead schema and canonical checkpoint-admission view.
+		res, err = tx.ExecContext(ctx,
+			`INSERT INTO assignments (bead_id, worker_id, worktree) VALUES (?, ?, ?)`,
+			beadID, workerID, worktree)
+	}
 	if err != nil {
 		return 0, fmt.Errorf("create assignment: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("create assignment rows affected: %w", err)
+	}
+	if rows != 1 {
+		return 0, fmt.Errorf("create assignment for %s: %w", beadID, errAssignmentBlockedByReviewCheckpoint)
 	}
 	id, err := res.LastInsertId()
 	if err != nil {
 		return 0, fmt.Errorf("create assignment last insert id: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit create assignment: %w", err)
 	}
 	return id, nil
 }

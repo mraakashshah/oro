@@ -2,6 +2,7 @@ package dispatcher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -190,8 +191,13 @@ func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, 
 
 	assignmentID, assignErr := d.createAssignment(ctx, bead.ID, w.id, worktree)
 	if assignErr != nil {
-		_ = d.logEvent(ctx, "assignment_persist_failed", "dispatcher", bead.ID, w.id, assignErr.Error())
-		d.recordAssignmentFailure(bead.ID)
+		if errors.Is(assignErr, errAssignmentBlockedByReviewCheckpoint) {
+			_ = d.logEvent(ctx, "review_checkpoint_assignment_blocked", "dispatcher", bead.ID, w.id,
+				`{"reason":"durable_nonterminal_review_checkpoint","stage":"atomic_insert"}`)
+		} else {
+			_ = d.logEvent(ctx, "assignment_persist_failed", "dispatcher", bead.ID, w.id, assignErr.Error())
+			d.recordAssignmentFailure(bead.ID)
+		}
 		_ = d.updateBeadStatus(ctx, bead.ID, "open")
 		if createdWorktree {
 			_ = d.worktrees.Remove(ctx, worktree)

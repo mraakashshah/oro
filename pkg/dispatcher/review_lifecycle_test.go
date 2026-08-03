@@ -491,6 +491,76 @@ func TestAssignBeadRechecksDurableReviewCheckpointAfterFiltering(t *testing.T) {
 	}
 }
 
+func TestAssignBeadAtomicallyRejectsCheckpointCreatedDuringWorktreeCreation(t *testing.T) {
+	ctx := context.Background()
+	d, beads, wtMgr, _, _, _ := newTestDispatcher(t)
+	const (
+		beadID         = "review-admission-insert-race"
+		originWorktree = "/tmp/worktree-review-admission-insert-race-origin"
+		newWorktree    = "/tmp/worktree-review-admission-insert-race-new"
+	)
+	candidate := protocol.Bead{ID: beadID, Title: "Close assignment insert race", Status: "open", Type: "task"}
+	beads.shown[beadID] = &protocol.BeadDetail{
+		ID:                 beadID,
+		Title:              candidate.Title,
+		Status:             "open",
+		AcceptanceCriteria: "Test: checkpoint creation races final assignment persistence",
+	}
+	seedReviewCheckpointBead(ctx, t, d, beadID, candidate.Title)
+	originAssignmentID, err := d.createAssignment(ctx, beadID, "review-worker", originWorktree)
+	if err != nil {
+		t.Fatalf("create origin assignment: %v", err)
+	}
+	if err := d.requeueAssignment(ctx, originAssignmentID); err != nil {
+		t.Fatalf("requeue origin assignment: %v", err)
+	}
+	if got := d.filterAssignable(ctx, []protocol.Bead{candidate}); len(got) != 1 {
+		t.Fatalf("candidate did not pass initial filtering: %+v", got)
+	}
+
+	wtMgr.createFn = func(_ context.Context, gotBeadID, _ string) (string, string, error) {
+		if gotBeadID != beadID {
+			t.Fatalf("worktree bead ID = %q, want %q", gotBeadID, beadID)
+		}
+		seedDurableReviewCheckpoint(t, d, beadID, originAssignmentID, originWorktree, ReviewCheckpointStateReviewRunning)
+		return newWorktree, protocol.BranchPrefix + beadID, nil
+	}
+	conn := newMockConn()
+	worker := &trackedWorker{id: "ordinary-worker", conn: conn, encoder: json.NewEncoder(conn), state: protocol.WorkerIdle}
+	d.mu.Lock()
+	d.workers[worker.id] = worker
+	d.mu.Unlock()
+
+	if err := d.assignBead(ctx, worker, candidate); err != nil {
+		t.Fatalf("assignBead: %v", err)
+	}
+
+	if got := countActiveAssignmentsForBead(t, d, beadID); got != 0 {
+		t.Fatalf("ordinary active assignments = %d, want 0", got)
+	}
+	conn.mu.Lock()
+	writes := len(conn.written)
+	conn.mu.Unlock()
+	if writes != 0 {
+		t.Fatalf("worker messages = %d, want no ASSIGN", writes)
+	}
+	wtMgr.mu.Lock()
+	removed := append([]string(nil), wtMgr.removed...)
+	wtMgr.mu.Unlock()
+	if len(removed) != 1 || removed[0] != newWorktree {
+		t.Fatalf("removed worktrees = %+v, want [%s]", removed, newWorktree)
+	}
+	d.mu.Lock()
+	_, tracked := d.worktreeByBead[beadID]
+	d.mu.Unlock()
+	if tracked {
+		t.Fatal("checkpoint-blocked assignment retained the new worktree in dispatcher tracking")
+	}
+	if worker.state != protocol.WorkerIdle || worker.beadID != "" || worker.assignmentID != 0 {
+		t.Fatalf("worker after blocked insert = state %q bead %q assignment %d, want idle/unassigned", worker.state, worker.beadID, worker.assignmentID)
+	}
+}
+
 func seedDurableReviewCheckpoint(
 	t *testing.T,
 	d *Dispatcher,
