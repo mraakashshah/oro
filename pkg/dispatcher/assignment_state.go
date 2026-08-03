@@ -12,6 +12,7 @@ import (
 )
 
 var errAssignmentBlockedByReviewCheckpoint = errors.New("assignment blocked by nonterminal review checkpoint")
+var errAssignmentAdmissionUnknown = errors.New("assignment checkpoint admission observation failed")
 
 func (d *Dispatcher) createAssignment(ctx context.Context, beadID, workerID, worktree string) (int64, error) {
 	res, err := d.db.ExecContext(ctx, `
@@ -22,15 +23,11 @@ WHERE NOT EXISTS (
     FROM review_checkpoints_blocking_assignment
     WHERE bead_id = ?
 )`, beadID, workerID, worktree, beadID)
-	if tableMissingErr(err) {
-		// Dispatcher unit fixtures may intentionally construct only SchemaDDL.
-		// Production assignment runs after startupRecovery installs the native
-		// bead schema and canonical checkpoint-admission view.
-		res, err = d.db.ExecContext(ctx,
-			`INSERT INTO assignments (bead_id, worker_id, worktree) VALUES (?, ?, ?)`,
-			beadID, workerID, worktree)
-	}
 	if err != nil {
+		if _, observationErr := d.reviewCheckpointBlocksAssignment(ctx, beadID); observationErr != nil {
+			d.recordAssignmentObservation("review_checkpoint", observationErr)
+			return 0, fmt.Errorf("%w: %v", errAssignmentAdmissionUnknown, observationErr)
+		}
 		return 0, fmt.Errorf("create assignment: %w", err)
 	}
 	rows, err := res.RowsAffected()

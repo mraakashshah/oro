@@ -237,9 +237,6 @@ func (d *Dispatcher) filterReviewCheckpointBlockedBeads(ctx context.Context, all
 func (d *Dispatcher) reviewCheckpointBlockedBeads(ctx context.Context) (map[string]bool, error) {
 	rows, err := d.db.QueryContext(ctx, `SELECT DISTINCT bead_id FROM review_checkpoints_blocking_assignment`)
 	if err != nil {
-		if tableMissingErr(err) {
-			return nil, nil
-		}
 		return nil, fmt.Errorf("query blocking review checkpoint beads: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
@@ -268,11 +265,6 @@ SELECT EXISTS(
     FROM review_checkpoints_blocking_assignment
     WHERE bead_id = ?
 )`, beadID).Scan(&blocked); err != nil {
-		// Direct unit construction can intentionally omit the native bead schema.
-		// Production assignment starts only after startupRecovery migrates it.
-		if tableMissingErr(err) {
-			return false, nil
-		}
 		return false, fmt.Errorf("query blocking review checkpoint: %w", err)
 	}
 	return blocked, nil

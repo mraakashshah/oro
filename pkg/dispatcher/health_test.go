@@ -2,6 +2,7 @@ package dispatcher //nolint:testpackage // white-box test needs internal access
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net"
@@ -141,6 +142,97 @@ SELECT id, bead_id FROM review_checkpoints WHERE missing_checkpoint_state = 1;`)
 	tryAssignAndWait(t, d, ctx)
 	assertNoAssignmentMessage(t, conn)
 	assertAssignmentObservationDegraded(t, d, "review_checkpoint", "missing_checkpoint_state")
+}
+
+func TestMissingCheckpointAdmissionViewFailsClosedAtEveryAssignmentPath(t *testing.T) {
+	const beadID = "oro-missing-checkpoint-admission-view"
+	candidate := protocol.Bead{ID: beadID, Title: "Missing checkpoint admission view", Status: "open", Type: "task"}
+
+	newSubject := func(t *testing.T) (*Dispatcher, *fakeBeadStore, *mockWorktreeManager, *mockConn, *trackedWorker) {
+		t.Helper()
+		d, beads, worktrees, _, _, _ := newTestDispatcher(t)
+		if err := protocol.MigrateBeadSchema(t.Context(), d.db); err != nil {
+			t.Fatalf("migrate bead schema: %v", err)
+		}
+		beads.shown[beadID] = &protocol.BeadDetail{
+			ID:                 beadID,
+			Title:              candidate.Title,
+			Status:             "open",
+			AcceptanceCriteria: "Test: missing checkpoint admission schema fails closed",
+		}
+		d.cfg.StorageHealth = func(context.Context) *factoryhealth.StorageHealth {
+			return &factoryhealth.StorageHealth{Available: true}
+		}
+		conn := newMockConn()
+		worker := &trackedWorker{id: "missing-view-worker", conn: conn, encoder: json.NewEncoder(conn), state: protocol.WorkerIdle}
+		d.mu.Lock()
+		d.workers[worker.id] = worker
+		d.mu.Unlock()
+		return d, beads, worktrees, conn, worker
+	}
+
+	t.Run("bulk filter", func(t *testing.T) {
+		d, _, _, _, _ := newSubject(t)
+		dropCheckpointAdmissionView(t.Context(), t, d.db)
+
+		if got := d.filterAssignable(t.Context(), []protocol.Bead{candidate}); len(got) != 0 {
+			t.Fatalf("filterAssignable = %+v, want no candidates when admission view is missing", got)
+		}
+		assertAssignmentObservationDegraded(t, d, "review_checkpoint", "no such table")
+	})
+
+	t.Run("final recheck", func(t *testing.T) {
+		d, _, worktrees, conn, worker := newSubject(t)
+		dropCheckpointAdmissionView(t.Context(), t, d.db)
+
+		if err := d.assignBead(t.Context(), worker, candidate); err != nil {
+			t.Fatalf("assignBead: %v", err)
+		}
+		assertNoAssignmentMessage(t, conn)
+		if got := countActiveAssignmentsForBead(t, d, beadID); got != 0 {
+			t.Fatalf("active assignments = %d, want 0 when final admission recheck cannot observe checkpoints", got)
+		}
+		worktrees.mu.Lock()
+		created := len(worktrees.created)
+		worktrees.mu.Unlock()
+		if created != 0 {
+			t.Fatalf("created worktrees = %d, want 0 when final admission recheck fails", created)
+		}
+		assertAssignmentObservationDegraded(t, d, "review_checkpoint", "no such table")
+	})
+
+	t.Run("atomic insert", func(t *testing.T) {
+		d, _, worktrees, conn, worker := newSubject(t)
+		worktrees.createFn = func(ctx context.Context, gotBeadID, _ string) (string, string, error) {
+			if gotBeadID != beadID {
+				t.Fatalf("worktree bead ID = %q, want %q", gotBeadID, beadID)
+			}
+			dropCheckpointAdmissionView(ctx, t, d.db)
+			return "/tmp/worktree-" + beadID, protocol.BranchPrefix + beadID, nil
+		}
+
+		if err := d.assignBead(t.Context(), worker, candidate); err != nil {
+			t.Fatalf("assignBead: %v", err)
+		}
+		assertNoAssignmentMessage(t, conn)
+		if got := countActiveAssignmentsForBead(t, d, beadID); got != 0 {
+			t.Fatalf("active assignments = %d, want 0 when atomic admission cannot observe checkpoints", got)
+		}
+		worktrees.mu.Lock()
+		removed := append([]string(nil), worktrees.removed...)
+		worktrees.mu.Unlock()
+		if len(removed) != 1 {
+			t.Fatalf("removed worktrees = %+v, want failed atomic admission worktree cleanup", removed)
+		}
+		assertAssignmentObservationDegraded(t, d, "review_checkpoint", "no such table")
+	})
+}
+
+func dropCheckpointAdmissionView(ctx context.Context, t *testing.T, db *sql.DB) {
+	t.Helper()
+	if _, err := db.ExecContext(ctx, `DROP VIEW review_checkpoints_blocking_assignment`); err != nil {
+		t.Fatalf("drop checkpoint admission view: %v", err)
+	}
 }
 
 func assertNoAssignmentMessage(t *testing.T, conn *mockConn) {
