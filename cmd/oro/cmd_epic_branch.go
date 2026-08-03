@@ -163,7 +163,7 @@ func resolveEpicBranchAdmission(
 	branch string,
 	generation int64,
 ) (int64, error) {
-	if !strings.HasPrefix(branch, "epic/") || len(strings.TrimPrefix(branch, "epic/")) == 0 {
+	if !strings.HasPrefix(branch, "epic/") || strings.TrimPrefix(branch, "epic/") == "" {
 		return 0, fmt.Errorf("invalid epic branch %q", branch)
 	}
 	if generation <= 0 {
@@ -173,6 +173,17 @@ func resolveEpicBranchAdmission(
 		return 0, errors.New("epic-branch inspector is required")
 	}
 
+	targetBranch, err := loadBlockedEpicBranchAdmission(ctx, db, branch, generation)
+	if err != nil {
+		return 0, err
+	}
+	if err := inspector.InspectEpicBranch(ctx, branch, targetBranch); err != nil {
+		return 0, fmt.Errorf("inspect epic branch %q: %w", branch, err)
+	}
+	return persistResolvedEpicBranchAdmission(ctx, db, branch, generation)
+}
+
+func loadBlockedEpicBranchAdmission(ctx context.Context, db *sql.DB, branch string, generation int64) (string, error) {
 	var targetBranch, state string
 	var persistedGeneration int64
 	err := db.QueryRowContext(ctx, `
@@ -180,21 +191,21 @@ SELECT target_branch, state, generation
 FROM epic_branch_admissions
 WHERE branch = ?`, branch).Scan(&targetBranch, &state, &persistedGeneration)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, fmt.Errorf("epic branch %q has no durable admission", branch)
+		return "", fmt.Errorf("epic branch %q has no durable admission", branch)
 	}
 	if err != nil {
-		return 0, fmt.Errorf("read epic-branch admission %q: %w", branch, err)
+		return "", fmt.Errorf("read epic-branch admission %q: %w", branch, err)
 	}
 	if state != "blocked" {
-		return 0, fmt.Errorf("epic branch %q is %s, not blocked", branch, state)
+		return "", fmt.Errorf("epic branch %q is %s, not blocked", branch, state)
 	}
 	if persistedGeneration != generation {
-		return 0, fmt.Errorf("stale generation for epic branch %q: got %d, current %d", branch, generation, persistedGeneration)
+		return "", fmt.Errorf("stale generation for epic branch %q: got %d, current %d", branch, generation, persistedGeneration)
 	}
-	if err := inspector.InspectEpicBranch(ctx, branch, targetBranch); err != nil {
-		return 0, fmt.Errorf("inspect epic branch %q: %w", branch, err)
-	}
+	return targetBranch, nil
+}
 
+func persistResolvedEpicBranchAdmission(ctx context.Context, db *sql.DB, branch string, generation int64) (int64, error) {
 	resolvedAt := time.Now().UTC().Format(time.RFC3339Nano)
 	result, err := db.ExecContext(ctx, `
 UPDATE epic_branch_admissions
@@ -218,6 +229,7 @@ WHERE branch = ? AND state = 'blocked' AND generation = ?`,
 	}
 
 	var resolvedState string
+	var persistedGeneration int64
 	if err := db.QueryRowContext(ctx, `
 SELECT state, generation
 FROM epic_branch_admissions

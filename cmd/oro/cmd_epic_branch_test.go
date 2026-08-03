@@ -115,14 +115,17 @@ INSERT INTO epic_branch_admissions (
 		if _, err := db.Exec(`INSERT INTO recovery_quarantines (bead_id, reason, details) VALUES ('oro-work', 'manual', 'preserve')`); err != nil {
 			t.Fatalf("seed recovery quarantine: %v", err)
 		}
-		for description, statement := range map[string]string{
-			"create runtime lease": `CREATE TABLE runtime_leases (id TEXT PRIMARY KEY, marker TEXT NOT NULL)`,
-			"seed runtime lease":   `INSERT INTO runtime_leases (id, marker) VALUES ('lease-1', 'unchanged')`,
-			"create storage lease": `CREATE TABLE leases (id TEXT PRIMARY KEY, marker TEXT NOT NULL)`,
-			"seed storage lease":   `INSERT INTO leases (id, marker) VALUES ('lease-1', 'unchanged')`,
+		for _, fixture := range []struct {
+			description string
+			statement   string
+		}{
+			{description: "create runtime lease", statement: `CREATE TABLE runtime_leases (id TEXT PRIMARY KEY, marker TEXT NOT NULL)`},
+			{description: "seed runtime lease", statement: `INSERT INTO runtime_leases (id, marker) VALUES ('lease-1', 'unchanged')`},
+			{description: "create storage lease", statement: `CREATE TABLE leases (id TEXT PRIMARY KEY, marker TEXT NOT NULL)`},
+			{description: "seed storage lease", statement: `INSERT INTO leases (id, marker) VALUES ('lease-1', 'unchanged')`},
 		} {
-			if _, err := db.Exec(statement); err != nil {
-				t.Fatalf("%s: %v", description, err)
+			if _, err := db.Exec(fixture.statement); err != nil {
+				t.Fatalf("%s: %v", fixture.description, err)
 			}
 		}
 		if err := db.Close(); err != nil {
