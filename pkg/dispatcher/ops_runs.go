@@ -14,6 +14,9 @@ import (
 	"oro/pkg/agentmodel"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
+
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 const (
@@ -51,12 +54,21 @@ func CreateOpsRun(ctx context.Context, db *sql.DB, rec OpsRunRecord) (OpsRunReco
 	if db == nil {
 		return OpsRunRecord{}, false, errors.New("create ops run: db is nil")
 	}
+	return createOpsRun(ctx, db, rec)
+}
+
+type opsRunStore interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func createOpsRun(ctx context.Context, store opsRunStore, rec OpsRunRecord) (OpsRunRecord, bool, error) {
 	rec = normalizeOpsRunRecord(rec)
 	if err := validateOpsRunStatus(rec.Status); err != nil {
 		return OpsRunRecord{}, false, err
 	}
 
-	result, err := db.ExecContext(ctx, `
+	result, err := store.ExecContext(ctx, `
 INSERT INTO ops_runs (
   escalation_id, type, bead_id, worker_id, dispatcher_pid, process_pid,
   runtime, model, status, verdict, feedback, error
@@ -65,7 +77,10 @@ INSERT INTO ops_runs (
 		nullableInt(rec.DispatcherPID), nullableInt(rec.ProcessPID),
 		rec.Runtime, rec.Model, rec.Status, rec.Verdict, rec.Feedback, rec.Error)
 	if err != nil {
-		blocking, findErr := FindBlockingOpsRun(ctx, db, rec.Type, rec.BeadID)
+		if !isSQLiteUniqueConstraint(err) {
+			return OpsRunRecord{}, false, fmt.Errorf("create ops run: %w", err)
+		}
+		blocking, findErr := findBlockingOpsRun(ctx, store, rec.Type, rec.BeadID)
 		if findErr == nil && blocking != nil {
 			return *blocking, false, nil
 		}
@@ -76,11 +91,16 @@ INSERT INTO ops_runs (
 	if err != nil {
 		return OpsRunRecord{}, false, fmt.Errorf("create ops run id: %w", err)
 	}
-	created, err := loadOpsRunByID(ctx, db, id)
+	created, err := loadOpsRunByID(ctx, store, id)
 	if err != nil {
 		return OpsRunRecord{}, false, err
 	}
 	return created, true, nil
+}
+
+func isSQLiteUniqueConstraint(err error) bool {
+	var sqliteErr *sqlite.Error
+	return errors.As(err, &sqliteErr) && sqliteErr.Code() == sqlite3.SQLITE_CONSTRAINT_UNIQUE
 }
 
 // FindBlockingOpsRun returns the active blocking row for type/bead, if any.
@@ -89,7 +109,11 @@ func FindBlockingOpsRun(ctx context.Context, db *sql.DB, runType, beadID string)
 	if db == nil {
 		return nil, errors.New("find blocking ops run: db is nil")
 	}
-	rec, err := scanOpsRun(db.QueryRowContext(ctx, `
+	return findBlockingOpsRun(ctx, db, runType, beadID)
+}
+
+func findBlockingOpsRun(ctx context.Context, store opsRunStore, runType, beadID string) (*OpsRunRecord, error) {
+	rec, err := scanOpsRun(store.QueryRowContext(ctx, `
 SELECT id, escalation_id, type, bead_id, worker_id, dispatcher_pid, process_pid, runtime, model, status, verdict, feedback, error, started_at, completed_at
 FROM ops_runs
 WHERE type = ?
@@ -113,10 +137,14 @@ func CompleteOpsRun(ctx context.Context, db *sql.DB, id int64, status, verdict, 
 	if db == nil {
 		return errors.New("complete ops run: db is nil")
 	}
+	return completeOpsRun(ctx, db, id, status, verdict, feedback, errorText)
+}
+
+func completeOpsRun(ctx context.Context, store opsRunStore, id int64, status, verdict, feedback, errorText string) error {
 	if err := validateOpsRunCompletionStatus(status); err != nil {
 		return err
 	}
-	result, err := db.ExecContext(ctx, `
+	result, err := store.ExecContext(ctx, `
 UPDATE ops_runs
 SET status = ?,
     verdict = ?,
@@ -227,10 +255,6 @@ func (d *Dispatcher) applyOpsRetry(args string) (string, error) {
 }
 
 func (d *Dispatcher) supersedeOpsRunForRetry(rec OpsRunRecord) (OpsRunRecord, bool, error) {
-	if err := CompleteOpsRun(context.Background(), d.db, rec.ID, opsRunStatusSuperseded, rec.Verdict, rec.Feedback, fmt.Sprintf("manual retry superseded ops run %d", rec.ID)); err != nil {
-		return OpsRunRecord{}, false, err
-	}
-
 	next := rec
 	next.ID = 0
 	next.Status = opsRunStatusRunning
@@ -246,7 +270,9 @@ func (d *Dispatcher) supersedeOpsRunForRetry(rec OpsRunRecord) (OpsRunRecord, bo
 	next.CompletedAt = ""
 	fillOpsRunRuntimeModel(&next)
 
-	created, wasCreated, err := CreateOpsRun(context.Background(), d.db, next)
+	created, wasCreated, err := replaceOpsRun(
+		context.Background(), d.db, rec, next, fmt.Sprintf("manual retry superseded ops run %d", rec.ID),
+	)
 	if err != nil {
 		return OpsRunRecord{}, false, err
 	}
@@ -425,9 +451,6 @@ ORDER BY id`)
 }
 
 func (d *Dispatcher) supersedeAndRerouteOpsRun(ctx context.Context, rec OpsRunRecord) error {
-	if err := CompleteOpsRun(ctx, d.db, rec.ID, opsRunStatusSuperseded, rec.Verdict, rec.Feedback, "orphaned dead process superseded on dispatcher startup"); err != nil {
-		return err
-	}
 	next := rec
 	next.ID = 0
 	next.Status = opsRunStatusRunning
@@ -439,7 +462,9 @@ func (d *Dispatcher) supersedeAndRerouteOpsRun(ctx context.Context, rec OpsRunRe
 	next.StartedAt = ""
 	next.CompletedAt = ""
 	fillOpsRunRuntimeModel(&next)
-	created, wasCreated, err := CreateOpsRun(ctx, d.db, next)
+	created, wasCreated, err := replaceOpsRun(
+		ctx, d.db, rec, next, "orphaned dead process superseded on dispatcher startup",
+	)
 	if err != nil {
 		return err
 	}
@@ -456,6 +481,37 @@ func (d *Dispatcher) supersedeAndRerouteOpsRun(ctx context.Context, rec OpsRunRe
 	_ = d.logEvent(ctx, "ops_run_superseded", "dispatcher", rec.BeadID, rec.WorkerID,
 		fmt.Sprintf(`{"ops_run_id":%d,"new_ops_run_id":%d,"type":%q,"routed":%t}`, rec.ID, created.ID, rec.Type, routed))
 	return nil
+}
+
+func replaceOpsRun(
+	ctx context.Context,
+	db *sql.DB,
+	current OpsRunRecord,
+	next OpsRunRecord,
+	supersedeReason string,
+) (OpsRunRecord, bool, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return OpsRunRecord{}, false, fmt.Errorf("begin ops run replacement: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if err := completeOpsRun(
+		ctx, tx, current.ID, opsRunStatusSuperseded, current.Verdict, current.Feedback, supersedeReason,
+	); err != nil {
+		return OpsRunRecord{}, false, err
+	}
+	created, wasCreated, err := createOpsRun(ctx, tx, next)
+	if err != nil {
+		return OpsRunRecord{}, false, err
+	}
+	if !wasCreated {
+		return created, false, nil
+	}
+	if err := tx.Commit(); err != nil {
+		return OpsRunRecord{}, false, fmt.Errorf("commit ops run replacement: %w", err)
+	}
+	return created, true, nil
 }
 
 func (d *Dispatcher) routeOpsRun(ctx context.Context, rec OpsRunRecord) bool {
@@ -690,8 +746,8 @@ func validateOpsRunCompletionStatus(status string) error {
 	}
 }
 
-func loadOpsRunByID(ctx context.Context, db *sql.DB, id int64) (OpsRunRecord, error) {
-	rec, err := scanOpsRun(db.QueryRowContext(ctx, `
+func loadOpsRunByID(ctx context.Context, store opsRunStore, id int64) (OpsRunRecord, error) {
+	rec, err := scanOpsRun(store.QueryRowContext(ctx, `
 SELECT id, escalation_id, type, bead_id, worker_id, dispatcher_pid, process_pid, runtime, model, status, verdict, feedback, error, started_at, completed_at
 FROM ops_runs
 WHERE id = ?`, id))

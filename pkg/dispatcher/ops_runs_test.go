@@ -89,6 +89,120 @@ func TestOpsRunPersistenceLifecycle(t *testing.T) {
 	}
 }
 
+func TestCreateOpsRunPropagatesNonUniqueInsertFailure(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	const beadID = "oro-create-ops-arbitrary-insert-error"
+
+	original, _, err := CreateOpsRun(ctx, db, OpsRunRecord{Type: string(ops.OpsDecompose), BeadID: beadID})
+	if err != nil {
+		t.Fatalf("CreateOpsRun original: %v", err)
+	}
+	installOpsRunInsertFailureTrigger(t, ctx, db, beadID)
+
+	_, wasCreated, err := CreateOpsRun(ctx, db, OpsRunRecord{Type: string(ops.OpsDecompose), BeadID: beadID})
+	if err == nil {
+		t.Fatal("CreateOpsRun arbitrary insert error = nil, want propagated error")
+	}
+	if wasCreated {
+		t.Fatal("CreateOpsRun arbitrary insert error created = true, want false")
+	}
+	if !strings.Contains(err.Error(), "injected replacement insert failure") {
+		t.Fatalf("CreateOpsRun error = %q, want injected replacement insert failure", err)
+	}
+	if got := fetchOpsRunForTest(t, db, original.ID).Status; got != opsRunStatusRunning {
+		t.Fatalf("original status = %q, want %q", got, opsRunStatusRunning)
+	}
+}
+
+func TestStartupOpsRunReplacementInsertFailureRollsBackSupersede(t *testing.T) {
+	ctx := context.Background()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	const beadID = "oro-startup-replacement-insert-rollback"
+
+	original, _, err := CreateOpsRun(ctx, d.db, OpsRunRecord{
+		Type:          string(ops.OpsDecompose),
+		BeadID:        beadID,
+		DispatcherPID: -1,
+		ProcessPID:    -1,
+	})
+	if err != nil {
+		t.Fatalf("CreateOpsRun original: %v", err)
+	}
+	installOpsRunInsertFailureTrigger(t, ctx, d.db, beadID)
+
+	err = d.reconcileOpsRunsOnStartup(ctx)
+	if err == nil {
+		t.Fatal("reconcileOpsRunsOnStartup replacement insert error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "injected replacement insert failure") {
+		t.Fatalf("reconcileOpsRunsOnStartup error = %q, want injected replacement insert failure", err)
+	}
+	after := fetchOpsRunForTest(t, d.db, original.ID)
+	if after.Status != opsRunStatusRunning || after.CompletedAt != "" {
+		t.Fatalf("original after failed replacement = status %q completed_at %q, want running/empty", after.Status, after.CompletedAt)
+	}
+	assertOpsRunCount(t, d.db, string(ops.OpsDecompose), beadID, 1)
+}
+
+func TestManualOpsRunReplacementInsertFailureRollsBackSupersede(t *testing.T) {
+	ctx := context.Background()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	const beadID = "oro-manual-replacement-insert-rollback"
+
+	original, _, err := CreateOpsRun(ctx, d.db, OpsRunRecord{
+		Type:   string(ops.OpsDecompose),
+		BeadID: beadID,
+	})
+	if err != nil {
+		t.Fatalf("CreateOpsRun original: %v", err)
+	}
+	if err := CompleteOpsRun(ctx, d.db, original.ID, opsRunStatusFailed, "failed", "original feedback", "original failure"); err != nil {
+		t.Fatalf("CompleteOpsRun original: %v", err)
+	}
+	before := fetchOpsRunForTest(t, d.db, original.ID)
+	installOpsRunInsertFailureTrigger(t, ctx, d.db, beadID)
+
+	_, _, err = d.supersedeOpsRunForRetry(before)
+	if err == nil {
+		t.Fatal("supersedeOpsRunForRetry replacement insert error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "injected replacement insert failure") {
+		t.Fatalf("supersedeOpsRunForRetry error = %q, want injected replacement insert failure", err)
+	}
+	after := fetchOpsRunForTest(t, d.db, original.ID)
+	if after != before {
+		t.Fatalf("original after failed manual replacement = %#v, want unchanged %#v", after, before)
+	}
+	assertOpsRunCount(t, d.db, string(ops.OpsDecompose), beadID, 1)
+}
+
+func installOpsRunInsertFailureTrigger(t *testing.T, ctx context.Context, db *sql.DB, beadID string) {
+	t.Helper()
+	if _, err := db.ExecContext(ctx, fmt.Sprintf(`
+CREATE TRIGGER fail_ops_run_replacement_insert
+BEFORE INSERT ON ops_runs
+WHEN NEW.bead_id = %q
+BEGIN
+    SELECT RAISE(FAIL, 'injected replacement insert failure');
+END`, beadID)); err != nil {
+		t.Fatalf("create ops-run insert failure trigger: %v", err)
+	}
+}
+
+func assertOpsRunCount(t *testing.T, db *sql.DB, runType, beadID string, want int) {
+	t.Helper()
+	var got int
+	if err := db.QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM ops_runs WHERE type=? AND bead_id=?`, runType, beadID,
+	).Scan(&got); err != nil {
+		t.Fatalf("count ops runs: %v", err)
+	}
+	if got != want {
+		t.Fatalf("ops run count = %d, want %d", got, want)
+	}
+}
+
 func TestFindBlockingOpsRun(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(t)
