@@ -204,6 +204,118 @@ func TestReviewCheckpointStoreSaveRejectedFindingsExactReplayOnly(t *testing.T) 
 	}
 }
 
+func TestReviewCheckpointStoreCapsCompactFindingsJSON(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "compact-cap.sqlite")
+	store := openReviewCheckpointStore(ctx, t, dbPath)
+
+	boundaryCheckpoint, err := store.CreateOrReuse(ctx, reviewCheckpointInput("oro-compact-boundary"))
+	if err != nil {
+		t.Fatalf("create boundary checkpoint: %v", err)
+	}
+	boundaryFinding := ops.Finding{
+		ID:             "boundary",
+		Severity:       ops.SevImportant,
+		ContractImpact: ops.ContractImplementationFix,
+		RequiredAction: "preserve required action",
+	}
+	baseJSON, err := json.Marshal(boundaryFinding)
+	if err != nil {
+		t.Fatalf("marshal boundary base: %v", err)
+	}
+	padding := maxReviewCheckpointFindingsJSONBytes - len(baseJSON)
+	if padding <= 0 {
+		t.Fatalf("boundary base bytes = %d, want below %d", len(baseJSON), maxReviewCheckpointFindingsJSONBytes)
+	}
+	boundaryFinding.Detail = strings.Repeat("x", padding)
+	boundaryJSON, err := json.Marshal(boundaryFinding)
+	if err != nil {
+		t.Fatalf("marshal exact boundary: %v", err)
+	}
+	if len(boundaryJSON) != maxReviewCheckpointFindingsJSONBytes {
+		t.Fatalf("boundary finding bytes = %d, want %d", len(boundaryJSON), maxReviewCheckpointFindingsJSONBytes)
+	}
+	if err := store.SaveRejectedFindings(ctx, boundaryCheckpoint.ID, []ops.Finding{boundaryFinding}, nil); err != nil {
+		t.Fatalf("save exact boundary finding: %v", err)
+	}
+	assertCompactFindingBytes(ctx, t, store, boundaryCheckpoint.ID, maxReviewCheckpointFindingsJSONBytes)
+	boundaryRecovery, err := store.LoadReviewRecovery(ctx, boundaryCheckpoint.ID)
+	if err != nil {
+		t.Fatalf("load exact boundary recovery: %v", err)
+	}
+	if !reflect.DeepEqual(boundaryRecovery.Findings, []ops.Finding{boundaryFinding}) {
+		t.Fatalf("boundary recovery findings changed: got %#v want %#v", boundaryRecovery.Findings, []ops.Finding{boundaryFinding})
+	}
+
+	overflowCheckpoint, err := store.CreateOrReuse(ctx, reviewCheckpointInput("oro-compact-overflow"))
+	if err != nil {
+		t.Fatalf("create overflow checkpoint: %v", err)
+	}
+	overflowFinding := boundaryFinding
+	overflowFinding.ID = "overflow"
+	overflowFinding.Detail += "x"
+	missingArtifactCheckpoint, err := store.CreateOrReuse(ctx, reviewCheckpointInput("oro-compact-overflow-without-artifact"))
+	if err != nil {
+		t.Fatalf("create missing-artifact checkpoint: %v", err)
+	}
+	if err := store.SaveRejectedFindings(ctx, missingArtifactCheckpoint.ID, []ops.Finding{overflowFinding}, nil); err == nil {
+		t.Fatal("save overflow finding without artifact succeeded, want error")
+	}
+	assertCheckpointStateAndFindingIDs(ctx, t, store, missingArtifactCheckpoint.ID, ReviewCheckpointStateReviewRunning, nil)
+
+	artifactDir := filepath.Join(root, "review-recovery")
+	overflowRef, err := PersistRecoveryArtifact(artifactDir, overflowCheckpoint.ID, []ops.Finding{overflowFinding})
+	if err != nil {
+		t.Fatalf("persist overflow artifact: %v", err)
+	}
+	if err := store.SaveRejectedFindings(ctx, overflowCheckpoint.ID, []ops.Finding{overflowFinding}, &overflowRef); err != nil {
+		t.Fatalf("save overflow finding: %v", err)
+	}
+	compactBytes := compactFindingBytes(ctx, t, store, overflowCheckpoint.ID)
+	if compactBytes > maxReviewCheckpointFindingsJSONBytes {
+		t.Fatalf("overflow compact bytes = %d, want <= %d", compactBytes, maxReviewCheckpointFindingsJSONBytes)
+	}
+	if compactBytes >= len(boundaryJSON)+1 {
+		t.Fatalf("overflow compact bytes = %d, want less than lossless %d", compactBytes, len(boundaryJSON)+1)
+	}
+	if err := store.db.Close(); err != nil {
+		t.Fatalf("close store before restart: %v", err)
+	}
+
+	restarted := openReviewCheckpointStore(ctx, t, dbPath)
+	overflowRecovery, err := restarted.LoadReviewRecovery(ctx, overflowCheckpoint.ID)
+	if err != nil {
+		t.Fatalf("load overflow recovery after restart: %v", err)
+	}
+	if overflowRecovery.Findings != nil || overflowRecovery.FindingsRef == nil || !reflect.DeepEqual(*overflowRecovery.FindingsRef, overflowRef) {
+		t.Fatalf("overflow recovery after restart = %#v, want exact ref %#v", overflowRecovery, overflowRef)
+	}
+	lossless, err := LoadRecoveryArtifact(*overflowRecovery.FindingsRef)
+	if err != nil {
+		t.Fatalf("load overflow artifact after restart: %v", err)
+	}
+	if !reflect.DeepEqual(lossless, []ops.Finding{overflowFinding}) {
+		t.Fatalf("lossless overflow findings changed: got %#v want %#v", lossless, []ops.Finding{overflowFinding})
+	}
+}
+
+func assertCompactFindingBytes(ctx context.Context, t *testing.T, store *ReviewCheckpointStore, checkpointID int64, want int) {
+	t.Helper()
+	if got := compactFindingBytes(ctx, t, store, checkpointID); got != want {
+		t.Fatalf("compact finding bytes = %d, want %d", got, want)
+	}
+}
+
+func compactFindingBytes(ctx context.Context, t *testing.T, store *ReviewCheckpointStore, checkpointID int64) int {
+	t.Helper()
+	var got int
+	if err := store.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(length(compact_json)), 0) FROM review_checkpoint_findings WHERE checkpoint_id = ?`, checkpointID).Scan(&got); err != nil {
+		t.Fatalf("sum compact finding bytes: %v", err)
+	}
+	return got
+}
+
 func assertCheckpointStateAndFindingIDs(
 	ctx context.Context,
 	t *testing.T,

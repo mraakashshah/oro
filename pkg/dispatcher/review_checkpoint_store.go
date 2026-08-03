@@ -22,6 +22,8 @@ var ErrCheckpointConflict = errors.New("review checkpoint conflict")
 // ReviewCheckpointState is the durable lifecycle state for a review checkpoint.
 type ReviewCheckpointState string
 
+const maxReviewCheckpointFindingsJSONBytes = 128 * 1024
+
 // ReviewCheckpointState values define the durable checkpoint lifecycle.
 const (
 	ReviewCheckpointStateQGPassed                 ReviewCheckpointState = "qg_passed"
@@ -167,6 +169,13 @@ func (s *ReviewCheckpointStore) SaveRejectedFindings(
 	if err := validateRejectedFindingsArtifact(findings, ref); err != nil {
 		return err
 	}
+	compactFindings, compacted, err := compactRejectedFindingsJSON(findings)
+	if err != nil {
+		return err
+	}
+	if compacted && ref == nil {
+		return errors.New("save rejected findings: lossless recovery artifact is required when compact JSON exceeds 128 KiB")
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -178,7 +187,7 @@ func (s *ReviewCheckpointStore) SaveRejectedFindings(
 		return err
 	}
 	if !claimed {
-		match, matchErr := rejectedFindingsReplayMatches(ctx, tx, checkpointID, findings, ref)
+		match, matchErr := rejectedFindingsReplayMatches(ctx, tx, checkpointID, compactFindings, compacted, ref)
 		if matchErr != nil {
 			return matchErr
 		}
@@ -190,8 +199,8 @@ func (s *ReviewCheckpointStore) SaveRejectedFindings(
 	if _, err := tx.ExecContext(ctx, `DELETE FROM review_checkpoint_findings WHERE checkpoint_id = ?`, checkpointID); err != nil {
 		return fmt.Errorf("clear rejected findings: %w", err)
 	}
-	for _, finding := range findings {
-		if err := insertRejectedFinding(ctx, tx, checkpointID, finding); err != nil {
+	for i, finding := range findings {
+		if err := insertRejectedFinding(ctx, tx, checkpointID, finding, compactFindings[i]); err != nil {
 			return err
 		}
 	}
@@ -233,7 +242,8 @@ func rejectedFindingsReplayMatches(
 	ctx context.Context,
 	tx *sql.Tx,
 	checkpointID int64,
-	findings []reviewcontract.Finding,
+	compactFindings [][]byte,
+	compacted bool,
 	ref *ReviewRecoveryArtifactRef,
 ) (bool, error) {
 	var state ReviewCheckpointState
@@ -253,6 +263,9 @@ WHERE id = ?`, checkpointID).Scan(&state, &path, &sha, &byteCount, &findingCount
 	if state != ReviewCheckpointStateRejected || !recoveryArtifactRefMatches(path, sha, byteCount, findingCount, ref) {
 		return false, nil
 	}
+	if ref == nil && compacted {
+		return false, nil
+	}
 
 	rows, err := tx.QueryContext(ctx, `
 SELECT compact_json
@@ -263,22 +276,26 @@ ORDER BY rowid`, checkpointID)
 		return false, fmt.Errorf("query rejected findings replay: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	stored := make([]reviewcontract.Finding, 0, len(findings))
+	stored := make([][]byte, 0, len(compactFindings))
 	for rows.Next() {
 		var compact []byte
 		if err := rows.Scan(&compact); err != nil {
 			return false, fmt.Errorf("scan rejected findings replay: %w", err)
 		}
-		var finding reviewcontract.Finding
-		if err := json.Unmarshal(compact, &finding); err != nil {
-			return false, fmt.Errorf("decode rejected findings replay: %w", err)
-		}
-		stored = append(stored, finding)
+		stored = append(stored, append([]byte(nil), compact...))
 	}
 	if err := rows.Err(); err != nil {
 		return false, fmt.Errorf("iterate rejected findings replay: %w", err)
 	}
-	return equalFindingsJSON(stored, findings), nil
+	if len(stored) != len(compactFindings) {
+		return false, nil
+	}
+	for i := range stored {
+		if !bytes.Equal(stored[i], compactFindings[i]) {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func recoveryArtifactRefMatches(path, sha sql.NullString, byteCount int64, findingCount int, ref *ReviewRecoveryArtifactRef) bool {
@@ -329,6 +346,55 @@ func recoveryArtifactColumns(ref *ReviewRecoveryArtifactRef) (path, sha any, byt
 		return nil, nil, 0, 0
 	}
 	return ref.Path, ref.SHA256, ref.Bytes, ref.FindingCount
+}
+
+func compactRejectedFindingsJSON(findings []reviewcontract.Finding) ([][]byte, bool, error) {
+	full := make([][]byte, len(findings))
+	total := 0
+	for i, finding := range findings {
+		if finding.ID == "" {
+			return nil, false, errors.New("save rejected findings: finding ID is empty")
+		}
+		encoded, err := json.Marshal(finding)
+		if err != nil {
+			return nil, false, fmt.Errorf("marshal rejected finding %q: %w", finding.ID, err)
+		}
+		full[i] = encoded
+		total += len(encoded)
+	}
+	if total <= maxReviewCheckpointFindingsJSONBytes {
+		return full, false, nil
+	}
+
+	compact := make([][]byte, len(findings))
+	total = 0
+	for i, finding := range findings {
+		normalized := finding
+		normalized.Detail = ""
+		normalized.Sources = nil
+		normalized.SourceFamilies = nil
+		normalized.History = nil
+		if len(normalized.Evidence) > 0 {
+			evidence := normalized.Evidence[0]
+			evidence.Quote = ""
+			normalized.Evidence = []reviewcontract.Evidence{evidence}
+		}
+		encoded, err := json.Marshal(normalized)
+		if err != nil {
+			return nil, false, fmt.Errorf("marshal compact rejected finding %q: %w", finding.ID, err)
+		}
+		compact[i] = encoded
+		total += len(encoded)
+	}
+	for i := len(compact) - 1; total > maxReviewCheckpointFindingsJSONBytes && i >= 0; i-- {
+		total -= len(compact[i])
+		compact[i] = []byte("{}")
+		total += len(compact[i])
+	}
+	if total > maxReviewCheckpointFindingsJSONBytes {
+		return nil, false, fmt.Errorf("save rejected findings: minimum compact JSON is %d bytes, exceeds %d-byte cap", total, maxReviewCheckpointFindingsJSONBytes)
+	}
+	return compact, true, nil
 }
 
 // LoadReviewRecovery reconstructs correction context from durable checkpoint
@@ -392,7 +458,7 @@ WHERE id = ?`, checkpointID).Scan(
 
 func (s *ReviewCheckpointStore) loadInlineRejectedFindings(ctx context.Context, checkpointID int64) ([]reviewcontract.Finding, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT compact_json
+SELECT finding_id, severity, file, line, contract_impact, required_action, compact_json
 FROM review_checkpoint_findings
 WHERE checkpoint_id = ?
 ORDER BY rowid`, checkpointID)
@@ -403,13 +469,31 @@ ORDER BY rowid`, checkpointID)
 
 	var findings []reviewcontract.Finding
 	for rows.Next() {
+		var id, severity, file, impact, action string
+		var line sql.NullInt64
 		var compact []byte
-		if err := rows.Scan(&compact); err != nil {
+		if err := rows.Scan(&id, &severity, &file, &line, &impact, &action, &compact); err != nil {
 			return nil, fmt.Errorf("scan review recovery finding: %w", err)
 		}
 		var finding reviewcontract.Finding
 		if err := json.Unmarshal(compact, &finding); err != nil {
 			return nil, fmt.Errorf("decode review recovery finding: %w", err)
+		}
+		finding.ID = id
+		finding.Severity = reviewcontract.Severity(severity)
+		finding.ContractImpact = reviewcontract.ContractImpact(impact)
+		finding.RequiredAction = action
+		if file != "" {
+			evidence := reviewcontract.Evidence{File: file}
+			if line.Valid {
+				evidence.LineStart = int(line.Int64)
+			}
+			if len(finding.Evidence) == 0 {
+				finding.Evidence = []reviewcontract.Evidence{evidence}
+			} else {
+				finding.Evidence[0].File = evidence.File
+				finding.Evidence[0].LineStart = evidence.LineStart
+			}
 		}
 		findings = append(findings, finding)
 	}
@@ -419,14 +503,7 @@ ORDER BY rowid`, checkpointID)
 	return findings, nil
 }
 
-func insertRejectedFinding(ctx context.Context, tx *sql.Tx, checkpointID int64, finding reviewcontract.Finding) error {
-	if finding.ID == "" {
-		return errors.New("save rejected findings: finding ID is empty")
-	}
-	compact, err := json.Marshal(finding)
-	if err != nil {
-		return fmt.Errorf("marshal rejected finding %q: %w", finding.ID, err)
-	}
+func insertRejectedFinding(ctx context.Context, tx *sql.Tx, checkpointID int64, finding reviewcontract.Finding, compact []byte) error {
 	file, line := compactFindingLocation(finding)
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO review_checkpoint_findings (
