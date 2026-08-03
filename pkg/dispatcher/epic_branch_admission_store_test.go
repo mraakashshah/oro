@@ -83,26 +83,29 @@ INSERT INTO leases VALUES ('storage-lease', 'preserve me');
 	}
 	assertEpicBranchLease(t, leaseB, "leased", 2, "token-b", "worker-b", now.Add(4*time.Minute+30*time.Second))
 
-	if _, err := store.block(ctx, leaseB.branch, leaseA.leaseToken, leaseA.generation, "checked_out", "/tmp/old", "old", "target", "stale"); !errors.Is(err, ErrEpicBranchAdmissionCAS) {
+	if _, err := store.block(ctx, leaseB.branch, leaseA.leaseToken, leaseA.generation, "checked_out", "/tmp/old", "old", "target", "oro-stale-recovery", "stale"); !errors.Is(err, ErrEpicBranchAdmissionCAS) {
 		t.Fatalf("stale holder block error = %v, want ErrEpicBranchAdmissionCAS", err)
 	}
 	if err := store.release(ctx, leaseB.branch, leaseA.leaseToken, leaseA.generation, now.Add(3*time.Minute)); !errors.Is(err, ErrEpicBranchAdmissionCAS) {
 		t.Fatalf("stale holder release error = %v, want ErrEpicBranchAdmissionCAS", err)
 	}
 
-	blocked, err := store.block(ctx, leaseB.branch, leaseB.leaseToken, leaseB.generation, "diverged", "/tmp/epic", "branch-sha", "target-sha", "preserve branch")
+	blocked, err := store.block(ctx, leaseB.branch, leaseB.leaseToken, leaseB.generation, "diverged", "/tmp/epic", "branch-sha", "target-sha", "oro-recovery", "preserve branch")
 	if err != nil {
 		t.Fatalf("block held branch: %v", err)
 	}
-	if blocked.state != "blocked" || blocked.targetBranch != "main" || blocked.blockerKind != "diverged" || blocked.checkoutPath != "/tmp/epic" || blocked.branchSHA != "branch-sha" || blocked.targetSHA != "target-sha" || blocked.details != "preserve branch" {
+	if blocked.state != "blocked" || blocked.targetBranch != "main" || blocked.blockerKind != "diverged" || blocked.checkoutPath != "/tmp/epic" || blocked.branchSHA != "branch-sha" || blocked.targetSHA != "target-sha" || blocked.recoveryBeadID != "oro-recovery" || blocked.details != "preserve branch" {
 		t.Fatalf("blocked admission = %+v", blocked)
 	}
-	blockedAgain, err := store.block(ctx, leaseB.branch, leaseB.leaseToken, leaseB.generation, "diverged", "/tmp/epic", "branch-sha", "target-sha", "preserve branch")
+	blockedAgain, err := store.block(ctx, leaseB.branch, leaseB.leaseToken, leaseB.generation, "diverged", "/tmp/epic", "branch-sha", "target-sha", "oro-recovery", "preserve branch")
 	if err != nil {
 		t.Fatalf("repeat identical block: %v", err)
 	}
 	if blockedAgain != blocked {
 		t.Fatalf("repeated block changed row\ngot:  %+v\nwant: %+v", blockedAgain, blocked)
+	}
+	if _, err := store.block(ctx, leaseB.branch, leaseB.leaseToken, leaseB.generation, "diverged", "/tmp/epic", "branch-sha", "target-sha", "oro-other-recovery", "preserve branch"); !errors.Is(err, ErrEpicBranchAdmissionCAS) {
+		t.Fatalf("mismatched recovery link block error = %v, want ErrEpicBranchAdmissionCAS", err)
 	}
 	var branchRows int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM epic_branch_admissions WHERE branch=?`, leaseB.branch).Scan(&branchRows); err != nil {
@@ -207,6 +210,122 @@ func TestEpicBranchAdmissionAcquireConcurrent(t *testing.T) {
 	}
 }
 
+func TestEpicBranchAdmissionExpiredHolderCannotBlock(t *testing.T) {
+	ctx := context.Background()
+	db := openEpicBranchAdmissionTestDB(t, t.TempDir()+"/state.db")
+	defer func() { _ = db.Close() }()
+	store := newEpicBranchAdmissionStore(db)
+	now := time.Now().UTC()
+	lease, acquired, err := store.acquire(ctx, "epic/oro-expired-block", "oro-expired-block", "main", "token-a", "worker-a", now)
+	if err != nil || !acquired {
+		t.Fatalf("acquire lease = acquired %v, error %v", acquired, err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE epic_branch_admissions SET lease_expires_at='2000-01-01T00:00:00Z' WHERE branch=?`, lease.branch); err != nil {
+		t.Fatalf("expire lease: %v", err)
+	}
+
+	if _, err := store.block(ctx, lease.branch, lease.leaseToken, lease.generation, "diverged", "/tmp/expired", "old", "target", "oro-expired-recovery", "must not persist"); !errors.Is(err, ErrEpicBranchAdmissionCAS) {
+		t.Fatalf("expired holder block error = %v, want ErrEpicBranchAdmissionCAS", err)
+	}
+	var state string
+	var blockerKind, recoveryBeadID sql.NullString
+	var details string
+	if err := db.QueryRowContext(ctx, `
+SELECT state, blocker_kind, recovery_bead_id, details
+FROM epic_branch_admissions WHERE branch=?`, lease.branch).Scan(&state, &blockerKind, &recoveryBeadID, &details); err != nil {
+		t.Fatalf("read expired lease after block attempt: %v", err)
+	}
+	if state != "leased" || blockerKind.Valid || recoveryBeadID.Valid || details != "" {
+		t.Fatalf("expired block mutated row: state=%q blocker=%v recovery=%v details=%q", state, blockerKind, recoveryBeadID, details)
+	}
+}
+
+func TestEpicBranchAdmissionBlockedResolveCAS(t *testing.T) {
+	ctx := context.Background()
+	db := openEpicBranchAdmissionTestDB(t, t.TempDir()+"/state.db")
+	defer func() { _ = db.Close() }()
+	store := newEpicBranchAdmissionStore(db)
+	now := time.Now().UTC()
+	lease, acquired, err := store.acquire(ctx, "epic/oro-resolve-block", "oro-resolve-block", "main", "token-a", "worker-a", now)
+	if err != nil || !acquired {
+		t.Fatalf("acquire lease = acquired %v, error %v", acquired, err)
+	}
+	blocked, err := store.block(ctx, lease.branch, lease.leaseToken, lease.generation, "diverged", "/tmp/blocked", "abc", "def", "oro-recovery", "repair branch")
+	if err != nil {
+		t.Fatalf("block lease: %v", err)
+	}
+
+	resolvedAt := now.Add(time.Minute)
+	if err := store.resolve(ctx, blocked.branch, blocked.generation+1, resolvedAt); !errors.Is(err, ErrEpicBranchAdmissionCAS) {
+		t.Fatalf("resolve with stale generation error = %v, want ErrEpicBranchAdmissionCAS", err)
+	}
+	var state string
+	if err := db.QueryRowContext(ctx, `SELECT state FROM epic_branch_admissions WHERE branch=?`, blocked.branch).Scan(&state); err != nil {
+		t.Fatalf("read state after stale resolve: %v", err)
+	}
+	if state != "blocked" {
+		t.Fatalf("stale resolve state = %q, want blocked", state)
+	}
+	if err := store.resolve(ctx, blocked.branch, blocked.generation, resolvedAt); err != nil {
+		t.Fatalf("resolve blocked admission: %v", err)
+	}
+	if err := store.resolve(ctx, blocked.branch, blocked.generation, resolvedAt); err != nil {
+		t.Fatalf("repeat identical resolve: %v", err)
+	}
+
+	var leaseToken, leaseOwner, leaseExpiresAt sql.NullString
+	var generation int64
+	var recoveryBeadID, details, resolvedAtText string
+	if err := db.QueryRowContext(ctx, `
+SELECT state, generation, lease_token, lease_owner, lease_expires_at,
+       recovery_bead_id, details, resolved_at
+FROM epic_branch_admissions WHERE branch=?`, blocked.branch).Scan(
+		&state, &generation, &leaseToken, &leaseOwner, &leaseExpiresAt,
+		&recoveryBeadID, &details, &resolvedAtText,
+	); err != nil {
+		t.Fatalf("read resolved blocker: %v", err)
+	}
+	if state != "resolved" || generation != blocked.generation || leaseToken.Valid || leaseOwner.Valid || leaseExpiresAt.Valid || recoveryBeadID != "oro-recovery" || details != "repair branch" || resolvedAtText != formatEpicBranchAdmissionTime(resolvedAt) {
+		t.Fatalf("resolved blocker = state %q generation %d token %v owner %v expiry %v recovery %q details %q resolved_at %q", state, generation, leaseToken, leaseOwner, leaseExpiresAt, recoveryBeadID, details, resolvedAtText)
+	}
+	if err := store.resolve(ctx, blocked.branch, blocked.generation+1, resolvedAt); !errors.Is(err, ErrEpicBranchAdmissionCAS) {
+		t.Fatalf("resolve resolved row with stale generation error = %v, want ErrEpicBranchAdmissionCAS", err)
+	}
+
+	safe, acquired, err := store.acquire(ctx, "epic/oro-safe-resolve", "oro-safe-resolve", "main", "token-safe", "worker-safe", now)
+	if err != nil || !acquired {
+		t.Fatalf("acquire safe lease = acquired %v, error %v", acquired, err)
+	}
+	if err := store.release(ctx, safe.branch, safe.leaseToken, safe.generation, now.Add(30*time.Second)); err != nil {
+		t.Fatalf("release safe lease: %v", err)
+	}
+	if err := store.resolve(ctx, safe.branch, safe.generation, resolvedAt); !errors.Is(err, ErrEpicBranchAdmissionCAS) {
+		t.Fatalf("resolve safely released row error = %v, want ErrEpicBranchAdmissionCAS", err)
+	}
+
+	checkedOut, acquired, err := store.acquire(ctx, "epic/oro-checked-out-resolve", "oro-checked-out-resolve", "main", "token-checked-out", "worker-checked-out", now)
+	if err != nil || !acquired {
+		t.Fatalf("acquire checked-out lease = acquired %v, error %v", acquired, err)
+	}
+	checkedOut, err = store.block(ctx, checkedOut.branch, checkedOut.leaseToken, checkedOut.generation, "checked_out", "/tmp/checked-out", "abc", "def", "", "branch is checked out")
+	if err != nil {
+		t.Fatalf("block checked-out branch without recovery child: %v", err)
+	}
+	var nullableRecovery sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT recovery_bead_id FROM epic_branch_admissions WHERE branch=?`, checkedOut.branch).Scan(&nullableRecovery); err != nil {
+		t.Fatalf("read checked-out recovery link: %v", err)
+	}
+	if nullableRecovery.Valid {
+		t.Fatalf("checked-out recovery link = %q, want NULL", nullableRecovery.String)
+	}
+	if err := store.resolve(ctx, checkedOut.branch, checkedOut.generation, resolvedAt); err != nil {
+		t.Fatalf("resolve checked-out blocker: %v", err)
+	}
+	if err := store.resolve(ctx, checkedOut.branch, checkedOut.generation, resolvedAt); err != nil {
+		t.Fatalf("repeat checked-out blocker resolve: %v", err)
+	}
+}
+
 func TestEpicBranchAdmissionPersistsAcrossReopen(t *testing.T) {
 	ctx := context.Background()
 	path := t.TempDir() + "/state.db"
@@ -251,11 +370,14 @@ func TestEpicBranchAdmissionDBErrorsFailClosed(t *testing.T) {
 	if err := store.renew(ctx, "epic/oro-closed", "token", 1, now); err == nil {
 		t.Fatal("renew closed DB succeeded")
 	}
-	if _, err := store.block(ctx, "epic/oro-closed", "token", 1, "diverged", "/tmp/epic", "abc", "def", "details"); err == nil {
+	if _, err := store.block(ctx, "epic/oro-closed", "token", 1, "diverged", "/tmp/epic", "abc", "def", "oro-recovery", "details"); err == nil {
 		t.Fatal("block closed DB succeeded")
 	}
 	if err := store.release(ctx, "epic/oro-closed", "token", 1, now); err == nil {
 		t.Fatal("release closed DB succeeded")
+	}
+	if err := store.resolve(ctx, "epic/oro-closed", 1, now); err == nil {
+		t.Fatal("resolve closed DB succeeded")
 	}
 }
 

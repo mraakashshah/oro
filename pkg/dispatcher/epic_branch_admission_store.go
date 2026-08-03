@@ -194,10 +194,8 @@ WHERE branch = ?
 }
 
 func (s *epicBranchAdmissionStore) block(
-	ctx context.Context,
-	branch, leaseToken string,
-	generation int64,
-	blockerKind, checkoutPath, branchSHA, targetSHA, details string,
+	ctx context.Context, branch, leaseToken string,
+	generation int64, blockerKind, checkoutPath, branchSHA, targetSHA, recoveryBeadID, details string,
 ) (epicBranchAdmission, error) {
 	if s == nil || s.db == nil {
 		return epicBranchAdmission{}, errors.New("block epic branch admission: store is nil")
@@ -225,12 +223,15 @@ SET state = 'blocked',
     checkout_path = NULLIF(?, ''),
     branch_sha = ?,
     target_sha = ?,
+    recovery_bead_id = NULLIF(?, ''),
     details = ?,
     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
 WHERE branch = ?
   AND state = 'leased'
   AND lease_token = ?
-  AND generation = ?`, blockerKind, checkoutPath, branchSHA, targetSHA, details, branch, leaseToken, generation)
+  AND generation = ?
+  AND lease_expires_at IS NOT NULL
+  AND julianday(lease_expires_at) > julianday('now')`, blockerKind, checkoutPath, branchSHA, targetSHA, recoveryBeadID, details, branch, leaseToken, generation)
 	if err != nil {
 		return epicBranchAdmission{}, fmt.Errorf("block epic branch admission %q: update: %w", branch, err)
 	}
@@ -245,7 +246,7 @@ WHERE branch = ?
 		}
 		return epicBranchAdmission{}, fmt.Errorf("block epic branch admission %q: load: %w", branch, err)
 	}
-	if changed != 1 && !sameEpicBranchBlock(admission, leaseToken, generation, blockerKind, checkoutPath, branchSHA, targetSHA, details) {
+	if changed != 1 && !sameEpicBranchBlock(admission, leaseToken, generation, blockerKind, checkoutPath, branchSHA, targetSHA, recoveryBeadID, details) {
 		return epicBranchAdmission{}, epicBranchAdmissionCASError("block", branch)
 	}
 	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
@@ -308,6 +309,63 @@ WHERE branch = ?`, branch).Scan(&state, &currentGeneration, &currentToken)
 		return nil
 	}
 	return epicBranchAdmissionCASError("release", branch)
+}
+
+func (s *epicBranchAdmissionStore) resolve(ctx context.Context, branch string, generation int64, now time.Time) error {
+	if s == nil || s.db == nil {
+		return errors.New("resolve epic branch admission: store is nil")
+	}
+	if blank(branch) || generation <= 0 || now.IsZero() {
+		return errors.New("resolve epic branch admission: missing blocker identity")
+	}
+	nowText := formatEpicBranchAdmissionTime(now)
+	result, err := s.db.ExecContext(ctx, `
+UPDATE epic_branch_admissions
+SET state = 'resolved',
+    lease_token = NULL,
+    lease_owner = NULL,
+    lease_expires_at = NULL,
+    updated_at = ?,
+    resolved_at = ?
+WHERE branch = ?
+  AND state = 'blocked'
+  AND generation = ?`, nowText, nowText, branch, generation)
+	if err != nil {
+		return fmt.Errorf("resolve epic branch admission %q: %w", branch, err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("resolve epic branch admission %q: count update: %w", branch, err)
+	}
+	if changed == 1 {
+		return nil
+	}
+
+	idempotent, err := s.isIdempotentBlockedResolve(ctx, branch, generation)
+	if err != nil {
+		return fmt.Errorf("resolve epic branch admission %q: inspect conflict: %w", branch, err)
+	}
+	if idempotent {
+		return nil
+	}
+	return epicBranchAdmissionCASError("resolve", branch)
+}
+
+func (s *epicBranchAdmissionStore) isIdempotentBlockedResolve(ctx context.Context, branch string, generation int64) (bool, error) {
+	var state string
+	var currentGeneration int64
+	var blockerKind sql.NullString
+	err := s.db.QueryRowContext(ctx, `
+SELECT state, generation, blocker_kind
+FROM epic_branch_admissions
+WHERE branch = ?`, branch).Scan(&state, &currentGeneration, &blockerKind)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("query resolved epic branch admission: %w", err)
+	}
+	return state == "resolved" && currentGeneration == generation && blockerKind.Valid && blockerKind.String != "", nil
 }
 
 type epicBranchAdmissionRow interface {
@@ -412,7 +470,7 @@ func sameEpicBranchBlock(
 	admission epicBranchAdmission,
 	leaseToken string,
 	generation int64,
-	blockerKind, checkoutPath, branchSHA, targetSHA, details string,
+	blockerKind, checkoutPath, branchSHA, targetSHA, recoveryBeadID, details string,
 ) bool {
 	return admission.state == "blocked" &&
 		admission.leaseToken == leaseToken &&
@@ -421,6 +479,7 @@ func sameEpicBranchBlock(
 		admission.checkoutPath == checkoutPath &&
 		admission.branchSHA == branchSHA &&
 		admission.targetSHA == targetSHA &&
+		admission.recoveryBeadID == recoveryBeadID &&
 		admission.details == details
 }
 
