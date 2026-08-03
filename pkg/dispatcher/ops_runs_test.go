@@ -296,6 +296,55 @@ func TestOpsRunCompletionStates(t *testing.T) {
 	}
 }
 
+func TestCompleteOpsRunCASPreservesTerminalRowsAndAllowsExactReplay(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+
+	replay, _, err := CreateOpsRun(ctx, db, OpsRunRecord{Type: "decompose", BeadID: "oro-ops-exact-replay"})
+	if err != nil {
+		t.Fatalf("CreateOpsRun replay: %v", err)
+	}
+	if err := CompleteOpsRun(ctx, db, replay.ID, opsRunStatusResolved, "original-verdict", "original-feedback", "original-error"); err != nil {
+		t.Fatalf("CompleteOpsRun original replay outcome: %v", err)
+	}
+	wantReplay := fetchOpsRunForTest(t, db, replay.ID)
+	if err := CompleteOpsRun(ctx, db, replay.ID, opsRunStatusResolved, "original-verdict", "original-feedback", "original-error"); err != nil {
+		t.Fatalf("CompleteOpsRun exact replay: %v", err)
+	}
+	if got := fetchOpsRunForTest(t, db, replay.ID); got != wantReplay {
+		t.Fatalf("exact replay changed terminal row\n got: %#v\nwant: %#v", got, wantReplay)
+	}
+
+	for _, terminalStatus := range []string{
+		opsRunStatusFailed,
+		opsRunStatusStale,
+		opsRunStatusResolved,
+		opsRunStatusSuperseded,
+	} {
+		t.Run(terminalStatus, func(t *testing.T) {
+			rec, _, err := CreateOpsRun(ctx, db, OpsRunRecord{
+				Type:   "decompose",
+				BeadID: "oro-ops-late-result-" + terminalStatus,
+			})
+			if err != nil {
+				t.Fatalf("CreateOpsRun: %v", err)
+			}
+			if err := CompleteOpsRun(ctx, db, rec.ID, terminalStatus, "original-verdict", "original-feedback", "original-error"); err != nil {
+				t.Fatalf("CompleteOpsRun original terminal outcome: %v", err)
+			}
+			want := fetchOpsRunForTest(t, db, rec.ID)
+
+			err = CompleteOpsRun(ctx, db, rec.ID, opsRunStatusResolved, "late-verdict", "late-feedback", "late-error")
+			if err == nil {
+				t.Fatal("CompleteOpsRun late result = nil, want compare-and-swap rejection")
+			}
+			if got := fetchOpsRunForTest(t, db, rec.ID); got != want {
+				t.Fatalf("late result changed terminal row\n got: %#v\nwant: %#v", got, want)
+			}
+		})
+	}
+}
+
 func TestDecomposeOpsRunPersistsTerminalOutcome(t *testing.T) {
 	ctx := context.Background()
 	d, _, _, _, _, spawnMock := newTestDispatcher(t)

@@ -137,10 +137,18 @@ func CompleteOpsRun(ctx context.Context, db *sql.DB, id int64, status, verdict, 
 	if db == nil {
 		return errors.New("complete ops run: db is nil")
 	}
-	return completeOpsRun(ctx, db, id, status, verdict, feedback, errorText)
+	return completeOpsRunFromStatus(ctx, db, id, opsRunStatusRunning, status, verdict, feedback, errorText)
 }
 
-func completeOpsRun(ctx context.Context, store opsRunStore, id int64, status, verdict, feedback, errorText string) error {
+func completeOpsRunFromStatus(
+	ctx context.Context,
+	store opsRunStore,
+	id int64,
+	expectedStatus, status, verdict, feedback, errorText string,
+) error {
+	if !isBlockingOpsRunStatus(expectedStatus) {
+		return fmt.Errorf("complete ops run %d: invalid expected status %q", id, expectedStatus)
+	}
 	if err := validateOpsRunCompletionStatus(status); err != nil {
 		return err
 	}
@@ -151,7 +159,8 @@ SET status = ?,
     feedback = ?,
     error = ?,
     completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP)
-WHERE id = ?`, status, verdict, feedback, errorText, id)
+WHERE id = ?
+  AND status = ?`, status, verdict, feedback, errorText, id, expectedStatus)
 	if err != nil {
 		return fmt.Errorf("complete ops run %d: %w", id, err)
 	}
@@ -160,7 +169,17 @@ WHERE id = ?`, status, verdict, feedback, errorText, id)
 		return fmt.Errorf("complete ops run %d rows affected: %w", id, err)
 	}
 	if affected == 0 {
-		return fmt.Errorf("complete ops run %d: not found", id)
+		current, loadErr := loadOpsRunByID(ctx, store, id)
+		if errors.Is(loadErr, sql.ErrNoRows) {
+			return fmt.Errorf("complete ops run %d: not found", id)
+		}
+		if loadErr != nil {
+			return loadErr
+		}
+		if current.Status == status && current.Verdict == verdict && current.Feedback == feedback && current.Error == errorText {
+			return nil
+		}
+		return fmt.Errorf("complete ops run %d: expected status %q, found %q", id, expectedStatus, current.Status)
 	}
 	return nil
 }
@@ -255,6 +274,16 @@ func (d *Dispatcher) applyOpsRetry(args string) (string, error) {
 }
 
 func (d *Dispatcher) supersedeOpsRunForRetry(rec OpsRunRecord) (OpsRunRecord, bool, error) {
+	if !isBlockingOpsRunStatus(rec.Status) {
+		blocking, err := FindBlockingOpsRun(context.Background(), d.db, rec.Type, rec.BeadID)
+		if err != nil {
+			return OpsRunRecord{}, false, err
+		}
+		if blocking != nil {
+			return OpsRunRecord{}, false, fmt.Errorf("retry ops run %d: blocking ops run %d already exists", rec.ID, blocking.ID)
+		}
+		return OpsRunRecord{}, false, fmt.Errorf("retry ops run %d: status %q is not retryable", rec.ID, rec.Status)
+	}
 	next := rec
 	next.ID = 0
 	next.Status = opsRunStatusRunning
@@ -316,7 +345,9 @@ func (d *Dispatcher) applyOpsResolve(args string) (string, error) {
 			return "", err
 		}
 	}
-	if err := CompleteOpsRun(context.Background(), d.db, rec.ID, opsRunStatusResolved, rec.Verdict, rec.Feedback, reason); err != nil {
+	if err := completeOpsRunFromStatus(
+		context.Background(), d.db, rec.ID, rec.Status, opsRunStatusResolved, rec.Verdict, rec.Feedback, reason,
+	); err != nil {
 		return "", err
 	}
 	d.ackEscalation(context.Background(), rec.EscalationID, rec.BeadID, rec.WorkerID)
@@ -496,8 +527,8 @@ func replaceOpsRun(
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if err := completeOpsRun(
-		ctx, tx, current.ID, opsRunStatusSuperseded, current.Verdict, current.Feedback, supersedeReason,
+	if err := completeOpsRunFromStatus(
+		ctx, tx, current.ID, current.Status, opsRunStatusSuperseded, current.Verdict, current.Feedback, supersedeReason,
 	); err != nil {
 		return OpsRunRecord{}, false, err
 	}
