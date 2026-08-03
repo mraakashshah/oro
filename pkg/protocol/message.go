@@ -15,6 +15,13 @@ import (
 // Scanner buffers are configured to accept up to this size.
 const MaxMessageSize = 1 * 1024 * 1024 // 1 MB
 
+// WorkerProtocolVersion identifies the current worker/dispatcher wire contract.
+const WorkerProtocolVersion = 1
+
+// CapabilityReadyEvidenceV1 proves that a worker writes and reports canonical,
+// assignment-bound QG evidence before requesting review.
+const CapabilityReadyEvidenceV1 = "ready-evidence-v1"
+
 // MessageType identifies the kind of UDS message.
 type MessageType string
 
@@ -171,9 +178,11 @@ func (a *AssignPayload) Validate() error {
 
 // HeartbeatPayload is sent by a worker to report liveness and context usage.
 type HeartbeatPayload struct {
-	BeadID     string `json:"bead_id"`
-	WorkerID   string `json:"worker_id"`
-	ContextPct int    `json:"context_pct"`
+	BeadID          string   `json:"bead_id"`
+	WorkerID        string   `json:"worker_id"`
+	ContextPct      int      `json:"context_pct"`
+	ProtocolVersion int      `json:"protocol_version,omitempty"`
+	Capabilities    []string `json:"capabilities,omitempty"`
 }
 
 // StatusPayload is sent by a worker to report state transitions.
@@ -291,11 +300,32 @@ type ShutdownApprovedPayload struct {
 
 // ReconnectPayload is sent by a worker reconnecting after a disconnect.
 type ReconnectPayload struct {
-	WorkerID       string    `json:"worker_id"`
-	BeadID         string    `json:"bead_id"`
-	State          string    `json:"state"`
-	ContextPct     int       `json:"context_pct"`
-	BufferedEvents []Message `json:"buffered_events"`
+	WorkerID        string    `json:"worker_id"`
+	BeadID          string    `json:"bead_id"`
+	State           string    `json:"state"`
+	ContextPct      int       `json:"context_pct"`
+	BufferedEvents  []Message `json:"buffered_events"`
+	ProtocolVersion int       `json:"protocol_version,omitempty"`
+	Capabilities    []string  `json:"capabilities,omitempty"`
+}
+
+// Supports reports whether the reconnecting worker advertised capability.
+func (r *ReconnectPayload) Supports(capability string) bool {
+	return containsCapability(r.Capabilities, capability)
+}
+
+// Supports reports whether the live worker advertised capability.
+func (h *HeartbeatPayload) Supports(capability string) bool {
+	return containsCapability(h.Capabilities, capability)
+}
+
+func containsCapability(capabilities []string, want string) bool {
+	for _, capability := range capabilities {
+		if capability == want {
+			return true
+		}
+	}
+	return false
 }
 
 // maxBufferedEvents is the maximum number of buffered events allowed in a

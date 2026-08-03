@@ -361,7 +361,7 @@ func (d *Dispatcher) tryAssignBatch(ctx context.Context) []<-chan struct{} {
 	totalWorkers := 0
 	for _, w := range d.workers {
 		totalWorkers++
-		if w.state == protocol.WorkerIdle {
+		if w.state == protocol.WorkerIdle && !w.drainAfterAssignment {
 			idle = append(idle, idleWorker{worker: w, targetBeadID: w.targetBeadID, spawnFor: w.spawnFor})
 		}
 	}

@@ -178,6 +178,41 @@ func TestReviewArtifactJanitorScheduled(t *testing.T) {
 	}
 }
 
+func TestReviewEvidenceParticipatesInArtifactRetention(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := openReviewCheckpointStore(ctx, t, "file:review-evidence-retention?mode=memory&cache=shared")
+	checkpoint := createMaintenanceCheckpoint(ctx, t, store, 200, ReviewCheckpointStateIntegrated)
+	evidencePath := filepath.Join(t.TempDir(), "1.json")
+	oldTimestamp := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339Nano)
+	if _, err := store.db.ExecContext(ctx, `
+UPDATE review_checkpoints
+SET state = ?, qg_evidence_path = ?, qg_evidence_sha256 = 'evidence-hash', created_at = ?, updated_at = ?
+WHERE id = ?`, ReviewCheckpointStateIntegrated, evidencePath, oldTimestamp, oldTimestamp, checkpoint.ID); err != nil {
+		t.Fatalf("seed retained QG evidence: %v", err)
+	}
+
+	artifacts, err := store.ListPrunableArtifacts(ctx, time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("list prunable QG evidence: %v", err)
+	}
+	if len(artifacts) != 1 || artifacts[0].Path != evidencePath {
+		t.Fatalf("prunable QG evidence = %v, want %q", artifacts, evidencePath)
+	}
+	if err := store.ClearPrunedArtifact(ctx, evidencePath); err != nil {
+		t.Fatalf("clear pruned QG evidence: %v", err)
+	}
+	var retained, retainedHash string
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT COALESCE(qg_evidence_path, ''), COALESCE(qg_evidence_sha256, '') FROM review_checkpoints WHERE id = ?`, checkpoint.ID,
+	).Scan(&retained, &retainedHash); err != nil {
+		t.Fatalf("load cleared QG evidence: %v", err)
+	}
+	if retained != "" || retainedHash != "" {
+		t.Fatalf("QG evidence reference retained after clear: path=%q hash=%q", retained, retainedHash)
+	}
+}
+
 func seedReviewArtifact(
 	ctx context.Context,
 	t *testing.T,

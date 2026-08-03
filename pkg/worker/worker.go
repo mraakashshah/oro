@@ -1492,7 +1492,9 @@ func (w *Worker) reconnect(ctx context.Context) error {
 		w.disconnected = false
 		beadID := w.beadID
 		state := "running"
-		if w.proc == nil {
+		if w.qgEvidencePath != "" {
+			state = "awaiting_review"
+		} else if w.proc == nil {
 			state = "idle"
 		}
 		hook := w.reconnectDialHook
@@ -1507,10 +1509,12 @@ func (w *Worker) reconnect(ctx context.Context) error {
 		reconnMsg := protocol.Message{
 			Type: protocol.MsgReconnect,
 			Reconnect: &protocol.ReconnectPayload{
-				WorkerID:       w.ID,
-				BeadID:         beadID,
-				State:          state,
-				BufferedEvents: buffered,
+				WorkerID:        w.ID,
+				BeadID:          beadID,
+				State:           state,
+				BufferedEvents:  buffered,
+				ProtocolVersion: protocol.WorkerProtocolVersion,
+				Capabilities:    []string{protocol.CapabilityReadyEvidenceV1},
 			},
 		}
 		if err := w.sendMessage(reconnMsg); err != nil {
@@ -1598,9 +1602,11 @@ func (w *Worker) trySendHeartbeat(_ context.Context) {
 	data, err := json.Marshal(protocol.Message{
 		Type: protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{
-			BeadID:     beadID,
-			WorkerID:   w.ID,
-			ContextPct: contextPct,
+			BeadID:          beadID,
+			WorkerID:        w.ID,
+			ContextPct:      contextPct,
+			ProtocolVersion: protocol.WorkerProtocolVersion,
+			Capabilities:    []string{protocol.CapabilityReadyEvidenceV1},
 		},
 	})
 	if err != nil {
@@ -1624,9 +1630,11 @@ func (w *Worker) SendHeartbeat(_ context.Context, contextPct int) error {
 	return w.sendMessage(protocol.Message{
 		Type: protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{
-			BeadID:     beadID,
-			WorkerID:   w.ID,
-			ContextPct: contextPct,
+			BeadID:          beadID,
+			WorkerID:        w.ID,
+			ContextPct:      contextPct,
+			ProtocolVersion: protocol.WorkerProtocolVersion,
+			Capabilities:    []string{protocol.CapabilityReadyEvidenceV1},
 		},
 	})
 }

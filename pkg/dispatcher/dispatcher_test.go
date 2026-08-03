@@ -1926,6 +1926,14 @@ var testAssignPayloadByConn sync.Map
 
 func sendMsg(t *testing.T, conn net.Conn, msg protocol.Message) {
 	t.Helper()
+	if msg.Heartbeat != nil && msg.Heartbeat.ProtocolVersion == 0 && len(msg.Heartbeat.Capabilities) == 0 {
+		msg.Heartbeat.ProtocolVersion = protocol.WorkerProtocolVersion
+		msg.Heartbeat.Capabilities = []string{protocol.CapabilityReadyEvidenceV1}
+	}
+	if msg.Reconnect != nil && msg.Reconnect.ProtocolVersion == 0 && len(msg.Reconnect.Capabilities) == 0 {
+		msg.Reconnect.ProtocolVersion = protocol.WorkerProtocolVersion
+		msg.Reconnect.Capabilities = []string{protocol.CapabilityReadyEvidenceV1}
+	}
 	hydrateReadyEvidenceTestMessage(t, conn, &msg)
 	data, err := json.Marshal(msg)
 	if err != nil {
@@ -13285,11 +13293,16 @@ func TestOpsReviewUsesTargetBranch(t *testing.T) {
 	beadSrc.SetBeads(nil)
 
 	// Set targetBranch on the worker (simulates assignBead resolution for epic children)
+	var assignmentID int64
 	d.mu.Lock()
 	if w, wOK := d.workers["w1"]; wOK {
 		w.targetBranch = "epic/my-epic"
+		assignmentID = w.assignmentID
 	}
 	d.mu.Unlock()
+	if _, err := d.db.Exec(`UPDATE assignments SET target_branch = ? WHERE id = ?`, "epic/my-epic", assignmentID); err != nil {
+		t.Fatalf("persist epic target branch: %v", err)
+	}
 
 	// Send READY_FOR_REVIEW
 	sendMsg(t, conn, protocol.Message{
@@ -14310,8 +14323,12 @@ func TestDispatcherBuffering(t *testing.T) {
 	// Send RECONNECT message
 	enc := json.NewEncoder(wConn)
 	_ = enc.Encode(protocol.Message{
-		Type:      protocol.MsgReconnect,
-		Reconnect: &protocol.ReconnectPayload{WorkerID: "w1", BeadID: "bead1", State: "idle"},
+		Type: protocol.MsgReconnect,
+		Reconnect: &protocol.ReconnectPayload{
+			WorkerID: "w1", BeadID: "bead1", State: "idle",
+			ProtocolVersion: protocol.WorkerProtocolVersion,
+			Capabilities:    []string{protocol.CapabilityReadyEvidenceV1},
+		},
 	})
 
 	// 5. Read messages from the new connection — should receive the buffered ASSIGN
@@ -19781,7 +19798,9 @@ func TestApplyRestartDaemon(t *testing.T) {
 	hb := protocol.Message{
 		Type: protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{
-			WorkerID: workerID,
+			WorkerID:        workerID,
+			ProtocolVersion: protocol.WorkerProtocolVersion,
+			Capabilities:    []string{protocol.CapabilityReadyEvidenceV1},
 		},
 	}
 	data, _ := json.Marshal(hb)

@@ -8,11 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 
+	"oro/pkg/evidencefs"
 	"oro/pkg/protocol"
 )
 
@@ -29,10 +29,30 @@ type durableReadyIdentity struct {
 }
 
 func (d *Dispatcher) acceptReadyEvidence(ctx context.Context, workerID string, ready *protocol.ReadyForReviewPayload) (durableReadyIdentity, bool) {
-	if legacyReadyEvidenceIdentity(ready) {
-		return d.validateLegacyReadyEvidence(ctx, workerID, ready)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	identity, accepted := d.acceptReadyEvidenceLocked(ctx, workerID, ready)
+	if !accepted || !trackedReadyIdentityMatches(d.workers[workerID], identity) {
+		return durableReadyIdentity{}, false
 	}
-	identity, evidence, evidenceSHA, ok := d.validateReadyEvidence(ctx, workerID, ready)
+	d.workers[workerID].state = protocol.WorkerReviewing
+	return identity, true
+}
+
+func (d *Dispatcher) acceptReadyEvidenceLocked(ctx context.Context, workerID string, ready *protocol.ReadyForReviewPayload) (durableReadyIdentity, bool) {
+	if legacyReadyEvidenceIdentity(ready) {
+		return d.validateLegacyReadyEvidenceLocked(ctx, workerID, ready)
+	}
+	if d.db == nil {
+		return durableReadyIdentity{}, false
+	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return durableReadyIdentity{}, false
+	}
+	defer func() { _ = tx.Rollback() }()
+	identity, evidence, evidenceSHA, ok := d.validateReadyEvidenceLocked(ctx, tx, workerID, ready)
 	if !ok {
 		return durableReadyIdentity{}, false
 	}
@@ -61,11 +81,11 @@ func (d *Dispatcher) acceptReadyEvidence(ctx context.Context, workerID string, r
 		ReadyAttempt:        "1",
 		State:               ReviewCheckpointStateQGPassed,
 	}
-	checkpoint, err := NewReviewCheckpointStore(d.db).CreateOrReuse(ctx, checkpointInput)
+	checkpoint, err := createOrReuseReviewCheckpoint(ctx, tx, checkpointInput)
 	if err != nil || checkpoint.CheckpointInput != checkpointInput {
 		return durableReadyIdentity{}, false
 	}
-	result, err := d.db.ExecContext(ctx, `
+	result, err := tx.ExecContext(ctx, `
 UPDATE review_checkpoints
 SET qg_evidence_path = ?, qg_evidence_sha256 = ?, updated_at = datetime('now')
 WHERE id = ? AND state = ?
@@ -77,7 +97,10 @@ WHERE id = ? AND state = ?
 		return durableReadyIdentity{}, false
 	}
 	rows, err := result.RowsAffected()
-	return identity, err == nil && rows == 1
+	if err != nil || rows != 1 || tx.Commit() != nil {
+		return durableReadyIdentity{}, false
+	}
+	return identity, true
 }
 
 func legacyReadyEvidenceIdentity(ready *protocol.ReadyForReviewPayload) bool {
@@ -85,7 +108,7 @@ func legacyReadyEvidenceIdentity(ready *protocol.ReadyForReviewPayload) bool {
 		ready.QGEvidencePath == "" && ready.TargetSHA == ""
 }
 
-func (d *Dispatcher) validateLegacyReadyEvidence(
+func (d *Dispatcher) validateLegacyReadyEvidenceLocked(
 	ctx context.Context,
 	workerID string,
 	ready *protocol.ReadyForReviewPayload,
@@ -93,7 +116,7 @@ func (d *Dispatcher) validateLegacyReadyEvidence(
 	if !legacyReadyEvidenceIdentity(ready) || ready.WorkerID != workerID || ready.BeadID == "" || d.db == nil {
 		return durableReadyIdentity{}, false
 	}
-	identity, ok := d.trackedLegacyReadyIdentity(workerID, ready.BeadID)
+	identity, ok := d.trackedLegacyReadyIdentityLocked(workerID, ready.BeadID)
 	if !ok {
 		return durableReadyIdentity{}, false
 	}
@@ -101,16 +124,16 @@ func (d *Dispatcher) validateLegacyReadyEvidence(
 	if err != nil || !legacyReadyMatchesDurableIdentity(identity, durable) {
 		return durableReadyIdentity{}, false
 	}
-	durable.targetBranch = identity.targetBranch
+	if durable.targetBranch == "" {
+		durable.targetBranch = identity.targetBranch
+	}
 	if durable.targetBranch == "" {
 		durable.targetBranch = d.cfg.DefaultBranch
 	}
 	return durable, true
 }
 
-func (d *Dispatcher) trackedLegacyReadyIdentity(workerID, beadID string) (durableReadyIdentity, bool) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+func (d *Dispatcher) trackedLegacyReadyIdentityLocked(workerID, beadID string) (durableReadyIdentity, bool) {
 	w := d.workers[workerID]
 	if w == nil || w.state != protocol.WorkerBusy || w.assignmentID <= 0 ||
 		w.beadID != beadID || w.worktree == "" {
@@ -128,10 +151,10 @@ func (d *Dispatcher) trackedLegacyReadyIdentity(workerID, beadID string) (durabl
 func (d *Dispatcher) loadLegacyReadyIdentity(ctx context.Context, assignmentID int64) (durableReadyIdentity, error) {
 	durable := durableReadyIdentity{assignmentID: assignmentID}
 	err := d.db.QueryRowContext(ctx, `
-SELECT bead_id, worker_id, worktree, qg_evidence_dir, target_sha
+SELECT bead_id, worker_id, worktree, qg_evidence_dir, target_sha, target_branch
 FROM assignments
 WHERE id = ? AND status = 'active'`, assignmentID).Scan(
-		&durable.beadID, &durable.workerID, &durable.worktree, &durable.evidenceRoot, &durable.targetSHA,
+		&durable.beadID, &durable.workerID, &durable.worktree, &durable.evidenceRoot, &durable.targetSHA, &durable.targetBranch,
 	)
 	if err != nil {
 		return durableReadyIdentity{}, fmt.Errorf("load legacy READY identity: %w", err)
@@ -145,23 +168,26 @@ func legacyReadyMatchesDurableIdentity(tracked, durable durableReadyIdentity) bo
 		durable.evidenceRoot == "" && durable.targetSHA == ""
 }
 
-func (d *Dispatcher) validateReadyEvidence(
+func (d *Dispatcher) validateReadyEvidenceLocked(
 	ctx context.Context,
+	executor reviewCheckpointExecutor,
 	workerID string,
 	ready *protocol.ReadyForReviewPayload,
 ) (durableReadyIdentity, protocol.ReadyForReviewPayload, string, bool) {
 	if ready == nil || ready.Validate() != nil || ready.WorkerID != workerID || d.db == nil {
 		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, "", false
 	}
-	identity, err := d.loadDurableReadyIdentity(ctx, ready.AssignmentID, workerID)
+	identity, err := d.loadDurableReadyIdentityLocked(ctx, executor, ready.AssignmentID, workerID)
 	if err != nil || !readyMatchesDurableIdentity(workerID, ready, identity) {
 		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, "", false
 	}
 	wantPath, err := canonicalReadyEvidencePath(identity.evidenceRoot, identity.beadID, ready.AssignmentID)
-	if err != nil || ready.QGEvidencePath != wantPath {
+	if err != nil || filepath.Clean(identity.evidenceRoot) != filepath.Clean(d.cfg.ReviewEvidenceDir) ||
+		ready.QGEvidencePath != wantPath {
 		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, "", false
 	}
-	data, err := os.ReadFile(wantPath) //nolint:gosec // exact path is derived from the durable assignment identity.
+	data, err := evidencefs.ReadFile(identity.evidenceRoot,
+		[]string{identity.beadID, strconv.FormatInt(ready.AssignmentID, 10)}, readyEvidenceAttempt, protocol.MaxMessageSize)
 	if err != nil {
 		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, "", false
 	}
@@ -172,13 +198,18 @@ func (d *Dispatcher) validateReadyEvidence(
 	return identity, evidence, readyEvidenceHash(data), true
 }
 
-func (d *Dispatcher) loadDurableReadyIdentity(ctx context.Context, assignmentID int64, workerID string) (durableReadyIdentity, error) {
+func (d *Dispatcher) loadDurableReadyIdentityLocked(
+	ctx context.Context,
+	executor reviewCheckpointExecutor,
+	assignmentID int64,
+	workerID string,
+) (durableReadyIdentity, error) {
 	identity := durableReadyIdentity{assignmentID: assignmentID}
-	err := d.db.QueryRowContext(ctx, `
-SELECT bead_id, worker_id, worktree, qg_evidence_dir, target_sha
+	err := executor.QueryRowContext(ctx, `
+SELECT bead_id, worker_id, worktree, qg_evidence_dir, target_sha, target_branch
 FROM assignments
 WHERE id = ? AND status = 'active'`, assignmentID).Scan(
-		&identity.beadID, &identity.workerID, &identity.worktree, &identity.evidenceRoot, &identity.targetSHA,
+		&identity.beadID, &identity.workerID, &identity.worktree, &identity.evidenceRoot, &identity.targetSHA, &identity.targetBranch,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -186,19 +217,19 @@ WHERE id = ? AND status = 'active'`, assignmentID).Scan(
 		}
 		return durableReadyIdentity{}, fmt.Errorf("load assignment evidence identity: %w", err)
 	}
-	d.mu.Lock()
 	w := d.workers[workerID]
-	if w != nil && w.assignmentID == assignmentID {
-		identity.targetBranch = w.targetBranch
-	}
-	d.mu.Unlock()
-	if w == nil || w.assignmentID != assignmentID {
+	if !trackedReadyIdentityMatches(w, identity) {
 		return durableReadyIdentity{}, errors.New("worker does not own active assignment")
 	}
 	if identity.targetBranch == "" {
 		identity.targetBranch = d.cfg.DefaultBranch
 	}
 	return identity, nil
+}
+
+func trackedReadyIdentityMatches(w *trackedWorker, identity durableReadyIdentity) bool {
+	return w != nil && identity.assignmentID > 0 && w.state == protocol.WorkerBusy &&
+		w.assignmentID == identity.assignmentID && w.beadID == identity.beadID && w.worktree == identity.worktree
 }
 
 func readyMatchesDurableIdentity(workerID string, ready *protocol.ReadyForReviewPayload, identity durableReadyIdentity) bool {

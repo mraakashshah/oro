@@ -45,10 +45,13 @@ CREATE TABLE assignments (
 )`); err != nil {
 		t.Fatalf("create legacy assignments: %v", err)
 	}
+	if _, err := db.Exec(`INSERT INTO assignments (id, bead_id, worker_id, worktree) VALUES (1, 'oro-legacy', 'worker-legacy', '/tmp/legacy')`); err != nil {
+		t.Fatalf("seed legacy assignment: %v", err)
+	}
 	if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
 		t.Fatalf("migrate bead schema: %v", err)
 	}
-	for _, column := range []string{"qg_evidence_dir", "target_sha"} {
+	for _, column := range []string{"qg_evidence_dir", "target_sha", "target_branch"} {
 		var count int
 		if err := db.QueryRowContext(ctx,
 			`SELECT COUNT(*) FROM pragma_table_info('assignments') WHERE name = ?`, column,
@@ -58,6 +61,13 @@ CREATE TABLE assignments (
 		if count != 1 {
 			t.Fatalf("assignments.%s count = %d, want 1", column, count)
 		}
+	}
+	var migratedTargetBranch string
+	if err := db.QueryRowContext(ctx, `SELECT target_branch FROM assignments WHERE id = 1`).Scan(&migratedTargetBranch); err != nil {
+		t.Fatalf("read migrated target branch: %v", err)
+	}
+	if migratedTargetBranch != "" {
+		t.Fatalf("migrated legacy target branch = %q, want empty for tracked-identity fallback", migratedTargetBranch)
 	}
 }
 

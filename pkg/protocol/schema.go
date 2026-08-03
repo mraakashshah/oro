@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS assignments (
     worktree TEXT NOT NULL,
     qg_evidence_dir TEXT NOT NULL DEFAULT '',
     target_sha TEXT NOT NULL DEFAULT '',
+	target_branch TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'active',
     assigned_at TEXT NOT NULL DEFAULT (datetime('now')),
     completed_at TEXT,
@@ -855,6 +856,7 @@ func ensureAssignmentEvidenceColumns(ctx context.Context, db *sql.DB) error {
 	}{
 		{name: "qg_evidence_dir", ddl: `ALTER TABLE assignments ADD COLUMN qg_evidence_dir TEXT NOT NULL DEFAULT ''`},
 		{name: "target_sha", ddl: `ALTER TABLE assignments ADD COLUMN target_sha TEXT NOT NULL DEFAULT ''`},
+		{name: "target_branch", ddl: `ALTER TABLE assignments ADD COLUMN target_branch TEXT NOT NULL DEFAULT ''`},
 	} {
 		if columns[column.name] {
 			continue

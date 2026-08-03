@@ -519,12 +519,78 @@ func (d *Dispatcher) handleConn(ctx context.Context, conn net.Conn) {
 		if workerID == "" {
 			workerID = extractWorkerID(msg)
 			if workerID != "" {
-				d.registerWorker(workerID, conn)
+				drainAfterAssignment, accepted := d.admitWorkerProtocol(ctx, conn, workerID, msg)
+				if !accepted {
+					return
+				}
+				d.registerWorkerWithProtocol(workerID, conn, drainAfterAssignment)
 			}
 		}
 
 		d.handleMessage(ctx, workerID, msg)
+		d.shutdownDrainedWorkerIfIdle(workerID)
 	}
+}
+
+func (d *Dispatcher) admitWorkerProtocol(
+	ctx context.Context,
+	conn net.Conn,
+	workerID string,
+	msg protocol.Message,
+) (drainAfterAssignment, accepted bool) {
+	if workerMessageSupportsReadyEvidence(msg) {
+		return false, true
+	}
+
+	var active int
+	err := d.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM assignments WHERE worker_id=? AND status IN ('active', 'requeued')`,
+		workerID,
+	).Scan(&active)
+	if err == nil && active > 0 {
+		_ = d.logEvent(ctx, "worker_protocol_drain_started", "dispatcher", extractBeadID(msg), workerID,
+			`{"required_capability":"ready-evidence-v1","policy":"finish-existing-only"}`)
+		return true, true
+	}
+
+	payload := fmt.Sprintf(`{"required_version":%d,"required_capability":%q`,
+		protocol.WorkerProtocolVersion, protocol.CapabilityReadyEvidenceV1)
+	if err != nil {
+		payload += fmt.Sprintf(`,"assignment_lookup_error":%q`, err.Error())
+	}
+	payload += `}`
+	_ = d.logEvent(ctx, "worker_protocol_drained", "dispatcher", extractBeadID(msg), workerID, payload)
+	_ = conn.SetWriteDeadline(time.Now().Add(directWorkerWriteTimeout))
+	_ = json.NewEncoder(conn).Encode(protocol.Message{Type: protocol.MsgShutdown})
+	_ = conn.SetWriteDeadline(time.Time{})
+	return false, false
+}
+
+func workerMessageSupportsReadyEvidence(msg protocol.Message) bool {
+	switch {
+	case msg.Heartbeat != nil:
+		return msg.Heartbeat.ProtocolVersion == protocol.WorkerProtocolVersion &&
+			msg.Heartbeat.Supports(protocol.CapabilityReadyEvidenceV1)
+	case msg.Reconnect != nil:
+		return msg.Reconnect.ProtocolVersion == protocol.WorkerProtocolVersion &&
+			msg.Reconnect.Supports(protocol.CapabilityReadyEvidenceV1)
+	default:
+		return false
+	}
+}
+
+func (d *Dispatcher) shutdownDrainedWorkerIfIdle(workerID string) {
+	if workerID == "" {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	w := d.workers[workerID]
+	if w == nil || !w.drainAfterAssignment || w.state != protocol.WorkerIdle {
+		return
+	}
+	w.markShuttingDownWithoutAssignment()
+	sendShutdownWithoutBuffering(w)
 }
 
 // extractWorkerID pulls the worker ID from any message payload.

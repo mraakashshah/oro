@@ -70,7 +70,7 @@ func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, 
 			return nil
 		}
 	}
-	if live, ok := d.workers[w.id]; !ok || live != w || w.state != protocol.WorkerIdle {
+	if live, ok := d.workers[w.id]; !ok || live != w || w.state != protocol.WorkerIdle || w.drainAfterAssignment {
 		d.mu.Unlock()
 		return nil
 	}

@@ -19,22 +19,6 @@ import (
 	workerstream "oro/pkg/worker"
 )
 
-func (d *Dispatcher) markWorkerReviewing(workerID string, identity durableReadyIdentity) (worktree, targetBranch string, ok bool) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	w, ok := d.workers[workerID]
-	if !ok || identity.assignmentID <= 0 {
-		return "", "", false
-	}
-	if w.assignmentID != identity.assignmentID || w.state != protocol.WorkerBusy ||
-		w.beadID != identity.beadID || w.worktree != identity.worktree {
-		return "", "", false
-	}
-	w.state = protocol.WorkerReviewing
-	return w.worktree, w.targetBranch, true
-}
-
 func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, msg protocol.Message) {
 	admission, admitted := d.admitReadyForReview(ctx, workerID, msg.ReadyForReview)
 	if !admitted {
@@ -109,14 +93,10 @@ func (d *Dispatcher) admitReadyForReview(ctx context.Context, workerID string, r
 	if !accepted {
 		return readyReviewAdmission{}, false
 	}
-	worktree, targetBranch, marked := d.markWorkerReviewing(workerID, identity)
-	if !marked {
-		return readyReviewAdmission{}, false
-	}
 	d.recordReadyForReviewProgress(ctx, workerID, identity.beadID)
 	return readyReviewAdmission{
 		beadID: identity.beadID, assignmentID: identity.assignmentID,
-		worktree: worktree, targetBranch: targetBranch,
+		worktree: identity.worktree, targetBranch: identity.targetBranch,
 	}, true
 }
 

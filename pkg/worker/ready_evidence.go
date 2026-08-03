@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strconv"
 
+	"oro/pkg/evidencefs"
 	"oro/pkg/protocol"
 )
 
@@ -61,44 +61,13 @@ func (w *Worker) writeQGEvidence() error {
 	if err != nil {
 		return fmt.Errorf("marshal QG evidence: %w", err)
 	}
-	if err := writeEvidenceAtomically(path, data); err != nil {
-		return err
+	if err := evidencefs.WriteFile(evidenceRoot,
+		[]string{ready.BeadID, strconv.FormatInt(ready.AssignmentID, 10)}, qgEvidenceAttempt, data); err != nil {
+		return fmt.Errorf("publish QG evidence: %w", err)
 	}
 
 	w.mu.Lock()
 	w.qgEvidencePath = path
 	w.mu.Unlock()
-	return nil
-}
-
-func writeEvidenceAtomically(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("create QG evidence directory: %w", err)
-	}
-	tmp, err := os.CreateTemp(dir, ".qg-evidence-*")
-	if err != nil {
-		return fmt.Errorf("create QG evidence temporary file: %w", err)
-	}
-	tmpPath := tmp.Name()
-	defer func() { _ = os.Remove(tmpPath) }()
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("secure QG evidence temporary file: %w", err)
-	}
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write QG evidence: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("sync QG evidence: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close QG evidence: %w", err)
-	}
-	if err := os.Rename(tmpPath, path); err != nil { //nolint:gosec // both paths are confined to the validated canonical assignment directory.
-		return fmt.Errorf("publish QG evidence: %w", err)
-	}
 	return nil
 }

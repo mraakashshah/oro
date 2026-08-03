@@ -1,13 +1,97 @@
 package dispatcher //nolint:testpackage // Admission tests require durable and tracked assignment state.
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
 	"oro/pkg/protocol"
 )
+
+func TestCanonicalReadyEvidenceRejectsSymlinkedParents(t *testing.T) {
+	t.Parallel()
+	for _, parent := range []string{"bead", "assignment"} {
+		t.Run(parent, func(t *testing.T) {
+			t.Parallel()
+			d, ready, workerID, beadID, opsSpawner := newCanonicalReadyAdmissionTest(t, "")
+			root := filepath.Dir(filepath.Dir(filepath.Dir(ready.QGEvidencePath)))
+			beadDir := filepath.Join(root, beadID)
+			assignmentDir := filepath.Join(beadDir, strconv.FormatInt(ready.AssignmentID, 10))
+			if err := os.RemoveAll(beadDir); err != nil {
+				t.Fatalf("remove canonical evidence fixture: %v", err)
+			}
+			external := t.TempDir()
+			externalEvidence := filepath.Join(external, readyEvidenceAttempt)
+			switch parent {
+			case "bead":
+				externalAssignment := filepath.Join(external, strconv.FormatInt(ready.AssignmentID, 10))
+				if err := os.Mkdir(externalAssignment, 0o700); err != nil {
+					t.Fatalf("create external assignment: %v", err)
+				}
+				externalEvidence = filepath.Join(externalAssignment, readyEvidenceAttempt)
+				if err := os.Symlink(external, beadDir); err != nil {
+					t.Fatalf("symlink bead parent: %v", err)
+				}
+			case "assignment":
+				if err := os.Mkdir(beadDir, 0o700); err != nil {
+					t.Fatalf("create bead parent: %v", err)
+				}
+				if err := os.Symlink(external, assignmentDir); err != nil {
+					t.Fatalf("symlink assignment parent: %v", err)
+				}
+			}
+			data, err := json.Marshal(ready)
+			if err != nil {
+				t.Fatalf("marshal external evidence: %v", err)
+			}
+			if err := os.WriteFile(externalEvidence, data, 0o600); err != nil {
+				t.Fatalf("write external evidence: %v", err)
+			}
+
+			d.handleReadyForReview(context.Background(), workerID, protocol.Message{
+				Type: protocol.MsgReadyForReview, ReadyForReview: &ready,
+			})
+			assertReadyAdmissionRejected(t, d, opsSpawner, workerID, beadID, true, protocol.WorkerBusy, time.Unix(123, 0))
+			got, err := os.ReadFile(externalEvidence)
+			if err != nil {
+				t.Fatalf("read external evidence: %v", err)
+			}
+			if !bytes.Equal(got, data) {
+				t.Fatal("dispatcher mutated external evidence")
+			}
+		})
+	}
+}
+
+func TestCanonicalReadyEvidenceClaimsBeforeCheckpoint(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		mutate func(*trackedWorker)
+		state  protocol.WorkerState
+	}{
+		{name: "idle", mutate: func(w *trackedWorker) { w.state = protocol.WorkerIdle }, state: protocol.WorkerIdle},
+		{name: "wrong bead", mutate: func(w *trackedWorker) { w.beadID = "oro-wrong-bead" }, state: protocol.WorkerBusy},
+		{name: "wrong worktree", mutate: func(w *trackedWorker) { w.worktree = t.TempDir() }, state: protocol.WorkerBusy},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			d, ready, workerID, beadID, opsSpawner := newCanonicalReadyAdmissionTest(t, "")
+			d.mu.Lock()
+			test.mutate(d.workers[workerID])
+			d.mu.Unlock()
+			d.handleReadyForReview(context.Background(), workerID, protocol.Message{
+				Type: protocol.MsgReadyForReview, ReadyForReview: &ready,
+			})
+			assertReadyAdmissionRejected(t, d, opsSpawner, workerID, beadID, true, test.state, time.Unix(123, 0))
+		})
+	}
+}
 
 func TestLegacyReadyEvidenceAdmissionMatrix(t *testing.T) {
 	t.Parallel()
@@ -165,6 +249,7 @@ func newCanonicalReadyAdmissionTest(
 	}
 	worktree := t.TempDir()
 	evidenceRoot := filepath.Join(t.TempDir(), "evidence")
+	d.cfg.ReviewEvidenceDir = evidenceRoot
 	if _, err := d.db.Exec(`
 INSERT INTO assignments (id, bead_id, worker_id, worktree, qg_evidence_dir, target_sha, status)
 VALUES (?, ?, ?, ?, ?, ?, 'active')`, assignmentID, beadID, durableWorkerID, worktree, evidenceRoot, targetSHA); err != nil {

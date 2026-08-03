@@ -82,11 +82,20 @@ func (s *ReviewCheckpointStore) CreateOrReuse(ctx context.Context, in Checkpoint
 	if s == nil || s.db == nil {
 		return ReviewCheckpoint{}, errors.New("create or reuse review checkpoint: db is nil")
 	}
+	return createOrReuseReviewCheckpoint(ctx, s.db, in)
+}
+
+type reviewCheckpointExecutor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func createOrReuseReviewCheckpoint(ctx context.Context, executor reviewCheckpointExecutor, in CheckpointInput) (ReviewCheckpoint, error) {
 	if err := validateCheckpointInput(in); err != nil {
 		return ReviewCheckpoint{}, err
 	}
 
-	_, err := s.db.ExecContext(ctx, `
+	_, err := executor.ExecContext(ctx, `
 INSERT INTO review_checkpoints (
   checkpoint_key, bead_id, origin_assignment_id, current_assignment_id, worker_id,
   worktree, branch, target_branch, head_sha, target_sha, acceptance_hash,
@@ -100,7 +109,7 @@ ON CONFLICT(checkpoint_key) WHERE state <> 'superseded' DO NOTHING`,
 		return ReviewCheckpoint{}, fmt.Errorf("insert review checkpoint: %w", err)
 	}
 
-	checkpoint, err := scanReviewCheckpoint(s.db.QueryRowContext(ctx, `
+	checkpoint, err := scanReviewCheckpoint(executor.QueryRowContext(ctx, `
 SELECT id, checkpoint_key, bead_id, origin_assignment_id, COALESCE(current_assignment_id, 0),
        COALESCE(worker_id, ''), worktree, branch, target_branch, head_sha, target_sha,
        acceptance_hash, qg_script_hash, qg_mode, review_policy_hash, triage_revision,
@@ -275,6 +284,10 @@ WITH artifact_references AS (
   SELECT recovery_artifact_path AS path, state, COALESCE(completed_at, updated_at, created_at) AS terminal_at
   FROM review_checkpoints
   WHERE COALESCE(recovery_artifact_path, '') <> ''
+  UNION ALL
+  SELECT qg_evidence_path AS path, state, COALESCE(completed_at, updated_at, created_at) AS terminal_at
+  FROM review_checkpoints
+  WHERE COALESCE(qg_evidence_path, '') <> ''
 )
 SELECT DISTINCT candidate.path
 FROM artifact_references AS candidate
@@ -326,8 +339,11 @@ func (s *ReviewCheckpointStore) ClearPrunedArtifact(ctx context.Context, path st
 UPDATE review_checkpoints
 SET artifact_path = CASE WHEN artifact_path = ? THEN NULL ELSE artifact_path END,
     recovery_artifact_path = CASE WHEN recovery_artifact_path = ? THEN NULL ELSE recovery_artifact_path END,
+	qg_evidence_path = CASE WHEN qg_evidence_path = ? THEN NULL ELSE qg_evidence_path END,
+	qg_evidence_sha256 = CASE WHEN qg_evidence_path = ? THEN NULL ELSE qg_evidence_sha256 END,
     updated_at = datetime('now')
-WHERE artifact_path = ? OR recovery_artifact_path = ?`, path, path, path, path)
+WHERE artifact_path = ? OR recovery_artifact_path = ? OR qg_evidence_path = ?`,
+		path, path, path, path, path, path, path)
 	if err != nil {
 		return fmt.Errorf("clear pruned review artifact %q: %w", path, err)
 	}

@@ -35,8 +35,8 @@ func (d *Dispatcher) createAssignmentWithEvidence(ctx context.Context, beadID, w
 		return 0, "", errors.New("resolve assignment target SHA: empty SHA")
 	}
 	res, err := d.db.ExecContext(ctx,
-		`INSERT INTO assignments (bead_id, worker_id, worktree, qg_evidence_dir, target_sha) VALUES (?, ?, ?, ?, ?)`,
-		beadID, workerID, worktree, d.cfg.ReviewEvidenceDir, targetSHA)
+		`INSERT INTO assignments (bead_id, worker_id, worktree, qg_evidence_dir, target_sha, target_branch) VALUES (?, ?, ?, ?, ?, ?)`,
+		beadID, workerID, worktree, d.cfg.ReviewEvidenceDir, targetSHA, targetBranch)
 	if err != nil {
 		return 0, "", fmt.Errorf("create assignment: %w", err)
 	}
