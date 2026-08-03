@@ -95,6 +95,9 @@ NC='\033[0m'
 
 # Temp directory for all check outputs (cleaned up on exit)
 QG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/qg-$$-XXXXXX")
+export GOCACHE="$QG_DIR/go-build-cache"
+export GOLANGCI_LINT_CACHE="$QG_DIR/golangci-lint-cache"
+mkdir -p "$GOCACHE" "$GOLANGCI_LINT_CACHE"
 # Coverage profiles: the main lockless lane covers ./internal/... ./pkg/... with
 # the serial-lane tests SKIPPED; the serial lane emits its own profile so the
 # ≥78% threshold is enforced on the MERGED coverage (oro-hwx2/oro-zdpg) — otherwise
@@ -158,8 +161,8 @@ trap cleanup_qg EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# Tool caches deliberately inherit their environment (or each tool's standard
-# external default). Only QG scratch data belongs under TMPDIR/QG_DIR.
+# Mutable Go build and lint caches are isolated above. Module and other tool
+# caches inherit their environment (or each tool's standard external default).
 export GOMAXPROCS="${ORO_QG_GOMAXPROCS:-2}"
 
 # Resolve repo root node_modules (works from worktrees too). Non-git harness

@@ -1177,10 +1177,8 @@ test_quality_gate_uses_scoped_lint_cache() {
 	fi
 
 	for cache_override in \
-		'export GOCACHE=' \
 		'export GOMODCACHE=' \
-		'export UV_CACHE_DIR=' \
-		'GOCACHE=\$QG_DIR/'; do
+		'export UV_CACHE_DIR='; do
 		if grep -q "$cache_override" "$gate"; then
 			echo "FAIL: quality_gate.sh overrides shared cache via $cache_override"
 			return 1
@@ -1188,6 +1186,72 @@ test_quality_gate_uses_scoped_lint_cache() {
 	done
 	if ! grep -q 'GOLANGCI_LINT_CACHE="\$lint_cache"' "$gate"; then
 		echo 'FAIL: quality_gate.sh does not scope the golangci-lint cache'
+		return 1
+	fi
+}
+
+# Test: each checked-in quality-gate run owns its mutable Go caches while
+# retaining the caller's shared module cache and GOPATH.
+# shellcheck disable=SC2016,SC2317,SC2329
+test_quality_gate_scopes_go_caches() {
+	local gate="$SCRIPT_DIR/quality_gate.sh"
+	local tmpdir setup harness first second
+	local first_qg first_go first_lint first_mod first_path
+	local second_qg second_go second_lint second_mod second_path
+	tmpdir=$(mktemp -d)
+	# shellcheck disable=SC2064
+	trap "rm -rf -- '$tmpdir'" RETURN
+
+	setup=$(sed -n '/^QG_DIR=$(mktemp -d /,/^# Coverage profiles:/p' "$gate")
+	for expected in \
+		'export GOCACHE="$QG_DIR/go-build-cache"' \
+		'export GOLANGCI_LINT_CACHE="$QG_DIR/golangci-lint-cache"' \
+		'mkdir -p "$GOCACHE" "$GOLANGCI_LINT_CACHE"'; do
+		if ! grep -Fqx "$expected" <<<"$setup"; then
+			echo "FAIL: quality_gate.sh cache setup is missing: $expected"
+			return 1
+		fi
+	done
+	if grep -Eq '^export (GOMODCACHE|GOPATH)=' "$gate"; then
+		echo 'FAIL: quality_gate.sh must keep GOMODCACHE and GOPATH shared'
+		return 1
+	fi
+	if ! grep -A 60 '^cleanup_qg()' "$gate" | grep -Fq 'rm -rf "$QG_DIR"' ||
+		! grep -Fq 'trap cleanup_qg EXIT' "$gate" ||
+		! grep -Fq "trap 'exit 130' INT" "$gate" ||
+		! grep -Fq "trap 'exit 143' TERM" "$gate"; then
+		echo 'FAIL: quality_gate.sh cache cleanup is not retained for exit/INT/TERM'
+		return 1
+	fi
+
+	mkdir -p "$tmpdir/qg-tmp"
+	harness="$tmpdir/cache-setup.sh"
+	{
+		printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail'
+		printf '%s\n' "$setup"
+		printf '%s\n' 'test -d "$GOCACHE"' 'test -d "$GOLANGCI_LINT_CACHE"'
+		printf '%s\n' 'printf "%s|%s|%s|%s|%s\n" "$QG_DIR" "$GOCACHE" "$GOLANGCI_LINT_CACHE" "$GOMODCACHE" "$GOPATH"'
+	} >"$harness"
+	chmod +x "$harness"
+
+	first=$(TMPDIR="$tmpdir/qg-tmp" GOCACHE="$tmpdir/ambient-go" GOLANGCI_LINT_CACHE="$tmpdir/ambient-lint" \
+		GOMODCACHE="$tmpdir/shared-mod" GOPATH="$tmpdir/shared-path" "$harness")
+	second=$(TMPDIR="$tmpdir/qg-tmp" GOCACHE="$tmpdir/ambient-go" GOLANGCI_LINT_CACHE="$tmpdir/ambient-lint" \
+		GOMODCACHE="$tmpdir/shared-mod" GOPATH="$tmpdir/shared-path" "$harness")
+	IFS='|' read -r first_qg first_go first_lint first_mod first_path <<<"$first"
+	IFS='|' read -r second_qg second_go second_lint second_mod second_path <<<"$second"
+
+	if [ "$first_qg" = "$second_qg" ] ||
+		[ "$first_go" != "$first_qg/go-build-cache" ] ||
+		[ "$first_lint" != "$first_qg/golangci-lint-cache" ] ||
+		[ "$second_go" != "$second_qg/go-build-cache" ] ||
+		[ "$second_lint" != "$second_qg/golangci-lint-cache" ]; then
+		echo "FAIL: quality-gate runs did not receive unique scoped Go caches: $first / $second"
+		return 1
+	fi
+	if [ "$first_mod" != "$tmpdir/shared-mod" ] || [ "$second_mod" != "$tmpdir/shared-mod" ] ||
+		[ "$first_path" != "$tmpdir/shared-path" ] || [ "$second_path" != "$tmpdir/shared-path" ]; then
+		echo "FAIL: quality_gate.sh changed shared GOMODCACHE or GOPATH: $first / $second"
 		return 1
 	fi
 }
@@ -2134,6 +2198,7 @@ test_case "ensure_stage_assets refreshes stale assets" test_ensure_stage_assets_
 test_case "golangci-lint is isolated to active worktree" test_golangci_lint_isolated_to_active_worktree
 test_case "formatter failures print offending files" test_go_formatter_failure_prints_files
 test_case "quality_gate.sh uses scoped lint cache" test_quality_gate_uses_scoped_lint_cache
+test_case "quality_gate.sh scopes Go caches" test_quality_gate_scopes_go_caches
 test_case "quality_gate.sh run lock timeout preserves holder" test_quality_gate_run_lock_timeout_preserves_holder
 test_case "quality_gate.sh archives stale legacy run lock" test_quality_gate_run_lock_archives_stale_legacy_lock
 test_case "quality_gate.sh garbage-collects archived stale run locks" test_quality_gate_archived_stale_locks_are_garbage_collected
