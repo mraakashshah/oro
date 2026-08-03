@@ -1174,6 +1174,7 @@ func buildDispatcherWithReviewTimeoutsAndCleanliness(initialWorkers, maxWorkers 
 		RepoRoot:                repoRoot,
 		ProgressTimeout:         progressTimeout,
 		ReviewTimeout:           reviewStallTimeout,
+		ReviewEvidenceDir:       paths.ReviewEvidenceDir,
 		ManualIntegration:       manualIntegration,
 		MutationTesting:         mutationTesting,
 		WorkerProgram:           resolveWorkerProgramPath(repoRoot),

@@ -194,6 +194,9 @@ func TestResolvePaths_Defaults(t *testing.T) {
 	if paths.StateDBPath != filepath.Join(expectedBase, "state.db") {
 		t.Errorf("StateDBPath = %q, want %q", paths.StateDBPath, filepath.Join(expectedBase, "state.db"))
 	}
+	if paths.ReviewEvidenceDir != filepath.Join(expectedBase, "review-evidence") {
+		t.Errorf("ReviewEvidenceDir = %q, want %q", paths.ReviewEvidenceDir, filepath.Join(expectedBase, "review-evidence"))
+	}
 	if paths.CodeIndexDBPath != filepath.Join(expectedBase, "code_index.db") {
 		t.Errorf("CodeIndexDBPath = %q, want %q", paths.CodeIndexDBPath, filepath.Join(expectedBase, "code_index.db"))
 	}
