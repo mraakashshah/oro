@@ -26,7 +26,7 @@ WHERE NOT EXISTS (
 	if err != nil {
 		if _, observationErr := d.reviewCheckpointBlocksAssignment(ctx, beadID); observationErr != nil {
 			d.recordAssignmentObservation("review_checkpoint", observationErr)
-			return 0, fmt.Errorf("%w: %v", errAssignmentAdmissionUnknown, observationErr)
+			return 0, fmt.Errorf("%w: %w", errAssignmentAdmissionUnknown, observationErr)
 		}
 		return 0, fmt.Errorf("create assignment: %w", err)
 	}

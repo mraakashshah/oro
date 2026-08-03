@@ -192,13 +192,14 @@ func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, 
 
 	assignmentID, assignErr := d.createAssignment(ctx, bead.ID, w.id, worktree)
 	if assignErr != nil {
-		if errors.Is(assignErr, errAssignmentAdmissionUnknown) {
+		switch {
+		case errors.Is(assignErr, errAssignmentAdmissionUnknown):
 			_ = d.logEvent(ctx, "review_checkpoint_assignment_recheck_failed", "dispatcher", bead.ID, w.id,
 				fmt.Sprintf(`{"stage":"atomic_insert","error":%q}`, assignErr.Error()))
-		} else if errors.Is(assignErr, errAssignmentBlockedByReviewCheckpoint) {
+		case errors.Is(assignErr, errAssignmentBlockedByReviewCheckpoint):
 			_ = d.logEvent(ctx, "review_checkpoint_assignment_blocked", "dispatcher", bead.ID, w.id,
 				`{"reason":"durable_nonterminal_review_checkpoint","stage":"atomic_insert"}`)
-		} else {
+		default:
 			_ = d.logEvent(ctx, "assignment_persist_failed", "dispatcher", bead.ID, w.id, assignErr.Error())
 			d.recordAssignmentFailure(bead.ID)
 		}
