@@ -83,28 +83,28 @@ INSERT INTO leases VALUES ('storage-lease', 'preserve me');
 	}
 	assertEpicBranchLease(t, leaseB, "leased", 2, "token-b", "worker-b", now.Add(4*time.Minute+30*time.Second))
 
-	if _, err := store.block(ctx, leaseB.branch, leaseA.leaseToken, leaseA.generation, "checked_out", "/tmp/old", "old", "target", "oro-stale-recovery", "stale"); !errors.Is(err, ErrEpicBranchAdmissionCAS) {
+	if _, err := store.block(ctx, leaseB.branch, leaseA.leaseToken, leaseA.generation, "checked_out", "/tmp/old", "old", "target", "oro-stale-recovery", "stale", now.Add(3*time.Minute)); !errors.Is(err, ErrEpicBranchAdmissionCAS) {
 		t.Fatalf("stale holder block error = %v, want ErrEpicBranchAdmissionCAS", err)
 	}
 	if err := store.release(ctx, leaseB.branch, leaseA.leaseToken, leaseA.generation, now.Add(3*time.Minute)); !errors.Is(err, ErrEpicBranchAdmissionCAS) {
 		t.Fatalf("stale holder release error = %v, want ErrEpicBranchAdmissionCAS", err)
 	}
 
-	blocked, err := store.block(ctx, leaseB.branch, leaseB.leaseToken, leaseB.generation, "diverged", "/tmp/epic", "branch-sha", "target-sha", "oro-recovery", "preserve branch")
+	blocked, err := store.block(ctx, leaseB.branch, leaseB.leaseToken, leaseB.generation, "diverged", "/tmp/epic", "branch-sha", "target-sha", "oro-recovery", "preserve branch", now.Add(3*time.Minute))
 	if err != nil {
 		t.Fatalf("block held branch: %v", err)
 	}
 	if blocked.state != "blocked" || blocked.targetBranch != "main" || blocked.blockerKind != "diverged" || blocked.checkoutPath != "/tmp/epic" || blocked.branchSHA != "branch-sha" || blocked.targetSHA != "target-sha" || blocked.recoveryBeadID != "oro-recovery" || blocked.details != "preserve branch" {
 		t.Fatalf("blocked admission = %+v", blocked)
 	}
-	blockedAgain, err := store.block(ctx, leaseB.branch, leaseB.leaseToken, leaseB.generation, "diverged", "/tmp/epic", "branch-sha", "target-sha", "oro-recovery", "preserve branch")
+	blockedAgain, err := store.block(ctx, leaseB.branch, leaseB.leaseToken, leaseB.generation, "diverged", "/tmp/epic", "branch-sha", "target-sha", "oro-recovery", "preserve branch", now.Add(3*time.Minute))
 	if err != nil {
 		t.Fatalf("repeat identical block: %v", err)
 	}
 	if blockedAgain != blocked {
 		t.Fatalf("repeated block changed row\ngot:  %+v\nwant: %+v", blockedAgain, blocked)
 	}
-	if _, err := store.block(ctx, leaseB.branch, leaseB.leaseToken, leaseB.generation, "diverged", "/tmp/epic", "branch-sha", "target-sha", "oro-other-recovery", "preserve branch"); !errors.Is(err, ErrEpicBranchAdmissionCAS) {
+	if _, err := store.block(ctx, leaseB.branch, leaseB.leaseToken, leaseB.generation, "diverged", "/tmp/epic", "branch-sha", "target-sha", "oro-other-recovery", "preserve branch", now.Add(3*time.Minute)); !errors.Is(err, ErrEpicBranchAdmissionCAS) {
 		t.Fatalf("mismatched recovery link block error = %v, want ErrEpicBranchAdmissionCAS", err)
 	}
 	var branchRows int
@@ -224,7 +224,7 @@ func TestEpicBranchAdmissionExpiredHolderCannotBlock(t *testing.T) {
 		t.Fatalf("expire lease: %v", err)
 	}
 
-	if _, err := store.block(ctx, lease.branch, lease.leaseToken, lease.generation, "diverged", "/tmp/expired", "old", "target", "oro-expired-recovery", "must not persist"); !errors.Is(err, ErrEpicBranchAdmissionCAS) {
+	if _, err := store.block(ctx, lease.branch, lease.leaseToken, lease.generation, "diverged", "/tmp/expired", "old", "target", "oro-expired-recovery", "must not persist", now); !errors.Is(err, ErrEpicBranchAdmissionCAS) {
 		t.Fatalf("expired holder block error = %v, want ErrEpicBranchAdmissionCAS", err)
 	}
 	var state string
@@ -240,6 +240,54 @@ FROM epic_branch_admissions WHERE branch=?`, lease.branch).Scan(&state, &blocker
 	}
 }
 
+func TestEpicBranchAdmissionBlockUsesInjectedClock(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("historical valid lease", func(t *testing.T) {
+		db := openEpicBranchAdmissionTestDB(t, t.TempDir()+"/state.db")
+		defer func() { _ = db.Close() }()
+		store := newEpicBranchAdmissionStore(db)
+		acquiredAt := time.Date(2001, 2, 3, 4, 5, 6, 0, time.UTC)
+		blockAt := acquiredAt.Add(time.Minute)
+		lease, acquired, err := store.acquire(ctx, "epic/oro-historical-clock", "oro-historical-clock", "main", "token-a", "worker-a", acquiredAt)
+		if err != nil || !acquired {
+			t.Fatalf("acquire historical lease = acquired %v, error %v", acquired, err)
+		}
+
+		blocked, err := store.block(ctx, lease.branch, lease.leaseToken, lease.generation, "diverged", "/tmp/historical", "abc", "def", "oro-recovery", "valid at injected time", blockAt)
+		if err != nil {
+			t.Fatalf("block historical lease at %s: %v", blockAt, err)
+		}
+		if !blocked.updatedAt.Equal(blockAt) {
+			t.Fatalf("historical block updated_at = %s, want injected time %s", blocked.updatedAt, blockAt)
+		}
+	})
+
+	t.Run("future expired lease", func(t *testing.T) {
+		db := openEpicBranchAdmissionTestDB(t, t.TempDir()+"/state.db")
+		defer func() { _ = db.Close() }()
+		store := newEpicBranchAdmissionStore(db)
+		acquiredAt := time.Date(2099, 2, 3, 4, 5, 6, 0, time.UTC)
+		blockAt := acquiredAt.Add(epicBranchAdmissionLeaseTTL + time.Second)
+		lease, acquired, err := store.acquire(ctx, "epic/oro-future-clock", "oro-future-clock", "main", "token-a", "worker-a", acquiredAt)
+		if err != nil || !acquired {
+			t.Fatalf("acquire future lease = acquired %v, error %v", acquired, err)
+		}
+
+		if _, err := store.block(ctx, lease.branch, lease.leaseToken, lease.generation, "diverged", "/tmp/future", "abc", "def", "oro-recovery", "expired at injected time", blockAt); !errors.Is(err, ErrEpicBranchAdmissionCAS) {
+			t.Fatalf("block future lease at %s error = %v, want ErrEpicBranchAdmissionCAS", blockAt, err)
+		}
+		var state string
+		var blockerKind sql.NullString
+		if err := db.QueryRowContext(ctx, `SELECT state, blocker_kind FROM epic_branch_admissions WHERE branch=?`, lease.branch).Scan(&state, &blockerKind); err != nil {
+			t.Fatalf("read future lease after block attempt: %v", err)
+		}
+		if state != "leased" || blockerKind.Valid {
+			t.Fatalf("future expired block mutated row: state=%q blocker=%v", state, blockerKind)
+		}
+	})
+}
+
 func TestEpicBranchAdmissionBlockedResolveCAS(t *testing.T) {
 	ctx := context.Background()
 	db := openEpicBranchAdmissionTestDB(t, t.TempDir()+"/state.db")
@@ -250,7 +298,7 @@ func TestEpicBranchAdmissionBlockedResolveCAS(t *testing.T) {
 	if err != nil || !acquired {
 		t.Fatalf("acquire lease = acquired %v, error %v", acquired, err)
 	}
-	blocked, err := store.block(ctx, lease.branch, lease.leaseToken, lease.generation, "diverged", "/tmp/blocked", "abc", "def", "oro-recovery", "repair branch")
+	blocked, err := store.block(ctx, lease.branch, lease.leaseToken, lease.generation, "diverged", "/tmp/blocked", "abc", "def", "oro-recovery", "repair branch", now.Add(30*time.Second))
 	if err != nil {
 		t.Fatalf("block lease: %v", err)
 	}
@@ -307,7 +355,7 @@ FROM epic_branch_admissions WHERE branch=?`, blocked.branch).Scan(
 	if err != nil || !acquired {
 		t.Fatalf("acquire checked-out lease = acquired %v, error %v", acquired, err)
 	}
-	checkedOut, err = store.block(ctx, checkedOut.branch, checkedOut.leaseToken, checkedOut.generation, "checked_out", "/tmp/checked-out", "abc", "def", "", "branch is checked out")
+	checkedOut, err = store.block(ctx, checkedOut.branch, checkedOut.leaseToken, checkedOut.generation, "checked_out", "/tmp/checked-out", "abc", "def", "", "branch is checked out", now.Add(30*time.Second))
 	if err != nil {
 		t.Fatalf("block checked-out branch without recovery child: %v", err)
 	}
@@ -370,7 +418,7 @@ func TestEpicBranchAdmissionDBErrorsFailClosed(t *testing.T) {
 	if err := store.renew(ctx, "epic/oro-closed", "token", 1, now); err == nil {
 		t.Fatal("renew closed DB succeeded")
 	}
-	if _, err := store.block(ctx, "epic/oro-closed", "token", 1, "diverged", "/tmp/epic", "abc", "def", "oro-recovery", "details"); err == nil {
+	if _, err := store.block(ctx, "epic/oro-closed", "token", 1, "diverged", "/tmp/epic", "abc", "def", "oro-recovery", "details", now); err == nil {
 		t.Fatal("block closed DB succeeded")
 	}
 	if err := store.release(ctx, "epic/oro-closed", "token", 1, now); err == nil {

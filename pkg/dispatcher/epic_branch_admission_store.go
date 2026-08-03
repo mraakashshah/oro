@@ -193,16 +193,16 @@ WHERE branch = ?
 	return requireEpicBranchAdmissionCAS(result, "renew", branch)
 }
 
-func (s *epicBranchAdmissionStore) block(
-	ctx context.Context, branch, leaseToken string,
-	generation int64, blockerKind, checkoutPath, branchSHA, targetSHA, recoveryBeadID, details string,
+func (s *epicBranchAdmissionStore) block(ctx context.Context, branch, leaseToken string, generation int64,
+	blockerKind, checkoutPath, branchSHA, targetSHA, recoveryBeadID, details string, now time.Time,
 ) (epicBranchAdmission, error) {
 	if s == nil || s.db == nil {
 		return epicBranchAdmission{}, errors.New("block epic branch admission: store is nil")
 	}
-	if blank(branch, leaseToken, blockerKind) || generation <= 0 {
+	if blank(branch, leaseToken, blockerKind) || generation <= 0 || now.IsZero() {
 		return epicBranchAdmission{}, errors.New("block epic branch admission: missing lease or blocker identity")
 	}
+	nowText := formatEpicBranchAdmissionTime(now)
 
 	conn, err := beginEpicBranchAdmissionImmediate(ctx, s.db, "block")
 	if err != nil {
@@ -225,13 +225,13 @@ SET state = 'blocked',
     target_sha = ?,
     recovery_bead_id = NULLIF(?, ''),
     details = ?,
-    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+    updated_at = ?
 WHERE branch = ?
   AND state = 'leased'
   AND lease_token = ?
   AND generation = ?
   AND lease_expires_at IS NOT NULL
-  AND julianday(lease_expires_at) > julianday('now')`, blockerKind, checkoutPath, branchSHA, targetSHA, recoveryBeadID, details, branch, leaseToken, generation)
+  AND julianday(lease_expires_at) > julianday(?)`, blockerKind, checkoutPath, branchSHA, targetSHA, recoveryBeadID, details, nowText, branch, leaseToken, generation, nowText)
 	if err != nil {
 		return epicBranchAdmission{}, fmt.Errorf("block epic branch admission %q: update: %w", branch, err)
 	}
