@@ -870,6 +870,66 @@ func TestEpicBranchAdmissionCanceledLegacyPreparationAbortsQuietly(t *testing.T)
 	}
 }
 
+func TestEpicBranchAdmissionLegacyPreparationRequiresCurrentOwnership(t *testing.T) {
+	ctx := context.Background()
+	d, beads, worktrees, escalator, _, _ := newTestDispatcher(t)
+	if err := protocol.MigrateBeadSchema(ctx, d.db); err != nil {
+		t.Fatalf("migrate epic branch admission schema: %v", err)
+	}
+	const (
+		epicID = "oro-late-loss-legacy"
+		beadID = epicID + "-child"
+		branch = "epic/" + epicID
+	)
+	worktrees.branchExistsFn = func(context.Context, string) (bool, error) {
+		if _, err := d.db.ExecContext(ctx, `
+UPDATE epic_branch_admissions
+SET generation=2, lease_token='replacement-token', lease_owner='worker-b',
+    lease_expires_at='2099-01-01T00:00:00Z'
+WHERE branch=?`, branch); err != nil {
+			t.Errorf("replace lease holder before legacy preparation: %v", err)
+		}
+		return true, nil
+	}
+	prepareCalls := 0
+	worktrees.prepareBaseFn = func(context.Context, string, string) (bool, error) {
+		prepareCalls++
+		return true, nil
+	}
+	d.worktrees = worktrees
+	beads.shown[epicID] = &protocol.BeadDetail{ID: epicID, Title: "Legacy loss epic", Type: "epic", Status: "in_progress"}
+	beads.shown[beadID] = &protocol.BeadDetail{
+		ID: beadID, Title: "Legacy loss child", Type: "task", Status: "open",
+		AcceptanceCriteria: "Test: legacy ownership loss | Assert: no stale mutation",
+	}
+	worker := &trackedWorker{id: "worker-legacy-loss", state: protocol.WorkerIdle, conn: newMockConn()}
+	d.mu.Lock()
+	d.workers[worker.id] = worker
+	d.mu.Unlock()
+
+	if err := d.assignBead(ctx, worker, protocol.Bead{ID: beadID, Title: "Legacy loss child", Type: "task", Epic: epicID}); err != nil {
+		t.Fatalf("assign after legacy lease loss: %v", err)
+	}
+	assertQuietAdmissionAssignmentAbort(t, d, beads, escalator, worker, beadID)
+	if prepareCalls != 0 {
+		t.Fatalf("legacy preparations after ownership loss = %d, want 0", prepareCalls)
+	}
+	if got := eventCount(t, d.db, "epic_branch_prepare_failed"); got != 0 {
+		t.Fatalf("legacy ownership loss emitted preparation failures = %d, want 0", got)
+	}
+	var state, token string
+	var generation int64
+	if err := d.db.QueryRowContext(ctx, `
+SELECT state, generation, lease_token
+FROM epic_branch_admissions
+WHERE branch=?`, branch).Scan(&state, &generation, &token); err != nil {
+		t.Fatalf("read replacement admission: %v", err)
+	}
+	if state != "leased" || generation != 2 || token != "replacement-token" {
+		t.Fatalf("replacement admission = %q/%d/%q, want leased/2/replacement-token", state, generation, token)
+	}
+}
+
 func TestEpicBranchAdmissionLateOwnershipLossAbortsQuietly(t *testing.T) {
 	for _, tt := range []struct {
 		name          string

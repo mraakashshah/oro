@@ -132,7 +132,7 @@ func (d *Dispatcher) prepareFreshEpicBranchAdmission(ctx context.Context, bead p
 	}
 	manager, ok := d.worktrees.(epicBranchAdmissionWorktreeManager)
 	if !ok {
-		return d.prepareEpicBranchForAssignment(ctx, bead.ID, workerID, lease.branch)
+		return d.prepareLegacyEpicBranchAdmission(ctx, bead.ID, workerID, lease)
 	}
 	inspection, err := manager.inspectEpicBranch(ctx, lease.branch, lease.targetBranch)
 	if err != nil {
@@ -167,6 +167,17 @@ func (d *Dispatcher) prepareFreshEpicBranchAdmission(ctx context.Context, bead p
 		return d.rejectFreshEpicBranchPreparation(ctx, bead.ID, workerID, lease.branch,
 			fmt.Errorf("unknown epic branch relation %d", inspection.Relation))
 	}
+}
+
+func (d *Dispatcher) prepareLegacyEpicBranchAdmission(
+	ctx context.Context,
+	beadID, workerID string,
+	lease epicBranchAdmission,
+) bool {
+	if !d.retainEpicBranchAdmissionOwnership(ctx, beadID, workerID, lease) {
+		return false
+	}
+	return d.prepareEpicBranchForAssignment(ctx, beadID, workerID, lease.branch)
 }
 
 func (d *Dispatcher) handleEpicBranchExistenceFailure(
