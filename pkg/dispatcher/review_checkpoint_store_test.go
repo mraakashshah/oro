@@ -7,6 +7,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"oro/pkg/dbutil"
@@ -141,6 +142,102 @@ func TestReviewCheckpointStoreSaveRejectedFindingsRejectsUnknownCheckpoint(t *te
 	}
 	if count != 0 {
 		t.Fatalf("orphaned findings = %d, want 0", count)
+	}
+}
+
+func TestReviewCheckpointStoreSaveRejectedFindingsCannotReopenTerminalCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	terminalStates := []ReviewCheckpointState{
+		ReviewCheckpointStateIntegrated,
+		ReviewCheckpointStateSuperseded,
+	}
+	for _, terminalState := range terminalStates {
+		t.Run(string(terminalState), func(t *testing.T) {
+			store := openReviewCheckpointStore(ctx, t, filepath.Join(t.TempDir(), "terminal-checkpoint.sqlite"))
+			checkpoint, err := store.CreateOrReuse(ctx, reviewCheckpointInput("oro-terminal-"+string(terminalState)))
+			if err != nil {
+				t.Fatalf("create checkpoint: %v", err)
+			}
+			original := []ops.Finding{{ID: "original", Severity: ops.SevImportant}}
+			if err := store.SaveRejectedFindings(ctx, checkpoint.ID, original, nil); err != nil {
+				t.Fatalf("save original findings: %v", err)
+			}
+			if err := store.CompareAndSwap(ctx, checkpoint.ID, ReviewCheckpointStateRejected, terminalState); err != nil {
+				t.Fatalf("make checkpoint terminal: %v", err)
+			}
+
+			err = store.SaveRejectedFindings(ctx, checkpoint.ID, []ops.Finding{{ID: "stale", Severity: ops.SevCritical}}, nil)
+			if !errors.Is(err, ErrCheckpointConflict) {
+				t.Fatalf("stale save error = %v, want ErrCheckpointConflict", err)
+			}
+			assertCheckpointStateAndFindingIDs(ctx, t, store, checkpoint.ID, terminalState, []string{"original"})
+		})
+	}
+}
+
+func TestReviewCheckpointStoreSaveRejectedFindingsExactReplayOnly(t *testing.T) {
+	ctx := context.Background()
+	store := openReviewCheckpointStore(ctx, t, filepath.Join(t.TempDir(), "rejected-replay.sqlite"))
+	checkpoint, err := store.CreateOrReuse(ctx, reviewCheckpointInput("oro-rejected-replay"))
+	if err != nil {
+		t.Fatalf("create checkpoint: %v", err)
+	}
+	findings := []ops.Finding{{ID: "finding-1", Severity: ops.SevImportant, RequiredAction: "preserve this"}}
+	if err := store.SaveRejectedFindings(ctx, checkpoint.ID, findings, nil); err != nil {
+		t.Fatalf("save findings: %v", err)
+	}
+	if err := store.SaveRejectedFindings(ctx, checkpoint.ID, findings, nil); err != nil {
+		t.Fatalf("exact replay: %v", err)
+	}
+
+	changed := []ops.Finding{{ID: "finding-1", Severity: ops.SevImportant, RequiredAction: "replace this"}}
+	if err := store.SaveRejectedFindings(ctx, checkpoint.ID, changed, nil); !errors.Is(err, ErrCheckpointConflict) {
+		t.Fatalf("changed replay error = %v, want ErrCheckpointConflict", err)
+	}
+	assertCheckpointStateAndFindingIDs(ctx, t, store, checkpoint.ID, ReviewCheckpointStateRejected, []string{"finding-1"})
+	var compact string
+	if err := store.db.QueryRowContext(ctx, `SELECT compact_json FROM review_checkpoint_findings WHERE checkpoint_id = ?`, checkpoint.ID).Scan(&compact); err != nil {
+		t.Fatalf("load replayed finding: %v", err)
+	}
+	if strings.Contains(compact, "replace this") {
+		t.Fatalf("changed replay replaced committed finding: %s", compact)
+	}
+}
+
+func assertCheckpointStateAndFindingIDs(
+	ctx context.Context,
+	t *testing.T,
+	store *ReviewCheckpointStore,
+	checkpointID int64,
+	wantState ReviewCheckpointState,
+	wantIDs []string,
+) {
+	t.Helper()
+	var state ReviewCheckpointState
+	if err := store.db.QueryRowContext(ctx, `SELECT state FROM review_checkpoints WHERE id = ?`, checkpointID).Scan(&state); err != nil {
+		t.Fatalf("load checkpoint state: %v", err)
+	}
+	if state != wantState {
+		t.Fatalf("checkpoint state = %q, want %q", state, wantState)
+	}
+	rows, err := store.db.QueryContext(ctx, `SELECT finding_id FROM review_checkpoint_findings WHERE checkpoint_id = ? ORDER BY finding_id`, checkpointID)
+	if err != nil {
+		t.Fatalf("load checkpoint findings: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var gotIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("scan checkpoint finding: %v", err)
+		}
+		gotIDs = append(gotIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate checkpoint findings: %v", err)
+	}
+	if !reflect.DeepEqual(gotIDs, wantIDs) {
+		t.Fatalf("checkpoint finding IDs = %v, want %v", gotIDs, wantIDs)
 	}
 }
 

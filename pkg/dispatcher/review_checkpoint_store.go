@@ -168,14 +168,6 @@ func (s *ReviewCheckpointStore) SaveRejectedFindings(
 		return fmt.Errorf("begin save rejected findings: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM review_checkpoint_findings WHERE checkpoint_id = ?`, checkpointID); err != nil {
-		return fmt.Errorf("clear rejected findings: %w", err)
-	}
-	for _, finding := range findings {
-		if err := insertRejectedFinding(ctx, tx, checkpointID, finding); err != nil {
-			return err
-		}
-	}
 	path, sha, byteCount, count := recoveryArtifactColumns(ref)
 	result, err := tx.ExecContext(ctx, `
 UPDATE review_checkpoints
@@ -185,21 +177,99 @@ SET state = ?,
     recovery_artifact_bytes = ?,
     recovery_artifact_finding_count = ?,
     updated_at = datetime('now')
-WHERE id = ?`, ReviewCheckpointStateRejected, path, sha, byteCount, count, checkpointID)
+WHERE id = ? AND state = ?`,
+		ReviewCheckpointStateRejected, path, sha, byteCount, count,
+		checkpointID, ReviewCheckpointStateReviewRunning)
 	if err != nil {
-		return fmt.Errorf("touch review checkpoint after rejected findings: %w", err)
+		return fmt.Errorf("reject review checkpoint before saving findings: %w", err)
 	}
 	rows, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("count touched review checkpoint after rejected findings: %w", err)
+		return fmt.Errorf("count rejected review checkpoint before saving findings: %w", err)
 	}
 	if rows != 1 {
-		return fmt.Errorf("save rejected findings: checkpoint %d not found", checkpointID)
+		match, matchErr := rejectedFindingsReplayMatches(ctx, tx, checkpointID, findings, ref)
+		if matchErr != nil {
+			return matchErr
+		}
+		if !match {
+			return fmt.Errorf("save rejected findings for checkpoint %d: %w", checkpointID, ErrCheckpointConflict)
+		}
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM review_checkpoint_findings WHERE checkpoint_id = ?`, checkpointID); err != nil {
+		return fmt.Errorf("clear rejected findings: %w", err)
+	}
+	for _, finding := range findings {
+		if err := insertRejectedFinding(ctx, tx, checkpointID, finding); err != nil {
+			return err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit rejected findings: %w", err)
 	}
 	return nil
+}
+
+func rejectedFindingsReplayMatches(
+	ctx context.Context,
+	tx *sql.Tx,
+	checkpointID int64,
+	findings []reviewcontract.Finding,
+	ref *ReviewRecoveryArtifactRef,
+) (bool, error) {
+	var state ReviewCheckpointState
+	var path, sha sql.NullString
+	var byteCount int64
+	var findingCount int
+	if err := tx.QueryRowContext(ctx, `
+SELECT state, recovery_artifact_path, recovery_artifact_sha256,
+       recovery_artifact_bytes, recovery_artifact_finding_count
+FROM review_checkpoints
+WHERE id = ?`, checkpointID).Scan(&state, &path, &sha, &byteCount, &findingCount); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, fmt.Errorf("save rejected findings: checkpoint %d not found", checkpointID)
+		}
+		return false, fmt.Errorf("load review checkpoint %d after rejected findings conflict: %w", checkpointID, err)
+	}
+	if state != ReviewCheckpointStateRejected || !recoveryArtifactRefMatches(path, sha, byteCount, findingCount, ref) {
+		return false, nil
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+SELECT compact_json
+FROM review_checkpoint_findings
+WHERE checkpoint_id = ?
+ORDER BY rowid`, checkpointID)
+	if err != nil {
+		return false, fmt.Errorf("query rejected findings replay: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	stored := make([]reviewcontract.Finding, 0, len(findings))
+	for rows.Next() {
+		var compact []byte
+		if err := rows.Scan(&compact); err != nil {
+			return false, fmt.Errorf("scan rejected findings replay: %w", err)
+		}
+		var finding reviewcontract.Finding
+		if err := json.Unmarshal(compact, &finding); err != nil {
+			return false, fmt.Errorf("decode rejected findings replay: %w", err)
+		}
+		stored = append(stored, finding)
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate rejected findings replay: %w", err)
+	}
+	return equalFindingsJSON(stored, findings), nil
+}
+
+func recoveryArtifactRefMatches(path, sha sql.NullString, byteCount int64, findingCount int, ref *ReviewRecoveryArtifactRef) bool {
+	if ref == nil {
+		return !path.Valid && !sha.Valid && byteCount == 0 && findingCount == 0
+	}
+	return path.Valid && path.String == ref.Path &&
+		sha.Valid && sha.String == ref.SHA256 &&
+		byteCount == ref.Bytes && findingCount == ref.FindingCount
 }
 
 func validateRejectedFindingsArtifact(findings []reviewcontract.Finding, ref *ReviewRecoveryArtifactRef) error {
