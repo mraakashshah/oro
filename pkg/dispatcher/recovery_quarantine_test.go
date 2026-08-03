@@ -466,6 +466,73 @@ WHERE bead_id=?`, beadID).Scan(&quarantinedEvents, &failedEvents); err != nil {
 	}
 }
 
+func TestProcessQuarantinedRollsBackWhenEventInsertFails(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const (
+		beadID   = "oro-recovery-event-failure"
+		workerID = "worker-recovery-event-failure"
+		worktree = "/tmp/missing-oro-recovery-event-failure"
+	)
+
+	res, err := d.db.ExecContext(ctx, `
+INSERT INTO assignments (bead_id, worker_id, worktree, status, completed_at)
+VALUES (?, ?, ?, 'requeued', datetime('now'))`, beadID, workerID, worktree)
+	if err != nil {
+		t.Fatalf("insert requeued assignment: %v", err)
+	}
+	assignmentID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("assignment id: %v", err)
+	}
+	if _, err := d.db.ExecContext(ctx, `
+CREATE TRIGGER reject_recovery_event
+BEFORE INSERT ON events
+BEGIN
+    SELECT RAISE(ABORT, 'forced recovery event failure');
+END;`); err != nil {
+		t.Fatalf("install event failure trigger: %v", err)
+	}
+
+	d.processQuarantined(ctx, []quarantinedAssignment{{
+		id:       assignmentID,
+		beadID:   beadID,
+		workerID: workerID,
+		worktree: worktree,
+		branch:   protocol.BranchPrefix + beadID,
+		reason:   "missing_worktree_path",
+	}})
+
+	var status string
+	var completedAt any
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT status, completed_at FROM assignments WHERE id=?`, assignmentID,
+	).Scan(&status, &completedAt); err != nil {
+		t.Fatalf("query assignment after event failure: %v", err)
+	}
+	if status != "requeued" {
+		t.Fatalf("assignment status = %q, want requeued after rollback", status)
+	}
+	if completedAt == nil {
+		t.Fatal("assignment completed_at = NULL, want original completion after rollback")
+	}
+
+	var quarantines, events int
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM recovery_quarantines WHERE assignment_id=?`, assignmentID,
+	).Scan(&quarantines); err != nil {
+		t.Fatalf("count recovery quarantines: %v", err)
+	}
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM events WHERE bead_id=?`, beadID,
+	).Scan(&events); err != nil {
+		t.Fatalf("count recovery events: %v", err)
+	}
+	if quarantines != 0 || events != 0 {
+		t.Fatalf("recovery state after event failure = quarantines %d events %d, want 0/0", quarantines, events)
+	}
+}
+
 func TestStartupAutoResolvesEmptySafeQuarantines(t *testing.T) {
 	d, _, wtMgr, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
