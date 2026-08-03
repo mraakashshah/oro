@@ -73,6 +73,7 @@ func (d *Dispatcher) statusQueueBeads(ctx context.Context, readyBeads []protocol
 	if len(readyBeads) == 0 {
 		return readyBeads
 	}
+	readyBeads = d.filterReviewCheckpointBlockedBeads(ctx, readyBeads)
 	queueBeads := make([]protocol.Bead, 0, len(readyBeads))
 	for _, bead := range readyBeads {
 		if strings.EqualFold(bead.Type, "epic") {

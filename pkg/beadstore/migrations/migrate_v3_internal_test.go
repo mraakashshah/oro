@@ -25,7 +25,7 @@ func TestV3ViewsDDLHandlesConcurrentBlockedViewRecreate(t *testing.T) {
 		t.Fatalf("apply bead schema: %v", err)
 	}
 
-	for _, stmt := range splitSQLStatements(v3ViewsDDL) {
+	for _, stmt := range splitSQLStatements(protocol.BeadQueueViewsDDL) {
 		if isCreateBlockedViewStatement(stmt) {
 			createConcurrentBlockedView(ctx, t, db)
 		}

@@ -6,6 +6,8 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+
+	"oro/pkg/protocol"
 )
 
 // MigrateToV3 applies the v20 → v3 additive schema changes to db.
@@ -53,7 +55,7 @@ func MigrateToV3(ctx context.Context, db *sql.DB) error {
 	}
 
 	// §4.6.e — view rewrites (drop-and-recreate is inherently idempotent).
-	if _, err := db.ExecContext(ctx, v3ViewsDDL); err != nil {
+	if _, err := db.ExecContext(ctx, protocol.BeadQueueViewsDDL); err != nil {
 		return fmt.Errorf("migrate v3 views: %w", err)
 	}
 
@@ -136,106 +138,4 @@ CREATE TABLE IF NOT EXISTS card_events (
   payload TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_card_events_card_ts ON card_events(card_id, ts);
-`
-
-// v3ViewsDDL rewrites beads_ready and beads_blocked to add the awaits_parent_close
-// blocking clause (§10.4) while preserving all v20 semantics verbatim.
-const v3ViewsDDL = `
-DROP VIEW IF EXISTS beads_ready;
-CREATE VIEW IF NOT EXISTS beads_ready AS
-SELECT b.*
-FROM beads b
-WHERE b.deleted = 0
-  AND b.status = 'open'
-  AND b.draft = 0
-  AND (b.deferred_until IS NULL OR b.deferred_until = '' OR julianday(b.deferred_until) <= julianday('now'))
-  AND NOT EXISTS (
-    SELECT 1 FROM assignments a
-    WHERE a.bead_id = b.id
-      AND a.status = 'active'
-  )
-  AND NOT EXISTS (
-    SELECT 1 FROM bead_deps d
-    LEFT JOIN beads parent ON parent.id = d.depends_on_id AND parent.deleted = 0
-    WHERE d.bead_id = b.id
-      AND d.type IN ('blocks','conditional-blocks')
-      AND (parent.id IS NULL OR parent.status != 'closed')
-  )
-  AND NOT EXISTS (
-    SELECT 1 FROM bead_tags t
-    WHERE t.bead_id = b.id
-      AND t.tag = 'awaits_parent_close'
-      AND (
-           b.parent_id IS NULL
-        OR NOT EXISTS (
-               SELECT 1 FROM beads p
-               WHERE p.id = b.parent_id
-                 AND p.deleted = 0
-                 AND p.status = 'closed'
-           )
-      )
-  );
-
-DROP VIEW IF EXISTS beads_blocked;
-CREATE VIEW IF NOT EXISTS beads_blocked AS
-SELECT b.*
-FROM beads b
-WHERE b.deleted = 0
-  AND b.status IN ('open','blocked')
-  AND (
-    b.status = 'blocked'
-    OR b.deferred_until IS NULL
-    OR b.deferred_until = ''
-    OR julianday(b.deferred_until) <= julianday('now')
-    OR EXISTS (
-      SELECT 1 FROM bead_deps d
-      LEFT JOIN beads parent ON parent.id = d.depends_on_id AND parent.deleted = 0
-      WHERE d.bead_id = b.id
-        AND d.type IN ('blocks','conditional-blocks')
-        AND (parent.id IS NULL OR parent.status != 'closed')
-    )
-    OR EXISTS (
-      SELECT 1 FROM bead_tags t
-      WHERE t.bead_id = b.id
-        AND t.tag = 'awaits_parent_close'
-        AND (
-             b.parent_id IS NULL
-          OR NOT EXISTS (
-                 SELECT 1 FROM beads p
-                 WHERE p.id = b.parent_id
-                   AND p.deleted = 0
-                   AND p.status = 'closed'
-             )
-        )
-    )
-  )
-  AND NOT EXISTS (
-    SELECT 1 FROM assignments a
-    WHERE a.bead_id = b.id
-      AND a.status = 'active'
-  )
-  AND (
-    b.status = 'blocked'
-    OR EXISTS (
-      SELECT 1 FROM bead_deps d
-      LEFT JOIN beads parent ON parent.id = d.depends_on_id AND parent.deleted = 0
-      WHERE d.bead_id = b.id
-        AND d.type IN ('blocks','conditional-blocks')
-        AND (parent.id IS NULL OR parent.status != 'closed')
-    )
-    OR EXISTS (
-      SELECT 1 FROM bead_tags t
-      WHERE t.bead_id = b.id
-        AND t.tag = 'awaits_parent_close'
-        AND (
-             b.parent_id IS NULL
-          OR NOT EXISTS (
-                 SELECT 1 FROM beads p
-                 WHERE p.id = b.parent_id
-                   AND p.deleted = 0
-                   AND p.status = 'closed'
-             )
-        )
-    )
-  );
 `

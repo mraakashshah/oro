@@ -607,8 +607,12 @@ CREATE TRIGGER IF NOT EXISTS beads_fts_au AFTER UPDATE ON beads BEGIN
   VALUES (new.rowid, new.title, new.description, new.acceptance_criteria);
 END;
 
-` + BeadParentTouchTriggerDDL + `
+` + BeadParentTouchTriggerDDL + BeadQueueViewsDDL
 
+// BeadQueueViewsDDL is the canonical definition of the bead readiness views.
+// Schema migrations must execute this exact DDL after rebuilding beads so
+// durable review-checkpoint ownership cannot drift between schema versions.
+const BeadQueueViewsDDL = `
 DROP VIEW IF EXISTS beads_ready;
 DROP VIEW IF EXISTS beads_blocked;
 DROP VIEW IF EXISTS review_checkpoints_blocking_assignment;
