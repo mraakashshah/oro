@@ -9,7 +9,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -18,6 +20,13 @@ const (
 	privateDirMode  = 0o700
 	privateFileMode = 0o600
 )
+
+// AssignmentFile identifies a canonical assignment evidence file.
+type AssignmentFile struct {
+	BeadID       string
+	AssignmentID int64
+	ModTime      time.Time
+}
 
 type directoryOperations interface {
 	open(path string, flags int, mode uint32) (int, error)
@@ -176,6 +185,130 @@ func ReadFile(root string, parents []string, name string, maxBytes int64) ([]byt
 		return nil, errors.New("evidence exceeds read limit")
 	}
 	return data, nil
+}
+
+// ListAssignmentFiles lists root/<bead>/<assignment>/<name> files without
+// following symlinks. Non-canonical and inaccessible entries are ignored.
+func ListAssignmentFiles(root, name string) ([]AssignmentFile, error) {
+	if !safeComponent(name) {
+		return nil, errors.New("evidence filename is not a safe path component")
+	}
+	rootFD, err := openEvidenceRoot(root, false)
+	if errors.Is(err, unix.ENOENT) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = unix.Close(rootFD) }()
+
+	beads, err := readDirectoryEntries(rootFD)
+	if err != nil {
+		return nil, err
+	}
+	files := make([]AssignmentFile, 0)
+	for _, bead := range beads {
+		if !safeComponent(bead.Name()) || !bead.IsDir() {
+			continue
+		}
+		files = append(files, listAssignmentFilesForBead(rootFD, bead.Name(), name)...)
+	}
+	return files, nil
+}
+
+func listAssignmentFilesForBead(rootFD int, beadID, name string) []AssignmentFile {
+	beadFD, err := openEvidenceDir(rootFD, beadID, false)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = unix.Close(beadFD) }()
+	assignments, err := readDirectoryEntries(beadFD)
+	if err != nil {
+		return nil
+	}
+	files := make([]AssignmentFile, 0, len(assignments))
+	for _, assignment := range assignments {
+		assignmentID, parseErr := strconv.ParseInt(assignment.Name(), 10, 64)
+		if parseErr != nil || assignmentID <= 0 || strconv.FormatInt(assignmentID, 10) != assignment.Name() || !assignment.IsDir() {
+			continue
+		}
+		assignmentFD, openErr := openEvidenceDir(beadFD, assignment.Name(), false)
+		if openErr != nil {
+			continue
+		}
+		modTime, statErr := regularFileModTime(assignmentFD, name)
+		_ = unix.Close(assignmentFD)
+		if statErr == nil {
+			files = append(files, AssignmentFile{BeadID: beadID, AssignmentID: assignmentID, ModTime: modTime})
+		}
+	}
+	return files
+}
+
+func readDirectoryEntries(fd int) ([]os.DirEntry, error) {
+	duplicate, err := unix.Dup(fd)
+	if err != nil {
+		return nil, fmt.Errorf("duplicate evidence directory: %w", err)
+	}
+	directory := os.NewFile(uintptr(duplicate), "evidence-directory")
+	if directory == nil {
+		_ = unix.Close(duplicate)
+		return nil, errors.New("create evidence directory handle")
+	}
+	defer func() { _ = directory.Close() }()
+	entries, err := directory.ReadDir(-1)
+	if err != nil {
+		return nil, fmt.Errorf("list evidence directory: %w", err)
+	}
+	return entries, nil
+}
+
+func regularFileModTime(dirFD int, name string) (time.Time, error) {
+	fd, err := unix.Openat(dirFD, name, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("open evidence file: %w", err)
+	}
+	file := os.NewFile(uintptr(fd), name)
+	if file == nil {
+		_ = unix.Close(fd)
+		return time.Time{}, errors.New("create evidence file handle")
+	}
+	defer func() { _ = file.Close() }()
+	if err := requirePrivateRegularFile(fd); err != nil {
+		return time.Time{}, err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return time.Time{}, fmt.Errorf("stat evidence file: %w", err)
+	}
+	return info.ModTime(), nil
+}
+
+// RemoveFile unlinks a file below root without following symlinked parents.
+func RemoveFile(root string, parents []string, name string) error {
+	dirFD, err := openEvidenceRoot(root, false)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = unix.Close(dirFD) }()
+	for _, parent := range parents {
+		nextFD, openErr := openEvidenceDir(dirFD, parent, false)
+		if openErr != nil {
+			return openErr
+		}
+		_ = unix.Close(dirFD)
+		dirFD = nextFD
+	}
+	if !safeComponent(name) {
+		return errors.New("evidence filename is not a safe path component")
+	}
+	if err := unix.Unlinkat(dirFD, name, 0); err != nil {
+		return fmt.Errorf("remove evidence file: %w", err)
+	}
+	if err := unix.Fsync(dirFD); err != nil {
+		return fmt.Errorf("sync evidence directory after removal: %w", err)
+	}
+	return nil
 }
 
 func openEvidenceRoot(root string, create bool) (int, error) {

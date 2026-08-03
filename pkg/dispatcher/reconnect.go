@@ -226,7 +226,7 @@ ORDER BY id DESC LIMIT 1`, workerID, beadID).Scan(
 		&identity.targetSHA, &identity.targetBranch, &status,
 	)
 	if err != nil {
-		return durableReadyIdentity{}, "", err
+		return durableReadyIdentity{}, "", fmt.Errorf("load legacy reconnect assignment: %w", err)
 	}
 	if identity.targetBranch == "" {
 		identity.targetBranch = d.cfg.DefaultBranch

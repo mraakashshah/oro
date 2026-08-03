@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -331,6 +332,64 @@ func TestEvidenceAccessDoesNotFollowSymlinks(t *testing.T) {
 			t.Fatal("ReadFile followed evidence file symlink")
 		}
 	})
+}
+
+func TestListAndRemoveAssignmentFilesDoNotFollowSymlinks(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "review-evidence")
+	if err := WriteFile(root, []string{"oro-owned", "41"}, "1.json", []byte("owned")); err != nil {
+		t.Fatalf("write owned evidence: %v", err)
+	}
+	external := t.TempDir()
+	externalAssignment := filepath.Join(external, "42")
+	if err := os.Mkdir(externalAssignment, 0o700); err != nil {
+		t.Fatalf("create external assignment: %v", err)
+	}
+	externalFile := filepath.Join(externalAssignment, "1.json")
+	if err := os.WriteFile(externalFile, []byte("external"), 0o600); err != nil {
+		t.Fatalf("write external evidence: %v", err)
+	}
+	if err := os.Symlink(external, filepath.Join(root, "oro-linked")); err != nil {
+		t.Fatalf("link external bead directory: %v", err)
+	}
+
+	files, err := ListAssignmentFiles(root, "1.json")
+	if err != nil {
+		t.Fatalf("ListAssignmentFiles: %v", err)
+	}
+	if len(files) != 1 || files[0].BeadID != "oro-owned" || files[0].AssignmentID != 41 {
+		t.Fatalf("listed files = %#v, want only owned assignment", files)
+	}
+	if err := RemoveFile(root, []string{"oro-linked", "42"}, "1.json"); err == nil {
+		t.Fatal("RemoveFile followed symlinked bead directory")
+	}
+	if data, err := os.ReadFile(externalFile); err != nil || string(data) != "external" {
+		t.Fatalf("external evidence changed: data=%q err=%v", data, err)
+	}
+	if err := RemoveFile(root, []string{"oro-owned", "41"}, "1.json"); err != nil {
+		t.Fatalf("remove owned evidence: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "oro-owned", "41", "1.json")); !os.IsNotExist(err) {
+		t.Fatalf("owned evidence stat after removal = %v, want not exist", err)
+	}
+}
+
+func TestListAssignmentFilesReportsModificationTime(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "review-evidence")
+	if err := WriteFile(root, []string{"oro-aged", "7"}, "1.json", []byte("aged")); err != nil {
+		t.Fatalf("write evidence: %v", err)
+	}
+	want := time.Date(2026, time.August, 1, 12, 0, 0, 0, time.UTC)
+	path := filepath.Join(root, "oro-aged", "7", "1.json")
+	if err := os.Chtimes(path, want, want); err != nil {
+		t.Fatalf("age evidence: %v", err)
+	}
+	files, err := ListAssignmentFiles(root, "1.json")
+	if err != nil {
+		t.Fatalf("ListAssignmentFiles: %v", err)
+	}
+	if len(files) != 1 || !files[0].ModTime.Equal(want) {
+		t.Fatalf("listed files = %#v, want modification time %v", files, want)
+	}
 }
 
 func TestEvidenceRootRejectsEverySymlinkedAncestor(t *testing.T) {

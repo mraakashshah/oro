@@ -3,8 +3,13 @@ package dispatcher
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
+	"strconv"
 	"time"
+
+	"oro/pkg/evidencefs"
 )
 
 const (
@@ -43,15 +48,88 @@ func (d *Dispatcher) pruneReviewArtifacts(ctx context.Context) {
 	store := NewReviewCheckpointStore(d.db)
 	before := d.nowFunc().Add(-d.reviewArtifactRetention)
 	artifacts, err := store.ListPrunableArtifacts(ctx, before)
+	if err == nil {
+		for _, artifact := range artifacts {
+			if err := os.Remove(artifact.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err := store.ClearPrunedArtifact(ctx, artifact.Path); err != nil {
+				continue
+			}
+		}
+	}
+	d.pruneReviewEvidenceOrphans(ctx, before)
+}
+
+func (d *Dispatcher) pruneReviewEvidenceOrphans(ctx context.Context, olderThan time.Time) {
+	root := filepath.Clean(d.cfg.ReviewEvidenceDir)
+	if root == "." || !filepath.IsAbs(root) || d.db == nil {
+		return
+	}
+	files, err := evidencefs.ListAssignmentFiles(root, readyEvidenceAttempt)
 	if err != nil {
 		return
 	}
-	for _, artifact := range artifacts {
-		if err := os.Remove(artifact.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
+	live, err := d.loadLiveReviewEvidence(ctx, root)
+	if err != nil {
+		return
+	}
+	for _, file := range files {
+		path := filepath.Join(root, file.BeadID, strconv.FormatInt(file.AssignmentID, 10), readyEvidenceAttempt)
+		if !file.ModTime.Before(olderThan) || live[path] {
 			continue
 		}
-		if err := store.ClearPrunedArtifact(ctx, artifact.Path); err != nil {
-			continue
+		_ = evidencefs.RemoveFile(root,
+			[]string{file.BeadID, strconv.FormatInt(file.AssignmentID, 10)}, readyEvidenceAttempt)
+	}
+}
+
+func (d *Dispatcher) loadLiveReviewEvidence(ctx context.Context, root string) (map[string]bool, error) {
+	live := make(map[string]bool)
+	rows, err := d.db.QueryContext(ctx, `
+SELECT id, bead_id
+FROM assignments
+	WHERE qg_evidence_dir=? AND status IN ('active','requeued','quarantined')`, root)
+	if err != nil {
+		return nil, fmt.Errorf("query live assignment evidence: %w", err)
+	}
+	for rows.Next() {
+		var assignmentID int64
+		var beadID string
+		if err := rows.Scan(&assignmentID, &beadID); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("scan live assignment evidence: %w", err)
+		}
+		path, pathErr := canonicalReadyEvidencePath(root, beadID, assignmentID)
+		if pathErr == nil {
+			live[path] = true
 		}
 	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, fmt.Errorf("iterate live assignment evidence: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close live assignment evidence: %w", err)
+	}
+
+	checkpointRows, err := d.db.QueryContext(ctx, `
+SELECT qg_evidence_path
+FROM review_checkpoints
+	WHERE COALESCE(qg_evidence_path, '') <> ''`)
+	if err != nil {
+		return nil, fmt.Errorf("query checkpoint evidence: %w", err)
+	}
+	defer func() { _ = checkpointRows.Close() }()
+	for checkpointRows.Next() {
+		var path string
+		if err := checkpointRows.Scan(&path); err != nil {
+			return nil, fmt.Errorf("scan checkpoint evidence: %w", err)
+		}
+		live[filepath.Clean(path)] = true
+	}
+	if err := checkpointRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate checkpoint evidence: %w", err)
+	}
+	return live, nil
 }
