@@ -3,6 +3,7 @@ package dispatcher //nolint:testpackage // white-box tests for worktree manager
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -11,6 +12,126 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestInspectEpicBranchReportsCheckoutRelationAndCAS(t *testing.T) {
+	ctx := context.Background()
+	repo := t.TempDir()
+	runAssignmentTestGit(t, repo, "init", "-b", "main")
+	runAssignmentTestGit(t, repo, "config", "user.email", "test@example.com")
+	runAssignmentTestGit(t, repo, "config", "user.name", "Oro Test")
+	runAssignmentTestGit(t, repo, "commit", "--allow-empty", "-m", "base")
+	rootOID := gitOut(t, repo, "rev-parse", "HEAD")
+	for _, branch := range []string{"epic/behind", "epic/checked", "epic/diverged", "epic/stale"} {
+		runAssignmentTestGit(t, repo, "branch", branch, rootOID)
+	}
+
+	runAssignmentTestGit(t, repo, "switch", "epic/diverged")
+	runAssignmentTestGit(t, repo, "commit", "--allow-empty", "-m", "epic diverged")
+	divergedOID := gitOut(t, repo, "rev-parse", "HEAD")
+	runAssignmentTestGit(t, repo, "switch", "main")
+	runAssignmentTestGit(t, repo, "commit", "--allow-empty", "-m", "main advances")
+	baseOID := gitOut(t, repo, "rev-parse", "HEAD")
+	runAssignmentTestGit(t, repo, "branch", "epic/equal", baseOID)
+	runAssignmentTestGit(t, repo, "switch", "-c", "epic/ahead")
+	runAssignmentTestGit(t, repo, "commit", "--allow-empty", "-m", "epic ahead")
+	aheadOID := gitOut(t, repo, "rev-parse", "HEAD")
+	runAssignmentTestGit(t, repo, "switch", "main")
+
+	checkoutParent := filepath.Join(t.TempDir(), "checkout paths")
+	checkedB := filepath.Join(checkoutParent, "z checked path")
+	checkedA := filepath.Join(checkoutParent, "a checked path")
+	detached := filepath.Join(checkoutParent, "detached path")
+	runAssignmentTestGit(t, repo, "worktree", "add", "--force", checkedB, "epic/checked")
+	runAssignmentTestGit(t, repo, "worktree", "add", "--force", checkedA, "epic/checked")
+	runAssignmentTestGit(t, repo, "worktree", "add", "--detach", detached, "epic/checked")
+	canonicalCheckoutParent, err := filepath.EvalSymlinks(checkoutParent)
+	if err != nil {
+		t.Fatalf("canonicalize checkout parent: %v", err)
+	}
+	checkedA = filepath.Join(canonicalCheckoutParent, filepath.Base(checkedA))
+	checkedB = filepath.Join(canonicalCheckoutParent, filepath.Base(checkedB))
+
+	mgr := NewGitWorktreeManager(repo, "", "", &ExecCommandRunner{})
+
+	_, err = mgr.inspectEpicBranch(ctx, "epic/missing", "main")
+	var refErr *epicBranchRefError
+	if !errors.As(err, &refErr) {
+		t.Fatalf("missing branch error = %v, want *epicBranchRefError", err)
+	}
+
+	tests := []struct {
+		name      string
+		branch    string
+		wantOID   string
+		want      branchBaseRelation
+		wantPaths []string
+	}{
+		{name: "equal", branch: "epic/equal", wantOID: baseOID, want: branchSame},
+		{name: "behind", branch: "epic/behind", wantOID: rootOID, want: branchStrictlyBehind},
+		{name: "ahead", branch: "epic/ahead", wantOID: aheadOID, want: branchContainsBase},
+		{name: "diverged", branch: "epic/diverged", wantOID: divergedOID, want: branchDiverged},
+		{
+			name: "checked out paths are sorted and detached is ignored", branch: "epic/checked", wantOID: rootOID,
+			want: branchStrictlyBehind, wantPaths: []string{checkedA, checkedB},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := gitOut(t, repo, "rev-parse", "refs/heads/"+tt.branch)
+			inspection, inspectErr := mgr.inspectEpicBranch(ctx, tt.branch, "main")
+			if inspectErr != nil {
+				t.Fatalf("inspectEpicBranch: %v", inspectErr)
+			}
+			if inspection.BranchOID != tt.wantOID || inspection.BaseOID != baseOID || inspection.Relation != tt.want {
+				t.Fatalf("inspection = %#v, want branch=%s base=%s relation=%v", inspection, tt.wantOID, baseOID, tt.want)
+			}
+			if !slices.Equal(inspection.CheckedOutPaths, tt.wantPaths) {
+				t.Fatalf("CheckedOutPaths = %q, want %q", inspection.CheckedOutPaths, tt.wantPaths)
+			}
+			if gitOut(t, repo, "rev-parse", "refs/heads/"+tt.branch) != before {
+				t.Fatalf("inspection mutated %s", tt.branch)
+			}
+		})
+	}
+
+	checkedInspection, err := mgr.inspectEpicBranch(ctx, "epic/checked", "main")
+	if err != nil {
+		t.Fatalf("inspect checked branch: %v", err)
+	}
+	err = mgr.compareAndSwapBranch(ctx, "epic/checked", checkedInspection.BranchOID, checkedInspection.BaseOID)
+	var checkedOutErr *epicBranchCheckedOutError
+	if !errors.As(err, &checkedOutErr) || !slices.Equal(checkedOutErr.CheckedOutPaths, []string{checkedA, checkedB}) {
+		t.Fatalf("checked-out CAS error = %v, want sorted *epicBranchCheckedOutError", err)
+	}
+	if got := gitOut(t, repo, "rev-parse", "epic/checked"); got != rootOID {
+		t.Fatalf("checked branch moved to %s, want %s", got, rootOID)
+	}
+
+	behind, err := mgr.inspectEpicBranch(ctx, "epic/behind", "main")
+	if err != nil {
+		t.Fatalf("inspect behind branch: %v", err)
+	}
+	if err := mgr.compareAndSwapBranch(ctx, "epic/behind", behind.BranchOID, behind.BaseOID); err != nil {
+		t.Fatalf("fast-forward CAS: %v", err)
+	}
+	if got := gitOut(t, repo, "rev-parse", "epic/behind"); got != baseOID {
+		t.Fatalf("behind branch = %s after CAS, want %s", got, baseOID)
+	}
+
+	stale, err := mgr.inspectEpicBranch(ctx, "epic/stale", "main")
+	if err != nil {
+		t.Fatalf("inspect stale branch: %v", err)
+	}
+	runAssignmentTestGit(t, repo, "update-ref", "refs/heads/epic/stale", aheadOID, stale.BranchOID)
+	err = mgr.compareAndSwapBranch(ctx, "epic/stale", stale.BranchOID, stale.BaseOID)
+	var casErr *epicBranchCASError
+	if !errors.As(err, &casErr) {
+		t.Fatalf("stale CAS error = %v, want *epicBranchCASError", err)
+	}
+	if got := gitOut(t, repo, "rev-parse", "epic/stale"); got != aheadOID {
+		t.Fatalf("stale CAS clobbered concurrent OID: got %s, want %s", got, aheadOID)
+	}
+}
 
 func TestGitWorktreeManager_Create_Success(t *testing.T) {
 	runner := &mockCommandRunner{}

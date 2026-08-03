@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"oro/pkg/protocol"
@@ -544,6 +545,152 @@ const (
 	branchDiverged
 )
 
+type epicBranchInspection struct {
+	BranchOID       string
+	BaseOID         string
+	Relation        branchBaseRelation
+	CheckedOutPaths []string
+}
+
+type epicBranchRefError struct {
+	Ref string
+	Err error
+}
+
+func (e *epicBranchRefError) Error() string {
+	return fmt.Sprintf("inspect epic branch ref %s: %v", e.Ref, e.Err)
+}
+
+func (e *epicBranchRefError) Unwrap() error { return e.Err }
+
+type epicBranchCheckedOutError struct {
+	Branch          string
+	CheckedOutPaths []string
+}
+
+func (e *epicBranchCheckedOutError) Error() string {
+	return fmt.Sprintf("epic branch %s is checked out in: %s", e.Branch, strings.Join(e.CheckedOutPaths, ", "))
+}
+
+type epicBranchCASError struct {
+	Branch string
+	OldOID string
+	NewOID string
+	Err    error
+}
+
+func (e *epicBranchCASError) Error() string {
+	return fmt.Sprintf("compare-and-swap epic branch %s from %s to %s: %v", e.Branch, e.OldOID, e.NewOID, e.Err)
+}
+
+func (e *epicBranchCASError) Unwrap() error { return e.Err }
+
+//nolint:unparam // baseBranch varies when admission consumes this contract.
+func (g *GitWorktreeManager) inspectEpicBranch(
+	ctx context.Context,
+	branch, baseBranch string,
+) (epicBranchInspection, error) {
+	checkedOutPaths, err := g.checkedOutBranchPaths(ctx, branch)
+	if err != nil {
+		return epicBranchInspection{}, err
+	}
+	branchOID, err := g.localBranchOID(ctx, branch)
+	if err != nil {
+		return epicBranchInspection{}, err
+	}
+	baseOID, err := g.localBranchOID(ctx, baseBranch)
+	if err != nil {
+		return epicBranchInspection{}, err
+	}
+	relation, err := g.branchRelationForOIDs(ctx, branchOID, baseOID)
+	if err != nil {
+		return epicBranchInspection{}, err
+	}
+	return epicBranchInspection{
+		BranchOID:       branchOID,
+		BaseOID:         baseOID,
+		Relation:        relation,
+		CheckedOutPaths: checkedOutPaths,
+	}, nil
+}
+
+func (g *GitWorktreeManager) compareAndSwapBranch(ctx context.Context, branch, oldOID, newOID string) error {
+	checkedOutPaths, err := g.checkedOutBranchPaths(ctx, branch)
+	if err != nil {
+		return err
+	}
+	if len(checkedOutPaths) != 0 {
+		return &epicBranchCheckedOutError{Branch: branch, CheckedOutPaths: checkedOutPaths}
+	}
+	fastForward, err := g.isAncestorOrUnrelated(ctx, oldOID, newOID)
+	if err != nil {
+		return &epicBranchCASError{Branch: branch, OldOID: oldOID, NewOID: newOID, Err: err}
+	}
+	if !fastForward {
+		return &epicBranchCASError{
+			Branch: branch,
+			OldOID: oldOID,
+			NewOID: newOID,
+			Err:    errors.New("refuse non-fast-forward update"),
+		}
+	}
+	if _, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "update-ref",
+		localBranchRef(branch), newOID, oldOID); err != nil {
+		return &epicBranchCASError{Branch: branch, OldOID: oldOID, NewOID: newOID, Err: err}
+	}
+	return nil
+}
+
+func (g *GitWorktreeManager) localBranchOID(ctx context.Context, branch string) (string, error) {
+	oid, err := g.revParse(ctx, g.repoRoot, localBranchRef(branch)+"^{commit}")
+	if err != nil {
+		return "", &epicBranchRefError{Ref: branch, Err: err}
+	}
+	return oid, nil
+}
+
+func localBranchRef(branch string) string {
+	return "refs/heads/" + strings.TrimPrefix(branch, "refs/heads/")
+}
+
+func (g *GitWorktreeManager) checkedOutBranchPaths(ctx context.Context, branch string) ([]string, error) {
+	out, err := g.runner.Run(ctx, "git", "-C", g.repoRoot, "worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, fmt.Errorf("list worktrees for epic branch %s: %w", branch, err)
+	}
+	return checkedOutPathsFromPorcelain(out, localBranchRef(branch)), nil
+}
+
+func checkedOutPathsFromPorcelain(out []byte, branchRef string) []string {
+	var paths []string
+	var path, recordBranch string
+	detached := false
+	flush := func() {
+		if path != "" && !detached && recordBranch == branchRef {
+			paths = append(paths, path)
+		}
+		path, recordBranch, detached = "", "", false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		switch {
+		case line == "":
+			flush()
+		case strings.HasPrefix(line, "worktree "):
+			if path != "" {
+				flush()
+			}
+			path = strings.TrimPrefix(line, "worktree ")
+		case strings.HasPrefix(line, "branch "):
+			recordBranch = strings.TrimPrefix(line, "branch ")
+		case line == "detached":
+			detached = true
+		}
+	}
+	flush()
+	slices.Sort(paths)
+	return paths
+}
+
 func (g *GitWorktreeManager) branchRelationToBase(ctx context.Context, branch, baseBranch string) (branchBaseRelation, error) {
 	branchHead, err := g.revParse(ctx, g.repoRoot, branch)
 	if err != nil {
@@ -566,6 +713,28 @@ func (g *GitWorktreeManager) branchRelationToBase(ctx context.Context, branch, b
 	}
 
 	baseBehind, err := g.isAncestorOrUnrelated(ctx, baseBranch, branch)
+	if err != nil {
+		return branchDiverged, err
+	}
+	if baseBehind {
+		return branchContainsBase, nil
+	}
+	return branchDiverged, nil
+}
+
+func (g *GitWorktreeManager) branchRelationForOIDs(ctx context.Context, branchOID, baseOID string) (branchBaseRelation, error) {
+	if branchOID == baseOID {
+		return branchSame, nil
+	}
+	branchBehind, err := g.isAncestorOrUnrelated(ctx, branchOID, baseOID)
+	if err != nil {
+		return branchDiverged, err
+	}
+	if branchBehind {
+		return branchStrictlyBehind, nil
+	}
+
+	baseBehind, err := g.isAncestorOrUnrelated(ctx, baseOID, branchOID)
 	if err != nil {
 		return branchDiverged, err
 	}
