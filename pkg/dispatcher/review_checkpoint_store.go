@@ -171,26 +171,11 @@ func (s *ReviewCheckpointStore) SaveRejectedFindings(
 		return fmt.Errorf("begin save rejected findings: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	path, sha, byteCount, count := recoveryArtifactColumns(ref)
-	result, err := tx.ExecContext(ctx, `
-UPDATE review_checkpoints
-SET state = ?,
-    recovery_artifact_path = ?,
-    recovery_artifact_sha256 = ?,
-    recovery_artifact_bytes = ?,
-    recovery_artifact_finding_count = ?,
-    updated_at = datetime('now')
-WHERE id = ? AND state = ?`,
-		ReviewCheckpointStateRejected, path, sha, byteCount, count,
-		checkpointID, ReviewCheckpointStateReviewRunning)
+	claimed, err := claimRejectedFindingsWrite(ctx, tx, checkpointID, ref)
 	if err != nil {
-		return fmt.Errorf("reject review checkpoint before saving findings: %w", err)
+		return err
 	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("count rejected review checkpoint before saving findings: %w", err)
-	}
-	if rows != 1 {
+	if !claimed {
 		match, matchErr := rejectedFindingsReplayMatches(ctx, tx, checkpointID, findings, ref)
 		if matchErr != nil {
 			return matchErr
@@ -212,6 +197,34 @@ WHERE id = ? AND state = ?`,
 		return fmt.Errorf("commit rejected findings: %w", err)
 	}
 	return nil
+}
+
+func claimRejectedFindingsWrite(
+	ctx context.Context,
+	tx *sql.Tx,
+	checkpointID int64,
+	ref *ReviewRecoveryArtifactRef,
+) (bool, error) {
+	path, sha, byteCount, count := recoveryArtifactColumns(ref)
+	result, err := tx.ExecContext(ctx, `
+UPDATE review_checkpoints
+SET state = ?,
+    recovery_artifact_path = ?,
+    recovery_artifact_sha256 = ?,
+    recovery_artifact_bytes = ?,
+    recovery_artifact_finding_count = ?,
+    updated_at = datetime('now')
+WHERE id = ? AND state = ?`,
+		ReviewCheckpointStateRejected, path, sha, byteCount, count,
+		checkpointID, ReviewCheckpointStateReviewRunning)
+	if err != nil {
+		return false, fmt.Errorf("reject review checkpoint before saving findings: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("count rejected review checkpoint before saving findings: %w", err)
+	}
+	return rows == 1, nil
 }
 
 func rejectedFindingsReplayMatches(
@@ -480,7 +493,7 @@ type ArtifactRef struct {
 	Path string
 }
 
-var recoveryArtifactFilenamePattern = regexp.MustCompile(`^checkpoint-[1-9][0-9]*-[0-9a-f]{64}\.json$`)
+var recoveryArtifactFilenamePattern = regexp.MustCompile(`^checkpoint-[1-9]\d*-[0-9a-f]{64}\.json$`)
 
 // ListPrunableArtifacts returns artifacts whose every checkpoint reference is
 // terminal and older than olderThan. Shared artifacts are retained until all
