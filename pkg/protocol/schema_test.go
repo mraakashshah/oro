@@ -130,6 +130,214 @@ func TestSchemaIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestMigrateEpicBranchAdmissionLedger(t *testing.T) {
+	t.Run("fresh database enforces the branch ledger contract", func(t *testing.T) {
+		db, err := dbutil.OpenDB(":memory:")
+		if err != nil {
+			t.Fatalf("open in-memory db: %v", err)
+		}
+		defer func() { _ = db.Close() }()
+
+		ctx := context.Background()
+		if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
+			t.Fatalf("migrate fresh database: %v", err)
+		}
+
+		type columnInfo struct {
+			name       string
+			columnType string
+			notNull    int
+			defaultSQL sql.NullString
+			primaryKey int
+		}
+		var columns []columnInfo
+		rows, err := db.QueryContext(ctx, `PRAGMA table_info(epic_branch_admissions)`)
+		if err != nil {
+			t.Fatalf("inspect epic_branch_admissions columns: %v", err)
+		}
+		for rows.Next() {
+			var column columnInfo
+			var cid int
+			if err := rows.Scan(&cid, &column.name, &column.columnType, &column.notNull, &column.defaultSQL, &column.primaryKey); err != nil {
+				t.Fatalf("scan epic_branch_admissions column: %v", err)
+			}
+			columns = append(columns, column)
+		}
+		if err := rows.Close(); err != nil {
+			t.Fatalf("close epic_branch_admissions columns: %v", err)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("iterate epic_branch_admissions columns: %v", err)
+		}
+
+		wantColumns := []struct {
+			name       string
+			columnType string
+			notNull    int
+			defaultSQL string
+			primaryKey int
+		}{
+			{name: "branch", columnType: "TEXT", primaryKey: 1},
+			{name: "epic_id", columnType: "TEXT", notNull: 1},
+			{name: "target_branch", columnType: "TEXT", notNull: 1},
+			{name: "state", columnType: "TEXT", notNull: 1},
+			{name: "generation", columnType: "INTEGER", notNull: 1, defaultSQL: "1"},
+			{name: "lease_token", columnType: "TEXT"},
+			{name: "lease_owner", columnType: "TEXT"},
+			{name: "lease_expires_at", columnType: "TEXT"},
+			{name: "blocker_kind", columnType: "TEXT"},
+			{name: "checkout_path", columnType: "TEXT"},
+			{name: "branch_sha", columnType: "TEXT", notNull: 1, defaultSQL: "''"},
+			{name: "target_sha", columnType: "TEXT", notNull: 1, defaultSQL: "''"},
+			{name: "recovery_bead_id", columnType: "TEXT"},
+			{name: "details", columnType: "TEXT", notNull: 1, defaultSQL: "''"},
+			{name: "created_at", columnType: "TEXT", notNull: 1},
+			{name: "updated_at", columnType: "TEXT", notNull: 1},
+			{name: "resolved_at", columnType: "TEXT"},
+		}
+		if len(columns) != len(wantColumns) {
+			t.Fatalf("epic_branch_admissions column count = %d, want %d", len(columns), len(wantColumns))
+		}
+		for i, want := range wantColumns {
+			got := columns[i]
+			if got.name != want.name || got.columnType != want.columnType || got.notNull != want.notNull || got.primaryKey != want.primaryKey || got.defaultSQL.String != want.defaultSQL {
+				t.Errorf("epic_branch_admissions column %d = %+v, want %+v", i, got, want)
+			}
+		}
+
+		var indexColumns string
+		if err := db.QueryRowContext(ctx, `
+SELECT group_concat(name, ',')
+FROM pragma_index_info('idx_epic_branch_admissions_state')
+`).Scan(&indexColumns); err != nil {
+			t.Fatalf("inspect epic branch admission state index: %v", err)
+		}
+		if indexColumns != "state" {
+			t.Fatalf("idx_epic_branch_admissions_state columns = %q, want state", indexColumns)
+		}
+
+		for _, state := range []string{"leased", "blocked", "resolved"} {
+			if _, err := db.ExecContext(ctx, `
+INSERT INTO epic_branch_admissions (branch, epic_id, target_branch, state, created_at, updated_at)
+VALUES (?, ?, 'main', ?, '2026-08-03T00:00:00Z', '2026-08-03T00:00:00Z')
+`, "epic/oro-"+state, "oro-"+state, state); err != nil {
+				t.Fatalf("insert %q admission: %v", state, err)
+			}
+		}
+		if _, err := db.ExecContext(ctx, `
+INSERT INTO epic_branch_admissions (branch, epic_id, target_branch, state, created_at, updated_at)
+VALUES ('epic/oro-leased', 'oro-duplicate', 'main', 'leased', '2026-08-03T00:00:00Z', '2026-08-03T00:00:00Z')
+`); err == nil {
+			t.Fatal("duplicate branch admission succeeded, want primary-key failure")
+		}
+		if _, err := db.ExecContext(ctx, `
+INSERT INTO epic_branch_admissions (branch, epic_id, target_branch, state, created_at, updated_at)
+VALUES ('epic/oro-invalid', 'oro-invalid', 'main', 'available', '2026-08-03T00:00:00Z', '2026-08-03T00:00:00Z')
+`); err == nil {
+			t.Fatal("invalid admission state succeeded, want CHECK failure")
+		}
+
+		var count int
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM epic_branch_admissions`).Scan(&count); err != nil {
+			t.Fatalf("count branch admissions: %v", err)
+		}
+		if count != 3 {
+			t.Fatalf("branch admission rows = %d, want exactly one for each of three branches", count)
+		}
+		var generation int
+		var branchSHA, targetSHA, details string
+		var leaseToken, leaseOwner, leaseExpiresAt, blockerKind, checkoutPath, recoveryBeadID, resolvedAt sql.NullString
+		if err := db.QueryRowContext(ctx, `
+SELECT generation, branch_sha, target_sha, details,
+       lease_token, lease_owner, lease_expires_at, blocker_kind, checkout_path, recovery_bead_id, resolved_at
+FROM epic_branch_admissions WHERE branch='epic/oro-resolved'
+`).Scan(&generation, &branchSHA, &targetSHA, &details, &leaseToken, &leaseOwner, &leaseExpiresAt, &blockerKind, &checkoutPath, &recoveryBeadID, &resolvedAt); err != nil {
+			t.Fatalf("read admission defaults and nullable fields: %v", err)
+		}
+		if generation != 1 || branchSHA != "" || targetSHA != "" || details != "" {
+			t.Fatalf("admission defaults = generation %d, branch_sha %q, target_sha %q, details %q", generation, branchSHA, targetSHA, details)
+		}
+		if leaseToken.Valid || leaseOwner.Valid || leaseExpiresAt.Valid || blockerKind.Valid || checkoutPath.Valid || recoveryBeadID.Valid || resolvedAt.Valid {
+			t.Fatalf("minimal admission invented optional state: token=%v owner=%v lease=%v blocker=%v checkout=%v recovery=%v resolved=%v", leaseToken, leaseOwner, leaseExpiresAt, blockerKind, checkoutPath, recoveryBeadID, resolvedAt)
+		}
+	})
+
+	t.Run("existing database migration is idempotent and preserves data", func(t *testing.T) {
+		db, err := dbutil.OpenDB(t.TempDir() + "/state.db")
+		if err != nil {
+			t.Fatalf("open legacy state db: %v", err)
+		}
+		defer func() { _ = db.Close() }()
+
+		ctx := context.Background()
+		if _, err := db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+			t.Fatalf("seed runtime schema: %v", err)
+		}
+		if _, err := db.ExecContext(ctx, `
+CREATE TABLE runtime_leases (id TEXT PRIMARY KEY, marker TEXT NOT NULL);
+CREATE TABLE leases (id TEXT PRIMARY KEY, marker TEXT NOT NULL);
+INSERT INTO recovery_quarantines (bead_id, reason, details, status)
+VALUES ('oro-quarantine', 'legacy', 'preserve me', 'open');
+INSERT INTO runtime_leases VALUES ('runtime-lease', 'preserve me');
+INSERT INTO leases VALUES ('storage-lease', 'preserve me');
+`); err != nil {
+			t.Fatalf("seed legacy state: %v", err)
+		}
+		unrelatedTableSQL := make(map[string]string)
+		for _, table := range []string{"recovery_quarantines", "runtime_leases", "leases"} {
+			var tableSQL string
+			if err := db.QueryRowContext(ctx, `SELECT sql FROM sqlite_schema WHERE type='table' AND name=?`, table).Scan(&tableSQL); err != nil {
+				t.Fatalf("read pre-migration %s schema: %v", table, err)
+			}
+			unrelatedTableSQL[table] = tableSQL
+		}
+		if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
+			t.Fatalf("first legacy migration: %v", err)
+		}
+		if _, err := db.ExecContext(ctx, `
+INSERT INTO epic_branch_admissions
+    (branch, epic_id, target_branch, state, blocker_kind, checkout_path, branch_sha, target_sha,
+     recovery_bead_id, details, created_at, updated_at)
+VALUES
+    ('epic/oro-existing', 'oro-existing', 'main', 'blocked', 'diverged', '/tmp/epic', 'abc', 'def',
+     'oro-recovery', 'preserve me',
+     '2026-08-03T00:00:00Z', '2026-08-03T00:00:00Z')
+`); err != nil {
+			t.Fatalf("seed existing admission: %v", err)
+		}
+		if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
+			t.Fatalf("second legacy migration: %v", err)
+		}
+		if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
+			t.Fatalf("third legacy migration: %v", err)
+		}
+		for table, wantSQL := range unrelatedTableSQL {
+			var gotSQL string
+			if err := db.QueryRowContext(ctx, `SELECT sql FROM sqlite_schema WHERE type='table' AND name=?`, table).Scan(&gotSQL); err != nil {
+				t.Fatalf("read post-migration %s schema: %v", table, err)
+			}
+			if gotSQL != wantSQL {
+				t.Errorf("%s schema changed during admission migration\ngot:  %s\nwant: %s", table, gotSQL, wantSQL)
+			}
+		}
+
+		for name, query := range map[string]string{
+			"admission":     `SELECT COUNT(*) FROM epic_branch_admissions WHERE branch='epic/oro-existing' AND epic_id='oro-existing' AND target_branch='main' AND state='blocked' AND blocker_kind='diverged' AND checkout_path='/tmp/epic' AND branch_sha='abc' AND target_sha='def' AND recovery_bead_id='oro-recovery' AND details='preserve me'`,
+			"quarantine":    `SELECT COUNT(*) FROM recovery_quarantines WHERE bead_id='oro-quarantine' AND reason='legacy' AND details='preserve me' AND status='open'`,
+			"runtime lease": `SELECT COUNT(*) FROM runtime_leases WHERE id='runtime-lease' AND marker='preserve me'`,
+			"storage lease": `SELECT COUNT(*) FROM leases WHERE id='storage-lease' AND marker='preserve me'`,
+		} {
+			var count int
+			if err := db.QueryRowContext(ctx, query).Scan(&count); err != nil {
+				t.Fatalf("count preserved %s: %v", name, err)
+			}
+			if count != 1 {
+				t.Errorf("preserved %s rows = %d, want 1", name, count)
+			}
+		}
+	})
+}
+
 func TestSchemaCreatesOpsRunsTable(t *testing.T) {
 	db, err := dbutil.OpenDB(":memory:")
 	if err != nil {

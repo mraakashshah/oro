@@ -514,6 +514,31 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_assignments_one_active_per_bead
 ON assignments(bead_id)
 WHERE status = 'active';
 
+-- Branch-keyed admission state serializes epic branch inspection and mutation
+-- across dispatcher processes and restarts.
+CREATE TABLE IF NOT EXISTS epic_branch_admissions (
+    branch TEXT PRIMARY KEY,
+    epic_id TEXT NOT NULL,
+    target_branch TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('leased', 'blocked', 'resolved')),
+    generation INTEGER NOT NULL DEFAULT 1,
+    lease_token TEXT,
+    lease_owner TEXT,
+    lease_expires_at TEXT,
+    blocker_kind TEXT,
+    checkout_path TEXT,
+    branch_sha TEXT NOT NULL DEFAULT '',
+    target_sha TEXT NOT NULL DEFAULT '',
+    recovery_bead_id TEXT,
+    details TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    resolved_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_epic_branch_admissions_state
+ON epic_branch_admissions(state);
+
 CREATE INDEX IF NOT EXISTS idx_beads_status     ON beads(status) WHERE deleted = 0;
 CREATE INDEX IF NOT EXISTS idx_beads_parent     ON beads(parent_id) WHERE deleted = 0;
 CREATE INDEX IF NOT EXISTS idx_beads_type       ON beads(type) WHERE deleted = 0;
