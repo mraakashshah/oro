@@ -1808,13 +1808,14 @@ func newTestDispatcher(t *testing.T) (*Dispatcher, *fakeBeadStore, *mockWorktree
 	t.Cleanup(func() { _ = os.Remove(sockPath) })
 
 	cfg := Config{
-		SocketPath:       sockPath,
-		DBPath:           ":memory:",
-		MaxWorkers:       5,
-		HeartbeatTimeout: 500 * time.Millisecond,
-		PollInterval:     50 * time.Millisecond,
-		ShutdownTimeout:  200 * time.Millisecond,
-		Estimator:        &mockBeadEstimator{},
+		SocketPath:        sockPath,
+		DBPath:            ":memory:",
+		ReviewEvidenceDir: filepath.Join(t.TempDir(), "review-evidence"),
+		MaxWorkers:        5,
+		HeartbeatTimeout:  500 * time.Millisecond,
+		PollInterval:      50 * time.Millisecond,
+		ShutdownTimeout:   200 * time.Millisecond,
+		Estimator:         &mockBeadEstimator{},
 	}
 
 	d, err := New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, nil,
