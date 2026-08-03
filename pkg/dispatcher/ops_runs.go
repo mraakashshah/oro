@@ -137,20 +137,28 @@ func CompleteOpsRun(ctx context.Context, db *sql.DB, id int64, status, verdict, 
 	if db == nil {
 		return errors.New("complete ops run: db is nil")
 	}
-	return completeOpsRunFromStatus(ctx, db, id, opsRunStatusRunning, status, verdict, feedback, errorText)
+	_, err := completeOpsRunFromStatus(ctx, db, id, opsRunStatusRunning, status, verdict, feedback, errorText)
+	return err
 }
+
+type opsRunCompletionOutcome uint8
+
+const (
+	opsRunCompletionAcquired opsRunCompletionOutcome = iota
+	opsRunCompletionExactReplay
+)
 
 func completeOpsRunFromStatus(
 	ctx context.Context,
 	store opsRunStore,
 	id int64,
 	expectedStatus, status, verdict, feedback, errorText string,
-) error {
+) (opsRunCompletionOutcome, error) {
 	if !isBlockingOpsRunStatus(expectedStatus) {
-		return fmt.Errorf("complete ops run %d: invalid expected status %q", id, expectedStatus)
+		return 0, fmt.Errorf("complete ops run %d: invalid expected status %q", id, expectedStatus)
 	}
 	if err := validateOpsRunCompletionStatus(status); err != nil {
-		return err
+		return 0, err
 	}
 	result, err := store.ExecContext(ctx, `
 UPDATE ops_runs
@@ -162,26 +170,26 @@ SET status = ?,
 WHERE id = ?
   AND status = ?`, status, verdict, feedback, errorText, id, expectedStatus)
 	if err != nil {
-		return fmt.Errorf("complete ops run %d: %w", id, err)
+		return 0, fmt.Errorf("complete ops run %d: %w", id, err)
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("complete ops run %d rows affected: %w", id, err)
+		return 0, fmt.Errorf("complete ops run %d rows affected: %w", id, err)
 	}
 	if affected == 0 {
 		current, loadErr := loadOpsRunByID(ctx, store, id)
 		if errors.Is(loadErr, sql.ErrNoRows) {
-			return fmt.Errorf("complete ops run %d: not found", id)
+			return 0, fmt.Errorf("complete ops run %d: not found", id)
 		}
 		if loadErr != nil {
-			return loadErr
+			return 0, loadErr
 		}
 		if current.Status == status && current.Verdict == verdict && current.Feedback == feedback && current.Error == errorText {
-			return nil
+			return opsRunCompletionExactReplay, nil
 		}
-		return fmt.Errorf("complete ops run %d: expected status %q, found %q", id, expectedStatus, current.Status)
+		return 0, fmt.Errorf("complete ops run %d: expected status %q, found %q", id, expectedStatus, current.Status)
 	}
-	return nil
+	return opsRunCompletionAcquired, nil
 }
 
 func (d *Dispatcher) applyOpsDirective(dir protocol.Directive, args string) (detail string, handled bool, err error) {
@@ -345,7 +353,7 @@ func (d *Dispatcher) applyOpsResolve(args string) (string, error) {
 			return "", err
 		}
 	}
-	if err := completeOpsRunFromStatus(
+	if _, err := completeOpsRunFromStatus(
 		context.Background(), d.db, rec.ID, rec.Status, opsRunStatusResolved, rec.Verdict, rec.Feedback, reason,
 	); err != nil {
 		return "", err
@@ -527,10 +535,14 @@ func replaceOpsRun(
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if err := completeOpsRunFromStatus(
+	outcome, err := completeOpsRunFromStatus(
 		ctx, tx, current.ID, current.Status, opsRunStatusSuperseded, current.Verdict, current.Feedback, supersedeReason,
-	); err != nil {
+	)
+	if err != nil {
 		return OpsRunRecord{}, false, err
+	}
+	if outcome != opsRunCompletionAcquired {
+		return OpsRunRecord{}, false, fmt.Errorf("replace ops run %d: completion ownership was not acquired", current.ID)
 	}
 	created, wasCreated, err := createOpsRun(ctx, tx, next)
 	if err != nil {
@@ -647,11 +659,19 @@ func (d *Dispatcher) watchReroutedOpsRunResult(
 				verdict = string(ops.VerdictResolved)
 			}
 		}
-		if rec.ID > 0 {
-			if err := CompleteOpsRun(ctx, d.db, rec.ID, status, verdict, result.Feedback, errorText); err != nil {
-				_ = d.logEvent(ctx, "ops_run_complete_failed", "dispatcher", rec.BeadID, rec.WorkerID,
-					fmt.Sprintf(`{"ops_run_id":%d,"type":%q,"status":%q,"error":%q}`, rec.ID, rec.Type, status, err.Error()))
-			}
+		if rec.ID <= 0 {
+			return
+		}
+		outcome, err := completeOpsRunFromStatus(
+			ctx, d.db, rec.ID, opsRunStatusRunning, status, verdict, result.Feedback, errorText,
+		)
+		if err != nil {
+			_ = d.logEvent(ctx, "ops_run_complete_failed", "dispatcher", rec.BeadID, rec.WorkerID,
+				fmt.Sprintf(`{"ops_run_id":%d,"type":%q,"status":%q,"error":%q}`, rec.ID, rec.Type, status, err.Error()))
+			return
+		}
+		if outcome != opsRunCompletionAcquired {
+			return
 		}
 		if afterComplete != nil {
 			afterComplete(result)

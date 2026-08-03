@@ -345,6 +345,84 @@ func TestCompleteOpsRunCASPreservesTerminalRowsAndAllowsExactReplay(t *testing.T
 	}
 }
 
+func TestWatchReroutedOpsRunResultRunsSideEffectsOnlyForAcquiredCompletion(t *testing.T) {
+	tests := []struct {
+		name          string
+		prepare       func(context.Context, *testing.T, *Dispatcher, OpsRunRecord)
+		wantCallbacks int
+		wantStatus    string
+	}{
+		{
+			name:          "running owner",
+			wantCallbacks: 1,
+			wantStatus:    opsRunStatusResolved,
+		},
+		{
+			name: "exact terminal replay",
+			prepare: func(ctx context.Context, t *testing.T, d *Dispatcher, rec OpsRunRecord) {
+				t.Helper()
+				if err := CompleteOpsRun(ctx, d.db, rec.ID, opsRunStatusResolved, string(ops.VerdictResolved), "rerouted result", ""); err != nil {
+					t.Fatalf("prepare exact replay: %v", err)
+				}
+			},
+			wantStatus: opsRunStatusResolved,
+		},
+		{
+			name: "superseded before result",
+			prepare: func(ctx context.Context, t *testing.T, d *Dispatcher, rec OpsRunRecord) {
+				t.Helper()
+				if err := CompleteOpsRun(ctx, d.db, rec.ID, opsRunStatusSuperseded, "superseded", "replacement owns work", "manual retry"); err != nil {
+					t.Fatalf("prepare superseded run: %v", err)
+				}
+			},
+			wantStatus: opsRunStatusSuperseded,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			d, _, _, _, _, _ := newTestDispatcher(t)
+			rec, _, err := CreateOpsRun(ctx, d.db, OpsRunRecord{
+				Type:     string(ops.OpsReview),
+				BeadID:   "oro-rerouted-side-effect-" + strings.ReplaceAll(tt.name, " ", "-"),
+				WorkerID: "worker-rerouted-side-effect",
+			})
+			if err != nil {
+				t.Fatalf("CreateOpsRun: %v", err)
+			}
+			if tt.prepare != nil {
+				tt.prepare(ctx, t, d, rec)
+			}
+			before := fetchOpsRunForTest(t, d.db, rec.ID)
+			resultCh := make(chan ops.Result, 1)
+			resultCh <- ops.Result{
+				Type:     ops.OpsReview,
+				BeadID:   rec.BeadID,
+				Verdict:  ops.VerdictResolved,
+				Feedback: "rerouted result",
+			}
+			callbacks := 0
+
+			d.watchReroutedOpsRunResult(ctx, rec, resultCh, func(ops.Result) {
+				callbacks++
+			})
+			d.wg.Wait()
+
+			if callbacks != tt.wantCallbacks {
+				t.Fatalf("afterComplete callbacks = %d, want %d", callbacks, tt.wantCallbacks)
+			}
+			after := fetchOpsRunForTest(t, d.db, rec.ID)
+			if after.Status != tt.wantStatus {
+				t.Fatalf("ops run status = %q, want %q", after.Status, tt.wantStatus)
+			}
+			if tt.wantCallbacks == 0 && after != before {
+				t.Fatalf("unowned result changed terminal row\n got: %#v\nwant: %#v", after, before)
+			}
+		})
+	}
+}
+
 func TestDecomposeOpsRunPersistsTerminalOutcome(t *testing.T) {
 	ctx := context.Background()
 	d, _, _, _, _, spawnMock := newTestDispatcher(t)
