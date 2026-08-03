@@ -18,6 +18,70 @@ const (
 	privateFileMode = 0o600
 )
 
+type directoryOperations interface {
+	lstat(path string) (os.FileMode, error)
+	open(path string, flags int, mode uint32) (int, error)
+	openat(parentFD int, name string, flags int, mode uint32) (int, error)
+	mkdirat(parentFD int, name string, mode uint32) error
+	fchmod(fd int, mode uint32) error
+	fsync(fd int) error
+	close(fd int) error
+}
+
+type unixDirectoryOperations struct{}
+
+func (unixDirectoryOperations) lstat(path string) (os.FileMode, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return 0, fmt.Errorf("lstat directory: %w", err)
+	}
+	return info.Mode(), nil
+}
+
+func (unixDirectoryOperations) open(path string, flags int, mode uint32) (int, error) {
+	fd, err := unix.Open(path, flags, mode)
+	if err != nil {
+		return -1, fmt.Errorf("open directory: %w", err)
+	}
+	return fd, nil
+}
+
+func (unixDirectoryOperations) openat(parentFD int, name string, flags int, mode uint32) (int, error) {
+	fd, err := unix.Openat(parentFD, name, flags, mode)
+	if err != nil {
+		return -1, fmt.Errorf("open directory relative to parent: %w", err)
+	}
+	return fd, nil
+}
+
+func (unixDirectoryOperations) mkdirat(parentFD int, name string, mode uint32) error {
+	if err := unix.Mkdirat(parentFD, name, mode); err != nil {
+		return fmt.Errorf("create directory relative to parent: %w", err)
+	}
+	return nil
+}
+
+func (unixDirectoryOperations) fchmod(fd int, mode uint32) error {
+	if err := unix.Fchmod(fd, mode); err != nil {
+		return fmt.Errorf("chmod directory: %w", err)
+	}
+	return nil
+}
+
+func (unixDirectoryOperations) fsync(fd int) error {
+	if err := unix.Fsync(fd); err != nil {
+		return fmt.Errorf("sync directory: %w", err)
+	}
+	return nil
+}
+
+func (unixDirectoryOperations) close(fd int) error {
+	if err := unix.Close(fd); err != nil {
+		return fmt.Errorf("close directory: %w", err)
+	}
+	return nil
+}
+
 // WriteFile atomically publishes data below root without following symlinks.
 func WriteFile(root string, parents []string, name string, data []byte) error {
 	dirFD, err := openEvidenceRoot(root, true)
@@ -123,53 +187,124 @@ func ReadFile(root string, parents []string, name string, maxBytes int64) ([]byt
 }
 
 func openEvidenceRoot(root string, create bool) (int, error) {
+	return openEvidenceRootWithOps(root, create, unixDirectoryOperations{})
+}
+
+func openEvidenceRootWithOps(root string, create bool, ops directoryOperations) (int, error) {
 	if !filepath.IsAbs(root) {
 		return -1, errors.New("evidence root must be absolute")
 	}
-	if create {
-		if err := os.MkdirAll(root, privateDirMode); err != nil {
-			return -1, fmt.Errorf("create evidence root: %w", err)
-		}
+	cleanRoot := filepath.Clean(root)
+	if cleanRoot == string(filepath.Separator) {
+		return -1, errors.New("evidence root must not be the filesystem root")
 	}
-	fd, err := unix.Open(filepath.Clean(root), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	existingRoot, missing, err := existingEvidenceRootParent(cleanRoot, ops)
 	if err != nil {
-		return -1, fmt.Errorf("open evidence root: %w", err)
+		return -1, err
+	}
+	fd, err := ops.open(existingRoot, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return -1, fmt.Errorf("open evidence root parent: %w", err)
+	}
+	for _, component := range missing {
+		nextFD, openErr := openRootComponentWithOps(fd, component, create, ops)
+		if openErr != nil {
+			_ = ops.close(fd)
+			return -1, openErr
+		}
+		_ = ops.close(fd)
+		fd = nextFD
 	}
 	if create {
-		if err := unix.Fchmod(fd, privateDirMode); err != nil {
-			_ = unix.Close(fd)
+		if err := ops.fchmod(fd, privateDirMode); err != nil {
+			_ = ops.close(fd)
 			return -1, fmt.Errorf("secure evidence root: %w", err)
 		}
 	} else if err := requirePrivateDirectory(fd); err != nil {
-		_ = unix.Close(fd)
+		_ = ops.close(fd)
 		return -1, err
 	}
 	return fd, nil
 }
 
+func existingEvidenceRootParent(root string, ops directoryOperations) (existing string, missing []string, err error) {
+	existing = root
+	for {
+		mode, statErr := ops.lstat(existing)
+		if statErr == nil {
+			if mode&os.ModeSymlink != 0 || !mode.IsDir() {
+				return "", nil, errors.New("evidence root ancestor is not a directory")
+			}
+			return existing, missing, nil
+		}
+		if !errors.Is(statErr, os.ErrNotExist) {
+			return "", nil, fmt.Errorf("inspect evidence root: %w", statErr)
+		}
+		parent := filepath.Dir(existing)
+		if parent == existing {
+			return "", nil, fmt.Errorf("locate evidence root parent: %w", statErr)
+		}
+		missing = append([]string{filepath.Base(existing)}, missing...)
+		existing = parent
+	}
+}
+
 func openEvidenceDir(parentFD int, name string, create bool) (int, error) {
+	return openEvidenceDirWithOps(parentFD, name, create, unixDirectoryOperations{})
+}
+
+func openEvidenceDirWithOps(parentFD int, name string, create bool, ops directoryOperations) (int, error) {
 	if !safeComponent(name) {
 		return -1, errors.New("evidence directory is not a safe path component")
 	}
 	if create {
-		if err := unix.Mkdirat(parentFD, name, privateDirMode); err != nil && !errors.Is(err, unix.EEXIST) {
-			return -1, fmt.Errorf("create evidence directory %q: %w", name, err)
+		if err := createDirectoryEntry(parentFD, name, "evidence directory", ops); err != nil {
+			return -1, err
 		}
 	}
-	fd, err := unix.Openat(parentFD, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	fd, err := ops.openat(parentFD, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return -1, fmt.Errorf("open evidence directory %q: %w", name, err)
 	}
 	if create {
-		if err := unix.Fchmod(fd, privateDirMode); err != nil {
-			_ = unix.Close(fd)
+		if err := ops.fchmod(fd, privateDirMode); err != nil {
+			_ = ops.close(fd)
 			return -1, fmt.Errorf("secure evidence directory %q: %w", name, err)
 		}
 	} else if err := requirePrivateDirectory(fd); err != nil {
-		_ = unix.Close(fd)
+		_ = ops.close(fd)
 		return -1, err
 	}
 	return fd, nil
+}
+
+func openRootComponentWithOps(parentFD int, name string, create bool, ops directoryOperations) (int, error) {
+	if !safeComponent(name) {
+		return -1, errors.New("evidence root contains an unsafe path component")
+	}
+	if create {
+		if err := createDirectoryEntry(parentFD, name, "evidence root component", ops); err != nil {
+			return -1, err
+		}
+	}
+	fd, err := ops.openat(parentFD, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return -1, fmt.Errorf("open evidence root component %q: %w", name, err)
+	}
+	return fd, nil
+}
+
+func createDirectoryEntry(parentFD int, name, kind string, ops directoryOperations) error {
+	if err := ops.mkdirat(parentFD, name, privateDirMode); err != nil {
+		if errors.Is(err, unix.EEXIST) {
+			return nil
+		}
+		return fmt.Errorf("create %s %q: %w", kind, name, err)
+	}
+	if err := ops.fsync(parentFD); err != nil {
+		return fmt.Errorf("sync %s parent for %q: %w", kind, name, err)
+	}
+	return nil
 }
 
 func safeComponent(value string) bool {
