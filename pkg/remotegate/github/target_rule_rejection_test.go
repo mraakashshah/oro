@@ -43,7 +43,7 @@ func TestRejectIncompleteEffectiveRulePages(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fixture := tt.fixture
-			client := PreflightClient{
+			client := Client{
 				repository:       "acme/oro",
 				collection:       &fixture,
 				collectionLimits: CollectionLimits{MaxPages: 1, MaxItems: 1, MaxBytes: 32},

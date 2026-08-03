@@ -36,13 +36,13 @@ func TestGitHubChangeLifecycle(t *testing.T) {
 	owned := remotegate.RemoteChange{Change: change, Owner: "worker-1", Generation: 1}
 	lease := remotegate.Lease{Owner: owned.Owner, Generation: owned.Generation, ExpectedSHA: candidate.SHA}
 
-	client, err := NewClient(Config{
+	client, err := NewChangeClient(Config{
 		Repository:     repository,
 		RequiredChecks: []string{"quality-gate"},
 		Limits:         CollectionLimits{MaxPages: 3, MaxItems: 10, MaxBytes: 4096},
 	}, fixture.runner, &fixture.git, fixture.credentials)
 	if err != nil {
-		t.Fatalf("NewClient() error = %v", err)
+		t.Fatalf("NewChangeClient() error = %v", err)
 	}
 
 	published, err := client.Publish(context.Background(), remotegate.PublishRequest{Candidate: candidate, Target: target, Lease: remotegate.RefLease{ExpectedAbsent: true}})
@@ -138,7 +138,7 @@ func TestGitHubChangeLifecycle(t *testing.T) {
 	}
 }
 
-func TestNewClientRejectsCredentialScopeMismatchBeforeMutation(t *testing.T) {
+func TestNewChangeClientRejectsCredentialScopeMismatchBeforeMutation(t *testing.T) {
 	t.Parallel()
 
 	for _, test := range []struct {
@@ -179,12 +179,12 @@ func TestNewClientRejectsCredentialScopeMismatchBeforeMutation(t *testing.T) {
 				gitCredentials = test.gitCred(fixture.credentials)
 			}
 			fixture.git.credentials = gitCredentials
-			_, err := NewClient(Config{
+			_, err := NewChangeClient(Config{
 				Repository:     remotegate.Repository{Host: "github.example", Owner: "acme", Name: "oro"},
 				RequiredChecks: []string{"quality-gate"},
 			}, fixture.runner, &fixture.git, clientCredentials)
 			if !errors.Is(err, remotegate.ErrConfig) {
-				t.Fatalf("NewClient() error = %v, want ErrConfig", err)
+				t.Fatalf("NewChangeClient() error = %v, want ErrConfig", err)
 			}
 			if len(fixture.git.requests) != 0 || fixture.countCalls("") != 0 {
 				t.Fatalf("constructor mismatch performed mutation: pushes=%d calls=%d", len(fixture.git.requests), fixture.countCalls(""))
@@ -257,7 +257,7 @@ func TestMutationContextErrorsRemainReachable(t *testing.T) {
 	})
 }
 
-func newLifecycleClient(t *testing.T, fixture *changeLifecycleFixture) (*Client, remotegate.RemoteChange, remotegate.Evidence, remotegate.Lease) {
+func newLifecycleClient(t *testing.T, fixture *changeLifecycleFixture) (*ChangeClient, remotegate.RemoteChange, remotegate.Evidence, remotegate.Lease) {
 	t.Helper()
 	repository := remotegate.Repository{Host: "github.example", Owner: "acme", Name: "oro"}
 	candidate := remotegate.Candidate{Repository: repository, Ref: "refs/heads/agent/oro-83st", SHA: strings.Repeat("1", 40), TreeSHA: strings.Repeat("2", 40)}
@@ -266,9 +266,9 @@ func newLifecycleClient(t *testing.T, fixture *changeLifecycleFixture) (*Client,
 	owned := remotegate.RemoteChange{Change: change, Owner: "worker-1", Generation: 1}
 	lease := remotegate.Lease{Owner: owned.Owner, Generation: owned.Generation, ExpectedSHA: candidate.SHA}
 	evidence := remotegate.Evidence{ID: "evidence-1", Change: change, CandidateSHA: candidate.SHA, Target: target, TestedTreeSHA: candidate.TreeSHA, PolicyHash: "github:quality-gate"}
-	client, err := NewClient(Config{Repository: repository, RequiredChecks: []string{"quality-gate"}}, fixture.runner, &fixture.git, fixture.credentials)
+	client, err := NewChangeClient(Config{Repository: repository, RequiredChecks: []string{"quality-gate"}}, fixture.runner, &fixture.git, fixture.credentials)
 	if err != nil {
-		t.Fatalf("NewClient() error = %v", err)
+		t.Fatalf("NewChangeClient() error = %v", err)
 	}
 	return client, owned, evidence, lease
 }

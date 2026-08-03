@@ -33,21 +33,21 @@ type credentialBoundGitTransport interface {
 	RuntimeCredentialProvider() remotegate.RuntimeCredentialProvider
 }
 
-// Client adapts GitHub pull requests and checks to the provider-neutral remote
+// ChangeClient adapts GitHub pull requests and checks to the provider-neutral remote
 // gate lifecycle.
 //
 //oro:testonly — dispatcher wiring is introduced by subsequent remote-gate tasks.
-type Client struct {
+type ChangeClient struct {
 	cfg         Config
 	gh          *GHRunner
 	git         GitTransport
 	credentials remotegate.RuntimeCredentialProvider
 }
 
-// NewClient constructs a repository-bound GitHub change adapter.
+// NewChangeClient constructs a repository-bound GitHub change adapter.
 //
 //oro:testonly — dispatcher wiring is introduced by subsequent remote-gate tasks.
-func NewClient(cfg Config, gh *GHRunner, git GitTransport, creds remotegate.RuntimeCredentialProvider) (*Client, error) {
+func NewChangeClient(cfg Config, gh *GHRunner, git GitTransport, creds remotegate.RuntimeCredentialProvider) (*ChangeClient, error) {
 	if err := validateConfig(cfg); err != nil {
 		return nil, err
 	}
@@ -60,7 +60,7 @@ func NewClient(cfg Config, gh *GHRunner, git GitTransport, creds remotegate.Runt
 		return nil, fmt.Errorf("construct GitHub change adapter: %w", remotegate.ErrConfig)
 	}
 	cfg.RequiredChecks = append([]string(nil), cfg.RequiredChecks...)
-	return &Client{cfg: cfg, gh: gh, git: git, credentials: creds}, nil
+	return &ChangeClient{cfg: cfg, gh: gh, git: git, credentials: creds}, nil
 }
 
 func validateConfig(cfg Config) error {
@@ -87,7 +87,7 @@ func validateConfig(cfg Config) error {
 }
 
 // Publish pushes the exact candidate ref through the isolated Git transport.
-func (c *Client) Publish(ctx context.Context, request remotegate.PublishRequest) (remotegate.PublishedCandidate, error) {
+func (c *ChangeClient) Publish(ctx context.Context, request remotegate.PublishRequest) (remotegate.PublishedCandidate, error) {
 	if err := remotegate.ValidateRequest(request); err != nil {
 		return remotegate.PublishedCandidate{}, fmt.Errorf("validate candidate publication: %w", err)
 	}
@@ -110,7 +110,7 @@ func (c *Client) Publish(ctx context.Context, request remotegate.PublishRequest)
 
 // EnsureChange observes before creating, so a lost create response is adopted
 // rather than producing a duplicate pull request.
-func (c *Client) EnsureChange(ctx context.Context, request remotegate.EnsureChangeRequest) (remotegate.RemoteChange, error) {
+func (c *ChangeClient) EnsureChange(ctx context.Context, request remotegate.EnsureChangeRequest) (remotegate.RemoteChange, error) {
 	if err := remotegate.ValidateRequest(request); err != nil {
 		return remotegate.RemoteChange{}, fmt.Errorf("validate change creation: %w", err)
 	}
@@ -136,7 +136,7 @@ func (c *Client) EnsureChange(ctx context.Context, request remotegate.EnsureChan
 }
 
 // Observe returns normalized terminal and exact required-check state.
-func (c *Client) Observe(ctx context.Context, request remotegate.ObserveGateRequest) (remotegate.RemoteGateObservation, error) {
+func (c *ChangeClient) Observe(ctx context.Context, request remotegate.ObserveGateRequest) (remotegate.RemoteGateObservation, error) {
 	if err := remotegate.ValidateRequest(request); err != nil {
 		return remotegate.RemoteGateObservation{}, fmt.Errorf("validate change observation: %w", err)
 	}
@@ -174,7 +174,7 @@ func (c *Client) Observe(ctx context.Context, request remotegate.ObserveGateRequ
 
 // SetChangeReady transitions a matching draft once and observes the result
 // after both success and ambiguous provider responses.
-func (c *Client) SetChangeReady(ctx context.Context, request remotegate.ChangeReadyRequest) (remotegate.RemoteChange, error) {
+func (c *ChangeClient) SetChangeReady(ctx context.Context, request remotegate.ChangeReadyRequest) (remotegate.RemoteChange, error) {
 	if err := remotegate.ValidateRequest(request); err != nil {
 		return remotegate.RemoteChange{}, fmt.Errorf("validate ready transition: %w", err)
 	}
@@ -201,7 +201,7 @@ func (c *Client) SetChangeReady(ctx context.Context, request remotegate.ChangeRe
 }
 
 // Cancel idempotently closes only the exact matching pull request.
-func (c *Client) Cancel(ctx context.Context, request remotegate.CancelGateRequest) error {
+func (c *ChangeClient) Cancel(ctx context.Context, request remotegate.CancelGateRequest) error {
 	if err := remotegate.ValidateRequest(request); err != nil {
 		return fmt.Errorf("validate cancellation: %w", err)
 	}
@@ -220,7 +220,7 @@ func (c *Client) Cancel(ctx context.Context, request remotegate.CancelGateReques
 
 // Reconcile observes the attempted operation before deciding whether any
 // mutation remains necessary.
-func (c *Client) Reconcile(ctx context.Context, request remotegate.ReconcileChangeRequest) error {
+func (c *ChangeClient) Reconcile(ctx context.Context, request remotegate.ReconcileChangeRequest) error {
 	if err := remotegate.ValidateRequest(request); err != nil {
 		return fmt.Errorf("validate reconciliation: %w", err)
 	}
@@ -248,11 +248,11 @@ func (c *Client) Reconcile(ctx context.Context, request remotegate.ReconcileChan
 	return fmt.Errorf("reconcile GitHub change: %w", remotegate.ErrAmbiguous)
 }
 
-func (c *Client) matchesRepository(repository remotegate.Repository) bool {
+func (c *ChangeClient) matchesRepository(repository remotegate.Repository) bool {
 	return repository == c.cfg.Repository
 }
 
-func (c *Client) repositoryPath() string {
+func (c *ChangeClient) repositoryPath() string {
 	return "/repos/" + url.PathEscape(c.cfg.Repository.Owner) + "/" + url.PathEscape(c.cfg.Repository.Name)
 }
 
@@ -299,7 +299,7 @@ type markReadyResponse struct {
 	} `json:"errors"`
 }
 
-func (c *Client) markPullRequestReadyForReview(ctx context.Context, nodeID string) error {
+func (c *ChangeClient) markPullRequestReadyForReview(ctx context.Context, nodeID string) error {
 	if strings.TrimSpace(nodeID) == "" {
 		return fmt.Errorf("ready GitHub change: missing pull request node ID: %w", remotegate.ErrAmbiguous)
 	}
@@ -343,7 +343,7 @@ func (pr pullRequest) normalized(expected remotegate.Change) remotegate.Change {
 	return normalized
 }
 
-func (c *Client) findChange(ctx context.Context, change remotegate.Change) (*pullRequest, error) {
+func (c *ChangeClient) findChange(ctx context.Context, change remotegate.Change) (*pullRequest, error) {
 	query := url.Values{
 		"state": {"all"},
 		"head":  {c.cfg.Repository.Owner + ":" + strings.TrimPrefix(change.Candidate.Ref, "refs/heads/")},
@@ -373,7 +373,7 @@ func (c *Client) findChange(ctx context.Context, change remotegate.Change) (*pul
 	return match, nil
 }
 
-func (c *Client) createDraftChange(ctx context.Context, change remotegate.Change) (pullRequest, error) {
+func (c *ChangeClient) createDraftChange(ctx context.Context, change remotegate.Change) (pullRequest, error) {
 	body, err := json.Marshal(map[string]any{
 		"title": "Oro remote gate: " + change.Candidate.Ref,
 		"head":  strings.TrimPrefix(change.Candidate.Ref, "refs/heads/"),
@@ -394,7 +394,7 @@ func (c *Client) createDraftChange(ctx context.Context, change remotegate.Change
 	return pr, nil
 }
 
-func (c *Client) adoptChange(expected remotegate.RemoteChange, pr pullRequest) (remotegate.RemoteChange, error) {
+func (c *ChangeClient) adoptChange(expected remotegate.RemoteChange, pr pullRequest) (remotegate.RemoteChange, error) {
 	change := expected.Change
 	if change.ID == "" {
 		change.ID = strconv.Itoa(pr.Number)
@@ -408,7 +408,7 @@ func (c *Client) adoptChange(expected remotegate.RemoteChange, pr pullRequest) (
 	return expected, nil
 }
 
-func (c *Client) getChange(ctx context.Context, id string) (pullRequest, error) {
+func (c *ChangeClient) getChange(ctx context.Context, id string) (pullRequest, error) {
 	output, err := c.gh.Run(ctx, APIRequest{Method: "GET", Path: c.repositoryPath() + "/pulls/" + url.PathEscape(id)})
 	if err != nil {
 		return pullRequest{}, fmt.Errorf("get GitHub change: %w", err)
@@ -432,7 +432,7 @@ func (run checkRun) ID() string {
 	return run.NodeID
 }
 
-func (c *Client) observeChecks(ctx context.Context, sha string) (ids []string, complete, passed bool, err error) {
+func (c *ChangeClient) observeChecks(ctx context.Context, sha string) (ids []string, complete, passed bool, err error) {
 	limits := c.cfg.Limits
 	if limits == (CollectionLimits{}) {
 		limits = CollectionLimits{MaxPages: 100, MaxItems: 1000, MaxBytes: 4 << 20}
@@ -466,7 +466,7 @@ func (c *Client) observeChecks(ctx context.Context, sha string) (ids []string, c
 	return ids, true, passed, nil
 }
 
-func (c *Client) closeChange(ctx context.Context, id string) error {
+func (c *ChangeClient) closeChange(ctx context.Context, id string) error {
 	body := json.RawMessage(`{"state":"closed"}`)
 	_, err := c.gh.Run(ctx, APIRequest{Method: "PATCH", Path: c.repositoryPath() + "/pulls/" + url.PathEscape(id), Body: body})
 	if err == nil {

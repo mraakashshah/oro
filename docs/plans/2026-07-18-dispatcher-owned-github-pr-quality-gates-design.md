@@ -735,6 +735,12 @@ type RemoteGateClient interface {
 }
 ```
 
+The GitHub package preserves its existing read-only startup surface as
+`Client` and `NewClient(APIReader, string, CollectionReader,
+CollectionLimits)`. The mutable remote-change adapter uses the distinct
+`ChangeClient` and `NewChangeClient` names so adding lifecycle support does not
+break current preflight callers.
+
 `EnsureEphemeralTarget` is the provider-neutral lifecycle for PR bases such as
 an Oro epic branch. Its request includes project/epic identity, exact ref name,
 persisted seed SHA, target generation, ownership marker, and expected-absent or

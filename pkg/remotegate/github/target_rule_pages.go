@@ -23,7 +23,7 @@ type effectiveRuleCollection struct {
 	Evidence CollectionEvidence
 }
 
-func (c *PreflightClient) collectEffectiveRuleResponses(ctx context.Context, target string) (effectiveRuleCollection, error) {
+func (c *Client) collectEffectiveRuleResponses(ctx context.Context, target string) (effectiveRuleCollection, error) {
 	if err := ctx.Err(); err != nil {
 		return effectiveRuleCollection{}, fmt.Errorf("collect effective rules context: %w", err)
 	}

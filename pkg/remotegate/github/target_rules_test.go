@@ -55,7 +55,7 @@ func TestEffectiveTargetRuleCollection(t *testing.T) {
 	}}
 
 	fixtures := targetRuleCollectionFixture{itemsByTarget: baseFixtures}
-	client := PreflightClient{repository: "acme/oro", collection: &fixtures, collectionLimits: CollectionLimits{MaxPages: 3, MaxItems: 50, MaxBytes: 4096}}
+	client := Client{repository: "acme/oro", collection: &fixtures, collectionLimits: CollectionLimits{MaxPages: 3, MaxItems: 50, MaxBytes: 4096}}
 	got, err := client.effectiveTargetPolicy(context.Background(), []string{"main", "release/1", "epic/demo"})
 	if err != nil {
 		t.Fatalf("effectiveTargetPolicy() error = %v", err)
@@ -73,7 +73,7 @@ func TestEffectiveTargetRuleCollection(t *testing.T) {
 		"release/1": slices.Clone(baseFixtures["release/1"]),
 		"epic/demo": slices.Clone(baseFixtures["epic/demo"]),
 	}}
-	reversedClient := PreflightClient{repository: "acme/oro", collection: &reversedFixtures, collectionLimits: CollectionLimits{MaxPages: 3, MaxItems: 50, MaxBytes: 4096}}
+	reversedClient := Client{repository: "acme/oro", collection: &reversedFixtures, collectionLimits: CollectionLimits{MaxPages: 3, MaxItems: 50, MaxBytes: 4096}}
 	reversed, err := reversedClient.effectiveTargetPolicy(context.Background(), []string{"epic/demo", "release/1", "main"})
 	if err != nil {
 		t.Fatalf("effectiveTargetPolicy() with reversed targets error = %v", err)
@@ -110,7 +110,7 @@ func TestEffectiveTargetPolicyRejectsAmbiguousEvidence(t *testing.T) {
 				cancel()
 			}
 			fixture := targetRuleCollectionFixture{itemsByTarget: tt.items}
-			client := PreflightClient{repository: "acme/oro", collection: &fixture, collectionLimits: CollectionLimits{MaxPages: 3, MaxItems: 50, MaxBytes: 4096}}
+			client := Client{repository: "acme/oro", collection: &fixture, collectionLimits: CollectionLimits{MaxPages: 3, MaxItems: 50, MaxBytes: 4096}}
 			got, err := client.effectiveTargetPolicy(ctx, tt.targets)
 			if tt.cancel {
 				if !errors.Is(err, context.Canceled) {

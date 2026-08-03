@@ -9,7 +9,7 @@ import (
 	"oro/pkg/remotegate"
 )
 
-func (c *PreflightClient) effectiveTargetPolicy(ctx context.Context, targets []string) (remotegate.EffectivePolicy, error) {
+func (c *Client) effectiveTargetPolicy(ctx context.Context, targets []string) (remotegate.EffectivePolicy, error) {
 	if err := ctx.Err(); err != nil {
 		return remotegate.EffectivePolicy{}, fmt.Errorf("collect effective target policy context: %w", err)
 	}
@@ -38,7 +38,7 @@ func (c *PreflightClient) effectiveTargetPolicy(ctx context.Context, targets []s
 	return policy, nil
 }
 
-func (c *PreflightClient) collectTargetRules(ctx context.Context, target string, seenRules map[string]struct{}) ([]remotegate.ApplicableRule, error) {
+func (c *Client) collectTargetRules(ctx context.Context, target string, seenRules map[string]struct{}) ([]remotegate.ApplicableRule, error) {
 	collection, err := c.collectEffectiveRuleResponses(ctx, target)
 	if err != nil {
 		return nil, err
