@@ -156,6 +156,8 @@ func (s *ReviewCheckpointStore) SaveRejectedFindings(
 	findings []reviewcontract.Finding,
 	ref *ReviewRecoveryArtifactRef,
 ) error {
+	reviewRecoveryArtifactLifecycleMu.Lock()
+	defer reviewRecoveryArtifactLifecycleMu.Unlock()
 	if s == nil || s.db == nil {
 		return errors.New("save rejected findings: db is nil")
 	}
@@ -300,7 +302,7 @@ func validateRejectedFindingsArtifact(findings []reviewcontract.Finding, ref *Re
 		}
 		return nil
 	}
-	loaded, err := LoadRecoveryArtifact(*ref)
+	loaded, err := loadRecoveryArtifactUnlocked(*ref)
 	if err != nil {
 		return fmt.Errorf("save rejected findings: %w", err)
 	}

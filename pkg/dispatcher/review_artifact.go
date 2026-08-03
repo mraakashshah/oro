@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"oro/pkg/protocol"
 	"oro/pkg/reviewcontract"
@@ -20,6 +21,8 @@ const (
 	recoveryArtifactFileMode       = 0o600
 	recoveryArtifactDirMode        = 0o700
 )
+
+var reviewRecoveryArtifactLifecycleMu sync.RWMutex
 
 // ReviewRecoveryArtifactRef is the durable wire identity for lossless findings.
 type ReviewRecoveryArtifactRef = protocol.ReviewRecoveryArtifactRef
@@ -139,6 +142,16 @@ func PersistRecoveryArtifact(
 	checkpointID int64,
 	findings []reviewcontract.Finding,
 ) (ReviewRecoveryArtifactRef, error) {
+	reviewRecoveryArtifactLifecycleMu.Lock()
+	defer reviewRecoveryArtifactLifecycleMu.Unlock()
+	return persistRecoveryArtifactUnlocked(dir, checkpointID, findings)
+}
+
+func persistRecoveryArtifactUnlocked(
+	dir string,
+	checkpointID int64,
+	findings []reviewcontract.Finding,
+) (ReviewRecoveryArtifactRef, error) {
 	if dir == "" {
 		return ReviewRecoveryArtifactRef{}, errors.New("persist recovery artifact: directory is empty")
 	}
@@ -217,6 +230,12 @@ func writeRecoveryArtifactAtomically(dir, path string, data []byte) error {
 
 // LoadRecoveryArtifact verifies the committed identity before returning any findings.
 func LoadRecoveryArtifact(ref ReviewRecoveryArtifactRef) ([]reviewcontract.Finding, error) {
+	reviewRecoveryArtifactLifecycleMu.RLock()
+	defer reviewRecoveryArtifactLifecycleMu.RUnlock()
+	return loadRecoveryArtifactUnlocked(ref)
+}
+
+func loadRecoveryArtifactUnlocked(ref ReviewRecoveryArtifactRef) ([]reviewcontract.Finding, error) {
 	if err := validateRecoveryArtifactRef(ref); err != nil {
 		return nil, recoveryArtifactError(RecoveryArtifactCorrupt, ref.Path, err)
 	}

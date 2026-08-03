@@ -363,6 +363,91 @@ func TestReviewRecoveryArtifactRetentionRemovesUnreferencedFiles(t *testing.T) {
 	}
 }
 
+func TestReviewRecoveryArtifactRenewalCannotBePrunedBeforeCheckpointCommit(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	artifactDir := filepath.Join(root, "review-recovery")
+	store := openReviewCheckpointStore(ctx, t, filepath.Join(root, "checkpoints.sqlite"))
+	checkpoint, err := store.CreateOrReuse(ctx, reviewCheckpointInput("oro-renew-prune-race"))
+	if err != nil {
+		t.Fatalf("create checkpoint: %v", err)
+	}
+	findings := []reviewcontract.Finding{reviewOverflowFinding("same-content", "renew deterministic path")}
+	oldRef, err := PersistRecoveryArtifact(artifactDir, checkpoint.ID, findings)
+	if err != nil {
+		t.Fatalf("persist old artifact: %v", err)
+	}
+	old := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(oldRef.Path, old, old); err != nil {
+		t.Fatalf("age old artifact: %v", err)
+	}
+
+	classified := make(chan struct{})
+	allowDelete := make(chan struct{})
+	d := &Dispatcher{
+		db:                        store.db,
+		nowFunc:                   time.Now,
+		reviewArtifactRetention:   time.Hour,
+		reviewRecoveryArtifactDir: artifactDir,
+		testReviewArtifactBeforeDelete: func(artifact ArtifactRef) {
+			if artifact.Path != oldRef.Path {
+				return
+			}
+			close(classified)
+			<-allowDelete
+		},
+	}
+	pruneDone := make(chan struct{})
+	go func() {
+		defer close(pruneDone)
+		d.pruneReviewArtifacts(ctx)
+	}()
+	<-classified
+
+	type saveResult struct {
+		ref ReviewRecoveryArtifactRef
+		err error
+	}
+	saved := make(chan saveResult, 1)
+	go func() {
+		ref, persistErr := PersistRecoveryArtifact(artifactDir, checkpoint.ID, findings)
+		if persistErr == nil {
+			persistErr = store.SaveRejectedFindings(ctx, checkpoint.ID, findings, &ref)
+		}
+		saved <- saveResult{ref: ref, err: persistErr}
+	}()
+
+	var result saveResult
+	select {
+	case result = <-saved:
+		close(allowDelete)
+		<-pruneDone
+	case <-time.After(250 * time.Millisecond):
+		// A synchronized pruner owns the artifact lifecycle until its stale
+		// deletion completes; renewal then recreates and commits the path.
+		close(allowDelete)
+		<-pruneDone
+		result = <-saved
+	}
+	if result.err != nil {
+		t.Fatalf("renew and commit artifact: %v", result.err)
+	}
+	loaded, err := store.LoadReviewRecovery(ctx, checkpoint.ID)
+	if err != nil {
+		t.Fatalf("load committed recovery after prune race: %v", err)
+	}
+	if loaded.FindingsRef == nil || !reflect.DeepEqual(*loaded.FindingsRef, result.ref) {
+		t.Fatalf("loaded recovery ref = %#v, want %#v", loaded.FindingsRef, result.ref)
+	}
+	got, err := LoadRecoveryArtifact(result.ref)
+	if err != nil {
+		t.Fatalf("load renewed artifact after checkpoint commit: %v", err)
+	}
+	if !reflect.DeepEqual(got, findings) {
+		t.Fatalf("renewed artifact findings = %#v, want %#v", got, findings)
+	}
+}
+
 func TestPrepareReviewRecoveryExactInlineBoundary(t *testing.T) {
 	root := t.TempDir()
 	base := protocol.ReviewRecovery{

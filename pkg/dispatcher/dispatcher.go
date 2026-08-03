@@ -309,6 +309,10 @@ type Dispatcher struct {
 	// iteration completes. Tests use this to synchronize without time.Sleep.
 	testPanePollDone func()
 
+	// testReviewArtifactBeforeDelete pauses retention after classification and
+	// before removal so tests can prove renewal/commit synchronization.
+	testReviewArtifactBeforeDelete func(ArtifactRef)
+
 	// Review artifact maintenance is serialized so overlapping scheduled ticks
 	// cannot delete or acknowledge the same artifact concurrently.
 	reviewArtifactPruneMu     sync.Mutex

@@ -39,6 +39,8 @@ func (d *Dispatcher) reviewMaintenanceLoop(ctx context.Context) {
 func (d *Dispatcher) pruneReviewArtifacts(ctx context.Context) {
 	d.reviewArtifactPruneMu.Lock()
 	defer d.reviewArtifactPruneMu.Unlock()
+	reviewRecoveryArtifactLifecycleMu.Lock()
+	defer reviewRecoveryArtifactLifecycleMu.Unlock()
 
 	store := NewReviewCheckpointStore(d.db)
 	before := d.nowFunc().Add(-d.reviewArtifactRetention)
@@ -47,6 +49,9 @@ func (d *Dispatcher) pruneReviewArtifacts(ctx context.Context) {
 		return
 	}
 	for _, artifact := range artifacts {
+		if d.testReviewArtifactBeforeDelete != nil {
+			d.testReviewArtifactBeforeDelete(artifact)
+		}
 		if err := os.Remove(artifact.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			continue
 		}
