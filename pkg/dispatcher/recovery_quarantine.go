@@ -44,6 +44,14 @@ type recoveryQuarantineRecord struct {
 	ResolvedAt   string
 }
 
+type recoveryQuarantineEvent struct {
+	Type     string
+	Source   string
+	BeadID   string
+	WorkerID string
+	Payload  string
+}
+
 // RecoveryQuarantineEmptySafe reports whether an inspected quarantine has no
 // dirty files or unique branch commits to preserve. The recovery CLI and the
 // dispatcher share this predicate so their definition of discardable state
@@ -56,6 +64,12 @@ func RecoveryQuarantineEmptySafe(dirtyFiles int, branchExists bool, branchAhead 
 }
 
 func (d *Dispatcher) createRecoveryQuarantine(ctx context.Context, q recoveryQuarantine) (int64, error) {
+	return d.createRecoveryQuarantineWithEvent(ctx, q, recoveryQuarantineEvent{})
+}
+
+func (d *Dispatcher) createRecoveryQuarantineWithEvent(
+	ctx context.Context, q recoveryQuarantine, event recoveryQuarantineEvent,
+) (int64, error) {
 	if d.db == nil {
 		return 0, fmt.Errorf("create recovery quarantine: db is nil")
 	}
@@ -66,7 +80,7 @@ func (d *Dispatcher) createRecoveryQuarantine(ctx context.Context, q recoveryQua
 		return 0, fmt.Errorf("create recovery quarantine: reason is required")
 	}
 
-	if q.AssignmentID <= 0 {
+	if q.AssignmentID <= 0 && event.Type == "" {
 		return insertRecoveryQuarantineRow(ctx, d.db, q)
 	}
 
@@ -76,32 +90,55 @@ func (d *Dispatcher) createRecoveryQuarantine(ctx context.Context, q recoveryQua
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if err := markAssignmentQuarantinedExec(ctx, tx, q.AssignmentID); err != nil {
-		return 0, err
-	}
-
-	id, found, err := findOpenRecoveryQuarantineForAssignment(ctx, tx, q.AssignmentID)
+	id, err := upsertRecoveryQuarantineTx(ctx, tx, q)
 	if err != nil {
 		return 0, err
 	}
-	if found {
-		if _, err := tx.ExecContext(ctx, `
-UPDATE recovery_quarantines
-SET bead_id=?, worker_id=?, worktree=?, branch=?, reason=?, details=?
-WHERE id=? AND status='open'`,
-			q.BeadID, q.WorkerID, q.Worktree, q.Branch, q.Reason, q.Details, id); err != nil {
-			return 0, fmt.Errorf("update recovery quarantine: %w", err)
-		}
-	} else {
-		id, err = insertRecoveryQuarantineRow(ctx, tx, q)
-		if err != nil {
+	if event.Type != "" {
+		if err := insertRecoveryQuarantineEvent(ctx, tx, event); err != nil {
 			return 0, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("commit recovery quarantine transaction: %w", err)
 	}
+	if event.Type != "" {
+		d.broadcastEvent(event.Type, event.BeadID, event.WorkerID)
+	}
 	return id, nil
+}
+
+func upsertRecoveryQuarantineTx(ctx context.Context, tx *sql.Tx, q recoveryQuarantine) (int64, error) {
+	if q.AssignmentID > 0 {
+		if err := markAssignmentQuarantinedExec(ctx, tx, q.AssignmentID); err != nil {
+			return 0, err
+		}
+	}
+
+	id, found, err := findOpenRecoveryQuarantineForAssignment(ctx, tx, q.AssignmentID)
+	if err != nil {
+		return 0, err
+	}
+	if !found {
+		return insertRecoveryQuarantineRow(ctx, tx, q)
+	}
+	if _, err := tx.ExecContext(ctx, `
+UPDATE recovery_quarantines
+SET bead_id=?, worker_id=?, worktree=?, branch=?, reason=?, details=?
+WHERE id=? AND status='open'`,
+		q.BeadID, q.WorkerID, q.Worktree, q.Branch, q.Reason, q.Details, id); err != nil {
+		return 0, fmt.Errorf("update recovery quarantine: %w", err)
+	}
+	return id, nil
+}
+
+func insertRecoveryQuarantineEvent(ctx context.Context, ex execer, event recoveryQuarantineEvent) error {
+	if _, err := ex.ExecContext(ctx,
+		`INSERT INTO events (type, source, bead_id, worker_id, payload) VALUES (?, ?, ?, ?, ?)`,
+		event.Type, event.Source, event.BeadID, event.WorkerID, event.Payload); err != nil {
+		return fmt.Errorf("log recovery quarantine event: %w", err)
+	}
+	return nil
 }
 
 // insertRecoveryQuarantineRow inserts (or coalesces onto the existing open
