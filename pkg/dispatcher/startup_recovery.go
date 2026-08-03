@@ -991,7 +991,7 @@ func (d *Dispatcher) classifyAssignment(ctx context.Context, a restoredAssignmen
 // recovery quarantine table and keeps the assignment visible as quarantined.
 func (d *Dispatcher) processQuarantined(ctx context.Context, quarantined []quarantinedAssignment) {
 	for _, q := range quarantined {
-		if _, err := d.createRecoveryQuarantine(ctx, recoveryQuarantine{
+		if _, err := d.createRecoveryQuarantineWithEvent(ctx, recoveryQuarantine{
 			BeadID:       q.beadID,
 			AssignmentID: q.id,
 			WorkerID:     q.workerID,
@@ -999,12 +999,14 @@ func (d *Dispatcher) processQuarantined(ctx context.Context, quarantined []quara
 			Branch:       q.branch,
 			Reason:       q.reason,
 			Details:      "startup recovery could not prove branch/worktree consistency",
+		}, recoveryQuarantineEvent{
+			Type:    "startup_recovery_quarantined",
+			Source:  "dispatcher",
+			BeadID:  q.beadID,
+			Payload: fmt.Sprintf(`{"assignment_id":%d,"reason":%q}`, q.id, q.reason),
 		}); err != nil {
 			_ = d.logEvent(ctx, "startup_recovery_quarantine_failed", "dispatcher", q.beadID, q.workerID, err.Error())
-			continue
 		}
-		_ = d.logEvent(ctx, "startup_recovery_quarantined", "dispatcher", q.beadID, "",
-			fmt.Sprintf(`{"assignment_id":%d,"reason":%q}`, q.id, q.reason))
 	}
 }
 
