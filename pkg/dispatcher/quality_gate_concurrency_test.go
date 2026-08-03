@@ -244,8 +244,10 @@ func TestConcurrentQualityGatesUseDistinctGoCaches(t *testing.T) {
 	}
 }
 
-const fullGateCacheProbeChildEnv = "ORO_QG_FULL_CACHE_PROBE_CHILD"
-const fullGateCacheProbePattern = "^TestConcurrentFullQualityGatesUseIsolatedGoCaches$"
+const (
+	fullGateCacheProbeChildEnv = "ORO_QG_FULL_CACHE_PROBE_CHILD"
+	fullGateCacheProbePattern  = "^TestConcurrentFullQualityGatesUseIsolatedGoCaches$"
+)
 
 type fullGateCacheEvidence struct {
 	qgDir     string
