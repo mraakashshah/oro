@@ -181,10 +181,7 @@ func (c *Client) SetChangeReady(ctx context.Context, request remotegate.ChangeRe
 		ready.Change.Draft = false
 		return ready, nil
 	}
-	_, readyErr := c.gh.Run(ctx, APIRequest{
-		Method: "POST",
-		Path:   c.repositoryPath() + "/pulls/" + url.PathEscape(request.Change.Change.ID) + "/ready_for_review",
-	})
+	readyErr := c.markPullRequestReadyForReview(ctx, pr.NodeID)
 	observed, observeErr := c.getChange(ctx, request.Change.Change.ID)
 	if observeErr == nil && observed.matches(request.Change.Change) && !observed.Draft && observed.State == "open" {
 		ready := request.Change
@@ -235,6 +232,14 @@ func (c *Client) Reconcile(ctx context.Context, request remotegate.ReconcileChan
 		if !pr.Draft {
 			return nil
 		}
+		readyErr := c.markPullRequestReadyForReview(ctx, pr.NodeID)
+		observed, observeErr := c.getChange(ctx, request.Change.Change.ID)
+		if observeErr == nil && observed.matches(request.Change.Change) && !observed.Draft && observed.State == "open" {
+			return nil
+		}
+		if readyErr != nil && (errors.Is(readyErr, context.Canceled) || errors.Is(readyErr, context.DeadlineExceeded)) {
+			return fmt.Errorf("reconcile GitHub ready transition: %w", readyErr)
+		}
 	}
 	return fmt.Errorf("reconcile GitHub change: %w", remotegate.ErrAmbiguous)
 }
@@ -256,6 +261,7 @@ func fullHeadRef(ref string) string {
 
 type pullRequest struct {
 	Number int    `json:"number"`
+	NodeID string `json:"node_id"`
 	URL    string `json:"html_url"`
 	State  string `json:"state"`
 	Draft  bool   `json:"draft"`
@@ -273,6 +279,46 @@ type pullRequest struct {
 			FullName string `json:"full_name"`
 		} `json:"repo"`
 	} `json:"base"`
+}
+
+type markReadyResponse struct {
+	Data struct {
+		MarkPullRequestReadyForReview struct {
+			PullRequest struct {
+				ID      string `json:"id"`
+				IsDraft bool   `json:"isDraft"`
+			} `json:"pullRequest"`
+		} `json:"markPullRequestReadyForReview"`
+	} `json:"data"`
+	Errors []struct {
+		Message string `json:"message"`
+	} `json:"errors"`
+}
+
+func (c *Client) markPullRequestReadyForReview(ctx context.Context, nodeID string) error {
+	if strings.TrimSpace(nodeID) == "" {
+		return fmt.Errorf("ready GitHub change: missing pull request node ID: %w", remotegate.ErrAmbiguous)
+	}
+	body, err := json.Marshal(map[string]any{
+		"query":     `mutation MarkPullRequestReadyForReview($pullRequestId: ID!) { markPullRequestReadyForReview(input: {pullRequestId: $pullRequestId}) { pullRequest { id isDraft } } }`,
+		"variables": map[string]string{"pullRequestId": nodeID},
+	})
+	if err != nil {
+		return fmt.Errorf("encode GitHub ready mutation: %w", err)
+	}
+	output, err := c.gh.Run(ctx, APIRequest{Method: "POST", Path: "/graphql", Body: body})
+	if err != nil {
+		return err
+	}
+	var response markReadyResponse
+	if err := json.Unmarshal(output, &response); err != nil {
+		return fmt.Errorf("decode GitHub ready mutation: %w", err)
+	}
+	ready := response.Data.MarkPullRequestReadyForReview.PullRequest
+	if len(response.Errors) != 0 || ready.ID != nodeID || ready.IsDraft {
+		return fmt.Errorf("validate GitHub ready mutation: %w", remotegate.ErrAmbiguous)
+	}
+	return nil
 }
 
 func (pr pullRequest) matches(change remotegate.Change) bool {

@@ -107,8 +107,17 @@ func TestGitHubChangeLifecycle(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SetChangeReady(idempotent) error = %v", err)
 	}
-	if got := fixture.countCalls("/ready_for_review"); got != 1 {
+	if got := fixture.countExactCalls("POST /graphql"); got != 1 {
 		t.Fatalf("ready calls = %d, want 1", got)
+	}
+	graphqlBody, err := os.ReadFile(fixture.graphqlBody)
+	if err != nil {
+		t.Fatalf("read GraphQL ready body: %v", err)
+	}
+	for _, want := range []string{"markPullRequestReadyForReview", `"pullRequestId":"PR_node_7"`} {
+		if !strings.Contains(string(graphqlBody), want) {
+			t.Errorf("GraphQL ready body = %s, want %q", graphqlBody, want)
+		}
 	}
 
 	cancel := remotegate.CancelGateRequest{Change: ready, Reason: "superseded", Lease: lease}
@@ -168,6 +177,7 @@ type changeLifecycleFixture struct {
 	credentials remotegate.RuntimeCredentialProvider
 	git         recordingGitTransport
 	calls       string
+	graphqlBody string
 	mismatch    string
 }
 
@@ -179,6 +189,8 @@ func newChangeLifecycleFixture(t *testing.T) changeLifecycleFixture {
 	created := filepath.Join(dir, "created")
 	ready := filepath.Join(dir, "ready")
 	closed := filepath.Join(dir, "closed")
+	graphqlBody := filepath.Join(dir, "graphql-body")
+	readyLost := filepath.Join(dir, "ready-lost")
 	mismatch := filepath.Join(dir, "mismatch")
 	script := fmt.Sprintf(`#!/bin/sh
 method=
@@ -197,11 +209,16 @@ emit_pr() {
   [ -f %q ] && draft=false
   [ -f %q ] && state=closed
   [ -f %q ] && head_sha=%s
-  printf '{"number":7,"html_url":"https://github.example/acme/oro/pull/7","state":"%%s","draft":%%s,"head":{"ref":"agent/oro-83st","sha":"%%s","repo":{"full_name":"acme/oro"}},"base":{"ref":"main","sha":"%s","repo":{"full_name":"acme/oro"}}}' "$state" "$draft" "$head_sha"
+  printf '{"number":7,"node_id":"PR_node_7","html_url":"https://github.example/acme/oro/pull/7","state":"%%s","draft":%%s,"head":{"ref":"agent/oro-83st","sha":"%%s","repo":{"full_name":"acme/oro"}},"base":{"ref":"main","sha":"%s","repo":{"full_name":"acme/oro"}}}' "$state" "$draft" "$head_sha"
 }
 case "$last" in
   *"/check-runs") printf '[{"check_runs":[{"node_id":"check-1","name":"quality-gate","status":"completed","conclusion":"success"}]}]' ;;
-  *"/ready_for_review") touch %q; emit_pr ;;
+  "/graphql")
+	cat > %q
+	touch %q
+	if [ ! -f %q ]; then touch %q; exit 1; fi
+	printf '{"data":{"markPullRequestReadyForReview":{"pullRequest":{"id":"PR_node_7","isDraft":false}}}}'
+	;;
   *"/pulls?"*) if [ -f %q ]; then printf '['; emit_pr; printf ']'; else printf '[]'; fi ;;
   *"/pulls")
     touch %q
@@ -215,7 +232,7 @@ case "$last" in
   *) exit 2 ;;
 esac
 `, calls, strings.Repeat("1", 40), ready, closed, mismatch, strings.Repeat("9", 40),
-		strings.Repeat("3", 40), ready, created, created, filepath.Join(dir, "lost"), filepath.Join(dir, "lost"), closed)
+		strings.Repeat("3", 40), graphqlBody, ready, readyLost, readyLost, created, created, filepath.Join(dir, "lost"), filepath.Join(dir, "lost"), closed)
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatalf("write lifecycle gh fixture: %v", err)
 	}
@@ -237,7 +254,7 @@ esac
 	if err != nil {
 		t.Fatalf("NewGHRunner() error = %v", err)
 	}
-	return changeLifecycleFixture{runner: runner, credentials: credentials, calls: calls, mismatch: mismatch}
+	return changeLifecycleFixture{runner: runner, credentials: credentials, calls: calls, graphqlBody: graphqlBody, mismatch: mismatch}
 }
 
 func (fixture changeLifecycleFixture) countCalls(fragment string) int {
