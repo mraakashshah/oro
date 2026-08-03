@@ -16,17 +16,18 @@ import (
 type admissionTestWorktreeManager struct {
 	*mockWorktreeManager
 
-	mu                 sync.Mutex
-	inspectionCalls    int
-	mutationCalls      int
-	inspectionComplete bool
-	oldOID             string
-	newOID             string
-	inspection         epicBranchInspection
-	mutationErr        error
-	mutationHook       func()
-	inspectionStarted  chan struct{}
-	continueInspection chan struct{}
+	mu                  sync.Mutex
+	inspectionCalls     int
+	mutationCalls       int
+	inspectionComplete  bool
+	oldOID              string
+	newOID              string
+	inspection          epicBranchInspection
+	mutationErr         error
+	mutationHook        func()
+	afterInspectionHook func()
+	inspectionStarted   chan struct{}
+	continueInspection  chan struct{}
 }
 
 func (m *admissionTestWorktreeManager) inspectEpicBranch(ctx context.Context, branch, targetBranch string) (epicBranchInspection, error) {
@@ -45,7 +46,11 @@ func (m *admissionTestWorktreeManager) inspectEpicBranch(ctx context.Context, br
 	m.mu.Lock()
 	m.inspectionComplete = true
 	inspection := m.inspection
+	afterInspectionHook := m.afterInspectionHook
 	m.mu.Unlock()
+	if afterInspectionHook != nil {
+		afterInspectionHook()
+	}
 	if inspection.BranchOID == "" {
 		inspection = epicBranchInspection{
 			BranchOID: "branch-before",
@@ -735,6 +740,230 @@ func TestEpicBranchAdmissionCancellationRestoresClaimedAssignment(t *testing.T) 
 	}
 }
 
+func TestEpicBranchAdmissionBranchCheckCancellationRestoresClaimedAssignment(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	d, beads, baseWorktrees, escalator, _, _ := newTestDispatcher(t)
+	if err := protocol.MigrateBeadSchema(ctx, d.db); err != nil {
+		t.Fatalf("migrate epic branch admission schema: %v", err)
+	}
+	branchCheckStarted := make(chan struct{})
+	baseWorktrees.branchExistsFn = func(checkCtx context.Context, _ string) (bool, error) {
+		close(branchCheckStarted)
+		<-checkCtx.Done()
+		return false, checkCtx.Err()
+	}
+	manager := &admissionTestWorktreeManager{
+		mockWorktreeManager: baseWorktrees,
+		inspectionStarted:   make(chan struct{}),
+		continueInspection:  make(chan struct{}),
+	}
+	d.worktrees = manager
+	const (
+		epicID = "oro-cancel-branch-check"
+		beadID = "oro-cancel-branch-check-child"
+	)
+	beads.shown[epicID] = &protocol.BeadDetail{ID: epicID, Title: "Branch check epic", Type: "epic", Status: "in_progress"}
+	beads.shown[beadID] = &protocol.BeadDetail{
+		ID: beadID, Title: "Branch check child", Type: "task", Status: "open",
+		AcceptanceCriteria: "Test: branch check cancellation | Assert: task reopens",
+	}
+	installContextAwareBeadUpdates(beads)
+	worker := &trackedWorker{id: "worker-cancel-branch-check", state: protocol.WorkerIdle, conn: newMockConn()}
+	d.mu.Lock()
+	d.workers[worker.id] = worker
+	d.mu.Unlock()
+	assignDone := make(chan error, 1)
+	go func() {
+		assignDone <- d.assignBead(ctx, worker, protocol.Bead{ID: beadID, Title: "Branch check child", Type: "task", Epic: epicID})
+	}()
+	select {
+	case <-branchCheckStarted:
+	case <-time.After(time.Second):
+		t.Fatal("assignment did not begin branch existence check")
+	}
+	cancel()
+	select {
+	case err := <-assignDone:
+		if err != nil {
+			t.Fatalf("assign bead after branch check cancellation: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("branch-check-canceled assignment did not stop")
+	}
+	assertQuietAdmissionAssignmentAbort(t, d, beads, escalator, worker, beadID)
+	if got := eventCount(t, d.db, "epic_branch_prepare_failed"); got != 0 {
+		t.Fatalf("branch check cancellation emitted preparation failures = %d, want 0", got)
+	}
+}
+
+func TestEpicBranchAdmissionCanceledLegacyPreparationAbortsQuietly(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		configure func(*mockWorktreeManager, chan struct{})
+	}{
+		{
+			name: "lazy create",
+			configure: func(worktrees *mockWorktreeManager, started chan struct{}) {
+				worktrees.branchExistsFn = func(context.Context, string) (bool, error) { return false, nil }
+				worktrees.createBranchFn = func(createCtx context.Context, _, _ string) error {
+					close(started)
+					<-createCtx.Done()
+					return createCtx.Err()
+				}
+			},
+		},
+		{
+			name: "legacy preparer",
+			configure: func(worktrees *mockWorktreeManager, started chan struct{}) {
+				worktrees.prepareBaseFn = func(prepareCtx context.Context, _, _ string) (bool, error) {
+					close(started)
+					<-prepareCtx.Done()
+					return false, prepareCtx.Err()
+				}
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			d, beads, worktrees, escalator, _, _ := newTestDispatcher(t)
+			if err := protocol.MigrateBeadSchema(ctx, d.db); err != nil {
+				t.Fatalf("migrate epic branch admission schema: %v", err)
+			}
+			started := make(chan struct{})
+			tt.configure(worktrees, started)
+			d.worktrees = worktrees
+			epicID := "oro-cancel-" + strings.ReplaceAll(tt.name, " ", "-")
+			beadID := epicID + "-child"
+			beads.shown[epicID] = &protocol.BeadDetail{ID: epicID, Title: "Canceled epic", Type: "epic", Status: "in_progress"}
+			beads.shown[beadID] = &protocol.BeadDetail{
+				ID: beadID, Title: "Canceled child", Type: "task", Status: "open",
+				AcceptanceCriteria: "Test: canceled preparation | Assert: aborts quietly",
+			}
+			installContextAwareBeadUpdates(beads)
+			worker := &trackedWorker{id: "worker-" + strings.ReplaceAll(tt.name, " ", "-"), state: protocol.WorkerIdle, conn: newMockConn()}
+			d.mu.Lock()
+			d.workers[worker.id] = worker
+			d.mu.Unlock()
+			assignDone := make(chan error, 1)
+			go func() {
+				assignDone <- d.assignBead(ctx, worker, protocol.Bead{ID: beadID, Title: "Canceled child", Type: "task", Epic: epicID})
+			}()
+			select {
+			case <-started:
+			case <-time.After(time.Second):
+				t.Fatal("assignment did not begin cancellable preparation")
+			}
+			cancel()
+			select {
+			case err := <-assignDone:
+				if err != nil {
+					t.Fatalf("assign bead after preparation cancellation: %v", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("canceled preparation did not stop")
+			}
+			assertQuietAdmissionAssignmentAbort(t, d, beads, escalator, worker, beadID)
+			if got := eventCount(t, d.db, "epic_branch_prepare_failed"); got != 0 {
+				t.Fatalf("canceled preparation emitted preparation failures = %d, want 0", got)
+			}
+		})
+	}
+}
+
+func TestEpicBranchAdmissionLateOwnershipLossAbortsQuietly(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		relation      branchBaseRelation
+		beforeCreate  bool
+		wantMutations int
+		wantCreates   int
+	}{
+		{name: "before creation", beforeCreate: true},
+		{name: "before mutation", relation: branchStrictlyBehind},
+		{name: "before release", relation: branchSame},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			d, beads, baseWorktrees, escalator, _, _ := newTestDispatcher(t)
+			if err := protocol.MigrateBeadSchema(ctx, d.db); err != nil {
+				t.Fatalf("migrate epic branch admission schema: %v", err)
+			}
+			continueInspection := make(chan struct{})
+			close(continueInspection)
+			epicID := "oro-late-loss-" + strings.ReplaceAll(tt.name, " ", "-")
+			beadID := epicID + "-child"
+			branch := "epic/" + epicID
+			replaceLease := func() {
+				if _, err := d.db.ExecContext(ctx, `
+UPDATE epic_branch_admissions
+SET generation=2, lease_token='replacement-token', lease_owner='worker-b',
+    lease_expires_at='2099-01-01T00:00:00Z'
+WHERE branch=?`, branch); err != nil {
+					t.Errorf("replace lease holder after inspection: %v", err)
+				}
+			}
+			createCalls := 0
+			if tt.beforeCreate {
+				baseWorktrees.branchExistsFn = func(context.Context, string) (bool, error) {
+					replaceLease()
+					return false, nil
+				}
+				baseWorktrees.createBranchFn = func(context.Context, string, string) error {
+					createCalls++
+					return nil
+				}
+			}
+			manager := &admissionTestWorktreeManager{
+				mockWorktreeManager: baseWorktrees,
+				inspection: epicBranchInspection{
+					BranchOID: "branch-before", BaseOID: "target-current", Relation: tt.relation,
+				},
+				inspectionStarted:  make(chan struct{}),
+				continueInspection: continueInspection,
+			}
+			d.worktrees = manager
+			if !tt.beforeCreate {
+				manager.afterInspectionHook = replaceLease
+			}
+			beads.shown[epicID] = &protocol.BeadDetail{ID: epicID, Title: "Late loss epic", Type: "epic", Status: "in_progress"}
+			beads.shown[beadID] = &protocol.BeadDetail{
+				ID: beadID, Title: "Late loss child", Type: "task", Status: "open",
+				AcceptanceCriteria: "Test: late ownership loss | Assert: aborts quietly",
+			}
+			worker := &trackedWorker{id: "worker-" + strings.ReplaceAll(tt.name, " ", "-"), state: protocol.WorkerIdle, conn: newMockConn()}
+			d.mu.Lock()
+			d.workers[worker.id] = worker
+			d.mu.Unlock()
+
+			if err := d.assignBead(ctx, worker, protocol.Bead{ID: beadID, Title: "Late loss child", Type: "task", Epic: epicID}); err != nil {
+				t.Fatalf("assign after late lease loss: %v", err)
+			}
+			assertQuietAdmissionAssignmentAbort(t, d, beads, escalator, worker, beadID)
+			manager.mu.Lock()
+			mutationCalls := manager.mutationCalls
+			manager.mu.Unlock()
+			if mutationCalls != tt.wantMutations || createCalls != tt.wantCreates {
+				t.Fatalf("mutations after ownership loss = ref:%d create:%d, want ref:%d create:%d",
+					mutationCalls, createCalls, tt.wantMutations, tt.wantCreates)
+			}
+			if got := eventCount(t, d.db, "epic_branch_prepare_failed"); got != 0 {
+				t.Fatalf("late ownership loss emitted preparation failures = %d, want 0", got)
+			}
+			var state, token string
+			var generation int64
+			if err := d.db.QueryRowContext(ctx, `
+SELECT state, generation, lease_token
+FROM epic_branch_admissions
+WHERE branch=?`, branch).Scan(&state, &generation, &token); err != nil {
+				t.Fatalf("read replacement admission: %v", err)
+			}
+			if state != "leased" || generation != 2 || token != "replacement-token" {
+				t.Fatalf("replacement admission = %q/%d/%q, want leased/2/replacement-token", state, generation, token)
+			}
+		})
+	}
+}
+
 func TestEpicBranchAdmissionBlockedAssignmentIsRecoverable(t *testing.T) {
 	for _, tt := range []struct {
 		name         string
@@ -875,6 +1104,23 @@ func assertQuietAdmissionAssignmentAbort(
 	}
 	if assignments != 0 {
 		t.Fatalf("blocked assignments = %d, want 0", assignments)
+	}
+}
+
+func installContextAwareBeadUpdates(beads *fakeBeadStore) {
+	beads.updateFn = func(updateCtx context.Context, id string, params beadstore.UpdateParams) error {
+		if err := updateCtx.Err(); err != nil {
+			return err
+		}
+		beads.mu.Lock()
+		defer beads.mu.Unlock()
+		if beads.updated == nil {
+			beads.updated = make(map[string]string)
+		}
+		if params.Status != nil {
+			beads.updated[id] = *params.Status
+		}
+		return nil
 	}
 }
 

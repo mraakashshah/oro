@@ -69,6 +69,9 @@ func (d *Dispatcher) withEpicBranchAdmission(
 		return false
 	}
 	if releaseErr != nil {
+		if errors.Is(releaseErr, ErrEpicBranchAdmissionCAS) {
+			return false
+		}
 		return d.rejectEpicBranchPreparation(ctx, bead.ID, workerID, branch, releaseErr)
 	}
 	return true
@@ -82,12 +85,6 @@ func epicBranchAdmissionCleanupContext(ctx context.Context) (context.Context, co
 }
 
 func (d *Dispatcher) restoreEpicBranchAdmissionClaim(ctx context.Context, beadID, workerID string) {
-	d.mu.Lock()
-	_, claimed := d.assigningBeads[beadID]
-	d.mu.Unlock()
-	if !claimed {
-		return
-	}
 	if err := d.updateBeadStatus(ctx, beadID, "open"); err != nil {
 		_ = d.logEvent(ctx, "epic_branch_admission_reopen_failed", "dispatcher", beadID, workerID, err.Error())
 	}
@@ -125,10 +122,12 @@ func (d *Dispatcher) renewEpicBranchAdmission(ctx context.Context, lease epicBra
 func (d *Dispatcher) prepareFreshEpicBranchAdmission(ctx context.Context, bead protocol.Bead, workerID string, lease epicBranchAdmission) bool {
 	exists, err := d.worktrees.BranchExists(ctx, lease.branch)
 	if err != nil {
-		d.handleEpicBranchMissing(ctx, bead, &trackedWorker{id: workerID}, lease.branch, lease.epicID, err)
-		return false
+		return d.handleEpicBranchExistenceFailure(ctx, bead, workerID, lease, err)
 	}
 	if !exists {
+		if !d.retainEpicBranchAdmissionOwnership(ctx, bead.ID, workerID, lease) {
+			return false
+		}
 		return d.lazyCreateEpicBranchFrom(ctx, bead.ID, lease.branch, lease.targetBranch)
 	}
 	manager, ok := d.worktrees.(epicBranchAdmissionWorktreeManager)
@@ -139,6 +138,9 @@ func (d *Dispatcher) prepareFreshEpicBranchAdmission(ctx context.Context, bead p
 	if err != nil {
 		return d.rejectFreshEpicBranchPreparation(ctx, bead.ID, workerID, lease.branch, err)
 	}
+	if ctx.Err() != nil {
+		return false
+	}
 	if len(inspection.CheckedOutPaths) != 0 {
 		return d.blockEpicBranchAdmission(ctx, bead.ID, lease, "checked_out", inspection.CheckedOutPaths[0], inspection,
 			fmt.Sprintf("epic branch is checked out in: %s", strings.Join(inspection.CheckedOutPaths, ", ")))
@@ -147,7 +149,7 @@ func (d *Dispatcher) prepareFreshEpicBranchAdmission(ctx context.Context, bead p
 	case branchSame, branchContainsBase:
 		return true
 	case branchStrictlyBehind:
-		if ctx.Err() != nil {
+		if !d.retainEpicBranchAdmissionOwnership(ctx, bead.ID, workerID, lease) {
 			return false
 		}
 		if err := manager.compareAndSwapBranch(ctx, lease.branch, inspection.BranchOID, inspection.BaseOID); err != nil {
@@ -165,6 +167,37 @@ func (d *Dispatcher) prepareFreshEpicBranchAdmission(ctx context.Context, bead p
 		return d.rejectFreshEpicBranchPreparation(ctx, bead.ID, workerID, lease.branch,
 			fmt.Errorf("unknown epic branch relation %d", inspection.Relation))
 	}
+}
+
+func (d *Dispatcher) handleEpicBranchExistenceFailure(
+	ctx context.Context,
+	bead protocol.Bead,
+	workerID string,
+	lease epicBranchAdmission,
+	err error,
+) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	d.handleEpicBranchMissing(ctx, bead, &trackedWorker{id: workerID}, lease.branch, lease.epicID, err)
+	return false
+}
+
+func (d *Dispatcher) retainEpicBranchAdmissionOwnership(
+	ctx context.Context,
+	beadID, workerID string,
+	lease epicBranchAdmission,
+) bool {
+	err := newEpicBranchAdmissionStore(d.db).renew(
+		ctx, lease.branch, lease.leaseToken, lease.generation, d.nowFunc(),
+	)
+	if err == nil {
+		return true
+	}
+	if ctx.Err() != nil || errors.Is(err, ErrEpicBranchAdmissionCAS) {
+		return false
+	}
+	return d.rejectFreshEpicBranchPreparation(ctx, beadID, workerID, lease.branch, err)
 }
 
 func (d *Dispatcher) rejectFreshEpicBranchPreparation(ctx context.Context, beadID, workerID, branch string, err error) bool {
@@ -185,6 +218,9 @@ func (d *Dispatcher) blockEpicBranchAdmission(
 	store := newEpicBranchAdmissionStore(d.db)
 	if _, err := store.block(ctx, lease.branch, lease.leaseToken, lease.generation, blockerKind, checkoutPath,
 		inspection.BranchOID, inspection.BaseOID, "", details, d.nowFunc()); err != nil {
+		if ctx.Err() != nil || errors.Is(err, ErrEpicBranchAdmissionCAS) {
+			return false
+		}
 		_ = d.logEvent(ctx, "epic_branch_admission_block_failed", "dispatcher", lease.epicID, lease.leaseOwner, err.Error())
 		return d.rejectEpicBranchPreparation(ctx, beadID, lease.leaseOwner, lease.branch, err)
 	}

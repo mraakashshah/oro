@@ -725,6 +725,9 @@ func assignmentBaseBranchDiverged(ctx context.Context, checker assignmentBaseBra
 }
 
 func (d *Dispatcher) rejectEpicBranchPreparation(ctx context.Context, beadID, workerID, baseBranch string, err error) bool {
+	if ctx.Err() != nil {
+		return false
+	}
 	_ = d.logEvent(ctx, "epic_branch_prepare_failed", "dispatcher", beadID, workerID,
 		fmt.Sprintf(`{"branch":%q,"base_branch":%q,"error":%q}`, baseBranch, d.cfg.DefaultBranch, err.Error()))
 	_ = d.updateBeadStatus(ctx, beadID, "open")
@@ -744,6 +747,9 @@ func (d *Dispatcher) lazyCreateEpicBranch(ctx context.Context, beadID, baseBranc
 
 func (d *Dispatcher) lazyCreateEpicBranchFrom(ctx context.Context, beadID, baseBranch, targetBranch string) bool {
 	if err := d.worktrees.CreateBranch(ctx, baseBranch, targetBranch); err != nil {
+		if ctx.Err() != nil {
+			return false
+		}
 		// Branch may already exist due to a concurrent child assignment (race) — re-check.
 		exists2, _ := d.worktrees.BranchExists(ctx, baseBranch)
 		if !exists2 {
