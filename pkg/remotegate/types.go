@@ -109,6 +109,16 @@ type Lease struct {
 	ExpectedAbsent bool
 }
 
+// RefLease authorizes one exact remote-ref publication. ExpectedAbsent is the
+// create contract; ObservedSHA is the caller's last observed remote value.
+// Exactly one form must be supplied.
+//
+//oro:testonly — remote-gate orchestration is wired by subsequent tasks.
+type RefLease struct {
+	ObservedSHA    string
+	ExpectedAbsent bool
+}
+
 // EphemeralTarget records a dispatcher-owned target that may be advanced or
 // retired only by its owning generation.
 //
@@ -211,6 +221,7 @@ type PreflightRequest struct {
 type PublishRequest struct {
 	Candidate Candidate
 	Target    Target
+	Lease     RefLease
 }
 
 // EnsureEphemeralTargetRequest creates or adopts an owned ephemeral target
@@ -416,13 +427,23 @@ func validatePreflightRequest(request PreflightRequest) error {
 }
 
 func validatePublishRequest(request PublishRequest) error {
-	if err := validateCandidate(request.Candidate); err != nil {
+	if err := validateCandidateTarget(request.Candidate, request.Target); err != nil {
 		return err
 	}
-	if err := validateTarget(request.Target); err != nil {
+	if request.Lease.ExpectedAbsent == (strings.TrimSpace(request.Lease.ObservedSHA) != "") {
+		return invalidRequest("publication lease must expect absent or an observed SHA")
+	}
+	return nil
+}
+
+func validateCandidateTarget(candidate Candidate, target Target) error {
+	if err := validateCandidate(candidate); err != nil {
 		return err
 	}
-	if request.Candidate.Repository != request.Target.Repository {
+	if err := validateTarget(target); err != nil {
+		return err
+	}
+	if candidate.Repository != target.Repository {
 		return invalidRequest("candidate repository does not match target repository")
 	}
 	return nil
@@ -465,7 +486,7 @@ func validateObserveGateRequest(request ObserveGateRequest) error {
 	if err := validateChange(request.Change); err != nil {
 		return err
 	}
-	if err := validatePublishRequest(PublishRequest{Candidate: request.Candidate, Target: request.Target}); err != nil {
+	if err := validateCandidateTarget(request.Candidate, request.Target); err != nil {
 		return err
 	}
 	if request.Change.Candidate != request.Candidate || request.Change.Target != request.Target {
@@ -599,7 +620,7 @@ func validateChange(change Change) error {
 	if strings.TrimSpace(change.ID) == "" {
 		return invalidRequest("change ID is required")
 	}
-	return validatePublishRequest(PublishRequest{Candidate: change.Candidate, Target: change.Target})
+	return validateCandidateTarget(change.Candidate, change.Target)
 }
 
 func validateEvidence(evidence Evidence) error {

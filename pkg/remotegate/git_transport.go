@@ -38,15 +38,18 @@ const (
 //
 //oro:testonly — dispatcher wiring is introduced by a subsequent task.
 type GitPushRequest struct {
-	Operation         GitOperation
-	LocalRef          string
-	RemoteRef         string
-	ExpectedRemoteSHA string
+	Operation            GitOperation
+	LocalRef             string
+	RemoteRef            string
+	ExpectedRemoteSHA    string
+	ExpectedRemoteAbsent bool
 }
 
 type internalGitTransport struct {
-	capabilities Capabilities
-	credentials  RuntimeCredentialProvider
+	capabilities     Capabilities
+	credentials      RuntimeCredentialProvider
+	remoteURL        string
+	workingDirectory string
 }
 
 // newInternalGitTransport constructs the capability-bound internal Git
@@ -55,7 +58,7 @@ type internalGitTransport struct {
 //
 //nolint:revive,gocritic // The constructor parameter name is fixed by the transport contract.
 func newInternalGitTransport(cap Capabilities, creds RuntimeCredentialProvider) *internalGitTransport {
-	return &internalGitTransport{capabilities: cap, credentials: creds}
+	return &internalGitTransport{capabilities: cap, credentials: creds, remoteURL: internalGitRemoteURL(cap.Repository)}
 }
 
 // Push updates one dispatcher-owned ref with an exact force-with-lease.
@@ -76,10 +79,11 @@ func (transport *internalGitTransport) Push(ctx context.Context, request GitPush
 	//nolint:gosec // The binary and every argument are setup-attested or validated as exact internal refs and leases.
 	command := exec.CommandContext(ctx, transport.capabilities.Git.BinaryPath,
 		"push",
-		"--force-with-lease="+request.RemoteRef+":"+request.ExpectedRemoteSHA,
-		internalGitRemoteURL(transport.capabilities.Repository),
+		gitForceWithLease(request),
+		transport.remoteURL,
 		request.LocalRef+":"+request.RemoteRef,
 	)
+	command.Dir = transport.workingDirectory
 	command.Env = internalGitEnvironment(transport.capabilities, credential)
 	if err := command.Run(); err != nil {
 		if ctx.Err() != nil {
@@ -97,10 +101,14 @@ func validateGitPushRequest(request GitPushRequest) error {
 	if !matchesGitOperation(request.Operation, request.LocalRef) || !matchesGitOperation(request.Operation, request.RemoteRef) {
 		return fmt.Errorf("push internal Git ref: ref is not dispatcher-owned: %w", ErrInvalidRequest)
 	}
-	if !isGitSHA(request.ExpectedRemoteSHA) {
+	if request.ExpectedRemoteAbsent == (request.ExpectedRemoteSHA != "") || (!request.ExpectedRemoteAbsent && !isGitSHA(request.ExpectedRemoteSHA)) {
 		return fmt.Errorf("push internal Git ref: exact lease is required: %w", ErrInvalidRequest)
 	}
 	return nil
+}
+
+func gitForceWithLease(request GitPushRequest) string {
+	return "--force-with-lease=" + request.RemoteRef + ":" + request.ExpectedRemoteSHA
 }
 
 func supportedGitOperation(operation GitOperation) bool {

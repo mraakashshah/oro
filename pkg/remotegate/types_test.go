@@ -52,10 +52,14 @@ func TestRemoteGateLifecycleContract(t *testing.T) {
 
 	valid := map[string]any{
 		"preflight": remotegate.PreflightRequest{Repository: identity, Target: target},
-		"publish":   remotegate.PublishRequest{Candidate: candidate, Target: target},
-		"observe":   remotegate.ObserveGateRequest{Change: change, Candidate: candidate, Target: target},
-		"prepare":   remotegate.PrepareSquashRequest{Change: change, Candidate: candidate, Target: target, Evidence: evidence},
-		"prepared":  prepared,
+		"publish": remotegate.PublishRequest{
+			Candidate: candidate,
+			Target:    target,
+			Lease:     remotegate.RefLease{ExpectedAbsent: true},
+		},
+		"observe":  remotegate.ObserveGateRequest{Change: change, Candidate: candidate, Target: target},
+		"prepare":  remotegate.PrepareSquashRequest{Change: change, Candidate: candidate, Target: target, Evidence: evidence},
+		"prepared": prepared,
 	}
 	for name, request := range valid {
 		if err := remotegate.ValidateRequest(request); err != nil {
@@ -86,6 +90,12 @@ func TestRemoteGateLifecycleContract(t *testing.T) {
 		"nil":                   nil,
 		"incomplete preflight":  remotegate.PreflightRequest{},
 		"incomplete publish":    remotegate.PublishRequest{},
+		"publish missing lease": remotegate.PublishRequest{Candidate: candidate, Target: target},
+		"publish conflicting lease": remotegate.PublishRequest{
+			Candidate: candidate,
+			Target:    target,
+			Lease:     remotegate.RefLease{ExpectedAbsent: true, ObservedSHA: "old"},
+		},
 		"incomplete observe":    remotegate.ObserveGateRequest{},
 		"incomplete prepare":    remotegate.PrepareSquashRequest{},
 		"incomplete prepared":   remotegate.PreparedSquash{},
@@ -452,6 +462,7 @@ func contractTypes() []reflect.Type {
 		reflect.TypeOf(remotegate.Change{}),
 		reflect.TypeOf(remotegate.Evidence{}),
 		reflect.TypeOf(remotegate.PublishedCandidate{}),
+		reflect.TypeOf(remotegate.RefLease{}),
 		reflect.TypeOf(remotegate.RemoteGateObservation{}),
 		reflect.TypeOf(remotegate.PreflightRequest{}),
 		reflect.TypeOf(remotegate.PublishRequest{}),

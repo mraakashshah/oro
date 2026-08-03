@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -100,6 +101,122 @@ func TestInternalGitTransportIsolation(t *testing.T) {
 			t.Errorf("Push(%#v) error = nil, want rejection", request)
 		}
 	}
+}
+
+func TestInternalGitTransportBareLeaseLifecycle(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitPath, err = filepath.Abs(gitPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	execPath := strings.TrimSpace(runGitOutput(t, "", gitPath, "--exec-path"))
+	helperPath := filepath.Join(execPath, "git-remote-https")
+	if _, err := os.Stat(helperPath); err != nil {
+		t.Fatalf("stat git-remote-https: %v", err)
+	}
+
+	root := t.TempDir()
+	remote := filepath.Join(root, "remote.git")
+	local := filepath.Join(root, "local")
+	runGit(t, "", gitPath, "init", "--bare", remote)
+	runGit(t, "", gitPath, "init", local)
+	runGit(t, local, gitPath, "config", "user.name", "Oro Test")
+	runGit(t, local, gitPath, "config", "user.email", "oro@example.invalid")
+
+	ref := "refs/heads/agent/lease-lifecycle"
+	first := commitGitFixture(t, local, gitPath, "first")
+	runGit(t, local, gitPath, "update-ref", ref, first)
+
+	target := CredentialTarget{
+		Identity: config.GitHubAppIdentityConfig{Type: "github-app", AppID: 1, InstallationID: 2, PrivateKeyRef: "keychain:oro/test"},
+		Host:     "github.example",
+		Owner:    "acme",
+		Name:     "oro",
+	}
+	transport := newInternalGitTransport(Capabilities{
+		Repository: Repository{Host: target.Host, Owner: target.Owner, Name: target.Name},
+		Git:        GitTransportCapabilities{BinaryPath: gitPath, RemoteHTTPSHelperPath: helperPath},
+	}, NewRuntimeCredentialProvider(target, gitTransportCredentialSource{target: target}))
+	transport.remoteURL = remote
+	transport.workingDirectory = local
+
+	absent := GitPushRequest{
+		Operation:            GitOperationCandidate,
+		LocalRef:             ref,
+		RemoteRef:            ref,
+		ExpectedRemoteAbsent: true,
+	}
+	if err := transport.Push(context.Background(), absent); err != nil {
+		t.Fatalf("Push(expected absent) error = %v", err)
+	}
+	assertBareRef(t, remote, gitPath, ref, first)
+
+	adopt := absent
+	adopt.ExpectedRemoteAbsent = false
+	adopt.ExpectedRemoteSHA = first
+	if err := transport.Push(context.Background(), adopt); err != nil {
+		t.Fatalf("Push(exact adoption) error = %v", err)
+	}
+
+	second := commitGitFixture(t, local, gitPath, "second")
+	runGit(t, local, gitPath, "update-ref", ref, second)
+	if err := transport.Push(context.Background(), absent); err == nil {
+		t.Fatal("Push(foreign existing ref) error = nil, want lease rejection")
+	}
+	assertBareRef(t, remote, gitPath, ref, first)
+
+	advance := adopt
+	advance.ExpectedRemoteSHA = first
+	if err := transport.Push(context.Background(), advance); err != nil {
+		t.Fatalf("Push(observed old) error = %v", err)
+	}
+	assertBareRef(t, remote, gitPath, ref, second)
+
+	third := commitGitFixture(t, local, gitPath, "third")
+	runGit(t, local, gitPath, "update-ref", ref, third)
+	if err := transport.Push(context.Background(), advance); err == nil {
+		t.Fatal("Push(moved remote ref) error = nil, want lease rejection")
+	}
+	assertBareRef(t, remote, gitPath, ref, second)
+}
+
+func commitGitFixture(t *testing.T, repository, gitPath, contents string) string {
+	t.Helper()
+	path := filepath.Join(repository, "content")
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repository, gitPath, "add", "content")
+	runGit(t, repository, gitPath, "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "commit", "-m", contents)
+	return strings.TrimSpace(runGitOutput(t, repository, gitPath, "rev-parse", "HEAD"))
+}
+
+func assertBareRef(t *testing.T, repository, gitPath, ref, want string) {
+	t.Helper()
+	if got := strings.TrimSpace(runGitOutput(t, "", gitPath, "--git-dir", repository, "rev-parse", ref)); got != want {
+		t.Fatalf("bare ref %s = %s, want %s", ref, got, want)
+	}
+}
+
+func runGit(t *testing.T, repository, gitPath string, args ...string) {
+	t.Helper()
+	_ = runGitOutput(t, repository, gitPath, args...)
+}
+
+func runGitOutput(t *testing.T, repository, gitPath string, args ...string) string {
+	t.Helper()
+	command := exec.Command(gitPath, args...)
+	if repository != "" {
+		command.Dir = repository
+	}
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+	}
+	return string(output)
 }
 
 type gitTransportCredentialSource struct{ target CredentialTarget }

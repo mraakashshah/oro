@@ -87,10 +87,11 @@ func (c *Client) Publish(ctx context.Context, request remotegate.PublishRequest)
 	}
 	remoteRef := fullHeadRef(request.Candidate.Ref)
 	err := c.git.Push(ctx, remotegate.GitPushRequest{
-		Operation:         remotegate.GitOperationCandidate,
-		LocalRef:          remoteRef,
-		RemoteRef:         remoteRef,
-		ExpectedRemoteSHA: request.Candidate.SHA,
+		Operation:            remotegate.GitOperationCandidate,
+		LocalRef:             remoteRef,
+		RemoteRef:            remoteRef,
+		ExpectedRemoteSHA:    request.Lease.ObservedSHA,
+		ExpectedRemoteAbsent: request.Lease.ExpectedAbsent,
 	})
 	if err != nil {
 		return remotegate.PublishedCandidate{}, fmt.Errorf("publish candidate: %w", err)

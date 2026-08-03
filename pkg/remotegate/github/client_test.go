@@ -44,7 +44,7 @@ func TestGitHubChangeLifecycle(t *testing.T) {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
-	published, err := client.Publish(context.Background(), remotegate.PublishRequest{Candidate: candidate, Target: target})
+	published, err := client.Publish(context.Background(), remotegate.PublishRequest{Candidate: candidate, Target: target, Lease: remotegate.RefLease{ExpectedAbsent: true}})
 	if err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
