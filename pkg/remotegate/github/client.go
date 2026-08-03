@@ -132,7 +132,7 @@ func (c *Client) EnsureChange(ctx context.Context, request remotegate.EnsureChan
 	if observeErr == nil && found != nil {
 		return c.adoptChange(request.Change, *found)
 	}
-	return remotegate.RemoteChange{}, fmt.Errorf("create GitHub change: %w", createErr)
+	return remotegate.RemoteChange{}, mutationAfterFailedObservation(ctx, "create GitHub change", createErr)
 }
 
 // Observe returns normalized terminal and exact required-check state.
@@ -197,10 +197,7 @@ func (c *Client) SetChangeReady(ctx context.Context, request remotegate.ChangeRe
 		ready.Change.Draft = false
 		return ready, nil
 	}
-	if readyErr != nil {
-		return remotegate.RemoteChange{}, fmt.Errorf("ready GitHub change: %w", readyErr)
-	}
-	return remotegate.RemoteChange{}, fmt.Errorf("ready GitHub change: %w", remotegate.ErrAmbiguous)
+	return remotegate.RemoteChange{}, mutationAfterFailedObservation(ctx, "ready GitHub change", readyErr)
 }
 
 // Cancel idempotently closes only the exact matching pull request.
@@ -246,9 +243,7 @@ func (c *Client) Reconcile(ctx context.Context, request remotegate.ReconcileChan
 		if observeErr == nil && observed.matches(request.Change.Change) && !observed.Draft && observed.State == "open" {
 			return nil
 		}
-		if readyErr != nil && (errors.Is(readyErr, context.Canceled) || errors.Is(readyErr, context.DeadlineExceeded)) {
-			return fmt.Errorf("reconcile GitHub ready transition: %w", readyErr)
-		}
+		return mutationAfterFailedObservation(ctx, "reconcile GitHub ready transition", readyErr)
 	}
 	return fmt.Errorf("reconcile GitHub change: %w", remotegate.ErrAmbiguous)
 }
@@ -481,8 +476,15 @@ func (c *Client) closeChange(ctx context.Context, id string) error {
 	if observeErr == nil && observed.State == "closed" {
 		return nil
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return fmt.Errorf("close GitHub change: %w", err)
+	return mutationAfterFailedObservation(ctx, "close GitHub change", err)
+}
+
+func mutationAfterFailedObservation(ctx context.Context, operation string, mutationErr error) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("%s: %w", operation, err)
 	}
-	return fmt.Errorf("close GitHub change: %w", remotegate.ErrAmbiguous)
+	if errors.Is(mutationErr, context.Canceled) || errors.Is(mutationErr, context.DeadlineExceeded) {
+		return fmt.Errorf("%s: %w", operation, mutationErr)
+	}
+	return fmt.Errorf("%s: %w", operation, remotegate.ErrAmbiguous)
 }

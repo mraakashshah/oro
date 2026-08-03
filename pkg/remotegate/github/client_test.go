@@ -193,6 +193,86 @@ func TestNewClientRejectsCredentialScopeMismatchBeforeMutation(t *testing.T) {
 	}
 }
 
+func TestMutationAppliedThenObservationFailureIsAmbiguous(t *testing.T) {
+	t.Parallel()
+
+	for _, operation := range []string{"create", "ready"} {
+		t.Run(operation, func(t *testing.T) {
+			t.Parallel()
+			fixture := newChangeLifecycleFixture(t)
+			client, owned, evidence, lease := newLifecycleClient(t, &fixture)
+			marker := fixture.failObserveAfterCreate
+			if operation == "ready" {
+				marker = fixture.failObserveAfterReady
+			}
+			if err := os.WriteFile(marker, []byte("fail"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var err error
+			if operation == "create" {
+				_, err = client.EnsureChange(context.Background(), remotegate.EnsureChangeRequest{Change: owned, Lease: lease})
+			} else {
+				_, err = client.SetChangeReady(context.Background(), remotegate.ChangeReadyRequest{Change: owned, Evidence: evidence, Lease: lease})
+			}
+			if !errors.Is(err, remotegate.ErrAmbiguous) {
+				t.Fatalf("%s error = %v, want ErrAmbiguous", operation, err)
+			}
+		})
+	}
+}
+
+func TestMutationContextErrorsRemainReachable(t *testing.T) {
+	t.Parallel()
+
+	t.Run("create deadline", func(t *testing.T) {
+		t.Parallel()
+		fixture := newChangeLifecycleFixture(t)
+		client, owned, _, lease := newLifecycleClient(t, &fixture)
+		if err := os.WriteFile(fixture.blockCreate, []byte("block"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+		_, err := client.EnsureChange(ctx, remotegate.EnsureChangeRequest{Change: owned, Lease: lease})
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("EnsureChange() error = %v, want deadline reachable", err)
+		}
+	})
+
+	t.Run("ready cancellation", func(t *testing.T) {
+		t.Parallel()
+		fixture := newChangeLifecycleFixture(t)
+		client, owned, evidence, lease := newLifecycleClient(t, &fixture)
+		if err := os.WriteFile(fixture.blockReady, []byte("block"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		timer := time.AfterFunc(100*time.Millisecond, cancel)
+		defer timer.Stop()
+		defer cancel()
+		_, err := client.SetChangeReady(ctx, remotegate.ChangeReadyRequest{Change: owned, Evidence: evidence, Lease: lease})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("SetChangeReady() error = %v, want cancellation reachable", err)
+		}
+	})
+}
+
+func newLifecycleClient(t *testing.T, fixture *changeLifecycleFixture) (*Client, remotegate.RemoteChange, remotegate.Evidence, remotegate.Lease) {
+	t.Helper()
+	repository := remotegate.Repository{Host: "github.example", Owner: "acme", Name: "oro"}
+	candidate := remotegate.Candidate{Repository: repository, Ref: "refs/heads/agent/oro-83st", SHA: strings.Repeat("1", 40), TreeSHA: strings.Repeat("2", 40)}
+	target := remotegate.Target{Repository: repository, Ref: "refs/heads/main", SHA: strings.Repeat("3", 40)}
+	change := remotegate.Change{ID: "7", Candidate: candidate, Target: target, Draft: true}
+	owned := remotegate.RemoteChange{Change: change, Owner: "worker-1", Generation: 1}
+	lease := remotegate.Lease{Owner: owned.Owner, Generation: owned.Generation, ExpectedSHA: candidate.SHA}
+	evidence := remotegate.Evidence{ID: "evidence-1", Change: change, CandidateSHA: candidate.SHA, Target: target, TestedTreeSHA: candidate.TreeSHA, PolicyHash: "github:quality-gate"}
+	client, err := NewClient(Config{Repository: repository, RequiredChecks: []string{"quality-gate"}}, fixture.runner, &fixture.git, fixture.credentials)
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	return client, owned, evidence, lease
+}
+
 func readyEvidence(evidence remotegate.Evidence, change remotegate.Change) remotegate.Evidence {
 	evidence.Change = change
 	return evidence
@@ -234,12 +314,16 @@ func (transport *recordingGitTransport) RuntimeCredentialProvider() remotegate.R
 }
 
 type changeLifecycleFixture struct {
-	runner      *GHRunner
-	credentials remotegate.RuntimeCredentialProvider
-	git         recordingGitTransport
-	calls       string
-	graphqlBody string
-	mismatch    string
+	runner                 *GHRunner
+	credentials            remotegate.RuntimeCredentialProvider
+	git                    recordingGitTransport
+	calls                  string
+	graphqlBody            string
+	mismatch               string
+	failObserveAfterCreate string
+	failObserveAfterReady  string
+	blockCreate            string
+	blockReady             string
 }
 
 func newChangeLifecycleFixture(t *testing.T) changeLifecycleFixture {
@@ -253,6 +337,11 @@ func newChangeLifecycleFixture(t *testing.T) changeLifecycleFixture {
 	graphqlBody := filepath.Join(dir, "graphql-body")
 	readyLost := filepath.Join(dir, "ready-lost")
 	mismatch := filepath.Join(dir, "mismatch")
+	failObservation := filepath.Join(dir, "fail-observation")
+	failObserveAfterCreate := filepath.Join(dir, "fail-after-create")
+	failObserveAfterReady := filepath.Join(dir, "fail-after-ready")
+	blockCreate := filepath.Join(dir, "block-create")
+	blockReady := filepath.Join(dir, "block-ready")
 	script := fmt.Sprintf(`#!/bin/sh
 method=
 last=
@@ -277,23 +366,32 @@ case "$last" in
   "/graphql")
 	cat > %q
 	touch %q
+	if [ -f %q ]; then touch %q; fi
+	if [ -f %q ]; then exec sleep 5; fi
 	if [ ! -f %q ]; then touch %q; exit 1; fi
 	printf '{"data":{"markPullRequestReadyForReview":{"pullRequest":{"id":"PR_node_7","isDraft":false}}}}'
 	;;
-  *"/pulls?"*) if [ -f %q ]; then printf '['; emit_pr; printf ']'; else printf '[]'; fi ;;
+  *"/pulls?"*)
+	if [ -f %q ]; then exit 1; fi
+	if [ -f %q ]; then printf '['; emit_pr; printf ']'; else printf '[]'; fi
+	;;
   *"/pulls")
     touch %q
+	if [ -f %q ]; then touch %q; fi
+	if [ -f %q ]; then exec sleep 5; fi
     emit_pr
     if [ ! -f %q ]; then touch %q; exit 1; fi
     ;;
   *"/pulls/7")
+	if [ -f %q ]; then exit 1; fi
     if [ "$method" = "PATCH" ]; then touch %q; fi
     emit_pr
     ;;
   *) exit 2 ;;
 esac
 `, calls, strings.Repeat("1", 40), ready, closed, mismatch, strings.Repeat("9", 40),
-		strings.Repeat("3", 40), graphqlBody, ready, readyLost, readyLost, created, created, filepath.Join(dir, "lost"), filepath.Join(dir, "lost"), closed)
+		strings.Repeat("3", 40), graphqlBody, ready, failObserveAfterReady, failObservation, blockReady, readyLost, readyLost,
+		failObservation, created, created, failObserveAfterCreate, failObservation, blockCreate, filepath.Join(dir, "lost"), filepath.Join(dir, "lost"), failObservation, closed)
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatalf("write lifecycle gh fixture: %v", err)
 	}
@@ -315,7 +413,12 @@ esac
 	if err != nil {
 		t.Fatalf("NewGHRunner() error = %v", err)
 	}
-	return changeLifecycleFixture{runner: runner, credentials: credentials, git: recordingGitTransport{credentials: credentials}, calls: calls, graphqlBody: graphqlBody, mismatch: mismatch}
+	return changeLifecycleFixture{
+		runner: runner, credentials: credentials, git: recordingGitTransport{credentials: credentials},
+		calls: calls, graphqlBody: graphqlBody, mismatch: mismatch,
+		failObserveAfterCreate: failObserveAfterCreate, failObserveAfterReady: failObserveAfterReady,
+		blockCreate: blockCreate, blockReady: blockReady,
+	}
 }
 
 func (fixture changeLifecycleFixture) countCalls(fragment string) int {
