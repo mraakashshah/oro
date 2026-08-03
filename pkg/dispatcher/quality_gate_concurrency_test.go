@@ -1,6 +1,7 @@
 package dispatcher //nolint:testpackage // white-box: shares serial-lane test helpers + guarded canary
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"os/exec"
@@ -46,6 +47,197 @@ func qgScript(t *testing.T) string {
 		t.Fatalf("quality_gate.sh not found at %s: %v", p, err)
 	}
 	return p
+}
+
+type cacheProbeResult struct {
+	id        string
+	exit      int
+	worktree  string
+	qgDir     string
+	goCache   string
+	lintCache string
+	output    string
+}
+
+type startedGateProbe struct {
+	id          string
+	worktree    string
+	cacheReport string
+	cmd         *exec.Cmd
+	output      *bytes.Buffer
+}
+
+func startGateProbe(
+	t *testing.T,
+	repoRoot, worktreeParent, markerDir, lockRoot, qgTmp, ambientGo, ambientLint, id string,
+) *startedGateProbe {
+	t.Helper()
+	worktree := filepath.Join(worktreeParent, id)
+	cmd := exec.Command("git", "-C", repoRoot, "worktree", "add", "--detach", worktree, "HEAD")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("create disposable worktree %s: %v\n%s", id, err, out)
+	}
+	t.Cleanup(func() {
+		remove := exec.Command("git", "-C", repoRoot, "worktree", "remove", "--force", worktree)
+		if out, err := remove.CombinedOutput(); err != nil {
+			t.Errorf("remove disposable worktree %s: %v\n%s", id, err, out)
+		}
+	})
+
+	shimDir := t.TempDir()
+	sleepShim := filepath.Join(shimDir, "sleep")
+	shim := `#!/bin/sh
+set -eu
+{
+	printf 'QG_DIR=%s\n' "${GOCACHE%/go-build-cache}"
+	printf 'GOCACHE=%s\n' "$GOCACHE"
+	printf 'GOLANGCI_LINT_CACHE=%s\n' "$GOLANGCI_LINT_CACHE"
+} >"$ORO_QG_CACHE_REPORT"
+PATH="$ORO_QG_ORIGINAL_PATH"
+export PATH
+exec sleep "$@"
+`
+	if err := os.WriteFile(sleepShim, []byte(shim), 0o755); err != nil {
+		t.Fatalf("write sleep probe for %s: %v", id, err)
+	}
+
+	cacheReport := filepath.Join(markerDir, "cache."+id)
+	originalPath := os.Getenv("PATH")
+	env := cleanQGEnv()
+	env = append(env,
+		"PATH="+shimDir+string(os.PathListSeparator)+originalPath,
+		"TMPDIR="+qgTmp,
+		"GOCACHE="+ambientGo,
+		"GOLANGCI_LINT_CACHE="+ambientLint,
+		"ORO_QG_ORIGINAL_PATH="+originalPath,
+		"ORO_QG_CACHE_REPORT="+cacheReport,
+		"ORO_QG_PHASE_MARKER_DIR="+markerDir,
+		"ORO_QG_REPO_ROOT_OVERRIDE="+lockRoot,
+		"ORO_QG_PROBE_ID="+id,
+		"ORO_QG_LOCK_TIMEOUT_SECONDS=60",
+		"ORO_QG_MAIN_SLEEP=3",
+		"ORO_QG_SERIAL_SLEEP=0",
+	)
+	gate := exec.Command("bash", filepath.Join(worktree, "scripts", "quality_gate.sh"))
+	gate.Dir = worktree
+	gate.Env = env
+	output := &bytes.Buffer{}
+	gate.Stdout = output
+	gate.Stderr = output
+	if err := gate.Start(); err != nil {
+		t.Fatalf("start quality-gate probe %s: %v", id, err)
+	}
+	return &startedGateProbe{
+		id:          id,
+		worktree:    worktree,
+		cacheReport: cacheReport,
+		cmd:         gate,
+		output:      output,
+	}
+}
+
+func (p *startedGateProbe) wait(t *testing.T) cacheProbeResult {
+	t.Helper()
+	err := p.cmd.Wait()
+	exit := 0
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			exit = exitErr.ExitCode()
+		} else {
+			t.Fatalf("wait for quality-gate probe %s: %v", p.id, err)
+		}
+	}
+	result := cacheProbeResult{
+		id:       p.id,
+		exit:     exit,
+		worktree: p.worktree,
+		output:   p.output.String(),
+	}
+	report, readErr := os.ReadFile(p.cacheReport)
+	if readErr != nil {
+		t.Errorf("read cache report for %s: %v\ngate output:\n%s", p.id, readErr, result.output)
+		return result
+	}
+	for _, line := range strings.Split(string(report), "\n") {
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		switch key {
+		case "QG_DIR":
+			result.qgDir = value
+		case "GOCACHE":
+			result.goCache = value
+		case "GOLANGCI_LINT_CACHE":
+			result.lintCache = value
+		}
+	}
+	return result
+}
+
+func TestConcurrentQualityGatesUseDistinctGoCaches(t *testing.T) {
+	for _, tool := range []string{"bash", "git", "go"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s not available", tool)
+		}
+	}
+
+	root := t.TempDir()
+	worktreeParent := filepath.Join(root, "worktrees")
+	markerDir := filepath.Join(root, "markers")
+	lockRoot := filepath.Join(root, "locks")
+	qgTmp := filepath.Join(root, "qg-tmp")
+	ambientGo := filepath.Join(root, "ambient", "go-build")
+	ambientLint := filepath.Join(root, "ambient", "golangci-lint")
+	for _, dir := range []string{worktreeParent, markerDir, lockRoot, qgTmp, ambientGo, ambientLint} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("create fixture directory %s: %v", dir, err)
+		}
+	}
+
+	first := startGateProbe(t, worktreeRoot(t), worktreeParent, markerDir, lockRoot, qgTmp, ambientGo, ambientLint, "cache-a")
+	second := startGateProbe(t, worktreeRoot(t), worktreeParent, markerDir, lockRoot, qgTmp, ambientGo, ambientLint, "cache-b")
+	results := []cacheProbeResult{first.wait(t), second.wait(t)}
+
+	for _, result := range results {
+		if result.exit != 0 {
+			t.Fatalf("gate %s failed: exit=%d\n%s", result.id, result.exit, result.output)
+		}
+		t.Logf("gate %s worktree=%s QG_DIR=%s GOCACHE=%s GOLANGCI_LINT_CACHE=%s", result.id, result.worktree, result.qgDir, result.goCache, result.lintCache)
+		if result.qgDir == "" || result.goCache != filepath.Join(result.qgDir, "go-build-cache") ||
+			result.lintCache != filepath.Join(result.qgDir, "golangci-lint-cache") {
+			t.Errorf("gate %s reported caches outside its QG_DIR: qg=%q go=%q lint=%q", result.id, result.qgDir, result.goCache, result.lintCache)
+		}
+	}
+	if results[0].worktree == results[1].worktree || filepath.Dir(results[0].worktree) != worktreeParent ||
+		filepath.Dir(results[1].worktree) != worktreeParent {
+		t.Errorf("gates did not run from distinct sibling worktrees: %q and %q", results[0].worktree, results[1].worktree)
+	}
+	if results[0].qgDir == results[1].qgDir || results[0].goCache == results[1].goCache ||
+		results[0].lintCache == results[1].lintCache {
+		t.Errorf("concurrent gates reused cache paths: %#v / %#v", results[0], results[1])
+	}
+	if max(readIntMarker(markerDir, "peak.main.cache-a"), readIntMarker(markerDir, "peak.main.cache-b")) < 2 {
+		t.Error("quality-gate probes did not overlap in the main phase")
+	}
+
+	for _, dir := range []string{ambientGo, ambientLint} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("read ambient cache %s: %v", dir, err)
+		}
+		if len(entries) != 0 {
+			t.Errorf("ambient cache %s was modified: %v", dir, entries)
+		}
+	}
+
+	logs := strings.ToLower(results[0].output + "\n" + results[1].output)
+	for _, signature := range []string{"could not import", "could not load export data", "no such cache file"} {
+		if strings.Contains(logs, signature) {
+			t.Errorf("concurrent gate logs contain %q:\n%s", signature, logs)
+		}
+	}
 }
 
 type probeResult struct {
