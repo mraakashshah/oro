@@ -739,7 +739,11 @@ func (d *Dispatcher) rejectEpicBranchPreparation(ctx context.Context, beadID, wo
 // absent. Returns true if the caller should continue with assignment, false if
 // the creation failed genuinely (bead reverted, failure recorded, escalation sent).
 func (d *Dispatcher) lazyCreateEpicBranch(ctx context.Context, beadID, baseBranch string) bool {
-	if err := d.worktrees.CreateBranch(ctx, baseBranch, d.cfg.DefaultBranch); err != nil {
+	return d.lazyCreateEpicBranchFrom(ctx, beadID, baseBranch, d.cfg.DefaultBranch)
+}
+
+func (d *Dispatcher) lazyCreateEpicBranchFrom(ctx context.Context, beadID, baseBranch, targetBranch string) bool {
+	if err := d.worktrees.CreateBranch(ctx, baseBranch, targetBranch); err != nil {
 		// Branch may already exist due to a concurrent child assignment (race) — re-check.
 		exists2, _ := d.worktrees.BranchExists(ctx, baseBranch)
 		if !exists2 {
@@ -761,6 +765,6 @@ func (d *Dispatcher) lazyCreateEpicBranch(ctx context.Context, beadID, baseBranc
 		return true
 	}
 	_ = d.logEvent(ctx, "epic_branch_created", "dispatcher", beadID, "",
-		fmt.Sprintf(`{"branch":%q,"from":%q}`, baseBranch, d.cfg.DefaultBranch))
+		fmt.Sprintf(`{"branch":%q,"from":%q}`, baseBranch, targetBranch))
 	return true
 }

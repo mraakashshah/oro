@@ -36,6 +36,11 @@ type epicBranchAdmission struct {
 	createdAt      time.Time
 	updatedAt      time.Time
 	resolvedAt     time.Time
+	operation      *epicBranchAdmissionOperation
+}
+
+type epicBranchAdmissionOperation struct {
+	cancel context.CancelCauseFunc
 }
 
 type epicBranchAdmissionStore struct {

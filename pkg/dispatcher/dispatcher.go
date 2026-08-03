@@ -296,7 +296,8 @@ type Dispatcher struct {
 	assignmentFreezeReason         string
 
 	// nowFunc allows tests to control time.
-	nowFunc func() time.Time
+	nowFunc                 func() time.Time
+	epicAdmissionRenewEvery time.Duration
 
 	// testUnlockHook, if non-nil, is called after releasing the lock in
 	// registerWorker/handleQGFailure (before memory.ForPrompt). Tests use
@@ -527,6 +528,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		escalatedCycles:           make(map[string]bool),
 		checkpoints:               newCheckpointTracker(),
 		nowFunc:                   time.Now,
+		epicAdmissionRenewEvery:   epicBranchAdmissionLeaseRenewInterval,
 		reviewArtifactRetention:   defaultReviewArtifactRetention,
 		reviewMaintenanceInterval: defaultReviewMaintenanceInterval,
 		acceptSem:                 make(chan struct{}, 100), // limit to 100 concurrent connection handlers

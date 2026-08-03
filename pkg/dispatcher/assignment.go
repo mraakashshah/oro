@@ -145,7 +145,7 @@ func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, 
 		return nil
 	}
 	if baseBranch != d.cfg.DefaultBranch {
-		if !d.ensureEpicBranchReady(ctx, bead, w, baseBranch, resolvedEpicID) {
+		if !d.withEpicBranchAdmission(ctx, bead, w.id, baseBranch, resolvedEpicID, d.cfg.DefaultBranch) {
 			d.releaseAssignmentReservation(w.id, bead.ID, reservationGen)
 			return nil
 		}

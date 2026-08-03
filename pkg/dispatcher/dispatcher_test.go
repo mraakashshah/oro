@@ -24428,6 +24428,9 @@ func TestTryAssign_FillsIdleWorkersAcrossEpicUnitsByPriority(t *testing.T) {
 	})
 
 	tryAssignAndWait(t, d, context.Background())
+	// Same-epic children race for one branch admission lease. The quiet loser
+	// remains eligible and fills the released worker on the next scheduling pass.
+	tryAssignAndWait(t, d, context.Background())
 
 	got := assignedBeadIDsSorted(t, d.db)
 	want := []string{"a-fast", "a-slow", "b-fast"}
@@ -24453,6 +24456,9 @@ func TestTryAssign_ConcentratesWorkersOnTopEpic(t *testing.T) {
 		{ID: "a-fast", Priority: 0, Epic: "epic-a"},
 	})
 
+	tryAssignAndWait(t, d, context.Background())
+	// The first pass admits one child for the epic; its quiet lease contender
+	// remains eligible to concentrate the second worker on the next pass.
 	tryAssignAndWait(t, d, context.Background())
 
 	got := assignedBeadIDsSorted(t, d.db)
@@ -24835,6 +24841,9 @@ func schedulingPlanBeadIDs(plan schedulingPlan) []string {
 func setupTryAssignSchedulingTest(t *testing.T, workerCount int) (*Dispatcher, *fakeBeadStore, []*mockConn) {
 	t.Helper()
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	if err := protocol.MigrateBeadSchema(t.Context(), d.db); err != nil {
+		t.Fatalf("migrate scheduler test schema: %v", err)
+	}
 	d.setState(StateRunning)
 	workers := make([]*mockConn, 0, workerCount)
 	d.mu.Lock()

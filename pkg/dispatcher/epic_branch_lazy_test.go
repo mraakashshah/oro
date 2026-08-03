@@ -341,6 +341,15 @@ func TestEpicBranchLazyCreation(t *testing.T) {
 			}
 			return false
 		}, 2*time.Second)
+		if got := eventCount(t, d.db, "epic_branch_prepare_failed"); got != 0 {
+			t.Errorf("epic_branch_prepare_failed events = %d, want preserved pending path", got)
+		}
+		d.mu.Lock()
+		_, cooldown := d.worktreeFailures["child-5"]
+		d.mu.Unlock()
+		if cooldown {
+			t.Error("BranchExists pending path recorded an assignment cooldown")
+		}
 
 		// No STUCK_WORKER escalation for an open epic.
 		for _, m := range esc.Messages() {
