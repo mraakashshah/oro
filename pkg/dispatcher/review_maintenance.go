@@ -42,7 +42,7 @@ func (d *Dispatcher) pruneReviewArtifacts(ctx context.Context) {
 
 	store := NewReviewCheckpointStore(d.db)
 	before := d.nowFunc().Add(-d.reviewArtifactRetention)
-	artifacts, err := store.ListPrunableArtifacts(ctx, before)
+	artifacts, err := store.ListPrunableArtifacts(ctx, before, d.reviewRecoveryArtifactDir)
 	if err != nil {
 		return
 	}

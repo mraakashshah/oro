@@ -7,6 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
 	"time"
 
 	"oro/pkg/protocol"
@@ -477,10 +480,12 @@ type ArtifactRef struct {
 	Path string
 }
 
+var recoveryArtifactFilenamePattern = regexp.MustCompile(`^checkpoint-[1-9][0-9]*-[0-9a-f]{64}\.json$`)
+
 // ListPrunableArtifacts returns artifacts whose every checkpoint reference is
 // terminal and older than olderThan. Shared artifacts are retained until all
 // references become eligible.
-func (s *ReviewCheckpointStore) ListPrunableArtifacts(ctx context.Context, olderThan time.Time) ([]ArtifactRef, error) {
+func (s *ReviewCheckpointStore) ListPrunableArtifacts(ctx context.Context, olderThan time.Time, recoveryDirs ...string) ([]ArtifactRef, error) {
 	if s == nil || s.db == nil {
 		return nil, errors.New("list prunable review artifacts: db is nil")
 	}
@@ -528,7 +533,126 @@ ORDER BY candidate.path`,
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate prunable review artifacts: %w", err)
 	}
+	unreferenced, err := s.listUnreferencedRecoveryArtifacts(ctx, olderThan, recoveryDirs)
+	if err != nil {
+		return nil, err
+	}
+	artifacts = appendUniqueArtifactRefs(artifacts, unreferenced)
 	return artifacts, nil
+}
+
+func (s *ReviewCheckpointStore) listUnreferencedRecoveryArtifacts(
+	ctx context.Context,
+	olderThan time.Time,
+	recoveryDirs []string,
+) ([]ArtifactRef, error) {
+	if len(recoveryDirs) == 0 {
+		return nil, nil
+	}
+	referenced, err := s.referencedArtifactPaths(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var artifacts []ArtifactRef
+	for _, dir := range recoveryDirs {
+		candidates, listErr := unreferencedRecoveryArtifactsInDir(dir, olderThan, referenced)
+		if listErr != nil {
+			return nil, listErr
+		}
+		artifacts = appendUniqueArtifactRefs(artifacts, candidates)
+	}
+	return artifacts, nil
+}
+
+func (s *ReviewCheckpointStore) referencedArtifactPaths(ctx context.Context) (map[string]struct{}, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT path FROM (
+  SELECT artifact_path AS path FROM review_checkpoints WHERE COALESCE(artifact_path, '') <> ''
+  UNION
+  SELECT recovery_artifact_path AS path FROM review_checkpoints WHERE COALESCE(recovery_artifact_path, '') <> ''
+)`)
+	if err != nil {
+		return nil, fmt.Errorf("query referenced review artifacts: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	referenced := make(map[string]struct{})
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			return nil, fmt.Errorf("scan referenced review artifact: %w", err)
+		}
+		canonical, err := filepath.Abs(filepath.Clean(path))
+		if err != nil {
+			return nil, fmt.Errorf("canonicalize referenced review artifact %q: %w", path, err)
+		}
+		referenced[canonical] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate referenced review artifacts: %w", err)
+	}
+	return referenced, nil
+}
+
+func unreferencedRecoveryArtifactsInDir(
+	dir string,
+	olderThan time.Time,
+	referenced map[string]struct{},
+) ([]ArtifactRef, error) {
+	if dir == "" {
+		return nil, nil
+	}
+	dirInfo, err := os.Lstat(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("inspect recovery artifact directory %q: %w", dir, err)
+	}
+	if !dirInfo.IsDir() || dirInfo.Mode()&os.ModeSymlink != 0 || dirInfo.Mode().Perm() != recoveryArtifactDirMode {
+		return nil, fmt.Errorf("refuse unsafe recovery artifact directory %q with mode %s", dir, dirInfo.Mode())
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("read recovery artifact directory %q: %w", dir, err)
+	}
+	artifacts := make([]ArtifactRef, 0)
+	for _, entry := range entries {
+		if !recoveryArtifactFilenamePattern.MatchString(entry.Name()) {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		info, err := os.Lstat(path)
+		if err != nil {
+			return nil, fmt.Errorf("inspect recovery artifact candidate %q: %w", path, err)
+		}
+		if !info.Mode().IsRegular() || !info.ModTime().Before(olderThan) {
+			continue
+		}
+		canonical, err := filepath.Abs(filepath.Clean(path))
+		if err != nil {
+			return nil, fmt.Errorf("canonicalize recovery artifact candidate %q: %w", path, err)
+		}
+		if _, ok := referenced[canonical]; ok {
+			continue
+		}
+		artifacts = append(artifacts, ArtifactRef{Path: path})
+	}
+	return artifacts, nil
+}
+
+func appendUniqueArtifactRefs(existing, additions []ArtifactRef) []ArtifactRef {
+	seen := make(map[string]struct{}, len(existing)+len(additions))
+	for _, artifact := range existing {
+		seen[artifact.Path] = struct{}{}
+	}
+	for _, artifact := range additions {
+		if _, ok := seen[artifact.Path]; ok {
+			continue
+		}
+		seen[artifact.Path] = struct{}{}
+		existing = append(existing, artifact)
+	}
+	return existing
 }
 
 // ClearPrunedArtifact removes durable references after an artifact was deleted.

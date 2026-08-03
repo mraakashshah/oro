@@ -191,6 +191,80 @@ func TestReviewArtifactAndFindingOverflow(t *testing.T) {
 	})
 }
 
+func TestReviewRecoveryArtifactRetentionRemovesUnreferencedFiles(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	artifactDir := filepath.Join(root, "review-recovery")
+	store := openReviewCheckpointStore(ctx, t, filepath.Join(root, "checkpoints.sqlite"))
+	checkpoint, err := store.CreateOrReuse(ctx, reviewCheckpointInput("oro-artifact-retention"))
+	if err != nil {
+		t.Fatalf("create checkpoint: %v", err)
+	}
+
+	findingsA := []reviewcontract.Finding{reviewOverflowFinding("A", "committed first")}
+	refA, err := PersistRecoveryArtifact(artifactDir, checkpoint.ID, findingsA)
+	if err != nil {
+		t.Fatalf("persist A: %v", err)
+	}
+	if err := store.SaveRejectedFindings(ctx, checkpoint.ID, findingsA, &refA); err != nil {
+		t.Fatalf("commit A: %v", err)
+	}
+	if err := store.CompareAndSwap(ctx, checkpoint.ID, ReviewCheckpointStateRejected, ReviewCheckpointStateReviewRunning); err != nil {
+		t.Fatalf("start replacement review: %v", err)
+	}
+
+	findingsB := []reviewcontract.Finding{reviewOverflowFinding("B", "durable replacement")}
+	refB, err := PersistRecoveryArtifact(artifactDir, checkpoint.ID, findingsB)
+	if err != nil {
+		t.Fatalf("persist B: %v", err)
+	}
+	if err := store.SaveRejectedFindings(ctx, checkpoint.ID, findingsB, &refB); err != nil {
+		t.Fatalf("commit B: %v", err)
+	}
+
+	findingsC := []reviewcontract.Finding{reviewOverflowFinding("C", "database write loses CAS")}
+	refC, err := PersistRecoveryArtifact(artifactDir, checkpoint.ID, findingsC)
+	if err != nil {
+		t.Fatalf("persist C: %v", err)
+	}
+	if err := store.SaveRejectedFindings(ctx, checkpoint.ID, findingsC, &refC); !errors.Is(err, ErrCheckpointConflict) {
+		t.Fatalf("commit C error = %v, want ErrCheckpointConflict", err)
+	}
+
+	// A fresh unreferenced contender may still be between file persistence and
+	// its DB commit. The retention grace window must protect it from this sweep.
+	findingsFresh := []reviewcontract.Finding{reviewOverflowFinding("fresh", "concurrent contender")}
+	refFresh, err := PersistRecoveryArtifact(artifactDir, checkpoint.ID, findingsFresh)
+	if err != nil {
+		t.Fatalf("persist fresh contender: %v", err)
+	}
+	old := time.Now().Add(-2 * time.Hour)
+	for _, path := range []string{refA.Path, refB.Path, refC.Path} {
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatalf("age artifact %s: %v", path, err)
+		}
+	}
+
+	d := &Dispatcher{
+		db:                        store.db,
+		nowFunc:                   time.Now,
+		reviewArtifactRetention:   time.Hour,
+		reviewRecoveryArtifactDir: artifactDir,
+	}
+	d.pruneReviewArtifacts(ctx)
+
+	for name, path := range map[string]string{"A": refA.Path, "C": refC.Path} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("unreferenced artifact %s stat error = %v, want not exist", name, err)
+		}
+	}
+	for name, path := range map[string]string{"B": refB.Path, "fresh": refFresh.Path} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("retained artifact %s stat: %v", name, err)
+		}
+	}
+}
+
 func reviewOverflowFinding(id, detail string) reviewcontract.Finding {
 	return reviewcontract.Finding{
 		ID:             id,
