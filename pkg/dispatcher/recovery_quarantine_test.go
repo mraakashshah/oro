@@ -376,6 +376,96 @@ func TestRestoreStateQuarantinesMissingWorktreeDurably(t *testing.T) {
 	}
 }
 
+func TestStartupRecoveryQuarantinesUnsafeRequeuedAssignmentAndReportsHealth(t *testing.T) {
+	d, _, wtMgr, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const (
+		beadID   = "oro-requeued-recovery"
+		workerID = "worker-requeued-recovery"
+		worktree = "/tmp/missing-oro-requeued-recovery"
+		branch   = protocol.BranchPrefix + beadID
+	)
+
+	wtMgr.existsFn = func(_ context.Context, path string) bool { return path != worktree }
+	wtMgr.branchExistsFn = func(_ context.Context, got string) (bool, error) { return got == branch, nil }
+
+	res, err := d.db.ExecContext(ctx, `
+INSERT INTO assignments (bead_id, worker_id, worktree, status, completed_at)
+VALUES (?, ?, ?, 'requeued', datetime('now'))`, beadID, workerID, worktree)
+	if err != nil {
+		t.Fatalf("insert requeued assignment: %v", err)
+	}
+	assignmentID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("assignment id: %v", err)
+	}
+
+	if err := d.startupRecovery(ctx); err != nil {
+		t.Fatalf("startupRecovery: %v", err)
+	}
+
+	var openQuarantines int
+	if err := d.db.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM recovery_quarantines
+WHERE assignment_id=? AND bead_id=? AND reason='missing_worktree_path' AND status='open'`,
+		assignmentID, beadID).Scan(&openQuarantines); err != nil {
+		t.Fatalf("count open recovery quarantines: %v", err)
+	}
+	if openQuarantines != 1 {
+		t.Fatalf("open recovery quarantines = %d, want 1", openQuarantines)
+	}
+
+	var assignmentStatus string
+	var completedAt any
+	if err := d.db.QueryRowContext(ctx,
+		`SELECT status, completed_at FROM assignments WHERE id=?`, assignmentID,
+	).Scan(&assignmentStatus, &completedAt); err != nil {
+		t.Fatalf("query recovered assignment: %v", err)
+	}
+	if assignmentStatus != "quarantined" {
+		t.Fatalf("assignment status = %q, want quarantined", assignmentStatus)
+	}
+	if completedAt != nil {
+		t.Fatalf("assignment completed_at = %v, want NULL", completedAt)
+	}
+
+	var quarantinedEvents, failedEvents int
+	if err := d.db.QueryRowContext(ctx, `
+SELECT
+    SUM(CASE WHEN type='startup_recovery_quarantined' THEN 1 ELSE 0 END),
+    SUM(CASE WHEN type='startup_recovery_quarantine_failed' THEN 1 ELSE 0 END)
+FROM events
+WHERE bead_id=?`, beadID).Scan(&quarantinedEvents, &failedEvents); err != nil {
+		t.Fatalf("count startup recovery events: %v", err)
+	}
+	if quarantinedEvents != 1 || failedEvents != 0 {
+		t.Fatalf("startup recovery events = quarantined %d failed %d, want 1/0", quarantinedEvents, failedEvents)
+	}
+
+	if redeployable, blocked := d.recoveryQuarantineAssignmentScope(ctx); !blocked || len(redeployable) != 0 {
+		t.Fatalf("assignment scope = redeployable %+v blocked %t, want globally blocked", redeployable, blocked)
+	}
+
+	healthJSON, err := d.applyHealth()
+	if err != nil {
+		t.Fatalf("applyHealth: %v", err)
+	}
+	var health SwarmHealth
+	if err := json.Unmarshal([]byte(healthJSON), &health); err != nil {
+		t.Fatalf("unmarshal health: %v", err)
+	}
+	if health.Metrics.OpenRecoveryQuarantines != 1 ||
+		health.Metrics.BlockingRecoveryQuarantines != 1 ||
+		!health.Metrics.AssignmentFrozenByQuarantine {
+		t.Fatalf("recovery quarantine health metrics = %+v, want open=1 blocking=1 frozen=true", health.Metrics)
+	}
+	if !hasHealthFinding(health, factoryhealth.FindingRecoveryQuarantineOpen) ||
+		!hasHealthFinding(health, factoryhealth.FindingAssignmentFrozenByQuarantine) {
+		t.Fatalf("health missing recovery quarantine findings: %+v", health.Findings)
+	}
+}
+
 func TestStartupAutoResolvesEmptySafeQuarantines(t *testing.T) {
 	d, _, wtMgr, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
