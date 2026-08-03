@@ -245,6 +245,8 @@ func recoveryArtifactColumns(ref *ReviewRecoveryArtifactRef) (path, sha any, byt
 
 // LoadReviewRecovery reconstructs correction context from durable checkpoint
 // state. Referenced findings are validated but never regenerated from compact rows.
+//
+//oro:testonly
 func (s *ReviewCheckpointStore) LoadReviewRecovery(ctx context.Context, checkpointID int64) (protocol.ReviewRecovery, error) {
 	if s == nil || s.db == nil {
 		return protocol.ReviewRecovery{}, errors.New("load review recovery: db is nil")
