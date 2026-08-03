@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"oro/pkg/cards"
 	"oro/pkg/protocol"
 	"oro/pkg/reviewcontract"
 )
@@ -94,22 +96,91 @@ func TestReviewArtifactAndFindingOverflow(t *testing.T) {
 
 	t.Run("canonical payload builder preserves the exact bounded reference", func(t *testing.T) {
 		d, beadSource, _, _, _, _ := newTestDispatcher(t)
-		beadSource.shown["oro-overflow"] = &protocol.BeadDetail{Title: "overflow correction"}
+		beadSource.shown["oro-overflow"] = &protocol.BeadDetail{
+			Title:              strings.Repeat("title-", 1024),
+			Description:        strings.Repeat("description-", 2048),
+			AcceptanceCriteria: strings.Repeat("acceptance-", 2048),
+		}
 		d.shutdownRunner = &mockCommandRunner{}
+		workerProgram := filepath.Join(t.TempDir(), "worker-program.md")
+		if err := os.WriteFile(workerProgram, []byte(strings.Repeat("w", maxWorkerProgramSize)), 0o600); err != nil {
+			t.Fatalf("write maximum worker program: %v", err)
+		}
+		d.cfg.WorkerProgram = workerProgram
+		d.cardStore = &staticRelevantCardStore{result: maximumAssignmentTestCards()}
 		payload := d.buildAssignPayload(ctx, &trackedWorker{
-			beadID:   "oro-overflow",
-			worktree: "/tmp/oro-overflow",
-		}, 2, "bounded compatibility summary", "", WorkerExecutionContext{
+			beadID:       "oro-overflow",
+			worktree:     "/tmp/oro-overflow",
+			runtime:      strings.Repeat("runtime-", 32),
+			model:        strings.Repeat("model-", 32),
+			reasoning:    strings.Repeat("reasoning-", 32),
+			targetBranch: strings.Repeat("target-", 32),
+		}, 2, strings.Repeat("feedback-", 2048), strings.Repeat("memory-", 2048), WorkerExecutionContext{
 			AssignmentID:   19,
 			Generation:     1,
-			ActorRole:      "execution_worker",
-			Project:        "oro",
+			ActorRole:      strings.Repeat("role-", 32),
+			Project:        strings.Repeat("project-", 32),
+			Capability:     strings.Repeat("capability-", 32),
 			ReviewRecovery: &loadedRecovery,
 		})
+		payload.CodeSearchContext = strings.Repeat("c", maxCodeSearchContextSize)
 		if payload.ReviewRecovery == nil || !reflect.DeepEqual(payload.ReviewRecovery.FindingsRef, recovery.FindingsRef) {
 			t.Fatalf("built recovery = %#v, want exact reference %#v", payload.ReviewRecovery, recovery.FindingsRef)
 		}
+		if len(payload.WorkerProgram) != maxWorkerProgramSize || len(payload.CodeSearchContext) != maxCodeSearchContextSize {
+			t.Fatalf("canonical bounded fields = worker program %d/code search %d, want %d/%d",
+				len(payload.WorkerProgram), len(payload.CodeSearchContext), maxWorkerProgramSize, maxCodeSearchContextSize)
+		}
+		deckJSON, err := json.Marshal(payload.Cards.Deck)
+		if err != nil {
+			t.Fatalf("marshal bounded deck: %v", err)
+		}
+		inlinedJSON, err := json.Marshal(payload.Cards.Inlined)
+		if err != nil {
+			t.Fatalf("marshal bounded inline cards: %v", err)
+		}
+		if len(deckJSON) <= maxAssignmentCardDeckJSONSize/2 || len(deckJSON) > maxAssignmentCardDeckJSONSize {
+			t.Fatalf("canonical deck bytes = %d, want (%d, %d]", len(deckJSON), maxAssignmentCardDeckJSONSize/2, maxAssignmentCardDeckJSONSize)
+		}
+		if len(inlinedJSON) <= maxAssignmentCardInlinedJSONSize/2 || len(inlinedJSON) > maxAssignmentCardInlinedJSONSize {
+			t.Fatalf("canonical inline card bytes = %d, want (%d, %d]", len(inlinedJSON), maxAssignmentCardInlinedJSONSize/2, maxAssignmentCardInlinedJSONSize)
+		}
 		assertReviewRecoveryPayloadBounded(t, *payload.ReviewRecovery)
+		messageJSON, err := json.Marshal(protocol.Message{Type: protocol.MsgAssign, Assign: payload})
+		if err != nil {
+			t.Fatalf("marshal canonical maximum-field ASSIGN: %v", err)
+		}
+		if len(messageJSON) >= protocol.MaxMessageSize {
+			t.Fatalf("canonical maximum-field ASSIGN bytes = %d, want < %d", len(messageJSON), protocol.MaxMessageSize)
+		}
+	})
+
+	t.Run("staged recovery transport emits no findings event payload", func(t *testing.T) {
+		if _, err := restarted.db.ExecContext(ctx, `
+CREATE TABLE IF NOT EXISTS events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  type TEXT NOT NULL,
+  source TEXT NOT NULL,
+  bead_id TEXT,
+  worker_id TEXT,
+  payload TEXT
+)`); err != nil {
+			t.Fatalf("create event observation surface: %v", err)
+		}
+		if err := restarted.SaveRejectedFindings(ctx, checkpoint.ID, findings, recovery.FindingsRef); err != nil {
+			t.Fatalf("replay staged recovery with event surface: %v", err)
+		}
+		var findingsEvents int
+		if err := restarted.db.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM events
+WHERE COALESCE(payload, '') LIKE '%critical-overflow%'
+   OR COALESCE(payload, '') LIKE '%important-overflow%'`).Scan(&findingsEvents); err != nil {
+			t.Fatalf("query findings-bearing events: %v", err)
+		}
+		if findingsEvents != 0 {
+			t.Fatalf("findings-bearing event payloads = %d, want 0; staged recovery transport is ASSIGN-only", findingsEvents)
+		}
 	})
 
 	t.Run("rejected retention and mismatched replacement are fail closed", func(t *testing.T) {
@@ -189,6 +260,33 @@ func TestReviewArtifactAndFindingOverflow(t *testing.T) {
 		loaded, err = restarted.LoadReviewRecovery(ctx, checkpoint.ID)
 		assertTypedStoredRecoveryFailure(t, loaded, err, RecoveryArtifactCorrupt)
 	})
+}
+
+func maximumAssignmentTestCards() cards.RelevantCards {
+	deck := make([]cards.DeckCard, 0, 300)
+	for i := 0; i < cap(deck); i++ {
+		deck = append(deck, cards.DeckCard{
+			ID:          fmt.Sprintf("deck-%03d", i),
+			Type:        cards.CardTypePattern,
+			Title:       strings.Repeat("title", 8),
+			BodySummary: strings.Repeat("summary", 96),
+			Score:       1,
+			Tags:        []string{"dispatcher", "maximum"},
+		})
+	}
+	inlined := make([]cards.InlinedCard, 0, 220)
+	for i := 0; i < cap(inlined); i++ {
+		inlined = append(inlined, cards.InlinedCard{
+			ID:          fmt.Sprintf("inline-%03d", i),
+			Type:        cards.CardTypePattern,
+			Title:       strings.Repeat("title", 8),
+			BodySummary: strings.Repeat("summary", 32),
+			BodyFull:    strings.Repeat("full", 128),
+			Score:       1,
+			Tags:        []string{"dispatcher", "maximum"},
+		})
+	}
+	return cards.RelevantCards{Deck: deck, Inlined: inlined}
 }
 
 func TestReviewRecoveryArtifactRetentionRemovesUnreferencedFiles(t *testing.T) {

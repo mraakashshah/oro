@@ -88,6 +88,9 @@ func (e *RecoveryArtifactError) Is(target error) bool {
 }
 
 // prepareReviewRecovery keeps bounded findings inline and persists larger findings by reference.
+// The staged recovery transport is ASSIGN-only: findings are never copied into
+// dispatcher event payloads, so the event-payload clause is intentionally not
+// part of this helper's wire budget.
 func prepareReviewRecovery(
 	dir string,
 	checkpointID int64,
