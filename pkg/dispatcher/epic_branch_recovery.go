@@ -263,6 +263,26 @@ func isExactEpicBranchRecoveryChild(child *protocol.Bead, admission epicBranchAd
 	if child.Status != "open" && child.Status != "in_progress" {
 		return false
 	}
+	if !isEpicBranchRecoveryChainMember(child, admission) {
+		return false
+	}
+	predecessor, ok := child.Metadata["epic_branch_recovery_predecessor"].(string)
+	return ok && child.ID == epicBranchRecoveryBeadID(admission, predecessor)
+}
+
+func recoveryMetadataEquals(metadata map[string]any, key, want string) bool {
+	if metadata == nil {
+		return false
+	}
+	got, ok := metadata[key].(string)
+	return ok && got == want
+}
+
+func isEpicBranchRecoveryChainMember(child *protocol.Bead, admission epicBranchAdmission) bool {
+	if child == nil || child.Epic != admission.epicID || child.Type != "task" || child.Priority != 0 ||
+		!strings.HasPrefix(child.ID, "oro-ebr-") {
+		return false
+	}
 	expectedMetadata := map[string]string{
 		"epic_branch_recovery":            "true",
 		"epic_branch_recovery_branch":     admission.branch,
@@ -275,14 +295,6 @@ func isExactEpicBranchRecoveryChild(child *protocol.Bead, admission epicBranchAd
 		}
 	}
 	return true
-}
-
-func recoveryMetadataEquals(metadata map[string]any, key, want string) bool {
-	if metadata == nil {
-		return false
-	}
-	got, ok := metadata[key].(string)
-	return ok && got == want
 }
 
 func (d *Dispatcher) addEpicBranchRecoveryDependency(ctx context.Context, epicID, childID string) error {
@@ -315,10 +327,16 @@ func (d *Dispatcher) retireEpicBranchRecoveryPredecessors(
 		if candidate == nil {
 			return nil
 		}
+		if !isEpicBranchRecoveryChainMember(candidate, admission) {
+			return fmt.Errorf("retire epic branch recovery predecessor %s: ownership metadata mismatch", predecessor)
+		}
 		next := epicBranchRecoveryPredecessor(candidate)
 		if err := d.retireEpicBranchRecovery(ctx, admission.epicID, candidate,
 			"superseded by canonical epic branch recovery "+child.ID); err != nil {
 			return err
+		}
+		if candidate.ID != epicBranchRecoveryBeadID(admission, next) {
+			return nil
 		}
 		predecessor = next
 	}
@@ -348,13 +366,11 @@ func (d *Dispatcher) retireEpicBranchRecovery(
 			errs = append(errs, fmt.Errorf("close superseded epic branch recovery %s: %w", child.ID, err))
 		}
 	}
-	if store, ok := d.beads.(dependencyRemovalStore); ok {
-		if err := store.RemoveDependency(ctx, epicID, child.ID); err != nil {
-			errs = append(errs, fmt.Errorf("remove superseded epic branch recovery dependency %s: %w", child.ID, err))
-		}
-	}
-	if err := d.beads.Delete(ctx, child.ID, reason); err != nil {
-		errs = append(errs, fmt.Errorf("delete superseded epic branch recovery %s: %w", child.ID, err))
+	store, ok := d.beads.(dependencyRemovalStore)
+	if !ok {
+		errs = append(errs, fmt.Errorf("remove superseded epic branch recovery dependency %s: store does not support removal", child.ID))
+	} else if err := store.RemoveDependency(ctx, epicID, child.ID); err != nil {
+		errs = append(errs, fmt.Errorf("remove superseded epic branch recovery dependency %s: %w", child.ID, err))
 	}
 	return errors.Join(errs...)
 }
