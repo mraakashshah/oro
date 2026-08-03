@@ -133,6 +133,9 @@ func (d *Dispatcher) handleReconnect(ctx context.Context, workerID string, msg p
 	if d.handleAwaitingReviewReconnect(ctx, workerID, msg.Reconnect) {
 		return
 	}
+	if d.handleLegacyIdleReconnect(ctx, workerID, msg.Reconnect) {
+		return
+	}
 
 	assignmentID := d.reactivateRequeuedAssignment(ctx, beadID, workerID)
 	alreadyReviewing, restored := d.restoreReconnectWorker(
@@ -144,6 +147,130 @@ func (d *Dispatcher) handleReconnect(ctx context.Context, workerID string, msg p
 
 	d.replayReconnectEvents(ctx, workerID, msg.Reconnect.BufferedEvents,
 		false, alreadyReviewing, protocol.ReadyForReviewPayload{})
+}
+
+func (d *Dispatcher) handleLegacyIdleReconnect(
+	ctx context.Context,
+	workerID string,
+	reconnect *protocol.ReconnectPayload,
+) bool {
+	if reconnect.State != "idle" || !d.workerDrainingAfterAssignment(workerID) {
+		return false
+	}
+
+	identity, status, err := d.loadLegacyReconnectAssignment(ctx, workerID, reconnect.BeadID)
+	if err != nil {
+		d.preserveLegacyReconnectClaim(workerID, reconnect.BeadID)
+		return true
+	}
+	d.restoreLegacyReconnectOwnership(workerID, identity)
+
+	if bufferedLegacyReady(reconnect.BufferedEvents, workerID, reconnect.BeadID) {
+		if status == "requeued" {
+			result, activateErr := d.db.ExecContext(ctx, `
+UPDATE assignments SET status='active', completed_at=NULL
+WHERE id=? AND worker_id=? AND status='requeued'`, identity.assignmentID, workerID)
+			if activateErr != nil || rowsAffected(result) != 1 {
+				return true
+			}
+		}
+		d.replayReconnectEvents(ctx, workerID, reconnect.BufferedEvents,
+			false, false, protocol.ReadyForReviewPayload{})
+		return true
+	}
+
+	result, err := d.db.ExecContext(ctx, `
+UPDATE assignments SET status='requeued', completed_at=datetime('now')
+WHERE id=? AND worker_id=? AND status IN ('active','requeued')`, identity.assignmentID, workerID)
+	if err != nil || rowsAffected(result) != 1 {
+		return true
+	}
+	d.mu.Lock()
+	if w := d.workers[workerID]; w != nil && w.assignmentID == identity.assignmentID {
+		w.state = protocol.WorkerIdle
+		w.lastSeen = d.nowFunc()
+	}
+	d.mu.Unlock()
+	return true
+}
+
+func (d *Dispatcher) preserveLegacyReconnectClaim(workerID, beadID string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if w := d.workers[workerID]; w != nil {
+		w.state = protocol.WorkerBusy
+		w.beadID = beadID
+		w.lastSeen = d.nowFunc()
+	}
+}
+
+func (d *Dispatcher) workerDrainingAfterAssignment(workerID string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	w := d.workers[workerID]
+	return w != nil && w.drainAfterAssignment
+}
+
+func (d *Dispatcher) loadLegacyReconnectAssignment(
+	ctx context.Context,
+	workerID, beadID string,
+) (durableReadyIdentity, string, error) {
+	identity := durableReadyIdentity{workerID: workerID, beadID: beadID}
+	var status string
+	err := d.db.QueryRowContext(ctx, `
+SELECT id, worktree, qg_evidence_dir, target_sha, target_branch, status
+FROM assignments
+WHERE worker_id=? AND bead_id=? AND status IN ('active','requeued')
+ORDER BY id DESC LIMIT 1`, workerID, beadID).Scan(
+		&identity.assignmentID, &identity.worktree, &identity.evidenceRoot,
+		&identity.targetSHA, &identity.targetBranch, &status,
+	)
+	if err != nil {
+		return durableReadyIdentity{}, "", err
+	}
+	if identity.targetBranch == "" {
+		identity.targetBranch = d.cfg.DefaultBranch
+	}
+	return identity, status, nil
+}
+
+func (d *Dispatcher) restoreLegacyReconnectOwnership(workerID string, identity durableReadyIdentity) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if w := d.workers[workerID]; w != nil {
+		w.state = protocol.WorkerBusy
+		w.assignmentID = identity.assignmentID
+		w.beadID = identity.beadID
+		w.worktree = identity.worktree
+		w.qgEvidenceDir = identity.evidenceRoot
+		w.targetSHA = identity.targetSHA
+		w.baseBranch = identity.targetBranch
+		w.targetBranch = identity.targetBranch
+		w.lastSeen = d.nowFunc()
+		w.lastProgress = d.nowFunc()
+	}
+}
+
+func bufferedLegacyReady(events []protocol.Message, workerID, beadID string) bool {
+	for _, event := range events {
+		ready := event.ReadyForReview
+		if event.Type == protocol.MsgReadyForReview && legacyReadyEvidenceIdentity(ready) &&
+			ready.WorkerID == workerID && ready.BeadID == beadID {
+			return true
+		}
+	}
+	return false
+}
+
+func rowsAffected(result sql.Result) int64 {
+	if result == nil {
+		return 0
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return 0
+	}
+	return rows
 }
 
 func (d *Dispatcher) markReconnectWorkerIdle(workerID string) {

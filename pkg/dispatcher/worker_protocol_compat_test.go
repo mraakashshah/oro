@@ -112,3 +112,89 @@ func TestLegacyActiveWorkerFinishesButCannotReceiveNewAssignment(t *testing.T) {
 
 	_ = client.Close()
 }
+
+func TestLegacyIdleReconnectWithBufferedReadyRestoresOwnership(t *testing.T) {
+	d, beads, _, _, _, _ := newTestDispatcher(t)
+	const (
+		workerID = "worker-legacy-buffered-ready"
+		beadID   = "oro-legacy-buffered-ready"
+	)
+	beads.mu.Lock()
+	beads.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress"}
+	beads.mu.Unlock()
+	startDispatcher(t, d)
+	assignmentID := insertActiveAssignment(t, d, beadID, workerID, t.TempDir())
+	if _, err := d.db.Exec(`UPDATE assignments SET status='requeued' WHERE id=?`, assignmentID); err != nil {
+		t.Fatalf("seed requeued assignment: %v", err)
+	}
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendLegacyReconnect(t, conn, protocol.ReconnectPayload{
+		WorkerID: workerID,
+		BeadID:   beadID,
+		State:    "idle",
+		BufferedEvents: []protocol.Message{{
+			Type: protocol.MsgReadyForReview,
+			ReadyForReview: &protocol.ReadyForReviewPayload{
+				WorkerID: workerID,
+				BeadID:   beadID,
+			},
+		}},
+	})
+
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		w := d.workers[workerID]
+		return w != nil && w.state == protocol.WorkerReviewing &&
+			w.assignmentID == assignmentID && w.beadID == beadID
+	}, time.Second)
+	var status string
+	if err := d.db.QueryRow(`SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&status); err != nil {
+		t.Fatalf("load assignment status: %v", err)
+	}
+	if status != "active" {
+		t.Fatalf("assignment status = %q, want active while review owns it", status)
+	}
+}
+
+func TestLegacyIdleReconnectWithoutBufferedReadyRequeuesBeforeDrain(t *testing.T) {
+	d, beads, _, _, _, _ := newTestDispatcher(t)
+	const (
+		workerID = "worker-legacy-no-ready"
+		beadID   = "oro-legacy-no-ready"
+	)
+	beads.mu.Lock()
+	beads.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress"}
+	beads.mu.Unlock()
+	startDispatcher(t, d)
+	assignmentID := insertActiveAssignment(t, d, beadID, workerID, t.TempDir())
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendLegacyReconnect(t, conn, protocol.ReconnectPayload{
+		WorkerID: workerID,
+		BeadID:   beadID,
+		State:    "idle",
+	})
+	reply, ok := readMsg(t, conn, time.Second)
+	if !ok || reply.Type != protocol.MsgShutdown {
+		t.Fatalf("drain reply = %#v, want SHUTDOWN", reply)
+	}
+	var status string
+	if err := d.db.QueryRow(`SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&status); err != nil {
+		t.Fatalf("load assignment status: %v", err)
+	}
+	if status != "requeued" {
+		t.Fatalf("assignment status at drain = %q, want requeued", status)
+	}
+}
+
+func sendLegacyReconnect(t *testing.T, conn net.Conn, reconnect protocol.ReconnectPayload) {
+	t.Helper()
+	if err := json.NewEncoder(conn).Encode(protocol.Message{
+		Type:      protocol.MsgReconnect,
+		Reconnect: &reconnect,
+	}); err != nil {
+		t.Fatalf("send legacy reconnect: %v", err)
+	}
+}
