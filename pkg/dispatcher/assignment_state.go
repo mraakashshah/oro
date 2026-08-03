@@ -11,8 +11,10 @@ import (
 	"oro/pkg/protocol"
 )
 
-var errAssignmentBlockedByReviewCheckpoint = errors.New("assignment blocked by nonterminal review checkpoint")
-var errAssignmentAdmissionUnknown = errors.New("assignment checkpoint admission observation failed")
+var (
+	errAssignmentBlockedByReviewCheckpoint = errors.New("assignment blocked by nonterminal review checkpoint")
+	errAssignmentAdmissionUnknown          = errors.New("assignment checkpoint admission observation failed")
+)
 
 func (d *Dispatcher) createAssignment(ctx context.Context, beadID, workerID, worktree string) (int64, error) {
 	res, err := d.db.ExecContext(ctx, `
