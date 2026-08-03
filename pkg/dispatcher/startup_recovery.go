@@ -128,16 +128,16 @@ func (d *Dispatcher) startupRecovery(ctx context.Context) error {
 	}
 	d.logAssignmentInvariantViolations(ctx)
 	d.detectAndResolveDuplicateActiveAssignments(ctx)
+
+	recoverableBeads, recoveryStats, err := d.restoreState(ctx)
+	if err != nil {
+		return fmt.Errorf("restore state: %w", err)
+	}
 	if err := d.reconcileOpsRunsOnStartup(ctx); err != nil {
 		return fmt.Errorf("reconcile ops runs: %w", err)
 	}
 	if err := d.routePendingRoutableEscalations(ctx); err != nil {
 		return fmt.Errorf("route pending routable escalations: %w", err)
-	}
-
-	recoverableBeads, recoveryStats, err := d.restoreState(ctx)
-	if err != nil {
-		return fmt.Errorf("restore state: %w", err)
 	}
 	autoResolved := d.autoResolveEmptySafeRecoveryQuarantines(ctx)
 	reopened, skipped := d.resetOrphanedBeads(ctx, recoverableBeads)
