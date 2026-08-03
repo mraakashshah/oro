@@ -233,11 +233,11 @@ func LoadRecoveryArtifact(ref ReviewRecoveryArtifactRef) ([]reviewcontract.Findi
 	if !info.Mode().IsRegular() || info.Mode().Perm() != recoveryArtifactFileMode {
 		return nil, recoveryArtifactError(RecoveryArtifactCorrupt, ref.Path, fmt.Errorf("unsafe artifact mode %s", info.Mode()))
 	}
-	if info.Size() != ref.Bytes {
-		return nil, recoveryArtifactError(RecoveryArtifactCorrupt, ref.Path, fmt.Errorf("byte count %d does not match %d", info.Size(), ref.Bytes))
-	}
 	if info.Size() > maxReviewRecoveryArtifactBytes {
 		return nil, recoveryArtifactError(RecoveryArtifactOversized, ref.Path, fmt.Errorf("%d bytes exceeds %d-byte cap", info.Size(), maxReviewRecoveryArtifactBytes))
+	}
+	if info.Size() != ref.Bytes {
+		return nil, recoveryArtifactError(RecoveryArtifactCorrupt, ref.Path, fmt.Errorf("byte count %d does not match %d", info.Size(), ref.Bytes))
 	}
 
 	data, err := io.ReadAll(io.LimitReader(file, maxReviewRecoveryArtifactBytes+1))

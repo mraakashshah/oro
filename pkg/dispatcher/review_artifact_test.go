@@ -265,6 +265,82 @@ func TestReviewRecoveryArtifactRetentionRemovesUnreferencedFiles(t *testing.T) {
 	}
 }
 
+func TestPrepareReviewRecoveryExactInlineBoundary(t *testing.T) {
+	root := t.TempDir()
+	base := protocol.ReviewRecovery{
+		CheckpointID:    41,
+		RejectedHeadSHA: "rejected-head",
+		Findings:        []reviewcontract.Finding{{ID: "boundary", Severity: reviewcontract.SevImportant}},
+		Attempt:         2,
+		AcceptanceHash:  "acceptance",
+	}
+	encoded, err := json.Marshal(base)
+	if err != nil {
+		t.Fatalf("marshal base recovery: %v", err)
+	}
+	padding := maxReviewRecoveryInlineBytes - len(encoded)
+	if padding <= 0 {
+		t.Fatalf("base recovery bytes = %d, want below %d", len(encoded), maxReviewRecoveryInlineBytes)
+	}
+	findings := []reviewcontract.Finding{{ID: "boundary", Severity: reviewcontract.SevImportant, Detail: strings.Repeat("x", padding)}}
+	boundary := base
+	boundary.Findings = findings
+	encoded, err = json.Marshal(boundary)
+	if err != nil {
+		t.Fatalf("marshal boundary recovery: %v", err)
+	}
+	if len(encoded) != maxReviewRecoveryInlineBytes {
+		t.Fatalf("boundary recovery bytes = %d, want exactly %d", len(encoded), maxReviewRecoveryInlineBytes)
+	}
+
+	inline, err := prepareReviewRecovery(root, boundary.CheckpointID, boundary.RejectedHeadSHA, boundary.AcceptanceHash, boundary.Attempt, findings)
+	if err != nil {
+		t.Fatalf("prepare exact boundary recovery: %v", err)
+	}
+	if inline.FindingsRef != nil || !reflect.DeepEqual(inline.Findings, findings) {
+		t.Fatalf("exact boundary recovery = %#v, want findings inline", inline)
+	}
+
+	findings[0].Detail += "x"
+	overflow, err := prepareReviewRecovery(root, boundary.CheckpointID, boundary.RejectedHeadSHA, boundary.AcceptanceHash, boundary.Attempt, findings)
+	if err != nil {
+		t.Fatalf("prepare boundary overflow recovery: %v", err)
+	}
+	if overflow.FindingsRef == nil || overflow.Findings != nil {
+		t.Fatalf("boundary overflow recovery = %#v, want artifact reference", overflow)
+	}
+}
+
+func TestLoadRecoveryArtifactOversizedPrecedesStaleByteIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "oversized.json")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, recoveryArtifactFileMode)
+	if err != nil {
+		t.Fatalf("create oversized artifact: %v", err)
+	}
+	if err := file.Truncate(maxReviewRecoveryArtifactBytes + 1); err != nil {
+		_ = file.Close()
+		t.Fatalf("truncate oversized artifact: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close oversized artifact: %v", err)
+	}
+
+	ref := ReviewRecoveryArtifactRef{
+		Path:         path,
+		SHA256:       strings.Repeat("0", 64),
+		Bytes:        1,
+		FindingCount: 1,
+	}
+	findings, err := LoadRecoveryArtifact(ref)
+	if findings != nil {
+		t.Fatalf("oversized recovery returned findings: %#v", findings)
+	}
+	if !errors.Is(err, ErrRecoveryArtifactOversized) {
+		t.Fatalf("oversized recovery error = %v, want ErrRecoveryArtifactOversized", err)
+	}
+	assertTypedRecoveryFailure(t, findings, err, RecoveryArtifactOversized)
+}
+
 func reviewOverflowFinding(id, detail string) reviewcontract.Finding {
 	return reviewcontract.Finding{
 		ID:             id,
