@@ -306,7 +306,7 @@ func preflightStartupRemoteGate(ctx context.Context, projectRoot string) error {
 	if err != nil {
 		return fmt.Errorf("construct startup GitHub API: %w", err)
 	}
-	client := remotegithub.NewPreflightClient(api, capabilities.Repository, api, remotegithub.CollectionLimits{
+	client := remotegithub.NewClient(api, capabilities.Repository, api, remotegithub.CollectionLimits{
 		MaxPages: startupPolicyMaxPages,
 		MaxItems: startupPolicyMaxItems,
 		MaxBytes: startupPolicyMaxBytes,
