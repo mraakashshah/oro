@@ -3,11 +3,13 @@ package dispatcher
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
 	"strconv"
 
+	"oro/pkg/evidencefs"
 	"oro/pkg/protocol"
 )
 
@@ -115,13 +117,7 @@ func (d *Dispatcher) handleReconnect(ctx context.Context, workerID string, msg p
 	// Skip bead validation entirely — there is no bead to look up — and
 	// transition the worker directly to idle so tryAssign can pick it up.
 	if beadID == "" {
-		d.mu.Lock()
-		if w, ok := d.workers[workerID]; ok {
-			w.state = protocol.WorkerIdle
-			w.beadID = ""
-			w.lastSeen = d.nowFunc()
-		}
-		d.mu.Unlock()
+		d.markReconnectWorkerIdle(workerID)
 		return
 	}
 
@@ -130,33 +126,56 @@ func (d *Dispatcher) handleReconnect(ctx context.Context, workerID string, msg p
 	if !d.validateReconnectBead(ctx, beadID, workerID) {
 		// oro-xj37: Transition worker to Idle so tryAssign can pick it up.
 		// Without this, the worker stays in its previous state permanently.
-		d.mu.Lock()
-		if w, ok := d.workers[workerID]; ok {
-			w.state = protocol.WorkerIdle
-			w.beadID = ""
-			w.lastSeen = d.nowFunc()
-		}
-		d.mu.Unlock()
+		d.markReconnectWorkerIdle(workerID)
 		return
 	}
 
-	readyIdentity, replayReady, canonicalReconnect := d.loadCanonicalReadyReconnect(ctx, workerID, msg.Reconnect)
-	assignmentID := int64(0)
-	if canonicalReconnect {
-		assignmentID = readyIdentity.assignmentID
-	} else {
-		assignmentID = d.reactivateRequeuedAssignment(ctx, beadID, workerID)
+	if d.handleAwaitingReviewReconnect(ctx, workerID, msg.Reconnect) {
+		return
 	}
 
+	assignmentID := d.reactivateRequeuedAssignment(ctx, beadID, workerID)
 	alreadyReviewing, restored := d.restoreReconnectWorker(
-		ctx, workerID, beadID, msg.Reconnect.State, assignmentID, readyIdentity, canonicalReconnect,
+		ctx, workerID, beadID, msg.Reconnect.State, assignmentID, durableReadyIdentity{}, false,
 	)
 	if !restored {
 		return
 	}
 
 	d.replayReconnectEvents(ctx, workerID, msg.Reconnect.BufferedEvents,
-		canonicalReconnect, alreadyReviewing, replayReady)
+		false, alreadyReviewing, protocol.ReadyForReviewPayload{})
+}
+
+func (d *Dispatcher) markReconnectWorkerIdle(workerID string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if w := d.workers[workerID]; w != nil {
+		w.state = protocol.WorkerIdle
+		w.beadID = ""
+		w.lastSeen = d.nowFunc()
+	}
+}
+
+func (d *Dispatcher) handleAwaitingReviewReconnect(
+	ctx context.Context,
+	workerID string,
+	reconnect *protocol.ReconnectPayload,
+) bool {
+	if reconnect.State != "awaiting_review" {
+		return false
+	}
+	_, replayReady, alreadyReviewing, restored := d.restoreCanonicalReadyReconnect(ctx, workerID, reconnect)
+	if restored {
+		d.replayReconnectEvents(ctx, workerID, reconnect.BufferedEvents, true, alreadyReviewing, replayReady)
+		return true
+	}
+	_, restored = d.restoreReconnectWorker(ctx, workerID, reconnect.BeadID,
+		reconnect.State, 0, durableReadyIdentity{}, false)
+	if restored {
+		d.replayReconnectEvents(ctx, workerID, reconnect.BufferedEvents,
+			false, false, protocol.ReadyForReviewPayload{})
+	}
+	return true
 }
 
 func (d *Dispatcher) replayReconnectEvents(
@@ -202,54 +221,141 @@ func (d *Dispatcher) restoreReconnectWorker(
 	return false, true
 }
 
-func (d *Dispatcher) loadCanonicalReadyReconnect(
+func (d *Dispatcher) restoreCanonicalReadyReconnect(
 	ctx context.Context,
 	workerID string,
 	reconnect *protocol.ReconnectPayload,
-) (durableReadyIdentity, protocol.ReadyForReviewPayload, bool) {
-	if reconnect == nil || reconnect.State != "awaiting_review" || reconnect.BeadID == "" || d.db == nil {
-		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, false
+) (durableReadyIdentity, protocol.ReadyForReviewPayload, bool, bool) {
+	if !canonicalReconnectRequestValid(reconnect, d.db) {
+		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, false, false
 	}
-	var identity durableReadyIdentity
-	err := d.db.QueryRowContext(ctx, `
-SELECT id, bead_id, worker_id, worktree, qg_evidence_dir, target_sha, target_branch
-FROM assignments
-WHERE bead_id = ? AND worker_id = ? AND status = 'active'
-ORDER BY id DESC LIMIT 1`, reconnect.BeadID, workerID).Scan(
-		&identity.assignmentID, &identity.beadID, &identity.workerID, &identity.worktree,
-		&identity.evidenceRoot, &identity.targetSHA, &identity.targetBranch,
-	)
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	w := d.workers[workerID]
+	if w == nil {
+		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, false, false
+	}
+
+	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
+		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, false, false
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	identity, status, err := loadCanonicalReconnectCandidate(ctx, tx, workerID, reconnect.BeadID)
+	if err != nil {
+		_ = tx.Rollback()
 		if !errors.Is(err, sql.ErrNoRows) {
 			_ = d.logEvent(ctx, "reconnect_ready_restore_failed", "dispatcher", reconnect.BeadID, workerID, err.Error())
 		}
-		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, false
+		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, false, false
 	}
 	if identity.targetBranch == "" {
 		identity.targetBranch = d.cfg.DefaultBranch
 	}
+	ready, valid := d.canonicalReconnectReady(identity)
+	if !valid || !d.canonicalReadyWorkerRestorableLocked(w, identity) {
+		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, false, false
+	}
+
+	alreadyReviewing := w.state == protocol.WorkerReviewing &&
+		w.assignmentID == identity.assignmentID && w.beadID == identity.beadID
+	if claimCanonicalReconnectAssignment(ctx, tx, identity, status) != nil {
+		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, false, false
+	}
+	if err := tx.Commit(); err != nil {
+		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, false, false
+	}
+	if !d.restoreCanonicalReadyWorkerLocked(w, identity, alreadyReviewing) {
+		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, false, false
+	}
+	return identity, ready, alreadyReviewing, true
+}
+
+func canonicalReconnectRequestValid(reconnect *protocol.ReconnectPayload, db *sql.DB) bool {
+	return reconnect != nil && reconnect.State == "awaiting_review" && reconnect.BeadID != "" && db != nil
+}
+
+func loadCanonicalReconnectCandidate(
+	ctx context.Context,
+	tx *sql.Tx,
+	workerID, beadID string,
+) (identity durableReadyIdentity, status string, err error) {
+	err = tx.QueryRowContext(ctx, `
+SELECT id, bead_id, worker_id, worktree, qg_evidence_dir, target_sha, target_branch, status
+FROM assignments
+WHERE id = (SELECT MAX(id) FROM assignments WHERE bead_id = ?)
+  AND bead_id = ? AND worker_id = ? AND status IN ('active', 'requeued')`,
+		beadID, beadID, workerID).Scan(
+		&identity.assignmentID, &identity.beadID, &identity.workerID, &identity.worktree,
+		&identity.evidenceRoot, &identity.targetSHA, &identity.targetBranch, &status,
+	)
+	if err != nil {
+		return durableReadyIdentity{}, "", fmt.Errorf("load canonical reconnect assignment: %w", err)
+	}
+	return identity, status, nil
+}
+
+func (d *Dispatcher) canonicalReconnectReady(identity durableReadyIdentity) (protocol.ReadyForReviewPayload, bool) {
 	path, err := canonicalReadyEvidencePath(identity.evidenceRoot, identity.beadID, identity.assignmentID)
 	if err != nil || filepath.Clean(identity.evidenceRoot) != filepath.Clean(d.cfg.ReviewEvidenceDir) {
-		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, false
+		return protocol.ReadyForReviewPayload{}, false
 	}
 	ready := protocol.ReadyForReviewPayload{
 		BeadID: identity.beadID, WorkerID: identity.workerID, AssignmentID: identity.assignmentID,
 		Worktree: identity.worktree, QGEvidencePath: path, TargetSHA: identity.targetSHA,
 	}
-	if ready.Validate() != nil {
-		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, false
-	}
-	return identity, ready, true
+	return ready, ready.Validate() == nil && canonicalReconnectEvidenceMatches(identity, ready)
 }
 
-func (d *Dispatcher) restoreCanonicalReadyWorkerLocked(w *trackedWorker, identity durableReadyIdentity, alreadyReviewing bool) bool {
+func claimCanonicalReconnectAssignment(
+	ctx context.Context,
+	tx *sql.Tx,
+	identity durableReadyIdentity,
+	status string,
+) error {
+	result, err := tx.ExecContext(ctx, `
+UPDATE assignments
+SET status = 'active',
+    completed_at = CASE WHEN status = 'requeued' THEN NULL ELSE completed_at END
+WHERE id = ? AND worker_id = ? AND status = ?`, identity.assignmentID, identity.workerID, status)
+	if err != nil {
+		return fmt.Errorf("claim canonical reconnect assignment: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count canonical reconnect claim: %w", err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("canonical reconnect claim changed %d rows", rows)
+	}
+	return nil
+}
+
+func canonicalReconnectEvidenceMatches(identity durableReadyIdentity, ready protocol.ReadyForReviewPayload) bool {
+	data, err := evidencefs.ReadFile(identity.evidenceRoot,
+		[]string{identity.beadID, strconv.FormatInt(identity.assignmentID, 10)},
+		readyEvidenceAttempt, protocol.MaxMessageSize)
+	if err != nil {
+		return false
+	}
+	var evidence protocol.ReadyForReviewPayload
+	return json.Unmarshal(data, &evidence) == nil && evidence.Validate() == nil && evidence == ready
+}
+
+func (d *Dispatcher) canonicalReadyWorkerRestorableLocked(w *trackedWorker, identity durableReadyIdentity) bool {
 	for otherID, other := range d.workers {
 		if otherID != w.id && other.beadID == identity.beadID &&
 			other.state != protocol.WorkerIdle && other.state != protocol.WorkerShuttingDown {
 			return false
 		}
 	}
-	if w.assignmentID != 0 && w.assignmentID != identity.assignmentID {
+	return w.assignmentID == 0 || w.assignmentID == identity.assignmentID
+}
+
+func (d *Dispatcher) restoreCanonicalReadyWorkerLocked(w *trackedWorker, identity durableReadyIdentity, alreadyReviewing bool) bool {
+	if !d.canonicalReadyWorkerRestorableLocked(w, identity) {
 		return false
 	}
 	w.assignmentID = identity.assignmentID
