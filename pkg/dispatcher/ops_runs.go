@@ -462,25 +462,26 @@ func (d *Dispatcher) routeOpsRun(ctx context.Context, rec OpsRunRecord) bool {
 	if d.ops == nil {
 		return false
 	}
+	var resultCh <-chan ops.Result
 	switch ops.Type(rec.Type) {
 	case ops.OpsReview:
 		return d.routeReviewOpsRun(ctx, rec)
 	case ops.OpsDecompose:
-		d.ops.Decompose(ctx, ops.DecomposeOpts{
+		resultCh = d.ops.Decompose(ctx, ops.DecomposeOpts{
 			BeadID:  rec.BeadID,
 			Workdir: d.workdirForOpsRun(rec.BeadID),
 			Reason:  rec.Error,
 		})
 	case ops.OpsWriteAC:
 		title, description := d.beadContextForOpsRun(ctx, rec.BeadID)
-		d.ops.WriteAC(ctx, ops.WriteACOpts{
+		resultCh = d.ops.WriteAC(ctx, ops.WriteACOpts{
 			BeadID:          rec.BeadID,
 			BeadTitle:       title,
 			BeadDescription: description,
 			Workdir:         d.workdirForOpsRun(rec.BeadID),
 		})
 	case ops.OpsDiagnosis:
-		d.ops.Diagnose(ctx, ops.DiagOpts{
+		resultCh = d.ops.Diagnose(ctx, ops.DiagOpts{
 			BeadID:   rec.BeadID,
 			Worktree: d.workdirForOpsRun(rec.BeadID),
 			Symptom:  "orphaned ops run rerouted on dispatcher startup",
@@ -491,7 +492,7 @@ func (d *Dispatcher) routeOpsRun(ctx context.Context, rec OpsRunRecord) bool {
 		if escType == "" {
 			escType = "ORPHANED_OPS_RUN"
 		}
-		d.ops.Escalate(ctx, ops.EscalationOpts{
+		resultCh = d.ops.Escalate(ctx, ops.EscalationOpts{
 			EscalationType: escType,
 			BeadID:         rec.BeadID,
 			BeadTitle:      title,
@@ -500,10 +501,11 @@ func (d *Dispatcher) routeOpsRun(ctx context.Context, rec OpsRunRecord) bool {
 			Workdir:        d.workdirForOpsRun(rec.BeadID),
 		})
 	case ops.OpsDream:
-		d.ops.Dream(ctx, d.dreamOpts(ctx))
+		resultCh = d.ops.Dream(ctx, d.dreamOpts(ctx))
 	default:
 		return false
 	}
+	d.watchReroutedOpsRunResult(ctx, rec, resultCh, nil)
 	return true
 }
 
@@ -524,8 +526,50 @@ func (d *Dispatcher) routeReviewOpsRun(ctx context.Context, rec OpsRunRecord) bo
 		BaseBranch:         targetBranch,
 		ProjectRoot:        worktree,
 	})
-	d.safeGo(func() { d.handleReviewResult(ctx, rec.WorkerID, rec.BeadID, resultCh) })
+	d.watchReroutedOpsRunResult(ctx, rec, resultCh, func(result ops.Result) {
+		forward := make(chan ops.Result, 1)
+		forward <- result
+		d.handleReviewResult(ctx, rec.WorkerID, rec.BeadID, forward)
+	})
 	return true
+}
+
+func (d *Dispatcher) watchReroutedOpsRunResult(
+	ctx context.Context,
+	rec OpsRunRecord,
+	resultCh <-chan ops.Result,
+	afterComplete func(ops.Result),
+) {
+	d.safeGo(func() {
+		result := <-resultCh
+		status := opsRunStatusResolved
+		verdict := string(result.Verdict)
+		errorText := ""
+		if result.Err != nil || result.Verdict == ops.VerdictFailed {
+			status = opsRunStatusFailed
+			if result.Err != nil {
+				errorText = result.Err.Error()
+			} else {
+				errorText = result.Feedback
+			}
+		}
+		if verdict == "" {
+			if status == opsRunStatusFailed {
+				verdict = string(ops.VerdictFailed)
+			} else {
+				verdict = string(ops.VerdictResolved)
+			}
+		}
+		if rec.ID > 0 {
+			if err := CompleteOpsRun(ctx, d.db, rec.ID, status, verdict, result.Feedback, errorText); err != nil {
+				_ = d.logEvent(ctx, "ops_run_complete_failed", "dispatcher", rec.BeadID, rec.WorkerID,
+					fmt.Sprintf(`{"ops_run_id":%d,"type":%q,"status":%q,"error":%q}`, rec.ID, rec.Type, status, err.Error()))
+			}
+		}
+		if afterComplete != nil {
+			afterComplete(result)
+		}
+	})
 }
 
 func (d *Dispatcher) reviewContextForOpsRun(rec OpsRunRecord) (worktree, targetBranch string) {

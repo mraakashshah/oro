@@ -1318,6 +1318,7 @@ type mockBatchSpawner struct {
 	mu       sync.Mutex
 	verdict  string
 	spawnErr error
+	wait     <-chan struct{}
 	spawns   []spawnCall
 }
 
@@ -1328,7 +1329,7 @@ func (m *mockBatchSpawner) Spawn(_ context.Context, model string, prompt string,
 	if m.spawnErr != nil {
 		return nil, m.spawnErr
 	}
-	return &mockProcess{output: m.verdict}, nil
+	return &mockProcess{output: m.verdict, wait: m.wait}, nil
 }
 
 func (m *mockBatchSpawner) SpawnCount() int {
@@ -1395,9 +1396,15 @@ func (m *blockingAcceptanceRunner) callCount() int {
 
 type mockProcess struct {
 	output string
+	wait   <-chan struct{}
 }
 
-func (m *mockProcess) Wait() error             { return nil }
+func (m *mockProcess) Wait() error {
+	if m.wait != nil {
+		<-m.wait
+	}
+	return nil
+}
 func (m *mockProcess) Kill() error             { return nil }
 func (m *mockProcess) Output() (string, error) { return m.output, nil }
 func (m *mockProcess) LastOutputAt() time.Time { return time.Time{} }

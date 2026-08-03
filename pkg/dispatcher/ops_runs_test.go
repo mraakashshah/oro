@@ -287,6 +287,9 @@ func TestDecomposeOpsRunPersistsFailedVerdict(t *testing.T) {
 func TestDispatcherStartupMarksOrphanedOpsRunsStale(t *testing.T) {
 	ctx := context.Background()
 	d, _, _, _, _, spawnMock := newTestDispatcher(t)
+	release := make(chan struct{})
+	spawnMock.wait = release
+	defer close(release)
 
 	live, _, err := CreateOpsRun(ctx, d.db, OpsRunRecord{
 		Type:          "decompose",
@@ -373,6 +376,95 @@ END`, orphaned.ID)); err != nil {
 	}
 	if got := fetchOpsRunForTest(t, d.db, orphaned.ID).Status; got != opsRunStatusSuperseded {
 		t.Fatalf("orphaned review status = %q, want %q", got, opsRunStatusSuperseded)
+	}
+}
+
+func TestDispatcherStartupReroutedOpsRunsCompleteExactReplacement(t *testing.T) {
+	tests := []struct {
+		name        string
+		runType     ops.Type
+		output      string
+		spawnErr    error
+		wantStatus  string
+		wantVerdict string
+		wantError   string
+	}{
+		{name: "review resolved", runType: ops.OpsReview, output: "review complete\nVERDICT: APPROVED", wantStatus: opsRunStatusResolved, wantVerdict: string(ops.VerdictApproved)},
+		{name: "review failed", runType: ops.OpsReview, spawnErr: errors.New("review spawn failed"), wantStatus: opsRunStatusFailed, wantVerdict: string(ops.VerdictFailed), wantError: "review spawn failed"},
+		{name: "decompose resolved", runType: ops.OpsDecompose, output: "VERDICT: RESOLVED\ndecomposition complete", wantStatus: opsRunStatusResolved, wantVerdict: string(ops.VerdictResolved)},
+		{name: "decompose failed", runType: ops.OpsDecompose, spawnErr: errors.New("decompose spawn failed"), wantStatus: opsRunStatusFailed, wantVerdict: string(ops.VerdictFailed), wantError: "decompose spawn failed"},
+		{name: "write ac resolved", runType: ops.OpsWriteAC, output: "acceptance criteria written", wantStatus: opsRunStatusResolved, wantVerdict: string(ops.VerdictResolved)},
+		{name: "write ac failed", runType: ops.OpsWriteAC, spawnErr: errors.New("write ac spawn failed"), wantStatus: opsRunStatusFailed, wantVerdict: string(ops.VerdictFailed), wantError: "write ac spawn failed"},
+		{name: "diagnosis resolved", runType: ops.OpsDiagnosis, output: "diagnosis complete", wantStatus: opsRunStatusResolved, wantVerdict: string(ops.VerdictResolved)},
+		{name: "diagnosis failed", runType: ops.OpsDiagnosis, spawnErr: errors.New("diagnosis spawn failed"), wantStatus: opsRunStatusFailed, wantVerdict: string(ops.VerdictFailed), wantError: "diagnosis spawn failed"},
+		{name: "escalation resolved", runType: ops.OpsEscalation, output: "ACK: escalation complete", wantStatus: opsRunStatusResolved, wantVerdict: string(ops.VerdictResolved)},
+		{name: "escalation failed", runType: ops.OpsEscalation, spawnErr: errors.New("escalation spawn failed"), wantStatus: opsRunStatusFailed, wantVerdict: string(ops.VerdictFailed), wantError: "escalation spawn failed"},
+		{name: "dream resolved", runType: ops.OpsDream, output: "dream complete", wantStatus: opsRunStatusResolved, wantVerdict: string(ops.VerdictResolved)},
+		{name: "dream failed", runType: ops.OpsDream, spawnErr: errors.New("dream spawn failed"), wantStatus: opsRunStatusFailed, wantVerdict: string(ops.VerdictFailed), wantError: "dream spawn failed"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			d, _, _, _, _, spawnMock := newTestDispatcher(t)
+			spawnMock.verdict = tt.output
+			spawnMock.spawnErr = tt.spawnErr
+			beadID := "oro-rerouted-" + strings.ReplaceAll(tt.name, " ", "-")
+			workerID := "worker-" + beadID
+			if tt.runType == ops.OpsReview {
+				d.mu.Lock()
+				d.worktreeByBead[beadID] = t.TempDir()
+				d.mu.Unlock()
+			}
+
+			orphaned, _, err := CreateOpsRun(ctx, d.db, OpsRunRecord{
+				Type:          string(tt.runType),
+				BeadID:        beadID,
+				WorkerID:      workerID,
+				DispatcherPID: -1,
+				ProcessPID:    -1,
+			})
+			if err != nil {
+				t.Fatalf("CreateOpsRun orphaned %s: %v", tt.runType, err)
+			}
+			if err := d.reconcileOpsRunsOnStartup(ctx); err != nil {
+				t.Fatalf("reconcileOpsRunsOnStartup: %v", err)
+			}
+
+			var replacementID int64
+			if err := d.db.QueryRowContext(ctx, `
+SELECT id FROM ops_runs
+WHERE type=? AND bead_id=? AND id<>?
+ORDER BY id DESC LIMIT 1`, tt.runType, beadID, orphaned.ID).Scan(&replacementID); err != nil {
+				t.Fatalf("query replacement %s run: %v", tt.runType, err)
+			}
+			waitFor(t, func() bool {
+				return fetchOpsRunForTest(t, d.db, replacementID).Status == tt.wantStatus
+			}, time.Second)
+			replacement := fetchOpsRunForTest(t, d.db, replacementID)
+			if replacement.CompletedAt == "" {
+				t.Fatal("replacement completed_at is empty")
+			}
+			if replacement.Verdict != tt.wantVerdict {
+				t.Fatalf("replacement verdict = %q, want %q", replacement.Verdict, tt.wantVerdict)
+			}
+			if !strings.Contains(replacement.Error, tt.wantError) {
+				t.Fatalf("replacement error = %q, want substring %q", replacement.Error, tt.wantError)
+			}
+
+			if err := d.reconcileOpsRunsOnStartup(ctx); err != nil {
+				t.Fatalf("second reconcileOpsRunsOnStartup: %v", err)
+			}
+			var runCount int
+			if err := d.db.QueryRowContext(ctx,
+				`SELECT COUNT(*) FROM ops_runs WHERE type=? AND bead_id=?`, tt.runType, beadID,
+			).Scan(&runCount); err != nil {
+				t.Fatalf("count %s runs: %v", tt.runType, err)
+			}
+			if runCount != 2 {
+				t.Fatalf("ops run count after second reconciliation = %d, want 2", runCount)
+			}
+		})
 	}
 }
 
@@ -500,6 +592,9 @@ func TestRouteOpsRunRoutesReviewOpsRun(t *testing.T) {
 func TestSupersedeOpsReviewRetryPreservesContext(t *testing.T) {
 	ctx := context.Background()
 	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
+	release := make(chan struct{})
+	spawnMock.wait = release
+	defer close(release)
 	beadID := "oro-review-retry"
 	workerID := "w-review-retry"
 	worktree := t.TempDir()
@@ -621,6 +716,9 @@ WHERE type = ? AND bead_id = ? AND status = ?`, string(ops.OpsReview), beadID, o
 func TestSupersedeRuntimeIncidentRetryPreservesContext(t *testing.T) {
 	ctx := context.Background()
 	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
+	release := make(chan struct{})
+	spawnMock.wait = release
+	defer close(release)
 	beadID := "oro-runtime-retry"
 	workerID := "w-runtime-retry"
 	worktree := t.TempDir()
@@ -737,6 +835,9 @@ WHERE type = ? AND bead_id = ? AND status = ?`, string(ops.OpsDecompose), beadID
 func TestRouteOpsRunRetriesDecomposeIncident(t *testing.T) {
 	ctx := context.Background()
 	d, _, _, _, _, spawnMock := newTestDispatcher(t)
+	release := make(chan struct{})
+	spawnMock.wait = release
+	defer close(release)
 	beadID := "oro-decompose-retry"
 	worktree := t.TempDir()
 	incidentErr := "runtime incident: worker exceeded retry budget"
