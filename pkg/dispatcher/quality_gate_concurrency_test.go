@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"flag"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -242,6 +245,7 @@ func TestConcurrentQualityGatesUseDistinctGoCaches(t *testing.T) {
 }
 
 const fullGateCacheProbeChildEnv = "ORO_QG_FULL_CACHE_PROBE_CHILD"
+const fullGateCacheProbePattern = "^TestConcurrentFullQualityGatesUseIsolatedGoCaches$"
 
 type fullGateCacheEvidence struct {
 	qgDir     string
@@ -267,6 +271,7 @@ type startedFullGateProbe struct {
 	evidenceDir string
 	cmd         *exec.Cmd
 	output      *bytes.Buffer
+	pgid        int
 	cleanupOnce sync.Once
 	cleanupErr  error
 }
@@ -282,8 +287,17 @@ func startFullGateProbe(
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("create full-gate worktree %s: %v\n%s", id, err, out)
 	}
-
-	writeFullGateProxies(t, proxyDir)
+	probe := &startedFullGateProbe{
+		id:       id,
+		repoRoot: repoRoot,
+		worktree: worktree,
+		output:   &bytes.Buffer{},
+	}
+	t.Cleanup(func() {
+		if err := probe.cleanup(); err != nil {
+			t.Errorf("fallback cleanup for full gate %s: %v", id, err)
+		}
+	})
 	realGo, err := exec.LookPath("go")
 	if err != nil {
 		t.Fatalf("resolve real go: %v", err)
@@ -315,44 +329,44 @@ func startFullGateProbe(
 	gate := exec.CommandContext(ctx, "bash", filepath.Join(worktree, "scripts", "quality_gate.sh"))
 	gate.Dir = worktree
 	gate.Env = env
+	gate.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	gate.WaitDelay = 15 * time.Second
-	output := &bytes.Buffer{}
-	gate.Stdout = output
-	gate.Stderr = output
+	gate.Stdout = probe.output
+	gate.Stderr = probe.output
+	gate.Cancel = func() error {
+		if gate.Process == nil {
+			return os.ErrProcessDone
+		}
+		if err := syscall.Kill(-gate.Process.Pid, syscall.SIGKILL); err != nil {
+			if errors.Is(err, syscall.ESRCH) {
+				return os.ErrProcessDone
+			}
+			return err
+		}
+		return nil
+	}
 	if err := gate.Start(); err != nil {
 		t.Fatalf("start full quality gate %s: %v", id, err)
 	}
-	probe := &startedFullGateProbe{
-		id:          id,
-		repoRoot:    repoRoot,
-		worktree:    worktree,
-		evidenceDir: evidenceDir,
-		cmd:         gate,
-		output:      output,
-	}
-	t.Cleanup(func() {
-		if err := probe.cleanup(); err != nil {
-			t.Errorf("fallback cleanup for full gate %s: %v", id, err)
-		}
-	})
+	probe.evidenceDir = evidenceDir
+	probe.cmd = gate
+	probe.pgid = gate.Process.Pid
 	return probe
 }
 
-func prepareFullGateSharedRoot(t *testing.T, repoRoot, lockRoot string) {
+func prepareFullGateSharedRoot(t *testing.T, lockRoot string) {
 	t.Helper()
-	cmd := exec.Command("git", "-C", repoRoot, "rev-parse", "--path-format=absolute", "--git-common-dir")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("resolve common checkout root: %v\n%s", err, output)
+	nodeBin := filepath.Join(lockRoot, "node_modules", ".bin")
+	if err := os.MkdirAll(nodeBin, 0o755); err != nil {
+		t.Fatalf("create full quality gate node tool directory: %v", err)
 	}
-	commonRoot := filepath.Dir(strings.TrimSpace(string(output)))
-	for _, name := range []string{"node_modules", ".venv"} {
-		source := filepath.Join(commonRoot, name)
-		if _, err := os.Stat(source); err != nil {
-			t.Fatalf("full quality gate dependency %s: %v", source, err)
-		}
-		if err := os.Symlink(source, filepath.Join(lockRoot, name)); err != nil {
-			t.Fatalf("link full quality gate dependency %s: %v", name, err)
+	// Node/Python lanes are outside this Go-cache proof. Provide hermetic
+	// pass-through results for the two tools the script resolves only through
+	// REPO_ROOT, so the test never depends on ignored checkout directories.
+	shim := []byte("#!/bin/sh\nexit 0\n")
+	for _, tool := range []string{"markdownlint-cli2", "biome"} {
+		if err := os.WriteFile(filepath.Join(nodeBin, tool), shim, 0o755); err != nil {
+			t.Fatalf("write full quality gate tool shim %s: %v", tool, err)
 		}
 	}
 }
@@ -387,6 +401,11 @@ func (p *startedFullGateProbe) wait(t *testing.T) fullGateProbeResult {
 			t.Fatalf("wait for full quality gate %s: %v", p.id, err)
 		}
 	}
+	if !waitForFullGateProcessGroupExit(p.pgid, 5*time.Second) {
+		_ = syscall.Kill(-p.pgid, syscall.SIGKILL)
+		_ = waitForFullGateProcessGroupExit(p.pgid, 5*time.Second)
+		t.Errorf("full quality gate %s left process-group descendants", p.id)
+	}
 	status, statusErr := exec.Command("git", "-C", p.worktree, "status", "--porcelain", "--untracked-files=no").CombinedOutput()
 	if statusErr != nil {
 		t.Errorf("read tracked status for full gate %s: %v\n%s", p.id, statusErr, status)
@@ -403,16 +422,56 @@ func (p *startedFullGateProbe) wait(t *testing.T) fullGateProbeResult {
 
 func (p *startedFullGateProbe) cleanup() error {
 	p.cleanupOnce.Do(func() {
-		if p.cmd != nil && p.cmd.Process != nil && p.cmd.ProcessState == nil {
-			_ = p.cmd.Process.Kill()
-			_ = p.cmd.Wait()
+		var cleanupErrs []error
+		if err := p.stopProcessGroup(); err != nil {
+			cleanupErrs = append(cleanupErrs, err)
 		}
 		remove := exec.Command("git", "-C", p.repoRoot, "worktree", "remove", "--force", p.worktree)
 		if out, err := remove.CombinedOutput(); err != nil {
-			p.cleanupErr = errors.New(err.Error() + ": " + strings.TrimSpace(string(out)))
+			cleanupErrs = append(cleanupErrs, errors.New(err.Error()+": "+strings.TrimSpace(string(out))))
 		}
+		p.cleanupErr = errors.Join(cleanupErrs...)
 	})
 	return p.cleanupErr
+}
+
+func (p *startedFullGateProbe) stopProcessGroup() error {
+	if p.cmd == nil || p.cmd.Process == nil {
+		return nil
+	}
+	var cleanupErrs []error
+	if !fullGateProcessGroupExited(p.pgid) {
+		if err := syscall.Kill(-p.pgid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("kill process group %d: %w", p.pgid, err))
+		}
+	}
+	if p.cmd.ProcessState == nil {
+		_ = p.cmd.Wait()
+	}
+	if !waitForFullGateProcessGroupExit(p.pgid, 5*time.Second) {
+		cleanupErrs = append(cleanupErrs, fmt.Errorf("process group %d survived cleanup timeout", p.pgid))
+	}
+	return errors.Join(cleanupErrs...)
+}
+
+func fullGateProcessGroupExited(pgid int) bool {
+	if pgid <= 0 {
+		return true
+	}
+	return errors.Is(syscall.Kill(-pgid, 0), syscall.ESRCH)
+}
+
+func waitForFullGateProcessGroupExit(pgid int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if fullGateProcessGroupExited(pgid) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
 }
 
 func writeFullGateProxies(t *testing.T, proxyDir string) {
@@ -498,9 +557,16 @@ func TestConcurrentFullQualityGatesUseIsolatedGoCaches(t *testing.T) {
 	if os.Getenv(fullGateCacheProbeChildEnv) == "1" {
 		t.Skip("nested full quality gate")
 	}
+	if os.Getenv("ORO_QG_ACTIVE_PID") != "" {
+		t.Skip("ordinary package run inside an active full quality gate")
+	}
+	runFlag := flag.Lookup("test.run")
+	if runFlag == nil || runFlag.Value.String() != fullGateCacheProbePattern {
+		t.Skip("full quality gate probe runs only when explicitly selected")
+	}
 	for _, tool := range []string{"bash", "git", "go", "golangci-lint"} {
 		if _, err := exec.LookPath(tool); err != nil {
-			t.Skipf("%s not available", tool)
+			t.Fatalf("required full quality gate tool %s is not available", tool)
 		}
 	}
 
@@ -522,7 +588,8 @@ func TestConcurrentFullQualityGatesUseIsolatedGoCaches(t *testing.T) {
 	}
 
 	repoRoot := worktreeRoot(t)
-	prepareFullGateSharedRoot(t, repoRoot, lockRoot)
+	prepareFullGateSharedRoot(t, lockRoot)
+	writeFullGateProxies(t, proxyDir)
 	first := startFullGateProbe(ctx, t, repoRoot, worktreeParent, proxyDir, evidenceRoot, oroHomeRoot, lockRoot, qgTmp, ambientGo, ambientLint, "full-a")
 	second := startFullGateProbe(ctx, t, repoRoot, worktreeParent, proxyDir, evidenceRoot, oroHomeRoot, lockRoot, qgTmp, ambientGo, ambientLint, "full-b")
 	results := []fullGateProbeResult{first.wait(t), second.wait(t)}
