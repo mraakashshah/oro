@@ -1,6 +1,7 @@
 package dispatcher
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -9,7 +10,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+
+	"golang.org/x/sys/unix"
 
 	"oro/pkg/protocol"
 	"oro/pkg/reviewcontract"
@@ -22,7 +26,7 @@ const (
 	recoveryArtifactDirMode        = 0o700
 )
 
-var reviewRecoveryArtifactLifecycleMu sync.RWMutex
+var reviewRecoveryArtifactLifecycleMu sync.RWMutex //nolint:gochecknoglobals // serializes process-wide artifact writes, commits, loads, and pruning.
 
 // ReviewRecoveryArtifactRef is the durable wire identity for lossless findings.
 type ReviewRecoveryArtifactRef = protocol.ReviewRecoveryArtifactRef
@@ -169,17 +173,10 @@ func persistRecoveryArtifactUnlocked(
 			Err:  fmt.Errorf("%d bytes exceeds %d-byte cap", len(data), maxReviewRecoveryArtifactBytes),
 		}
 	}
-	if err := os.MkdirAll(dir, recoveryArtifactDirMode); err != nil {
-		return ReviewRecoveryArtifactRef{}, fmt.Errorf("create recovery artifact directory: %w", err)
-	}
-	if err := os.Chmod(dir, recoveryArtifactDirMode); err != nil {
-		return ReviewRecoveryArtifactRef{}, fmt.Errorf("secure recovery artifact directory: %w", err)
-	}
-
 	digest := sha256.Sum256(data)
 	sha := hex.EncodeToString(digest[:])
 	path := filepath.Join(dir, fmt.Sprintf("checkpoint-%d-%s.json", checkpointID, sha))
-	if err := writeRecoveryArtifactAtomically(dir, path, data); err != nil {
+	if err := writeRecoveryArtifactAtomically(dir, filepath.Base(path), data); err != nil {
 		return ReviewRecoveryArtifactRef{}, err
 	}
 	return ReviewRecoveryArtifactRef{
@@ -190,15 +187,20 @@ func persistRecoveryArtifactUnlocked(
 	}, nil
 }
 
-func writeRecoveryArtifactAtomically(dir, path string, data []byte) error {
-	temporary, err := os.CreateTemp(dir, ".review-recovery-*.tmp")
+func writeRecoveryArtifactAtomically(dir, name string, data []byte) error {
+	directory, err := openSecuredRecoveryArtifactDir(dir)
 	if err != nil {
-		return fmt.Errorf("create recovery artifact temporary: %w", err)
+		return err
 	}
-	temporaryPath := temporary.Name()
+	defer func() { _ = directory.Close() }()
+
+	temporary, temporaryName, err := createRecoveryArtifactTemporary(directory)
+	if err != nil {
+		return err
+	}
 	defer func() {
 		_ = temporary.Close()
-		_ = os.Remove(temporaryPath)
+		_ = unix.Unlinkat(int(directory.Fd()), temporaryName, 0)
 	}()
 	if err := temporary.Chmod(recoveryArtifactFileMode); err != nil {
 		return fmt.Errorf("secure recovery artifact temporary: %w", err)
@@ -212,20 +214,91 @@ func writeRecoveryArtifactAtomically(dir, path string, data []byte) error {
 	if err := temporary.Close(); err != nil {
 		return fmt.Errorf("close recovery artifact temporary: %w", err)
 	}
-	// Both paths are derived inside the caller-provided artifact directory;
-	// the destination filename contains only a checkpoint integer and hex digest.
-	if err := os.Rename(temporaryPath, path); err != nil { //nolint:gosec // atomic same-directory commit
+	if err := unix.Renameat(int(directory.Fd()), temporaryName, int(directory.Fd()), name); err != nil {
 		return fmt.Errorf("commit recovery artifact: %w", err)
 	}
-	directory, err := os.Open(dir) //nolint:gosec // dir is the caller-provided recovery directory.
-	if err != nil {
-		return fmt.Errorf("open recovery artifact directory for sync: %w", err)
-	}
-	defer func() { _ = directory.Close() }()
 	if err := directory.Sync(); err != nil {
 		return fmt.Errorf("sync recovery artifact directory: %w", err)
 	}
 	return nil
+}
+
+func openSecuredRecoveryArtifactDir(dir string) (*os.File, error) {
+	absolute, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve recovery artifact directory: %w", err)
+	}
+	parent := filepath.Dir(absolute)
+	anchor := filepath.Dir(parent)
+	canonicalAnchor, err := filepath.EvalSymlinks(anchor)
+	if err != nil {
+		return nil, fmt.Errorf("resolve recovery artifact directory anchor: %w", err)
+	}
+	relative, err := filepath.Rel(anchor, absolute)
+	if err != nil {
+		return nil, fmt.Errorf("resolve recovery artifact directory components: %w", err)
+	}
+	if relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return nil, errors.New("resolve recovery artifact directory: unsafe path")
+	}
+
+	directory, err := os.Open(canonicalAnchor) //nolint:gosec // the anchor is canonicalized before descriptor-relative traversal.
+	if err != nil {
+		return nil, fmt.Errorf("open recovery artifact directory anchor: %w", err)
+	}
+	components := strings.Split(relative, string(filepath.Separator))
+	for index, component := range components {
+		if err := unix.Mkdirat(int(directory.Fd()), component, recoveryArtifactDirMode); err != nil && !errors.Is(err, unix.EEXIST) {
+			_ = directory.Close()
+			return nil, fmt.Errorf("create recovery artifact directory component %q: %w", component, err)
+		}
+		flags := unix.O_RDONLY | unix.O_DIRECTORY | unix.O_CLOEXEC | unix.O_NOFOLLOW
+		nextFD, err := unix.Openat(int(directory.Fd()), component, flags, 0)
+		if err != nil {
+			_ = directory.Close()
+			return nil, fmt.Errorf("open recovery artifact directory component %q without following symlinks: %w", component, err)
+		}
+		next := os.NewFile(uintptr(nextFD), filepath.Join(directory.Name(), component))
+		if next == nil {
+			_ = unix.Close(nextFD)
+			_ = directory.Close()
+			return nil, fmt.Errorf("open recovery artifact directory component %q: invalid file descriptor", component)
+		}
+		_ = directory.Close()
+		directory = next
+		if index == len(components)-1 {
+			if err := directory.Chmod(recoveryArtifactDirMode); err != nil {
+				_ = directory.Close()
+				return nil, fmt.Errorf("secure recovery artifact directory: %w", err)
+			}
+		}
+	}
+	return directory, nil
+}
+
+func createRecoveryArtifactTemporary(directory *os.File) (*os.File, string, error) {
+	for range 100 {
+		var random [16]byte
+		if _, err := rand.Read(random[:]); err != nil {
+			return nil, "", fmt.Errorf("generate recovery artifact temporary name: %w", err)
+		}
+		name := ".review-recovery-" + hex.EncodeToString(random[:]) + ".tmp"
+		flags := unix.O_WRONLY | unix.O_CREAT | unix.O_EXCL | unix.O_CLOEXEC | unix.O_NOFOLLOW
+		fd, err := unix.Openat(int(directory.Fd()), name, flags, recoveryArtifactFileMode)
+		if errors.Is(err, unix.EEXIST) {
+			continue
+		}
+		if err != nil {
+			return nil, "", fmt.Errorf("create recovery artifact temporary: %w", err)
+		}
+		file := os.NewFile(uintptr(fd), filepath.Join(directory.Name(), name))
+		if file == nil {
+			_ = unix.Close(fd)
+			return nil, "", errors.New("create recovery artifact temporary: invalid file descriptor")
+		}
+		return file, name, nil
+	}
+	return nil, "", errors.New("create recovery artifact temporary: exhausted unique names")
 }
 
 // LoadRecoveryArtifact verifies the committed identity before returning any findings.

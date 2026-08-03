@@ -448,6 +448,61 @@ func TestReviewRecoveryArtifactRenewalCannotBePrunedBeforeCheckpointCommit(t *te
 	}
 }
 
+func TestPersistRecoveryArtifactRejectsSymlinkedDirectoryComponents(t *testing.T) {
+	findings := []reviewcontract.Finding{reviewOverflowFinding("confined", "do not escape the artifact directory")}
+
+	t.Run("artifact directory symlink", func(t *testing.T) {
+		root := t.TempDir()
+		outside := t.TempDir()
+		if err := os.Chmod(outside, 0o751); err != nil {
+			t.Fatalf("set outside mode: %v", err)
+		}
+		artifactDir := filepath.Join(root, "review-recovery")
+		if err := os.Symlink(outside, artifactDir); err != nil {
+			t.Fatalf("symlink artifact directory: %v", err)
+		}
+
+		if _, err := PersistRecoveryArtifact(artifactDir, 71, findings); err == nil {
+			t.Fatal("persist through artifact directory symlink succeeded, want error")
+		}
+		assertDirectoryUntouched(t, outside, 0o751)
+	})
+
+	t.Run("intermediate directory symlink", func(t *testing.T) {
+		root := t.TempDir()
+		outside := t.TempDir()
+		if err := os.Chmod(outside, 0o751); err != nil {
+			t.Fatalf("set outside mode: %v", err)
+		}
+		if err := os.Symlink(outside, filepath.Join(root, ".oro")); err != nil {
+			t.Fatalf("symlink intermediate directory: %v", err)
+		}
+
+		if _, err := PersistRecoveryArtifact(filepath.Join(root, ".oro", "review-recovery"), 72, findings); err == nil {
+			t.Fatal("persist through intermediate directory symlink succeeded, want error")
+		}
+		assertDirectoryUntouched(t, outside, 0o751)
+	})
+}
+
+func assertDirectoryUntouched(t *testing.T, path string, wantMode os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat outside directory: %v", err)
+	}
+	if info.Mode().Perm() != wantMode {
+		t.Fatalf("outside directory mode = %o, want %o", info.Mode().Perm(), wantMode)
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		t.Fatalf("read outside directory: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("outside directory entries = %d, want none: %#v", len(entries), entries)
+	}
+}
+
 func TestPrepareReviewRecoveryExactInlineBoundary(t *testing.T) {
 	root := t.TempDir()
 	base := protocol.ReviewRecovery{
