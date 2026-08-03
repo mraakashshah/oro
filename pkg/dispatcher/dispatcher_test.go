@@ -5124,7 +5124,25 @@ func TestOversizedDecomposeResultAcksOnlyAfterValidation(t *testing.T) {
 	insertDispatcherTestBead(t, d.db, childID, "task", beadID, tddAcceptanceForTest())
 	insertDispatcherTestDependency(t, d.db, beadID, childID, "blocks")
 	validEscID := insertDispatcherTestEscalation(t, d.db, protocol.EscOversizedBead, beadID, workerID)
-	insertDispatcherTestOpsRun(t, d, ops.OpsDecompose, beadID, workerID)
+	failed, err := FindBlockingOpsRun(ctx, d.db, string(ops.OpsDecompose), beadID)
+	if err != nil || failed == nil {
+		t.Fatalf("find failed decompose run: rec=%#v err=%v", failed, err)
+	}
+	next := *failed
+	next.ID = 0
+	next.Status = opsRunStatusRunning
+	next.DispatcherPID = os.Getpid()
+	next.ProcessPID = 0
+	next.Verdict = ""
+	next.Feedback = ""
+	next.Error = ""
+	next.StartedAt = ""
+	next.CompletedAt = ""
+	if _, created, err := replaceOpsRun(ctx, d.db, *failed, next, "test retry after invalid decompose result"); err != nil {
+		t.Fatalf("replace failed decompose run: %v", err)
+	} else if !created {
+		t.Fatal("replace failed decompose run created = false, want a new running owner")
+	}
 
 	d.mu.Lock()
 	d.worktreeFailures[beadID] = time.Now()
