@@ -93,34 +93,12 @@ func (d *Dispatcher) validateLegacyReadyEvidence(
 	if !legacyReadyEvidenceIdentity(ready) || ready.WorkerID != workerID || ready.BeadID == "" || d.db == nil {
 		return durableReadyIdentity{}, false
 	}
-	d.mu.Lock()
-	w := d.workers[workerID]
-	if w == nil || w.state != protocol.WorkerBusy || w.assignmentID <= 0 ||
-		w.beadID != ready.BeadID || w.worktree == "" {
-		d.mu.Unlock()
+	identity, ok := d.trackedLegacyReadyIdentity(workerID, ready.BeadID)
+	if !ok {
 		return durableReadyIdentity{}, false
 	}
-	identity := durableReadyIdentity{
-		assignmentID: w.assignmentID,
-		beadID:       w.beadID,
-		workerID:     workerID,
-		worktree:     w.worktree,
-		targetBranch: w.targetBranch,
-	}
-	d.mu.Unlock()
-
-	var durable durableReadyIdentity
-	durable.assignmentID = identity.assignmentID
-	if err := d.db.QueryRowContext(ctx, `
-SELECT bead_id, worker_id, worktree, qg_evidence_dir, target_sha
-FROM assignments
-WHERE id = ? AND status = 'active'`, identity.assignmentID).Scan(
-		&durable.beadID, &durable.workerID, &durable.worktree, &durable.evidenceRoot, &durable.targetSHA,
-	); err != nil {
-		return durableReadyIdentity{}, false
-	}
-	if durable.beadID != identity.beadID || durable.workerID != identity.workerID ||
-		durable.worktree != identity.worktree || durable.evidenceRoot != "" || durable.targetSHA != "" {
+	durable, err := d.loadLegacyReadyIdentity(ctx, identity.assignmentID)
+	if err != nil || !legacyReadyMatchesDurableIdentity(identity, durable) {
 		return durableReadyIdentity{}, false
 	}
 	durable.targetBranch = identity.targetBranch
@@ -128,6 +106,43 @@ WHERE id = ? AND status = 'active'`, identity.assignmentID).Scan(
 		durable.targetBranch = d.cfg.DefaultBranch
 	}
 	return durable, true
+}
+
+func (d *Dispatcher) trackedLegacyReadyIdentity(workerID, beadID string) (durableReadyIdentity, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	w := d.workers[workerID]
+	if w == nil || w.state != protocol.WorkerBusy || w.assignmentID <= 0 ||
+		w.beadID != beadID || w.worktree == "" {
+		return durableReadyIdentity{}, false
+	}
+	return durableReadyIdentity{
+		assignmentID: w.assignmentID,
+		beadID:       w.beadID,
+		workerID:     workerID,
+		worktree:     w.worktree,
+		targetBranch: w.targetBranch,
+	}, true
+}
+
+func (d *Dispatcher) loadLegacyReadyIdentity(ctx context.Context, assignmentID int64) (durableReadyIdentity, error) {
+	durable := durableReadyIdentity{assignmentID: assignmentID}
+	err := d.db.QueryRowContext(ctx, `
+SELECT bead_id, worker_id, worktree, qg_evidence_dir, target_sha
+FROM assignments
+WHERE id = ? AND status = 'active'`, assignmentID).Scan(
+		&durable.beadID, &durable.workerID, &durable.worktree, &durable.evidenceRoot, &durable.targetSHA,
+	)
+	if err != nil {
+		return durableReadyIdentity{}, fmt.Errorf("load legacy READY identity: %w", err)
+	}
+	return durable, nil
+}
+
+func legacyReadyMatchesDurableIdentity(tracked, durable durableReadyIdentity) bool {
+	return durable.assignmentID == tracked.assignmentID && durable.beadID == tracked.beadID &&
+		durable.workerID == tracked.workerID && durable.worktree == tracked.worktree &&
+		durable.evidenceRoot == "" && durable.targetSHA == ""
 }
 
 func (d *Dispatcher) validateReadyEvidence(
