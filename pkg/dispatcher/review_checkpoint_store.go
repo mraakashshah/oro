@@ -166,15 +166,9 @@ func (s *ReviewCheckpointStore) SaveRejectedFindings(
 	if checkpointID <= 0 {
 		return fmt.Errorf("save rejected findings: invalid checkpoint ID %d", checkpointID)
 	}
-	if err := validateRejectedFindingsArtifact(findings, ref); err != nil {
-		return err
-	}
-	compactFindings, compacted, err := compactRejectedFindingsJSON(findings)
+	compaction, err := prepareRejectedFindingsSave(findings, ref)
 	if err != nil {
 		return err
-	}
-	if compacted && ref == nil {
-		return errors.New("save rejected findings: lossless recovery artifact is required when compact JSON exceeds 128 KiB")
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -187,7 +181,7 @@ func (s *ReviewCheckpointStore) SaveRejectedFindings(
 		return err
 	}
 	if !claimed {
-		match, matchErr := rejectedFindingsReplayMatches(ctx, tx, checkpointID, compactFindings, compacted, ref)
+		match, matchErr := rejectedFindingsReplayMatches(ctx, tx, checkpointID, compaction.rows, compaction.compacted, ref)
 		if matchErr != nil {
 			return matchErr
 		}
@@ -200,7 +194,7 @@ func (s *ReviewCheckpointStore) SaveRejectedFindings(
 		return fmt.Errorf("clear rejected findings: %w", err)
 	}
 	for i, finding := range findings {
-		if err := insertRejectedFinding(ctx, tx, checkpointID, finding, compactFindings[i]); err != nil {
+		if err := insertRejectedFinding(ctx, tx, checkpointID, finding, compaction.rows[i]); err != nil {
 			return err
 		}
 	}
@@ -348,22 +342,44 @@ func recoveryArtifactColumns(ref *ReviewRecoveryArtifactRef) (path, sha any, byt
 	return ref.Path, ref.SHA256, ref.Bytes, ref.FindingCount
 }
 
-func compactRejectedFindingsJSON(findings []reviewcontract.Finding) ([][]byte, bool, error) {
+type rejectedFindingsCompaction struct {
+	rows      [][]byte
+	compacted bool
+}
+
+func prepareRejectedFindingsSave(
+	findings []reviewcontract.Finding,
+	ref *ReviewRecoveryArtifactRef,
+) (rejectedFindingsCompaction, error) {
+	if err := validateRejectedFindingsArtifact(findings, ref); err != nil {
+		return rejectedFindingsCompaction{}, err
+	}
+	compaction, err := compactRejectedFindingsJSON(findings)
+	if err != nil {
+		return rejectedFindingsCompaction{}, err
+	}
+	if compaction.compacted && ref == nil {
+		return rejectedFindingsCompaction{}, errors.New("save rejected findings: lossless recovery artifact is required when compact JSON exceeds 128 KiB")
+	}
+	return compaction, nil
+}
+
+func compactRejectedFindingsJSON(findings []reviewcontract.Finding) (rejectedFindingsCompaction, error) {
 	full := make([][]byte, len(findings))
 	total := 0
 	for i, finding := range findings {
 		if finding.ID == "" {
-			return nil, false, errors.New("save rejected findings: finding ID is empty")
+			return rejectedFindingsCompaction{}, errors.New("save rejected findings: finding ID is empty")
 		}
 		encoded, err := json.Marshal(finding)
 		if err != nil {
-			return nil, false, fmt.Errorf("marshal rejected finding %q: %w", finding.ID, err)
+			return rejectedFindingsCompaction{}, fmt.Errorf("marshal rejected finding %q: %w", finding.ID, err)
 		}
 		full[i] = encoded
 		total += len(encoded)
 	}
 	if total <= maxReviewCheckpointFindingsJSONBytes {
-		return full, false, nil
+		return rejectedFindingsCompaction{rows: full}, nil
 	}
 
 	compact := make([][]byte, len(findings))
@@ -381,7 +397,7 @@ func compactRejectedFindingsJSON(findings []reviewcontract.Finding) ([][]byte, b
 		}
 		encoded, err := json.Marshal(normalized)
 		if err != nil {
-			return nil, false, fmt.Errorf("marshal compact rejected finding %q: %w", finding.ID, err)
+			return rejectedFindingsCompaction{}, fmt.Errorf("marshal compact rejected finding %q: %w", finding.ID, err)
 		}
 		compact[i] = encoded
 		total += len(encoded)
@@ -392,9 +408,9 @@ func compactRejectedFindingsJSON(findings []reviewcontract.Finding) ([][]byte, b
 		total += len(compact[i])
 	}
 	if total > maxReviewCheckpointFindingsJSONBytes {
-		return nil, false, fmt.Errorf("save rejected findings: minimum compact JSON is %d bytes, exceeds %d-byte cap", total, maxReviewCheckpointFindingsJSONBytes)
+		return rejectedFindingsCompaction{}, fmt.Errorf("save rejected findings: minimum compact JSON is %d bytes, exceeds %d-byte cap", total, maxReviewCheckpointFindingsJSONBytes)
 	}
-	return compact, true, nil
+	return rejectedFindingsCompaction{rows: compact, compacted: true}, nil
 }
 
 // LoadReviewRecovery reconstructs correction context from durable checkpoint
