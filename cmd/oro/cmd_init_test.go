@@ -2267,21 +2267,14 @@ func TestOroInitStealth_EndToEnd(t *testing.T) {
 	if !strings.Contains(string(prePushData), "managed by oro") {
 		t.Error("pre-push hook must be an oro wrapper")
 	}
-	if !strings.Contains(string(prePushData), "ORO_QG_CONTEXT=push") {
-		t.Error("pre-push hook must run quality gate in push context")
-	}
-	if strings.Contains(string(prePushData), "ORO_RUN_MUTATION=1 ") || strings.Contains(string(prePushData), "ORO_RUN_MUTATION=1\"") {
-		t.Error("pre-push hook must not enable mutation by default")
-	}
-	if !strings.Contains(string(prePushData), "scripts/quality_gate.sh") {
-		t.Error("pre-push hook must run scripts/quality_gate.sh")
-	}
-	if !strings.Contains(string(prePushData), "mutation testing disabled by default") {
-		t.Error("pre-push hook must explain mutation testing is disabled by default")
+	for _, forbidden := range []string{"ORO_QG_CONTEXT", "ORO_PRE_PUSH_QG", "quality_gate.sh"} {
+		if strings.Contains(string(prePushData), forbidden) {
+			t.Errorf("pre-push hook must leave authoritative full QG to GitHub; found %q", forbidden)
+		}
 	}
 	stealthQG := filepath.Join(stealthDir, "quality_gate.sh")
-	if !strings.Contains(string(prePushData), stealthQG) {
-		t.Errorf("pre-push hook must reference stealth quality gate %q, got:\n%s", stealthQG, string(prePushData))
+	if strings.Contains(string(prePushData), stealthQG) {
+		t.Errorf("pre-push hook must not run stealth quality gate %q, got:\n%s", stealthQG, string(prePushData))
 	}
 
 	// 5. settings.json created and is valid JSON.
