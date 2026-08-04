@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"oro/pkg/beadstore"
 	"oro/pkg/dbutil"
 	"oro/pkg/protocol"
 )
@@ -200,6 +201,340 @@ func TestLegacyIdleReconnectWithoutBufferedReadyRequeuesBeforeDrain(t *testing.T
 	d.mu.Unlock()
 	if active != 0 || inMemoryOwned {
 		t.Fatalf("ownership after successful drain: active=%d in_memory=%v", active, inMemoryOwned)
+	}
+}
+
+func TestLegacyIdleReconnectSQLiteStoreDoesNotReenterWriter(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	ctx := t.Context()
+	if err := protocol.MigrateBeadSchema(ctx, d.db); err != nil {
+		t.Fatalf("migrate native bead schema: %v", err)
+	}
+	store := beadstore.NewSQLiteStore(d.db)
+	d.beads = store
+	const (
+		workerID = "worker-legacy-sqlite-release"
+		beadID   = "oro-legacy-sqlite-release"
+	)
+	if _, err := store.Create(ctx, beadstore.CreateParams{
+		ID: beadID, Title: "Legacy SQLite release", Type: "task", Status: "in_progress",
+	}); err != nil {
+		t.Fatalf("create native bead: %v", err)
+	}
+	assignmentID := insertActiveAssignment(t, d, beadID, workerID, t.TempDir())
+	d.mu.Lock()
+	d.workers[workerID] = &trackedWorker{
+		id: workerID, state: protocol.WorkerBusy, assignmentID: assignmentID,
+		beadID: beadID, drainAfterAssignment: true,
+	}
+	d.mu.Unlock()
+
+	reconnectCtx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
+	defer cancel()
+	if !d.handleLegacyIdleReconnect(reconnectCtx, workerID, &protocol.ReconnectPayload{
+		WorkerID: workerID, BeadID: beadID, State: "idle",
+	}) {
+		t.Fatal("legacy idle reconnect was not handled")
+	}
+	if err := reconnectCtx.Err(); err != nil {
+		t.Fatalf("legacy idle reconnect stalled on its own SQLite writer: %v", err)
+	}
+
+	var assignmentStatus string
+	if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&assignmentStatus); err != nil {
+		t.Fatalf("load released assignment: %v", err)
+	}
+	bead, err := store.Show(ctx, beadID)
+	if err != nil {
+		t.Fatalf("show released native bead: %v", err)
+	}
+	d.mu.Lock()
+	workerState := d.workers[workerID].state
+	d.mu.Unlock()
+	if assignmentStatus != "requeued" || bead.Status != "open" || workerState != protocol.WorkerIdle {
+		t.Fatalf("released state = assignment %q bead %q worker %q, want requeued/open/idle",
+			assignmentStatus, bead.Status, workerState)
+	}
+}
+
+func TestLegacyReconnectNeverReservesWriterBeforeValidReadyReleasesDispatcherLock(t *testing.T) {
+	d, beads, worktrees, _, _, _ := newTestDispatcher(t)
+	useFileBackedLegacyAssignmentDB(t, d)
+	ctx := t.Context()
+	if err := protocol.MigrateBeadSchema(ctx, d.db); err != nil {
+		t.Fatalf("migrate READY schema: %v", err)
+	}
+	const (
+		readyWorkerID  = "worker-ready-lock-order"
+		readyBeadID    = "oro-ready-lock-order"
+		legacyWorkerID = "worker-legacy-lock-order"
+		legacyBeadID   = "oro-legacy-lock-order"
+		targetSHA      = "0123456789abcdef0123456789abcdef01234567"
+	)
+	readyWorktree := t.TempDir()
+	evidenceRoot := filepath.Join(t.TempDir(), "evidence")
+	d.cfg.ReviewEvidenceDir = evidenceRoot
+	result, err := d.db.ExecContext(ctx, `
+INSERT INTO assignments (bead_id, worker_id, worktree, qg_evidence_dir, target_sha, target_branch, status)
+VALUES (?, ?, ?, ?, ?, 'main', 'active')`, readyBeadID, readyWorkerID, readyWorktree, evidenceRoot, targetSHA)
+	if err != nil {
+		t.Fatalf("insert canonical READY assignment: %v", err)
+	}
+	readyAssignmentID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("load canonical READY assignment ID: %v", err)
+	}
+	readyPath, err := canonicalReadyEvidencePath(evidenceRoot, readyBeadID, readyAssignmentID)
+	if err != nil {
+		t.Fatalf("canonical READY evidence path: %v", err)
+	}
+	ready := protocol.ReadyForReviewPayload{
+		BeadID: readyBeadID, WorkerID: readyWorkerID, AssignmentID: readyAssignmentID,
+		Worktree: readyWorktree, QGEvidencePath: readyPath, TargetSHA: targetSHA,
+	}
+	writeReadyEvidenceFixture(t, readyPath, ready)
+	beads.mu.Lock()
+	beads.shown[readyBeadID] = &protocol.BeadDetail{
+		ID: readyBeadID, AcceptanceCriteria: "canonical lock-order evidence",
+	}
+	beads.mu.Unlock()
+
+	seedLegacyAuthoritativeBead(beads, legacyBeadID)
+	legacyAssignmentID := insertActiveAssignment(t, d, legacyBeadID, legacyWorkerID, t.TempDir())
+	d.mu.Lock()
+	d.workers[readyWorkerID] = &trackedWorker{
+		id: readyWorkerID, state: protocol.WorkerBusy, assignmentID: readyAssignmentID,
+		beadID: readyBeadID, worktree: readyWorktree, targetBranch: "main",
+	}
+	d.workers[legacyWorkerID] = &trackedWorker{
+		id: legacyWorkerID, state: protocol.WorkerBusy, assignmentID: legacyAssignmentID,
+		beadID: legacyBeadID, drainAfterAssignment: true,
+	}
+	d.mu.Unlock()
+
+	readyLocked := make(chan struct{})
+	continueReady := make(chan struct{})
+	worktrees.branchHeadFn = func(branch string) (string, error) {
+		if branch == protocol.BranchPrefix+readyBeadID {
+			close(readyLocked)
+			<-continueReady
+		}
+		return "head-" + branch, nil
+	}
+	legacyWriterHeld := make(chan struct{})
+	continueLegacy := make(chan struct{})
+	legacyPreAdmission := make(chan struct{})
+	continueLegacyAdmission := make(chan struct{})
+	d.testLegacyReconnectAdmissionHook = func() {
+		close(legacyPreAdmission)
+		<-continueLegacyAdmission
+	}
+	d.testLegacyReconnectClaimedHook = func() {
+		close(legacyWriterHeld)
+		<-continueLegacy
+	}
+
+	type readyResult struct {
+		identity durableReadyIdentity
+		accepted bool
+	}
+	legacyDone := make(chan bool, 1)
+	go func() {
+		legacyDone <- d.handleLegacyIdleReconnect(ctx, legacyWorkerID, &protocol.ReconnectPayload{
+			WorkerID: legacyWorkerID, BeadID: legacyBeadID, State: "idle",
+		})
+	}()
+	select {
+	case <-legacyPreAdmission:
+	case <-time.After(2 * time.Second):
+		t.Fatal("legacy reconnect did not reach pre-admission boundary")
+	}
+
+	readyResults := make(chan readyResult, 1)
+	go func() {
+		identity, accepted := d.acceptReadyEvidence(ctx, readyWorkerID, &ready)
+		readyResults <- readyResult{identity: identity, accepted: accepted}
+	}()
+	select {
+	case <-readyLocked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("valid READY did not reach dispatcher-locked database boundary")
+	}
+	close(continueLegacyAdmission)
+
+	legacyReservedWriterFirst := false
+	select {
+	case <-legacyWriterHeld:
+		legacyReservedWriterFirst = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(continueReady)
+
+	var gotReady readyResult
+	select {
+	case gotReady = <-readyResults:
+	case <-time.After(2 * time.Second):
+		close(continueLegacy)
+		t.Fatal("valid READY stalled behind reconnect writer while holding dispatcher lock")
+	}
+	if !legacyReservedWriterFirst {
+		select {
+		case <-legacyWriterHeld:
+		case <-time.After(2 * time.Second):
+			t.Fatal("legacy reconnect did not resume after valid READY released dispatcher lock")
+		}
+	}
+	close(continueLegacy)
+	select {
+	case handled := <-legacyDone:
+		if !handled {
+			t.Fatal("legacy reconnect was not handled")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("legacy reconnect stalled after lock-order interleaving")
+	}
+	if legacyReservedWriterFirst {
+		t.Fatal("legacy reconnect reserved SQLite writer while valid READY held dispatcher lock")
+	}
+	if !gotReady.accepted || gotReady.identity.assignmentID != readyAssignmentID {
+		t.Fatalf("valid READY result = accepted %t assignment %d, want accepted assignment %d",
+			gotReady.accepted, gotReady.identity.assignmentID, readyAssignmentID)
+	}
+}
+
+func TestCanonicalReconnectNeverReservesWriterBeforeValidReadyReleasesDispatcherLock(t *testing.T) {
+	d, beads, worktrees, _, _, _ := newTestDispatcher(t)
+	useFileBackedLegacyAssignmentDB(t, d)
+	ctx := t.Context()
+	if err := protocol.MigrateBeadSchema(ctx, d.db); err != nil {
+		t.Fatalf("migrate READY schema: %v", err)
+	}
+	const targetSHA = "0123456789abcdef0123456789abcdef01234567"
+	evidenceRoot := filepath.Join(t.TempDir(), "evidence")
+	d.cfg.ReviewEvidenceDir = evidenceRoot
+	seedReady := func(workerID, beadID string) (protocol.ReadyForReviewPayload, int64) {
+		t.Helper()
+		worktree := t.TempDir()
+		result, err := d.db.ExecContext(ctx, `
+INSERT INTO assignments (bead_id, worker_id, worktree, qg_evidence_dir, target_sha, target_branch, status)
+VALUES (?, ?, ?, ?, ?, 'main', 'active')`, beadID, workerID, worktree, evidenceRoot, targetSHA)
+		if err != nil {
+			t.Fatalf("insert canonical assignment for %s: %v", beadID, err)
+		}
+		assignmentID, err := result.LastInsertId()
+		if err != nil {
+			t.Fatalf("load canonical assignment ID for %s: %v", beadID, err)
+		}
+		evidencePath, err := canonicalReadyEvidencePath(evidenceRoot, beadID, assignmentID)
+		if err != nil {
+			t.Fatalf("canonical evidence path for %s: %v", beadID, err)
+		}
+		ready := protocol.ReadyForReviewPayload{
+			BeadID: beadID, WorkerID: workerID, AssignmentID: assignmentID,
+			Worktree: worktree, QGEvidencePath: evidencePath, TargetSHA: targetSHA,
+		}
+		writeReadyEvidenceFixture(t, evidencePath, ready)
+		return ready, assignmentID
+	}
+	const (
+		readyWorkerID     = "worker-ready-canonical-order"
+		readyBeadID       = "oro-ready-canonical-order"
+		reconnectWorkerID = "worker-reconnect-canonical-order"
+		reconnectBeadID   = "oro-reconnect-canonical-order"
+	)
+	ready, readyAssignmentID := seedReady(readyWorkerID, readyBeadID)
+	reconnectReady, reconnectAssignmentID := seedReady(reconnectWorkerID, reconnectBeadID)
+	beads.mu.Lock()
+	beads.shown[readyBeadID] = &protocol.BeadDetail{
+		ID: readyBeadID, AcceptanceCriteria: "canonical lock-order evidence",
+	}
+	beads.mu.Unlock()
+	d.mu.Lock()
+	d.workers[readyWorkerID] = &trackedWorker{
+		id: readyWorkerID, state: protocol.WorkerBusy, assignmentID: readyAssignmentID,
+		beadID: readyBeadID, worktree: ready.Worktree, targetBranch: "main",
+	}
+	d.workers[reconnectWorkerID] = &trackedWorker{id: reconnectWorkerID, state: protocol.WorkerIdle}
+	d.mu.Unlock()
+
+	readyLocked := make(chan struct{})
+	continueReady := make(chan struct{})
+	worktrees.branchHeadFn = func(branch string) (string, error) {
+		if branch == protocol.BranchPrefix+readyBeadID {
+			close(readyLocked)
+			<-continueReady
+		}
+		return "head-" + branch, nil
+	}
+	canonicalWriterHeld := make(chan struct{})
+	d.testCanonicalReconnectAdmissionHook = func() { close(canonicalWriterHeld) }
+
+	type readyResult struct {
+		identity durableReadyIdentity
+		accepted bool
+	}
+	readyResults := make(chan readyResult, 1)
+	go func() {
+		identity, accepted := d.acceptReadyEvidence(ctx, readyWorkerID, &ready)
+		readyResults <- readyResult{identity: identity, accepted: accepted}
+	}()
+	select {
+	case <-readyLocked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("valid READY did not reach dispatcher-locked database boundary")
+	}
+
+	type reconnectResult struct {
+		identity durableReadyIdentity
+		restored bool
+	}
+	reconnectResults := make(chan reconnectResult, 1)
+	go func() {
+		identity, _, _, restored := d.restoreCanonicalReadyReconnect(ctx, reconnectWorkerID, &protocol.ReconnectPayload{
+			WorkerID: reconnectWorkerID, BeadID: reconnectBeadID, State: "awaiting_review",
+		})
+		reconnectResults <- reconnectResult{identity: identity, restored: restored}
+	}()
+	canonicalReservedWriterFirst := false
+	select {
+	case <-canonicalWriterHeld:
+		canonicalReservedWriterFirst = true
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(continueReady)
+
+	var gotReady readyResult
+	select {
+	case gotReady = <-readyResults:
+	case <-time.After(2 * time.Second):
+		t.Fatal("valid READY stalled behind canonical reconnect writer")
+	}
+	if !canonicalReservedWriterFirst {
+		select {
+		case <-canonicalWriterHeld:
+		case <-time.After(2 * time.Second):
+			t.Fatal("canonical reconnect did not resume after valid READY released dispatcher lock")
+		}
+	}
+	var gotReconnect reconnectResult
+	select {
+	case gotReconnect = <-reconnectResults:
+	case <-time.After(2 * time.Second):
+		t.Fatal("canonical reconnect stalled after lock-order interleaving")
+	}
+	if canonicalReservedWriterFirst {
+		t.Fatal("canonical reconnect reserved SQLite writer while valid READY held dispatcher lock")
+	}
+	if !gotReady.accepted || gotReady.identity.assignmentID != readyAssignmentID {
+		t.Fatalf("valid READY result = accepted %t assignment %d, want accepted assignment %d",
+			gotReady.accepted, gotReady.identity.assignmentID, readyAssignmentID)
+	}
+	wantReconnectIdentity := durableReadyIdentity{
+		assignmentID: reconnectAssignmentID, beadID: reconnectBeadID, workerID: reconnectWorkerID,
+		worktree: reconnectReady.Worktree, evidenceRoot: evidenceRoot, targetSHA: targetSHA, targetBranch: "main",
+	}
+	if !gotReconnect.restored || gotReconnect.identity != wantReconnectIdentity {
+		t.Fatalf("canonical reconnect result = restored %t identity %#v", gotReconnect.restored, gotReconnect.identity)
 	}
 }
 

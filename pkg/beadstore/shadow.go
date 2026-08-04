@@ -205,6 +205,21 @@ func (s *ShadowStore) UpdateStatusIf(ctx context.Context, id, expected, next str
 	return updated, nil
 }
 
+// UpdateStatusIfConn conditionally writes to a connection-aware primary.
+func (s *ShadowStore) UpdateStatusIfConn(ctx context.Context, conn *sql.Conn, id, expected, next string) (bool, error) {
+	primary, ok := s.primary.(interface {
+		UpdateStatusIfConn(context.Context, *sql.Conn, string, string, string) (bool, error)
+	})
+	if !ok {
+		return false, errors.New("shadow primary does not support connection-aware status updates")
+	}
+	updated, err := primary.UpdateStatusIfConn(ctx, conn, id, expected, next)
+	if err != nil {
+		return false, fmt.Errorf("shadow primary conditionally update bead status: %w", err)
+	}
+	return updated, nil
+}
+
 // Close writes to primary only.
 func (s *ShadowStore) Close(ctx context.Context, id, reason string) error {
 	if err := s.primary.Close(ctx, id, reason); err != nil {

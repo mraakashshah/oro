@@ -321,6 +321,13 @@ type Dispatcher struct {
 	// testLegacyReconnectRequeuedHook, if non-nil, is called after the legacy
 	// assignment is durably requeued and before the authoritative bead reopens.
 	testLegacyReconnectRequeuedHook func()
+	// testLegacyReconnectAdmissionHook, if non-nil, is called after the legacy
+	// drain check and before assignment admission. Tests use it to reproduce
+	// reconnect/READY lock-order interleavings.
+	testLegacyReconnectAdmissionHook func()
+	// testCanonicalReconnectAdmissionHook, if non-nil, is called after the
+	// canonical reconnect reserves assignment admission and before d.mu.
+	testCanonicalReconnectAdmissionHook func()
 
 	// Review artifact maintenance is serialized so overlapping scheduled ticks
 	// cannot delete or acknowledge the same artifact concurrently.

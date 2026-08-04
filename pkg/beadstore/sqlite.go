@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -276,6 +277,31 @@ func (s *SQLiteStore) UpdateStatusIf(ctx context.Context, id, expected, next str
 	defer s.writeMu.Unlock()
 
 	res, err := s.db.ExecContext(ctx, `UPDATE beads SET status = ? WHERE id = ? AND status = ?`, next, id, expected)
+	if err != nil {
+		return false, fmt.Errorf("beadstore: conditionally update status for %s: %w", id, err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("beadstore: conditionally update status for %s rows affected: %w", id, err)
+	}
+	return affected == 1, nil
+}
+
+// UpdateStatusIfConn conditionally changes a bead status on an existing
+// SQLite connection. Callers that already own a write transaction must use
+// this form so the store does not re-enter the same database through *sql.DB.
+func (s *SQLiteStore) UpdateStatusIfConn(ctx context.Context, conn *sql.Conn, id, expected, next string) (bool, error) {
+	if !validStatus(next) {
+		return false, fmt.Errorf("beadstore: invalid status %q", next)
+	}
+	if conn == nil {
+		return false, errors.New("beadstore: conditionally update status: nil connection")
+	}
+
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	res, err := conn.ExecContext(ctx, `UPDATE beads SET status = ? WHERE id = ? AND status = ?`, next, id, expected)
 	if err != nil {
 		return false, fmt.Errorf("beadstore: conditionally update status for %s: %w", id, err)
 	}

@@ -175,21 +175,33 @@ func (d *Dispatcher) handleLegacyIdleReconnect(
 	if reconnect.State != "idle" || !d.workerDrainingAfterAssignment(workerID) {
 		return false
 	}
+	if d.testLegacyReconnectAdmissionHook != nil {
+		d.testLegacyReconnectAdmissionHook()
+	}
 
+	d.mu.Lock()
+	w := d.workers[workerID]
+	if w == nil || !w.drainAfterAssignment {
+		d.mu.Unlock()
+		return false
+	}
 	admission, err := d.beginAssignmentAdmission(ctx, "legacy reconnect")
 	if err != nil {
-		d.preserveLegacyReconnectClaim(workerID, reconnect.BeadID)
+		d.preserveLegacyReconnectClaimLocked(workerID, reconnect.BeadID)
+		d.mu.Unlock()
 		return true
 	}
 	identity, status, err := d.claimCanonicalLegacyReconnectAssignment(ctx, admission.conn, workerID, reconnect.BeadID)
 	if err != nil {
 		admission.close()
 		if errors.Is(err, errLegacyReconnectSuperseded) {
-			d.holdSupersededLegacyReconnect(workerID)
+			d.holdSupersededLegacyReconnectLocked(workerID)
+			d.mu.Unlock()
 			_ = d.logEvent(ctx, "legacy_reconnect_superseded", "dispatcher", reconnect.BeadID, workerID, err.Error())
 			return true
 		}
-		d.preserveLegacyReconnectClaim(workerID, reconnect.BeadID)
+		d.preserveLegacyReconnectClaimLocked(workerID, reconnect.BeadID)
+		d.mu.Unlock()
 		return true
 	}
 	if d.testLegacyReconnectClaimedHook != nil {
@@ -197,62 +209,47 @@ func (d *Dispatcher) handleLegacyIdleReconnect(
 	}
 	if err := d.verifyCanonicalLegacyReconnectAssignment(ctx, admission.conn, identity); err != nil {
 		admission.close()
-		d.holdSupersededLegacyReconnect(workerID)
+		d.holdSupersededLegacyReconnectLocked(workerID)
+		d.mu.Unlock()
 		_ = d.logEvent(ctx, "legacy_reconnect_superseded", "dispatcher", reconnect.BeadID, workerID, err.Error())
 		return true
 	}
 	if d.testLegacyReconnectVerifiedHook != nil {
 		d.testLegacyReconnectVerifiedHook()
 	}
-	d.restoreLegacyReconnectOwnership(workerID, identity)
+	d.restoreLegacyReconnectOwnershipLocked(workerID, identity)
 
 	if bufferedLegacyReady(reconnect.BufferedEvents, workerID, reconnect.BeadID) {
-		return d.finishBufferedLegacyReconnect(ctx, workerID, reconnect, admission)
-	}
-	return d.finishLegacyIdleRelease(ctx, workerID, identity, status, admission)
-}
-
-func (d *Dispatcher) finishBufferedLegacyReconnect(
-	ctx context.Context,
-	workerID string,
-	reconnect *protocol.ReconnectPayload,
-	admission *assignmentAdmission,
-) bool {
-	if err := admission.commit(ctx, "legacy reconnect"); err != nil {
+		if err := admission.commit(ctx, "legacy reconnect"); err != nil {
+			admission.close()
+			d.holdSupersededLegacyReconnectLocked(workerID)
+			d.mu.Unlock()
+			_ = d.logEvent(ctx, "legacy_reconnect_commit_failed", "dispatcher", reconnect.BeadID, workerID, err.Error())
+			return true
+		}
 		admission.close()
-		d.holdSupersededLegacyReconnect(workerID)
-		_ = d.logEvent(ctx, "legacy_reconnect_commit_failed", "dispatcher", reconnect.BeadID, workerID, err.Error())
+		d.mu.Unlock()
+		d.replayReconnectEvents(ctx, workerID, reconnect.BufferedEvents,
+			false, false, protocol.ReadyForReviewPayload{})
 		return true
 	}
-	admission.close()
-	d.replayReconnectEvents(ctx, workerID, reconnect.BufferedEvents,
-		false, false, protocol.ReadyForReviewPayload{})
-	return true
-}
-
-func (d *Dispatcher) finishLegacyIdleRelease(
-	ctx context.Context,
-	workerID string,
-	identity durableReadyIdentity,
-	status string,
-	admission *assignmentAdmission,
-) bool {
-	releaseErr := d.releaseLegacyIdleOwnership(ctx, admission.conn, identity, status)
+	beadTransitionTransactional, releaseErr := d.releaseLegacyIdleOwnership(ctx, admission.conn, identity, status)
 	commitErr := admission.commit(ctx, "legacy idle release")
 	admission.close()
 	if commitErr != nil {
-		if releaseErr == nil {
+		d.holdSupersededLegacyReconnectLocked(workerID)
+		d.mu.Unlock()
+		if releaseErr == nil && !beadTransitionTransactional {
 			d.compensateLegacyBeadReopen(ctx, identity.beadID)
 		}
-		d.holdSupersededLegacyReconnect(workerID)
 		_ = d.logEvent(ctx, "legacy_idle_release_failed", "dispatcher", identity.beadID, workerID, commitErr.Error())
 		return true
 	}
 	if releaseErr != nil {
+		d.mu.Unlock()
 		_ = d.logEvent(ctx, "legacy_idle_release_failed", "dispatcher", identity.beadID, workerID, releaseErr.Error())
 		return true
 	}
-	d.mu.Lock()
 	if w := d.workers[workerID]; w != nil && w.assignmentID == identity.assignmentID {
 		w.state = protocol.WorkerIdle
 		w.lastSeen = d.nowFunc()
@@ -261,9 +258,7 @@ func (d *Dispatcher) finishLegacyIdleRelease(
 	return true
 }
 
-func (d *Dispatcher) holdSupersededLegacyReconnect(workerID string) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+func (d *Dispatcher) holdSupersededLegacyReconnectLocked(workerID string) {
 	if w := d.workers[workerID]; w != nil {
 		w.state = protocol.WorkerReserved
 		w.assignmentID = 0
@@ -280,19 +275,19 @@ func (d *Dispatcher) holdSupersededLegacyReconnect(workerID string) {
 
 func (d *Dispatcher) releaseLegacyIdleOwnership(
 	ctx context.Context,
-	ex execer,
+	conn *sql.Conn,
 	identity durableReadyIdentity,
 	originalStatus string,
-) error {
+) (bool, error) {
 	if originalStatus == "active" {
-		if err := transitionLegacyAssignmentStatus(ctx, ex, identity, "active", "requeued"); err != nil {
-			return err
+		if err := transitionLegacyAssignmentStatus(ctx, conn, identity, "active", "requeued"); err != nil {
+			return false, err
 		}
 		if d.testLegacyReconnectRequeuedHook != nil {
 			d.testLegacyReconnectRequeuedHook()
 		}
 	}
-	opened, err := d.beads.UpdateStatusIf(ctx, identity.beadID, "in_progress", "open")
+	opened, transactional, err := d.updateLegacyBeadStatus(ctx, conn, identity.beadID, "in_progress", "open")
 	if err == nil && !opened {
 		var detail *protocol.BeadDetail
 		detail, err = d.beads.Show(ctx, identity.beadID)
@@ -302,14 +297,29 @@ func (d *Dispatcher) releaseLegacyIdleOwnership(
 		}
 	}
 	if err == nil && opened {
-		return nil
+		return transactional, nil
 	}
 	if originalStatus == "active" {
-		if restoreErr := transitionLegacyAssignmentStatus(ctx, ex, identity, "requeued", "active"); restoreErr != nil {
-			return fmt.Errorf("reopen authoritative bead: %w; restore assignment ownership: %w", err, restoreErr)
+		if restoreErr := transitionLegacyAssignmentStatus(ctx, conn, identity, "requeued", "active"); restoreErr != nil {
+			return transactional, fmt.Errorf("reopen authoritative bead: %w; restore assignment ownership: %w", err, restoreErr)
 		}
 	}
-	return fmt.Errorf("reopen authoritative bead: %w", err)
+	return transactional, fmt.Errorf("reopen authoritative bead: %w", err)
+}
+
+func (d *Dispatcher) updateLegacyBeadStatus(
+	ctx context.Context,
+	conn *sql.Conn,
+	beadID, expected, next string,
+) (updated, transactional bool, err error) {
+	if store, ok := d.beads.(interface {
+		UpdateStatusIfConn(context.Context, *sql.Conn, string, string, string) (bool, error)
+	}); ok {
+		updated, err = store.UpdateStatusIfConn(ctx, conn, beadID, expected, next)
+		return updated, true, err
+	}
+	updated, err = d.beads.UpdateStatusIf(ctx, beadID, expected, next)
+	return updated, false, err
 }
 
 func (d *Dispatcher) compensateLegacyBeadReopen(ctx context.Context, beadID string) {
@@ -358,9 +368,7 @@ WHERE id=? AND bead_id=? AND worker_id=? AND status='requeued'`,
 	return nil
 }
 
-func (d *Dispatcher) preserveLegacyReconnectClaim(workerID, beadID string) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+func (d *Dispatcher) preserveLegacyReconnectClaimLocked(workerID, beadID string) {
 	if w := d.workers[workerID]; w != nil {
 		w.state = protocol.WorkerBusy
 		w.beadID = beadID
@@ -436,9 +444,7 @@ SELECT EXISTS(
 	return nil
 }
 
-func (d *Dispatcher) restoreLegacyReconnectOwnership(workerID string, identity durableReadyIdentity) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+func (d *Dispatcher) restoreLegacyReconnectOwnershipLocked(workerID string, identity durableReadyIdentity) {
 	if w := d.workers[workerID]; w != nil {
 		w.state = protocol.WorkerBusy
 		w.assignmentID = identity.assignmentID
@@ -559,15 +565,19 @@ func (d *Dispatcher) restoreCanonicalReadyReconnect(
 		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, false, false
 	}
 
+	d.mu.Lock()
 	admission, err := d.beginAssignmentAdmission(ctx, "canonical ready reconnect")
 	if err != nil {
+		d.mu.Unlock()
 		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, false, false
 	}
-	d.mu.Lock()
+	if d.testCanonicalReconnectAdmissionHook != nil {
+		d.testCanonicalReconnectAdmissionHook()
+	}
 	w := d.workers[workerID]
 	if w == nil {
-		d.mu.Unlock()
 		admission.close()
+		d.mu.Unlock()
 		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, false, false
 	}
 
@@ -575,38 +585,38 @@ func (d *Dispatcher) restoreCanonicalReadyReconnect(
 		ctx, admission.conn, w, workerID, reconnect.BeadID,
 	)
 	if err != nil {
-		d.mu.Unlock()
 		admission.close()
+		d.mu.Unlock()
 		if !errors.Is(err, sql.ErrNoRows) {
 			_ = d.logEvent(ctx, "reconnect_ready_restore_failed", "dispatcher", reconnect.BeadID, workerID, err.Error())
 		}
 		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, false, false
 	}
 	if !prepared.valid {
-		d.mu.Unlock()
 		admission.close()
+		d.mu.Unlock()
 		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, false, false
 	}
 
 	if claimCanonicalReconnectAssignment(ctx, admission.conn, prepared.identity, prepared.status) != nil {
-		d.mu.Unlock()
 		admission.close()
+		d.mu.Unlock()
 		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, false, false
 	}
 	priorWorker := *w
 	if !d.restoreCanonicalReadyWorkerLocked(w, prepared.identity, prepared.alreadyReviewing) {
-		d.mu.Unlock()
 		admission.close()
+		d.mu.Unlock()
 		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, false, false
 	}
 	if err := admission.commit(ctx, "canonical ready reconnect"); err != nil {
 		*w = priorWorker
-		d.mu.Unlock()
 		admission.close()
+		d.mu.Unlock()
 		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, false, false
 	}
-	d.mu.Unlock()
 	admission.close()
+	d.mu.Unlock()
 	return prepared.identity, prepared.ready, prepared.alreadyReviewing, true
 }
 
