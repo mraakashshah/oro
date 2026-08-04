@@ -425,7 +425,7 @@ printf '%s:%s' "${ORO_RUN_MUTATION:-unset}" "${ORO_QG_CONTEXT:-unset}" > "$MARKE
 }
 
 func TestIsOroDistributedHookRecognizesFastPrePush(t *testing.T) {
-	content := []byte(`#!/usr/bin/env sh
+	fast := `#!/usr/bin/env sh
 # Oro fast pre-push safety checks. GitHub Actions is the authoritative full quality gate.
 while IFS= read -r line; do
     local_ref=$(echo "$line" | awk '{print $1}')
@@ -433,8 +433,36 @@ while IFS= read -r line; do
         refs/heads/agent/* | refs/heads/epic/*) exit 1 ;;
     esac
 done
-`)
-	if !isOroDistributedHook("pre-push", content) {
-		t.Fatal("fast repository pre-push hook must be recognized as Oro-distributed")
+	`
+	legacy := `#!/usr/bin/env sh
+# Run Oro's full quality gate before push. Mutation testing remains disabled
+# unless explicitly requested with --mutation-testing.
+ORO_QG_CONTEXT=push scripts/quality_gate.sh
+`
+
+	tests := []struct {
+		name     string
+		hookName string
+		content  string
+		want     bool
+	}{
+		{name: "fast complete", hookName: "pre-push", content: fast, want: true},
+		{name: "fast missing authority", hookName: "pre-push", content: strings.ReplaceAll(fast, "GitHub Actions is the authoritative full quality gate", "local checks")},
+		{name: "fast missing agent guard", hookName: "pre-push", content: strings.ReplaceAll(fast, "refs/heads/agent/*", "refs/heads/topic/*")},
+		{name: "fast missing epic guard", hookName: "pre-push", content: strings.ReplaceAll(fast, "refs/heads/epic/*", "refs/heads/topic/*")},
+		{name: "legacy complete", hookName: "pre-push", content: legacy, want: true},
+		{name: "legacy missing full gate", hookName: "pre-push", content: strings.ReplaceAll(legacy, "Run Oro's full quality gate before push", "Run checks")},
+		{name: "legacy missing mutation disabled", hookName: "pre-push", content: strings.ReplaceAll(legacy, "Mutation testing remains disabled", "Mutation policy")},
+		{name: "legacy missing mutation flag", hookName: "pre-push", content: strings.ReplaceAll(legacy, "--mutation-testing", "mutation testing")},
+		{name: "legacy missing push context", hookName: "pre-push", content: strings.ReplaceAll(legacy, "ORO_QG_CONTEXT=push", "scripts/quality_gate.sh")},
+		{name: "wrong hook", hookName: "pre-commit", content: fast},
+		{name: "partial hybrid", hookName: "pre-push", content: "GitHub Actions is the authoritative full quality gate\n--mutation-testing\nORO_QG_CONTEXT=push"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isOroDistributedHook(tc.hookName, []byte(tc.content)); got != tc.want {
+				t.Fatalf("isOroDistributedHook(%q, content) = %v, want %v", tc.hookName, got, tc.want)
+			}
+		})
 	}
 }

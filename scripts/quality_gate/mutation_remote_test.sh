@@ -47,11 +47,44 @@ new_multi_fixture() {
 	printf '%s\n%s\n' "$base" "$head"
 }
 
+new_targeted_fixture() {
+	local fixture="$1"
+	local expanded="${2:-false}"
+	mkdir -p "$fixture/bin" "$fixture/cmd/oro"
+	git -C "$fixture" init -q
+	git -C "$fixture" config user.email mutation@example.test
+	git -C "$fixture" config user.name mutation-test
+	printf 'package main\n\nfunc isOroDistributedHook() bool { return false }\n' >"$fixture/cmd/oro/hooks.go"
+	if [[ "$expanded" = true ]]; then
+		printf '\nfunc anotherHookDecision() bool { return false }\n' >>"$fixture/cmd/oro/hooks.go"
+	fi
+	printf 'package main\n\nfunc TestIsOroDistributedHookRecognizesFastPrePush() {}\n' >"$fixture/cmd/oro/hooks_test.go"
+	git -C "$fixture" add cmd/oro/hooks.go cmd/oro/hooks_test.go
+	git -C "$fixture" commit -qm base
+	base=$(git -C "$fixture" rev-parse HEAD)
+	printf 'package main\n\nfunc isOroDistributedHook() bool { return true }\n' >"$fixture/cmd/oro/hooks.go"
+	if [[ "$expanded" = true ]]; then
+		printf '\nfunc anotherHookDecision() bool { return true }\n' >>"$fixture/cmd/oro/hooks.go"
+	fi
+	git -C "$fixture" add cmd/oro/hooks.go
+	git -C "$fixture" commit -qm head
+	head=$(git -C "$fixture" rev-parse HEAD)
+	printf '%s\n%s\n' "$base" "$head"
+}
+
 write_fake_go() {
 	local path="$1"
 	cat >"$path" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+
+if [[ "$1" = test ]]; then
+	printf '%s\n' "$*" >>"${MUTATION_LIST_TRACE:?}"
+	if [[ "$MUTATION_FIXTURE" != targeted-list-miss ]]; then
+		printf 'TestIsOroDistributedHookRecognizesFastPrePush\n'
+	fi
+	exit 0
+fi
 
 if [[ "$1" != tool || "$2" != go-mutesting ]]; then
 	echo "unexpected go invocation: $*" >&2
@@ -133,6 +166,13 @@ aggregate | aggregate-below | aggregate-zero | shard-timeout)
 		;;
 	esac
 	;;
+targeted | targeted-fallback | targeted-list-miss | targeted-timeout)
+	printf '%s\n' "$*" >"${MUTATION_ARGS_TRACE:?}"
+	if [[ "$MUTATION_FIXTURE" = targeted-timeout ]]; then
+		printf 'UNKOWN exit code for targeted mutation test timeout\n'
+	fi
+	printf 'The mutation score is 1.000000 (1 passed, 0 failed, 0 duplicated, 0 skipped, total is 1)\n'
+	;;
 *)
 	echo "unknown mutation fixture: $MUTATION_FIXTURE" >&2
 	exit 64
@@ -140,6 +180,37 @@ aggregate | aggregate-below | aggregate-zero | shard-timeout)
 esac
 EOF
 	chmod +x "$path"
+}
+
+run_targeted_fixture() {
+	local fixture="$1"
+	local outcome="$2"
+	local expected_status="$3"
+	local expected_exit="$4"
+	local expanded="${5:-false}"
+	local base head evidence status args_trace list_trace
+	mapfile -t refs < <(new_targeted_fixture "$fixture" "$expanded")
+	base=${refs[0]}
+	head=${refs[1]}
+	evidence="$fixture/mutation-evidence.json"
+	args_trace="$fixture/mutation-args.txt"
+	list_trace="$fixture/mutation-list.txt"
+	write_fake_go "$fixture/bin/go"
+
+	set +e
+	(
+		cd "$fixture"
+		PATH="$fixture/bin:$PATH" MUTATION_FIXTURE="$outcome" \
+			MUTATION_ARGS_TRACE="$args_trace" MUTATION_LIST_TRACE="$list_trace" \
+			bash "$runner" --base "$base" --head "$head" --evidence "$evidence" \
+			>"$fixture/runner.log" 2>&1
+	)
+	status=$?
+	set -e
+	[[ "$status" = "$expected_exit" ]] || fail "$outcome exit = $status, want $expected_exit"
+	jq -e --arg status "$expected_status" '.conclusion == $status' "$evidence" >/dev/null ||
+		fail "$outcome did not preserve its expected conclusion"
+	printf '%s\n' "$evidence"
 }
 
 run_multi_fixture() {
@@ -219,6 +290,34 @@ TestStrictIncrementalMutationShards() {
 		"$evidence" >/dev/null || fail 'one legitimate zero-mutant shard must not erase completed strict score evidence'
 }
 
+TestTargetedMutationScope() {
+	local evidence fixture args_trace list_trace
+	fixture="$tmp/targeted"
+	evidence=$(run_targeted_fixture "$fixture" targeted pass 0)
+	args_trace="$fixture/mutation-args.txt"
+	list_trace="$fixture/mutation-list.txt"
+	grep -q -- '--exec=bash scripts/quality_gate/mutation_exec.sh' "$args_trace" ||
+		fail 'bounded hook mutations must use the checked-in targeted exec boundary'
+	grep -q -- '-list \^TestIsOroDistributedHook ./cmd/oro' "$list_trace" ||
+		fail 'targeted mutation scope must preflight the exact package test pattern'
+	jq -e '.shards[0].match == "^(isOroDistributedHook)$" and .shards[0].test_pattern == "^TestIsOroDistributedHook"' \
+		"$evidence" >/dev/null || fail 'targeted mutation evidence must preserve function and test scope'
+
+	evidence=$(run_targeted_fixture "$tmp/targeted-expanded" targeted-fallback pass 0 true)
+	! grep -q -- '--exec=' "$tmp/targeted-expanded/mutation-args.txt" ||
+		fail 'an expanded mutation surface must fall back to the full package instead of silently narrowing tests'
+	jq -e '.shards[0].match == "^(anotherHookDecision|isOroDistributedHook)$" and .shards[0].test_pattern == ""' \
+		"$evidence" >/dev/null || fail 'full-package fallback evidence must preserve the expanded function surface'
+
+	evidence=$(run_targeted_fixture "$tmp/targeted-list-miss" targeted-list-miss infrastructure_failure 2)
+	jq -e '.shards[0].reason == "targeted mutation test pattern matched no tests"' "$evidence" >/dev/null ||
+		fail 'an empty targeted test scope must be an infrastructure failure'
+
+	evidence=$(run_targeted_fixture "$tmp/targeted-timeout" targeted-timeout infrastructure_failure 2)
+	jq -e '.mutation_exit_code == 124 and .shards[0].exit_code == 124' "$evidence" >/dev/null ||
+		fail 'a targeted mutation test timeout must remain an infrastructure failure'
+}
+
 run_fixture() {
 	local fixture="$1"
 	local outcome="$2"
@@ -290,6 +389,7 @@ TestStrictIncrementalMutation() {
 		fail 'annotated output did not preserve its score and total'
 	run_missing_base_fixture "$tmp/missing-base"
 	TestStrictIncrementalMutationShards
+	TestTargetedMutationScope
 
 	awk '
 		/^  incremental-mutation:$/ { in_job = 1; next }
