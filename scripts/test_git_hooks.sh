@@ -58,7 +58,7 @@ fi
 echo ""
 echo "--- AC3: pre-push fast ref safety ---"
 
-if grep -q 'refs/heads/agent/\*|refs/heads/epic/\*' "$REPO_ROOT/git/hooks/pre-push" 2>/dev/null; then
+if grep -Eq 'refs/heads/agent/\*[[:space:]]*\|[[:space:]]*refs/heads/epic/\*' "$REPO_ROOT/git/hooks/pre-push" 2>/dev/null; then
 	ok "pre-push blocks agent/* and epic/* refs"
 else
 	fail "pre-push does NOT block agent/* and epic/* refs"
@@ -117,7 +117,7 @@ else
 fi
 
 # AC4: fast ref safety persists after install
-if grep -q 'refs/heads/agent/\*|refs/heads/epic/\*' "$TMP_DIR/test-repo/.git/hooks/pre-push" 2>/dev/null; then
+if grep -Eq 'refs/heads/agent/\*[[:space:]]*\|[[:space:]]*refs/heads/epic/\*' "$TMP_DIR/test-repo/.git/hooks/pre-push" 2>/dev/null; then
 	ok "pre-push ref safety persists after install"
 else
 	fail "pre-push ref safety does NOT persist after install"

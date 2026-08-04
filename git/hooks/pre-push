@@ -2,12 +2,13 @@
 
 set -e
 
-# Run Oro's full quality gate before push. Mutation testing remains disabled
-# unless the quality gate is run separately with --mutation-testing.
-if [ "${ORO_PRE_PUSH_QG:-1}" != "0" ]; then
-  _oro_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
-  if [ -x "$_oro_root/scripts/quality_gate.sh" ]; then
-    echo >&2 "oro: running quality gate (mutation testing disabled by default)"
-    (cd "$_oro_root" && ORO_QG_CONTEXT=push scripts/quality_gate.sh) || exit $?
-  fi
-fi
+# Oro fast pre-push safety checks. GitHub Actions is the authoritative full quality gate.
+while IFS= read -r line; do
+  local_ref=$(echo "$line" | awk '{print $1}')
+  case "$local_ref" in
+    refs/heads/agent/* | refs/heads/epic/*)
+      echo >&2 "oro: pushing agent/* and epic/* branches is not allowed"
+      exit 1
+      ;;
+  esac
+done

@@ -94,7 +94,11 @@ make install-git-hooks
 This symlinks `git/hooks/pre-commit` and `git/hooks/pre-push` into `.git/hooks/`.
 
 - **pre-commit**: Runs language-aware lint/format checks on staged files.
-- **pre-push**: Runs the full quality gate (`quality_gate.sh`) before allowing a push.
+- **pre-push**: Performs fast ref-safety checks and blocks direct publication of
+  `agent/*` and `epic/*` branches. GitHub Actions is the authoritative full
+  quality gate for pushed changes.
+
+Run `scripts/quality_gate.sh` explicitly when you want the full gate locally.
 
 ## Linting
 

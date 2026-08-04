@@ -430,7 +430,7 @@ func TestIsOroDistributedHookRecognizesFastPrePush(t *testing.T) {
 while IFS= read -r line; do
     local_ref=$(echo "$line" | awk '{print $1}')
     case "$local_ref" in
-        refs/heads/agent/*|refs/heads/epic/*) exit 1 ;;
+        refs/heads/agent/* | refs/heads/epic/*) exit 1 ;;
     esac
 done
 `)

@@ -1,7 +1,5 @@
 package main
 
-import "strings"
-
 // oroPreCommitCheck is the shell snippet injected into the pre-commit wrapper.
 // It rejects any staged files under oro-docs/ to prevent accidental leakage in
 // stealth mode.
@@ -11,7 +9,9 @@ if git diff --cached --name-only | grep -q '^oro-docs/'; then
     exit 1
 fi`
 
-const oroPrePushCheckPrefix = `# oro check: block agent/* and epic/* branches
+// oroPrePushCheck is the fast safety check injected into ordinary pre-push
+// wrappers. GitHub Actions owns the authoritative full quality gate.
+const oroPrePushCheck = `# oro check: block agent/* and epic/* branches
 while IFS= read -r line; do
     local_ref=$(echo "$line" | awk '{print $1}')
     case "$local_ref" in
@@ -20,40 +20,13 @@ while IFS= read -r line; do
             exit 1
             ;;
     esac
-done
-
-# Run Oro's full quality gate before push. Mutation testing remains disabled
-# unless the quality gate is run separately with --mutation-testing.
-if [ "${ORO_PRE_PUSH_QG:-1}" != "0" ]; then
-    oro_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
-    oro_qg=`
-
-const oroPrePushCheckSuffix = `
-    if [ -x "$oro_root/scripts/quality_gate.sh" ]; then
-        echo "oro: running quality gate (mutation testing disabled by default)" >&2
-        (cd "$oro_root" && ORO_QG_CONTEXT=push "$oro_root/scripts/quality_gate.sh") || exit $?
-    elif [ -x "$oro_qg" ]; then
-        echo "oro: running quality gate (mutation testing disabled by default)" >&2
-        (cd "$oro_root" && ORO_QG_CONTEXT=push "$oro_qg") || exit $?
-    fi
-fi`
-
-// oroPrePushCheck is the default shell snippet injected into the pre-push
-// wrapper by tests and fallback hook installs.
-const oroPrePushCheck = oroPrePushCheckPrefix + `"$oro_root/scripts/quality_gate.sh"` + oroPrePushCheckSuffix
+done`
 
 // buildOroPrePushCheck returns the shell snippet injected into the pre-push wrapper.
 // It blocks pushes of agent/* and epic/* branches to prevent oro work-branches
-// from appearing in the shared remote, then runs QG in push context without
-// enabling mutation testing by default.
+// from appearing in the shared remote. qualityGatePath is retained for source
+// compatibility with hook installers; ordinary pushes never execute it.
 // Installed for ALL oro projects (not just stealth).
-func buildOroPrePushCheck(qualityGatePath string) string {
-	if qualityGatePath == "" {
-		return oroPrePushCheck
-	}
-	return oroPrePushCheckPrefix + shellSingleQuote(qualityGatePath) + oroPrePushCheckSuffix
-}
-
-func shellSingleQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
+func buildOroPrePushCheck(_ string) string {
+	return oroPrePushCheck
 }

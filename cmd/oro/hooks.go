@@ -66,10 +66,14 @@ func isOroDistributedHook(hookName string, data []byte) bool {
 	content := string(data)
 	switch hookName {
 	case "pre-push":
-		return strings.Contains(content, "Run Oro's full quality gate before push") &&
+		legacyFullGate := strings.Contains(content, "Run Oro's full quality gate before push") &&
 			strings.Contains(content, "Mutation testing remains disabled") &&
 			strings.Contains(content, "--mutation-testing") &&
 			strings.Contains(content, "ORO_QG_CONTEXT=push")
+		fastRefGuard := strings.Contains(content, "GitHub Actions is the authoritative full quality gate") &&
+			strings.Contains(content, "refs/heads/agent/*") &&
+			strings.Contains(content, "refs/heads/epic/*")
+		return legacyFullGate || fastRefGuard
 	default:
 		return false
 	}

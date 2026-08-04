@@ -634,7 +634,7 @@ test_pre_push_leaves_full_gate_to_github() {
 		echo "FAIL: pre-push hook still invokes the full quality gate"
 		return 1
 	fi
-	if ! grep -q 'refs/heads/agent/\*|refs/heads/epic/\*' "$hook"; then
+	if ! grep -Eq 'refs/heads/agent/\*[[:space:]]*\|[[:space:]]*refs/heads/epic/\*' "$hook"; then
 		echo "FAIL: pre-push hook lost fast agent/epic ref safety"
 		return 1
 	fi
