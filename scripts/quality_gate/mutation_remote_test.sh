@@ -55,8 +55,11 @@ new_targeted_fixture() {
 	git -C "$fixture" init -q
 	git -C "$fixture" config user.email mutation@example.test
 	git -C "$fixture" config user.name mutation-test
-	local package_name source_file test_file function_name test_name
+	local base_parameters head_parameters package_name source_file source_prefix test_file function_name test_name
 	local -a test_names
+	base_parameters=""
+	head_parameters=""
+	source_prefix=""
 	case "$target" in
 	hooks)
 		package_name=main
@@ -89,11 +92,15 @@ new_targeted_fixture() {
 		source_file=pkg/dispatcher/scheduling.go
 		test_file=pkg/dispatcher/scheduling_cursor_test.go
 		function_name=advanceAssignedGeneralIdle
+		base_parameters='idle []int'
+		head_parameters='_ []int'
+		source_prefix='func nextGeneralIdleIndex() int { return 0 }\n\n'
 		test_names=(TestAdvanceAssignedGeneralIdleConsumesReportedClaimAfterAsyncRelease)
 		;;
 	*) fail "unknown targeted fixture: $target" ;;
 	esac
-	printf 'package %s\n\nfunc %s() bool { return false }\n' "$package_name" "$function_name" >"$fixture/$source_file"
+	printf 'package %s\n\n%bfunc %s(%s) bool { return false }\n' \
+		"$package_name" "$source_prefix" "$function_name" "$base_parameters" >"$fixture/$source_file"
 	if [[ "$expanded" = true ]]; then
 		printf '\nfunc anotherHookDecision() bool { return false }\n' >>"$fixture/$source_file"
 	fi
@@ -104,7 +111,8 @@ new_targeted_fixture() {
 	git -C "$fixture" add "$source_file" "$test_file"
 	git -C "$fixture" commit -qm base
 	base=$(git -C "$fixture" rev-parse HEAD)
-	printf 'package %s\n\nfunc %s() bool { return true }\n' "$package_name" "$function_name" >"$fixture/$source_file"
+	printf 'package %s\n\n%bfunc %s(%s) bool { return true }\n' \
+		"$package_name" "$source_prefix" "$function_name" "$head_parameters" >"$fixture/$source_file"
 	if [[ "$expanded" = true ]]; then
 		printf '\nfunc anotherHookDecision() bool { return true }\n' >>"$fixture/$source_file"
 	fi
