@@ -235,11 +235,8 @@ func (s *SQLiteStore) UpdateWithJourney(ctx context.Context, id string, params U
 }
 
 func (s *SQLiteStore) updateWithOptionalJourney(ctx context.Context, id string, params UpdateParams, journey *JourneyEvent) error {
-	if params.Status != nil && !validStatus(*params.Status) {
-		return fmt.Errorf("beadstore: invalid status %q", *params.Status)
-	}
-	if params.Draft != nil && !*params.Draft {
-		return fmt.Errorf("beadstore: clearing draft requires validated publish")
+	if err := validateNativeUpdateParams(params); err != nil {
+		return err
 	}
 
 	s.writeMu.Lock()
@@ -251,10 +248,8 @@ func (s *SQLiteStore) updateWithOptionalJourney(ctx context.Context, id string, 
 	}
 	defer rollback(tx)
 
-	if params.ParentID != nil && *params.ParentID != "" {
-		if err := ensureBeadExists(ctx, tx, *params.ParentID); err != nil {
-			return err
-		}
+	if err := ensureUpdatedParentExists(ctx, tx, params.ParentID); err != nil {
+		return err
 	}
 
 	stmt := newUpdateStatement(params)
@@ -277,15 +272,37 @@ func (s *SQLiteStore) updateWithOptionalJourney(ctx context.Context, id string, 
 	if err := insertEvent(ctx, tx, "bead_updated", id, updatePayload(params)); err != nil {
 		return err
 	}
-	if journey != nil {
-		if err := insertJourneyEvent(ctx, tx, id, *journey); err != nil {
-			return err
-		}
+	if err := insertOptionalJourneyEvent(ctx, tx, id, journey); err != nil {
+		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("beadstore: commit update %s: %w", id, err)
 	}
 	return nil
+}
+
+func validateNativeUpdateParams(params UpdateParams) error {
+	if params.Status != nil && !validStatus(*params.Status) {
+		return fmt.Errorf("beadstore: invalid status %q", *params.Status)
+	}
+	if params.Draft != nil && !*params.Draft {
+		return fmt.Errorf("beadstore: clearing draft requires validated publish")
+	}
+	return nil
+}
+
+func ensureUpdatedParentExists(ctx context.Context, tx *sql.Tx, parentID *string) error {
+	if parentID == nil || *parentID == "" {
+		return nil
+	}
+	return ensureBeadExists(ctx, tx, *parentID)
+}
+
+func insertOptionalJourneyEvent(ctx context.Context, tx *sql.Tx, beadID string, journey *JourneyEvent) error {
+	if journey == nil {
+		return nil
+	}
+	return insertJourneyEvent(ctx, tx, beadID, *journey)
 }
 
 // UpdateStatusIf atomically changes id from expected to next status.

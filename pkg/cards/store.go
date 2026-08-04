@@ -1130,17 +1130,8 @@ func (s *SQLiteCardStore) promoteLearningWithJourney(
 		if affected != 1 {
 			return ErrAlreadyResolved
 		}
-		if journey != nil {
-			payload, err := journey.Payload(id)
-			if err != nil {
-				return fmt.Errorf("build learning promotion journey payload: %w", err)
-			}
-			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO bead_journey (bead_id, ts, actor, event, payload)
-				VALUES (?, ?, ?, ?, ?)`,
-				journey.BeadID, journey.Ts, journey.Actor, journey.Event, nullableString(payload)); err != nil {
-				return fmt.Errorf("append learning promotion journey: %w", err)
-			}
+		if err := insertLearningPromotionJourney(ctx, tx, id, journey); err != nil {
+			return err
 		}
 		cardID = id
 		return nil
@@ -1149,6 +1140,23 @@ func (s *SQLiteCardStore) promoteLearningWithJourney(
 		return "", err
 	}
 	return cardID, nil
+}
+
+func insertLearningPromotionJourney(ctx context.Context, tx *sql.Tx, cardID string, journey *LearningPromotionJourney) error {
+	if journey == nil {
+		return nil
+	}
+	payload, err := journey.Payload(cardID)
+	if err != nil {
+		return fmt.Errorf("build learning promotion journey payload: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO bead_journey (bead_id, ts, actor, event, payload)
+		VALUES (?, ?, ?, ?, ?)`,
+		journey.BeadID, journey.Ts, journey.Actor, journey.Event, nullableString(payload)); err != nil {
+		return fmt.Errorf("append learning promotion journey: %w", err)
+	}
+	return nil
 }
 
 func learningProposalHash(candidate CardCandidate) string {

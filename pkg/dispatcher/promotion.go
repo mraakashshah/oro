@@ -243,7 +243,7 @@ func learningPromotionPayload(learningID int64, decision cards.PromotionDecision
 		"confidence":  decision.Confidence,
 	})
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("marshal learning promotion payload: %w", err)
 	}
 	return string(payload), nil
 }
