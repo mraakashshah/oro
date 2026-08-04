@@ -218,6 +218,8 @@ targeted_test_pattern() {
 		printf '^TestIsOroDistributedHook'
 	elif [[ "$file" == cmd/oro/cmd_init.go && "$match" == '^(installAgentBranchGuard)$' ]]; then
 		printf '^TestInstallAgentBranchGuard'
+	elif [[ "$file" == cmd/oro/cmd_start.go && "$match" == '^(hookPathsWouldLeak)$' ]]; then
+		printf '^(TestHookPathsWouldLeak|TestHookPathsWouldLeak_NonTmpdirSandboxRoot|TestHookPathsWouldLeak_NonstandardGoTempRoot|TestInstallCodexHookConfigRefusesLeakyHooks)$'
 	fi
 }
 

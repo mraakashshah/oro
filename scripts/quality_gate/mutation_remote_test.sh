@@ -56,18 +56,30 @@ new_targeted_fixture() {
 	git -C "$fixture" config user.email mutation@example.test
 	git -C "$fixture" config user.name mutation-test
 	local source_file test_file function_name test_name
+	local -a test_names
 	case "$target" in
 	hooks)
 		source_file=cmd/oro/hooks.go
 		test_file=cmd/oro/hooks_test.go
 		function_name=isOroDistributedHook
-		test_name=TestIsOroDistributedHookRecognizesFastPrePush
+		test_names=(TestIsOroDistributedHookRecognizesFastPrePush)
 		;;
 	init)
 		source_file=cmd/oro/cmd_init.go
 		test_file=cmd/oro/cmd_init_test.go
 		function_name=installAgentBranchGuard
-		test_name=TestInstallAgentBranchGuard
+		test_names=(TestInstallAgentBranchGuard)
+		;;
+	start)
+		source_file=cmd/oro/cmd_start.go
+		test_file=cmd/oro/cmd_start_test.go
+		function_name=hookPathsWouldLeak
+		test_names=(
+			TestHookPathsWouldLeak
+			TestHookPathsWouldLeak_NonTmpdirSandboxRoot
+			TestHookPathsWouldLeak_NonstandardGoTempRoot
+			TestInstallCodexHookConfigRefusesLeakyHooks
+		)
 		;;
 	*) fail "unknown targeted fixture: $target" ;;
 	esac
@@ -75,7 +87,10 @@ new_targeted_fixture() {
 	if [[ "$expanded" = true ]]; then
 		printf '\nfunc anotherHookDecision() bool { return false }\n' >>"$fixture/$source_file"
 	fi
-	printf 'package main\n\nfunc %s() {}\n' "$test_name" >"$fixture/$test_file"
+	printf 'package main\n' >"$fixture/$test_file"
+	for test_name in "${test_names[@]}"; do
+		printf '\nfunc %s() {}\n' "$test_name" >>"$fixture/$test_file"
+	done
 	git -C "$fixture" add "$source_file" "$test_file"
 	git -C "$fixture" commit -qm base
 	base=$(git -C "$fixture" rev-parse HEAD)
@@ -100,6 +115,7 @@ if [[ "$1" = test ]]; then
 	if [[ "$MUTATION_FIXTURE" != targeted-list-miss ]]; then
 		case "$*" in
 		*TestInstallAgentBranchGuard*) printf 'TestInstallAgentBranchGuard\n' ;;
+		*TestHookPathsWouldLeak*) printf 'TestHookPathsWouldLeak\nTestHookPathsWouldLeak_NonTmpdirSandboxRoot\nTestHookPathsWouldLeak_NonstandardGoTempRoot\nTestInstallCodexHookConfigRefusesLeakyHooks\n' ;;
 		*) printf 'TestIsOroDistributedHookRecognizesFastPrePush\n' ;;
 		esac
 	fi
@@ -313,7 +329,7 @@ TestStrictIncrementalMutationShards() {
 }
 
 TestTargetedMutationScope() {
-	local evidence fixture args_trace list_trace
+	local evidence fixture args_trace list_trace start_pattern
 	fixture="$tmp/targeted"
 	evidence=$(run_targeted_fixture "$fixture" targeted pass 0)
 	args_trace="$fixture/mutation-args.txt"
@@ -330,6 +346,14 @@ TestTargetedMutationScope() {
 		fail 'init guard mutations must preflight their exact direct test pattern'
 	jq -e '.shards[0].match == "^(installAgentBranchGuard)$" and .shards[0].test_pattern == "^TestInstallAgentBranchGuard"' \
 		"$evidence" >/dev/null || fail 'init guard mutation evidence must preserve function and test scope'
+
+	start_pattern='^(TestHookPathsWouldLeak|TestHookPathsWouldLeak_NonTmpdirSandboxRoot|TestHookPathsWouldLeak_NonstandardGoTempRoot|TestInstallCodexHookConfigRefusesLeakyHooks)$'
+	evidence=$(run_targeted_fixture "$tmp/targeted-start" targeted pass 0 false start)
+	grep -Fq -- "-list $start_pattern ./cmd/oro" "$tmp/targeted-start/mutation-list.txt" ||
+		fail 'start hook leak mutations must preflight the exact focused safety tests'
+	jq -e --arg pattern "$start_pattern" \
+		'.shards[0].match == "^(hookPathsWouldLeak)$" and .shards[0].test_pattern == $pattern' \
+		"$evidence" >/dev/null || fail 'start hook leak mutation evidence must preserve function and focused test scope'
 
 	evidence=$(run_targeted_fixture "$tmp/targeted-expanded" targeted-fallback pass 0 true)
 	! grep -q -- '--exec=' "$tmp/targeted-expanded/mutation-args.txt" ||
