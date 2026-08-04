@@ -1,4 +1,4 @@
-package dispatcher
+package dispatcher //nolint:testpackage // White-box regression verifies package-private retention classification.
 
 import (
 	"context"

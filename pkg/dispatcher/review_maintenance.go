@@ -74,18 +74,22 @@ func (d *Dispatcher) removeReviewArtifact(artifact ArtifactRef) error {
 		}
 		return nil
 	}
-	if !artifact.QGEvidence {
-		if err := os.Remove(artifact.Path); err != nil {
-			return fmt.Errorf("remove review artifact: %w", err)
-		}
-		return nil
+	if artifact.QGEvidence {
+		return d.removeCheckpointQGEvidence(artifact.Path)
 	}
+	if err := os.Remove(artifact.Path); err != nil {
+		return fmt.Errorf("remove review artifact: %w", err)
+	}
+	return nil
+}
+
+func (d *Dispatcher) removeCheckpointQGEvidence(path string) error {
 	root := filepath.Clean(d.cfg.ReviewEvidenceDir)
-	path := filepath.Clean(artifact.Path)
-	if artifact.Path != path || !filepath.IsAbs(root) {
+	cleanPath := filepath.Clean(path)
+	if path != cleanPath || !filepath.IsAbs(root) {
 		return errors.New("checkpoint QG evidence path is not canonical")
 	}
-	relative, err := filepath.Rel(root, path)
+	relative, err := filepath.Rel(root, cleanPath)
 	if err != nil {
 		return fmt.Errorf("resolve checkpoint QG evidence path: %w", err)
 	}
@@ -98,7 +102,7 @@ func (d *Dispatcher) removeReviewArtifact(artifact ArtifactRef) error {
 		return errors.New("checkpoint QG evidence assignment is invalid")
 	}
 	want, err := canonicalReadyEvidencePath(root, parts[0], assignmentID)
-	if err != nil || want != path {
+	if err != nil || want != cleanPath {
 		return errors.New("checkpoint QG evidence path is outside canonical root")
 	}
 	if err := evidencefs.RemoveFile(root, parts[:2], parts[2]); err != nil {

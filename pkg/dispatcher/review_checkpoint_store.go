@@ -681,8 +681,7 @@ ORDER BY candidate.path`,
 	if err != nil {
 		return nil, err
 	}
-	artifacts = appendUniqueArtifactRefs(artifacts, unreferenced)
-	return artifacts, nil
+	return appendUniqueArtifactRefs(artifacts, unreferenced), nil
 }
 
 func (s *ReviewCheckpointStore) listUnreferencedRecoveryArtifacts(
