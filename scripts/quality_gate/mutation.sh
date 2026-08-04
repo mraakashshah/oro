@@ -83,15 +83,31 @@ write_shard_infrastructure() {
 	local result="$1"
 	local index="$2"
 	local file="$3"
-	local exit_code="$4"
-	local reason="$5"
+	local match="$4"
+	local exit_code="$5"
+	local reason="$6"
 
 	jq -n \
 		--argjson index "$index" \
 		--arg file "$file" \
+		--arg match "$match" \
 		--arg reason "$reason" \
 		--argjson exit_code "$exit_code" \
-		'{index: $index, file: $file, conclusion: "infrastructure_failure", exit_code: $exit_code, reason: $reason, score: null, passed: 0, failed: 0, duplicated: 0, skipped: 0, total: 0}' \
+		'{index: $index, file: $file, match: $match, conclusion: "infrastructure_failure", exit_code: $exit_code, reason: $reason, score: null, passed: 0, failed: 0, duplicated: 0, skipped: 0, total: 0}' \
+		>"$result"
+}
+
+write_shard_no_mutants() {
+	local result="$1"
+	local index="$2"
+	local file="$3"
+	local match="$4"
+
+	jq -n \
+		--argjson index "$index" \
+		--arg file "$file" \
+		--arg match "$match" \
+		'{index: $index, file: $file, match: $match, conclusion: "completed", exit_code: 0, reason: "no mutants generated", score: null, passed: 0, failed: 0, duplicated: 0, skipped: 0, total: 0}' \
 		>"$result"
 }
 
@@ -99,8 +115,9 @@ write_shard_result() {
 	local result="$1"
 	local index="$2"
 	local file="$3"
-	local mutation_exit="$4"
-	local output_file="$5"
+	local match="$4"
+	local mutation_exit="$5"
+	local output_file="$6"
 	local output summary bare_record score total passed failed duplicated skipped
 	output=$(<"$output_file")
 
@@ -109,7 +126,7 @@ write_shard_result() {
 		if ((mutation_exit == 124)); then
 			reason='mutation file deadline exceeded'
 		fi
-		write_shard_infrastructure "$result" "$index" "$file" "$mutation_exit" "$reason"
+		write_shard_infrastructure "$result" "$index" "$file" "$match" "$mutation_exit" "$reason"
 		return
 	fi
 
@@ -144,49 +161,72 @@ write_shard_result() {
 		-z "${duplicated:-}" || -z "${skipped:-}" || ! "$score" =~ ^[0-9]+(\.[0-9]+)?$ ||
 		! "$total" =~ ^[0-9]+$ || ! "$passed" =~ ^[0-9]+$ || ! "$failed" =~ ^[0-9]+$ ||
 		! "$duplicated" =~ ^[0-9]+$ || ! "$skipped" =~ ^[0-9]+$ ]]; then
-		write_shard_infrastructure "$result" "$index" "$file" 0 'mutation output was malformed or absent'
+		write_shard_infrastructure "$result" "$index" "$file" "$match" 0 'mutation output was malformed or absent'
 		return
 	fi
 	if ((total == 0)); then
-		write_shard_infrastructure "$result" "$index" "$file" 0 'mutation tool generated zero mutants'
+		write_shard_no_mutants "$result" "$index" "$file" "$match"
 		return
 	fi
 
 	jq -n \
 		--argjson index "$index" \
 		--arg file "$file" \
+		--arg match "$match" \
 		--argjson score "$score" \
 		--argjson passed "$passed" \
 		--argjson failed "$failed" \
 		--argjson duplicated "$duplicated" \
 		--argjson skipped "$skipped" \
 		--argjson total "$total" \
-		'{index: $index, file: $file, conclusion: "completed", exit_code: 0, reason: "", score: $score, passed: $passed, failed: $failed, duplicated: $duplicated, skipped: $skipped, total: $total}' \
+		'{index: $index, file: $file, match: $match, conclusion: "completed", exit_code: 0, reason: "", score: $score, passed: $passed, failed: $failed, duplicated: $duplicated, skipped: $skipped, total: $total}' \
 		>"$result"
+}
+
+touched_function_match() {
+	local base="$1"
+	local head="$2"
+	local file="$3"
+	local touched_functions
+
+	touched_functions=$(git diff --unified=0 "$base" "$head" -- "$file" 2>/dev/null |
+		sed -nE '/^(\+func[[:space:]]|@@.*func[[:space:]])/ {
+			s/.*func[[:space:]]+(\([^)]*\)[[:space:]]+)?([A-Za-z0-9_]+).*/\2/p
+		}' |
+		sort -u |
+		paste -sd'|' -)
+	if [[ -n "$touched_functions" ]]; then
+		printf '^(%s)$' "$touched_functions"
+	fi
 }
 
 run_mutation_shard() {
 	local index="$1"
 	local file="$2"
-	local cache_slot="$3"
-	local head="$4"
-	local shard_root="$5"
-	local result_dir="$6"
-	local file_timeout="$7"
-	local exec_timeout="$8"
+	local match="$3"
+	local cache_slot="$4"
+	local head="$5"
+	local shard_root="$6"
+	local result_dir="$7"
+	local file_timeout="$8"
+	local exec_timeout="$9"
 	local checkout="$shard_root/checkouts/$index"
 	local output_file="$shard_root/logs/$index.log"
 	local result="$result_dir/$index.json"
 	local mutation_exit=0
 
+	if [[ -z "$match" ]]; then
+		write_shard_no_mutants "$result" "$index" "$file" "$match"
+		return
+	fi
 	mkdir -p "$checkout" "$shard_root/logs" "$shard_root/caches/$cache_slot" "$shard_root/tmp/$index"
 	if ! git archive "$head" | tar -x -C "$checkout"; then
-		write_shard_infrastructure "$result" "$index" "$file" 2 'create isolated mutation checkout'
+		write_shard_infrastructure "$result" "$index" "$file" "$match" 2 'create isolated mutation checkout'
 		return
 	fi
 	if [[ -f "$checkout/Makefile" && -f "$checkout/cmd/oro/embed.go" ]]; then
 		if ! (cd "$checkout" && make stage-assets) >"$output_file" 2>&1; then
-			write_shard_infrastructure "$result" "$index" "$file" 2 'stage embedded assets in mutation checkout'
+			write_shard_infrastructure "$result" "$index" "$file" "$match" 2 'stage embedded assets in mutation checkout'
 			return
 		fi
 	fi
@@ -194,9 +234,9 @@ run_mutation_shard() {
 		cd "$checkout"
 		GOCACHE="$shard_root/caches/$cache_slot" \
 			GOTMPDIR="$shard_root/tmp/$index" \
-			timeout "$file_timeout" go tool go-mutesting --exec-timeout="$exec_timeout" "$file"
+			timeout "$file_timeout" go tool go-mutesting --exec-timeout="$exec_timeout" "--match=$match" "$file"
 	) >"$output_file" 2>&1 || mutation_exit=$?
-	write_shard_result "$result" "$index" "$file" "$mutation_exit" "$output_file"
+	write_shard_result "$result" "$index" "$file" "$match" "$mutation_exit" "$output_file"
 }
 
 main() {
@@ -271,9 +311,18 @@ main() {
 	trap cleanup_mutation_shards EXIT
 	local result_dir="$shard_root/results"
 	mkdir -p "$result_dir"
+	local -a match_patterns=()
+	local file
+	for file in "${changed_files[@]}"; do
+		match_patterns+=("$(touched_function_match "$base" "$head" "$file")")
+	done
 	local pending_shards
-	pending_shards=$(printf '%s\n' "${changed_files[@]}" |
-		jq -Rn '[inputs | {file: ., conclusion: "pending", exit_code: 0, reason: "", score: null, passed: 0, failed: 0, duplicated: 0, skipped: 0, total: 0}]')
+	pending_shards=$(
+		for index in "${!changed_files[@]}"; do
+			jq -nc --arg file "${changed_files[$index]}" --arg match "${match_patterns[$index]}" \
+				'{file: $file, match: $match, conclusion: "pending", exit_code: 0, reason: "", score: null, passed: 0, failed: 0, duplicated: 0, skipped: 0, total: 0}'
+		done | jq -s '.'
+	)
 	write_sharded_evidence "$evidence" "$base" "$head" infrastructure_failure 2 null 0 "$pending_shards" "${changed_files[@]}"
 
 	local worker_count=$max_workers
@@ -284,12 +333,12 @@ main() {
 		"${#changed_files[@]}" "$worker_count" "$file_timeout" "$exec_timeout"
 
 	local -a pids=()
-	local index file key cache_slot pid
+	local index key cache_slot pid
 	for index in "${!changed_files[@]}"; do
 		file=${changed_files[$index]}
 		printf -v key '%06d' "$index"
 		cache_slot=$((index % worker_count))
-		run_mutation_shard "$key" "$file" "$cache_slot" "$head" "$shard_root" "$result_dir" "$file_timeout" "$exec_timeout" &
+		run_mutation_shard "$key" "$file" "${match_patterns[$index]}" "$cache_slot" "$head" "$shard_root" "$result_dir" "$file_timeout" "$exec_timeout" &
 		pids+=("$!")
 		if ((${#pids[@]} == worker_count)); then
 			for pid in "${pids[@]}"; do
@@ -306,7 +355,7 @@ main() {
 		file=${changed_files[$index]}
 		printf -v key '%06d' "$index"
 		if [[ ! -s "$result_dir/$key.json" ]]; then
-			write_shard_infrastructure "$result_dir/$key.json" "$key" "$file" 2 'mutation shard produced no evidence'
+			write_shard_infrastructure "$result_dir/$key.json" "$key" "$file" "${match_patterns[$index]}" 2 'mutation shard produced no evidence'
 		fi
 		if [[ -s "$shard_root/logs/$key.log" ]]; then
 			printf '\n--- mutation shard %s: %s ---\n' "$key" "$file"

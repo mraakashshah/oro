@@ -119,6 +119,8 @@ aggregate | aggregate-below | aggregate-zero | shard-timeout)
 		if [[ "$MUTATION_FIXTURE" = shard-timeout ]]; then
 			printf 'mutation timed out\n' >&2
 			exit 124
+		elif [[ "$MUTATION_FIXTURE" = aggregate-zero ]]; then
+			printf 'The mutation score is 0.900000 (9 passed, 1 failed, 2 duplicated, 0 skipped, total is 10)\n'
 		elif [[ "$MUTATION_FIXTURE" = aggregate-below ]]; then
 			printf 'The mutation score is 0.900000 (9 passed, 1 failed, 2 duplicated, 0 skipped, total is 10)\n'
 		else
