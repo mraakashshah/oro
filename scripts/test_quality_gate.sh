@@ -628,13 +628,14 @@ test_mutation_opt_in_flag_runs() {
 }
 
 # shellcheck disable=SC2317,SC2329
-test_pre_push_leaves_mutation_opt_in() {
-	if grep -vE '^[[:space:]]*(#|echo)' "$SCRIPT_DIR/../git/hooks/pre-push" | grep -q 'ORO_RUN_MUTATION=1'; then
-		echo "FAIL: pre-push hook enables mutation by default"
+test_pre_push_leaves_full_gate_to_github() {
+	local hook="$SCRIPT_DIR/../git/hooks/pre-push"
+	if grep -q 'quality_gate\.sh\|ORO_QG_CONTEXT\|ORO_PRE_PUSH_QG' "$hook"; then
+		echo "FAIL: pre-push hook still invokes the full quality gate"
 		return 1
 	fi
-	if ! grep -q 'mutation testing disabled by default' "$SCRIPT_DIR/../git/hooks/pre-push"; then
-		echo "FAIL: pre-push hook does not advertise mutation default-off behavior"
+	if ! grep -Eq 'refs/heads/agent/\*[[:space:]]*\|[[:space:]]*refs/heads/epic/\*' "$hook"; then
+		echo "FAIL: pre-push hook lost fast agent/epic ref safety"
 		return 1
 	fi
 }
@@ -2161,7 +2162,7 @@ test_case "mutation zero-total report skips" test_mutation_zero_total_skips
 test_case "mutation missing-main warning message" test_mutation_missing_main_warning_message
 test_case "mutation skips by default in all contexts" test_mutation_default_all_contexts_skip
 test_case "mutation runs only with opt-in flag" test_mutation_opt_in_flag_runs
-test_case "pre-push leaves mutation disabled" test_pre_push_leaves_mutation_opt_in
+test_case "pre-push leaves full gate to GitHub" test_pre_push_leaves_full_gate_to_github
 
 echo ""
 echo "Testing Python mutation missing main branch (oro-xgwr)"

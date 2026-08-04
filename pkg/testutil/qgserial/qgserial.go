@@ -1,7 +1,7 @@
 // Package qgserial gates concurrency-flaky tests into a serialized quality-gate
 // lane.
 //
-// Two orthogonal test guards exist in this codebase. Pick the right one:
+// Three orthogonal test guards exist in this codebase. Pick the right one:
 //
 //   - qgserial.RequireSerial (this package, env ORO_QG_SERIAL_LANE) — use for a
 //     test that opens a REAL Unix-domain-socket/net listener or asserts tight
@@ -12,6 +12,11 @@
 //     serial lane, which the quality gate runs under its cross-worktree FIFO lock
 //     (see scripts/quality_gate.sh). The canonical guarded set lives in
 //     pkg/dispatcher/testdata/serial_lane_tests.txt.
+//
+//   - qgserial.RequireStress (this package, env ORO_QG_STRESS_LANE) — use for
+//     an integration test that launches nested quality gates or another
+//     resource-intensive test topology. These tests skip ordinary package and
+//     coverage runs and execute only in an explicit, cache-isolated CI lane.
 //
 //   - loadguard.SkipOutsidePushQG (pkg/testutil/loadguard, env ORO_QG_CONTEXT) —
 //     use for a timing-sensitive test that should run ONLY in the push/pre-push
@@ -30,6 +35,10 @@ import (
 // lane in scripts/quality_gate.sh; the concurrent main phase actively neutralizes
 // it so guarded tests stay skipped there.
 const SerialLaneEnvVar = "ORO_QG_SERIAL_LANE"
+
+// StressLaneEnvVar opts resource-intensive nested quality-gate integration
+// tests into their explicit CI lane.
+const StressLaneEnvVar = "ORO_QG_STRESS_LANE"
 
 // RequireSerial skips the calling test unless the serial lane is enabled via a
 // truthy ORO_QG_SERIAL_LANE. Call it as the first line of any test that stands up
@@ -51,10 +60,32 @@ func skipUnlessSerialLane(tb testing.TB) {
 	}
 }
 
+// RequireStress skips the calling test unless the explicit stress lane is
+// enabled. Ordinary package, coverage, and CGO-free runs must leave it false.
+//
+//oro:testonly
+func RequireStress(t *testing.T) {
+	t.Helper()
+	skipUnlessStressLane(t)
+}
+
+func skipUnlessStressLane(tb testing.TB) {
+	tb.Helper()
+	if !StressLaneEnabled() {
+		tb.Skipf("skipping resource-intensive test outside the stress lane; set %s=1 to run", StressLaneEnvVar)
+	}
+}
+
 // SerialLaneEnabled reports whether the serial lane is enabled in the current
 // environment.
 func SerialLaneEnabled() bool {
 	return truthy(os.Getenv(SerialLaneEnvVar))
+}
+
+// StressLaneEnabled reports whether the resource-intensive stress lane is
+// enabled in the current environment.
+func StressLaneEnabled() bool {
+	return truthy(os.Getenv(StressLaneEnvVar))
 }
 
 func truthy(v string) bool {

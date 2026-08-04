@@ -322,17 +322,10 @@ func TestInstallHookWrapper(t *testing.T) {
 		if !strings.Contains(oroPrePushCheck, "exit 1") {
 			t.Error("oroPrePushCheck should exit 1 on violation")
 		}
-		if !strings.Contains(oroPrePushCheck, "ORO_QG_CONTEXT=push") {
-			t.Error("oroPrePushCheck should run quality gate in push context")
-		}
-		if strings.Contains(oroPrePushCheck, "ORO_RUN_MUTATION=1 ") || strings.Contains(oroPrePushCheck, "ORO_RUN_MUTATION=1\"") {
-			t.Error("oroPrePushCheck should not enable mutation by default")
-		}
-		if !strings.Contains(oroPrePushCheck, "scripts/quality_gate.sh") {
-			t.Error("oroPrePushCheck should run scripts/quality_gate.sh")
-		}
-		if !strings.Contains(oroPrePushCheck, "mutation testing disabled by default") {
-			t.Error("oroPrePushCheck should describe mutation testing as disabled by default")
+		for _, forbidden := range []string{"ORO_QG_CONTEXT", "ORO_PRE_PUSH_QG", "quality_gate.sh"} {
+			if strings.Contains(oroPrePushCheck, forbidden) {
+				t.Errorf("oroPrePushCheck must leave the authoritative full gate to GitHub; found %q", forbidden)
+			}
 		}
 	})
 
@@ -360,7 +353,7 @@ func TestInstallHookWrapper(t *testing.T) {
 		}
 	})
 
-	t.Run("pre_push_hook_runs_explicit_quality_gate_path", func(t *testing.T) {
+	t.Run("pre_push_hook_does_not_run_explicit_quality_gate_path", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		gitDir := filepath.Join(tmpDir, ".git")
 		if err := os.MkdirAll(filepath.Join(gitDir, "hooks"), 0o750); err != nil {
@@ -390,16 +383,12 @@ printf '%s:%s' "${ORO_RUN_MUTATION:-unset}" "${ORO_QG_CONTEXT:-unset}" > "$MARKE
 			t.Fatalf("pre-push hook failed: %v\n%s", err, string(output))
 		}
 
-		got, err := os.ReadFile(marker) //nolint:gosec // test marker
-		if err != nil {
-			t.Fatalf("read marker: %v", err)
-		}
-		if string(got) != "unset:push" {
-			t.Fatalf("expected explicit quality gate to run in push context with mutation disabled by default, got %q", string(got))
+		if _, err := os.Stat(marker); !os.IsNotExist(err) {
+			t.Fatalf("ordinary pre-push unexpectedly ran the full quality gate: %v", err)
 		}
 	})
 
-	t.Run("pre_push_hook_prefers_repo_quality_gate_to_stale_explicit_path", func(t *testing.T) {
+	t.Run("pre_push_hook_blocks_agent_branch_without_running_quality_gate", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		gitDir := filepath.Join(tmpDir, ".git")
 		if err := os.MkdirAll(filepath.Join(gitDir, "hooks"), 0o750); err != nil {
@@ -407,17 +396,8 @@ printf '%s:%s' "${ORO_RUN_MUTATION:-unset}" "${ORO_QG_CONTEXT:-unset}" > "$MARKE
 		}
 
 		marker := filepath.Join(tmpDir, "selected-quality-gate.txt")
-		repoQGPath := filepath.Join(tmpDir, "scripts", "quality_gate.sh")
-		if err := os.MkdirAll(filepath.Dir(repoQGPath), 0o750); err != nil {
-			t.Fatal(err)
-		}
-		repoQGScript := "#!/bin/sh\nprintf repo > \"$MARKER\"\n"
-		if err := os.WriteFile(repoQGPath, []byte(repoQGScript), 0o755); err != nil { //nolint:gosec // test hook script
-			t.Fatal(err)
-		}
-
 		staleQGPath := filepath.Join(tmpDir, "stale-quality_gate.sh")
-		staleQGScript := "#!/bin/sh\nprintf stale > \"$MARKER\"\n"
+		staleQGScript := "#!/bin/sh\nprintf ran > \"$MARKER\"\n"
 		if err := os.WriteFile(staleQGPath, []byte(staleQGScript), 0o755); err != nil { //nolint:gosec // test hook script
 			t.Fatal(err)
 		}
@@ -429,19 +409,60 @@ printf '%s:%s' "${ORO_RUN_MUTATION:-unset}" "${ORO_QG_CONTEXT:-unset}" > "$MARKE
 		hookPath := filepath.Join(gitDir, "hooks", "pre-push")
 		cmd := exec.Command(hookPath, "origin", "git@example.invalid:repo.git") //nolint:gosec // test-created hook
 		cmd.Dir = tmpDir
-		cmd.Stdin = strings.NewReader("refs/heads/main 0000000000000000000000000000000000000000 refs/heads/main 0000000000000000000000000000000000000000\n")
+		cmd.Stdin = strings.NewReader("refs/heads/agent/oro-test 0000000000000000000000000000000000000000 refs/heads/agent/oro-test 0000000000000000000000000000000000000000\n")
 		cmd.Env = append(os.Environ(), "MARKER="+marker)
 		output, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("pre-push hook failed: %v\n%s", err, string(output))
+		if err == nil {
+			t.Fatalf("pre-push hook accepted an agent branch:\n%s", string(output))
 		}
-
-		got, err := os.ReadFile(marker) //nolint:gosec // test marker
-		if err != nil {
-			t.Fatalf("read marker: %v", err)
+		if _, err := os.Stat(marker); !os.IsNotExist(err) {
+			t.Fatalf("blocked agent push unexpectedly ran the full quality gate: %v", err)
 		}
-		if string(got) != "repo" {
-			t.Fatalf("expected repository quality gate to win over stale explicit path, got %q", string(got))
+		if !strings.Contains(string(output), "pushing agent/* and epic/* branches is not allowed") {
+			t.Fatalf("pre-push rejection lost the branch safety reason:\n%s", string(output))
 		}
 	})
+}
+
+func TestIsOroDistributedHookRecognizesFastPrePush(t *testing.T) {
+	fast := `#!/usr/bin/env sh
+# Oro fast pre-push safety checks. GitHub Actions is the authoritative full quality gate.
+while IFS= read -r line; do
+    local_ref=$(echo "$line" | awk '{print $1}')
+    case "$local_ref" in
+        refs/heads/agent/* | refs/heads/epic/*) exit 1 ;;
+    esac
+done
+	`
+	legacy := `#!/usr/bin/env sh
+# Run Oro's full quality gate before push. Mutation testing remains disabled
+# unless explicitly requested with --mutation-testing.
+ORO_QG_CONTEXT=push scripts/quality_gate.sh
+`
+
+	tests := []struct {
+		name     string
+		hookName string
+		content  string
+		want     bool
+	}{
+		{name: "fast complete", hookName: "pre-push", content: fast, want: true},
+		{name: "fast missing authority", hookName: "pre-push", content: strings.ReplaceAll(fast, "GitHub Actions is the authoritative full quality gate", "local checks")},
+		{name: "fast missing agent guard", hookName: "pre-push", content: strings.ReplaceAll(fast, "refs/heads/agent/*", "refs/heads/topic/*")},
+		{name: "fast missing epic guard", hookName: "pre-push", content: strings.ReplaceAll(fast, "refs/heads/epic/*", "refs/heads/topic/*")},
+		{name: "legacy complete", hookName: "pre-push", content: legacy, want: true},
+		{name: "legacy missing full gate", hookName: "pre-push", content: strings.ReplaceAll(legacy, "Run Oro's full quality gate before push", "Run checks")},
+		{name: "legacy missing mutation disabled", hookName: "pre-push", content: strings.ReplaceAll(legacy, "Mutation testing remains disabled", "Mutation policy")},
+		{name: "legacy missing mutation flag", hookName: "pre-push", content: strings.ReplaceAll(legacy, "--mutation-testing", "mutation testing")},
+		{name: "legacy missing push context", hookName: "pre-push", content: strings.ReplaceAll(legacy, "ORO_QG_CONTEXT=push", "scripts/quality_gate.sh")},
+		{name: "wrong hook", hookName: "pre-commit", content: fast},
+		{name: "partial hybrid", hookName: "pre-push", content: "GitHub Actions is the authoritative full quality gate\n--mutation-testing\nORO_QG_CONTEXT=push"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isOroDistributedHook(tc.hookName, []byte(tc.content)); got != tc.want {
+				t.Fatalf("isOroDistributedHook(%q, content) = %v, want %v", tc.hookName, got, tc.want)
+			}
+		})
+	}
 }

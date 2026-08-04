@@ -1038,7 +1038,7 @@ UPDATE recovery_quarantines SET status='resolved', resolved_at=datetime('now') W
 		t.Fatalf("resolve recovery quarantine: %v", err)
 	}
 
-	d.tryAssign(ctx)
+	tryAssignAndWait(t, d, ctx)
 
 	beadSrc.mu.Lock()
 	status = beadSrc.updated["oro-ready"]

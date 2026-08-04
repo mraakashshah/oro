@@ -502,7 +502,11 @@ An automated lane-based pipeline (`scripts/quality_gate.sh`) that every automati
 
 The quality gate is generated during `oro init` / `oro setup` based on detected project languages. For projects with no recognized languages, a shell/docs/config gate is still generated so that tasks always have a gate to pass.
 
-Common environment controls include `ORO_QG_GOMAXPROCS`, `ORO_SKIP_MUTATION`, `ORO_MUTATION_BASE`, `ORO_PRE_PUSH_QG`, and `ORO_QG_CONTEXT`.
+Common environment controls include `ORO_QG_GOMAXPROCS`, `ORO_SKIP_MUTATION`,
+`ORO_MUTATION_BASE`, and `ORO_QG_CONTEXT`. For repository pushes, GitHub
+Actions is the authoritative full gate; ordinary pre-push hooks perform only
+fast ref-safety checks. Run `scripts/quality_gate.sh` explicitly for a full
+local check.
 
 ### Dead Pane Detection
 

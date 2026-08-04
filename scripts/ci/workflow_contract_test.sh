@@ -99,7 +99,7 @@ TestPortableQGAggregate() {
 	[[ "$actual_required" == "$expected_jobs" ]] ||
 		fail 'require-needs-success must require every portable job exactly once'
 
-	successful_needs='{"go":{"result":"success"},"cgo-free":{"result":"success"},"shell":{"result":"success"},"docs":{"result":"success"},"python":{"result":"success"},"incremental-mutation":{"result":"success"}}'
+	successful_needs='{"go":{"result":"success"},"cgo-free":{"result":"success"},"shell":{"result":"success"},"docs":{"result":"success"},"python":{"result":"success"},"incremental-mutation":{"result":"success"},"qg-stress":{"result":"success"}}'
 	for status in skipped cancelled timed_out action_required; do
 		needs_json=$(printf '%s\n' "$successful_needs" | jq --arg status "$status" '.go.result = $status')
 		if "$repo_root/scripts/ci/require-needs-success.sh" "$needs_json" >/dev/null 2>&1; then
@@ -111,6 +111,74 @@ TestPortableQGAggregate() {
 	fi
 }
 
+TestIncrementalMutationCheckoutMatchesHead() {
+	local mutation_job
+	mutation_job=$(awk '
+		/^  incremental-mutation:$/ { in_job = 1 }
+		in_job && /^  [a-z0-9][a-z0-9-]*:$/ && $1 != "incremental-mutation:" { exit }
+		in_job { print }
+	' "$workflow_path")
+	[[ -n "$mutation_job" ]] || fail 'workflow must define an incremental-mutation job'
+
+	[[ $(printf '%s\n' "$mutation_job" | grep -Fxc '      - uses: actions/checkout@v4') -eq 1 ]] ||
+		fail 'incremental-mutation must use checkout exactly once'
+	[[ $(printf '%s\n' "$mutation_job" | grep -Fxc '          fetch-depth: 0') -eq 1 ]] ||
+		fail 'incremental-mutation checkout must preserve full history'
+	# These are literal GitHub expressions, not shell expansions.
+	# shellcheck disable=SC2016
+	[[ $(printf '%s\n' "$mutation_job" | grep -Fxc '          ref: ${{ github.sha }}') -eq 1 ]] ||
+		fail 'incremental-mutation checkout must use the exact mutation head'
+	# shellcheck disable=SC2016
+	printf '%s\n' "$mutation_job" | grep -Fq '          base_sha="${{ github.event.pull_request.base.sha || github.event.before }}"' ||
+		fail 'incremental-mutation must preserve pull-request and push base selection'
+	# shellcheck disable=SC2016
+	printf '%s\n' "$mutation_job" | grep -Fq -- '            --base "$base_sha"' ||
+		fail 'incremental-mutation must pass the selected base'
+	# shellcheck disable=SC2016
+	[[ $(printf '%s\n' "$mutation_job" | grep -Fc '            --head "${{ github.sha }}"') -eq 1 ]] ||
+		fail 'incremental-mutation must pass the exact checkout head'
+	# shellcheck disable=SC2016
+	if printf '%s\n' "$mutation_job" | grep -Fq 'github.event.pull_request.merge_commit_sha'; then
+		fail 'incremental-mutation must not use a stale pull-request payload merge SHA'
+	fi
+}
+
+TestExplicitQGStressLane() {
+	local stress_job ordinary_jobs
+	stress_job=$(awk '
+		/^  qg-stress:$/ { in_job = 1 }
+		in_job && /^  [a-z0-9][a-z0-9-]*:$/ && $1 != "qg-stress:" { exit }
+		in_job { print }
+	' "$workflow_path")
+	[[ -n "$stress_job" ]] || fail 'workflow must define an explicit qg-stress job'
+	printf '%s\n' "$stress_job" | grep -q '^    needs: \[go, cgo-free, shell, docs, python, incremental-mutation\]$' ||
+		fail 'qg-stress must wait for every ordinary portable job before consuming stress resources'
+	# These are literal GitHub-expression contracts, not shell expansions.
+	# shellcheck disable=SC2016
+	for required in \
+		'ORO_QG_STRESS_LANE: "1"' \
+		'GOCACHE: ${{ runner.temp }}/oro-qg-stress/go-build' \
+		'GOTMPDIR: ${{ runner.temp }}/oro-qg-stress/go-tmp' \
+		"-run '^TestConcurrentGatesNoTimingFlakeSerialLaneCatchesRegression\$'" \
+		'-count=1' \
+		'-p 1' \
+		'-timeout=10m' \
+		'if: always()' \
+		'if-no-files-found: error' \
+		'qg-stress-evidence'; do
+		printf '%s\n' "$stress_job" | grep -Fq -- "$required" ||
+			fail "qg-stress job is missing: $required"
+	done
+
+	ordinary_jobs=$(awk '
+		/^  go:$/ || /^  cgo-free:$/ { in_job = 1 }
+		in_job && /^  [a-z0-9][a-z0-9-]*:$/ && $1 != "go:" && $1 != "cgo-free:" { in_job = 0 }
+		in_job { print }
+	' "$workflow_path")
+	[[ $(printf '%s\n' "$ordinary_jobs" | grep -c 'ORO_QG_STRESS_LANE: "0"') -eq 2 ]] ||
+		fail 'ordinary Go and CGO-free jobs must explicitly disable nested QG stress tests'
+}
+
 main() {
 	local requested_test=${1:-}
 	case "$requested_test" in
@@ -119,6 +187,12 @@ main() {
 		;;
 	TestPortableQGAggregate)
 		TestPortableQGAggregate
+		;;
+	TestIncrementalMutationCheckoutMatchesHead)
+		TestIncrementalMutationCheckoutMatchesHead
+		;;
+	TestExplicitQGStressLane)
+		TestExplicitQGStressLane
 		;;
 	*)
 		fail "unknown test $requested_test"

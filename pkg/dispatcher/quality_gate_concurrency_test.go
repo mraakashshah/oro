@@ -832,6 +832,7 @@ func TestRunSerialLaneOnlyRetainsNestedFailureOutput(t *testing.T) {
 }
 
 func TestConcurrentQualityGatesSerializeDispatcherAggregateSuite(t *testing.T) {
+	qgserial.RequireStress(t)
 	assertConcurrentQualityGatesSerializeDispatcherAggregateSuite(t)
 }
 
@@ -840,6 +841,7 @@ func TestConcurrentQualityGatesSerializeDispatcherAggregateSuite(t *testing.T) {
 // tests skipped, even when the serial-lane env leaks in ambiently), while the
 // serialized lane still runs the guarded tests and catches a regression.
 func TestConcurrentGatesNoTimingFlakeSerialLaneCatchesRegression(t *testing.T) {
+	qgserial.RequireStress(t)
 	assertConcurrentQualityGatesSerializeDispatcherAggregateSuite(t)
 }
 

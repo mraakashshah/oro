@@ -64,7 +64,10 @@ Stealth mode stores all config, task data, and quality gate scripts under
 No `.oro/` directory is created in the project root.
 
 Git pre-commit and pre-push hooks are installed automatically to prevent
-accidental commits of oro artifacts.
+accidental commits of Oro artifacts and direct publication of `agent/*` or
+`epic/*` refs. Ordinary pushes leave the authoritative full quality gate to
+GitHub Actions; the generated quality-gate script remains available for
+explicit local runs.
 
 ---
 

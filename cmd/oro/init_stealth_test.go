@@ -73,8 +73,8 @@ func TestBootstrapStealthProjectHooks(t *testing.T) {
 			t.Fatalf("projectHash: %v", err)
 		}
 		stealthQG := filepath.Join(oroHome, "projects", "s-"+hash, "quality_gate.sh")
-		if !strings.Contains(string(data), stealthQG) {
-			t.Errorf("pre-push hook should reference stealth quality gate %q, got:\n%s", stealthQG, string(data))
+		if strings.Contains(string(data), stealthQG) || strings.Contains(string(data), "quality_gate.sh") {
+			t.Errorf("pre-push hook should leave the full gate to GitHub, got:\n%s", string(data))
 		}
 	})
 

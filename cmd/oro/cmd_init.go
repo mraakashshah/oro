@@ -541,8 +541,7 @@ func installAgentBranchGuard(absProjectRoot string) {
 	if _, err := os.Stat(gitDir); err != nil {
 		return
 	}
-	qgPath := filepath.Join(absProjectRoot, "scripts", "quality_gate.sh")
-	if err := installHookWrapper(gitDir, "pre-push", buildOroPrePushCheck(qgPath)); err != nil {
+	if err := installHookWrapper(gitDir, "pre-push", buildOroPrePushCheck("")); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: install pre-push hook: %v\n", err)
 	}
 }

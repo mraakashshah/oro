@@ -54,14 +54,20 @@ else
 	fail "git/hooks/pre-push is NOT executable"
 fi
 
-# AC3: pre-push contains the "all checks" string
+# AC3: pre-push keeps fast ref safety checks and leaves the full QG to GitHub
 echo ""
-echo "--- AC3: pre-push check count string ---"
+echo "--- AC3: pre-push fast ref safety ---"
 
-if grep -q "all checks" "$REPO_ROOT/git/hooks/pre-push" 2>/dev/null; then
-	ok "pre-push contains 'all checks' string"
+if grep -Eq 'refs/heads/agent/\*[[:space:]]*\|[[:space:]]*refs/heads/epic/\*' "$REPO_ROOT/git/hooks/pre-push" 2>/dev/null; then
+	ok "pre-push blocks agent/* and epic/* refs"
 else
-	fail "pre-push does NOT contain 'all checks' string"
+	fail "pre-push does NOT block agent/* and epic/* refs"
+fi
+
+if grep -q 'quality_gate\.sh\|ORO_QG_CONTEXT\|ORO_PRE_PUSH_QG' "$REPO_ROOT/git/hooks/pre-push" 2>/dev/null; then
+	fail "pre-push invokes the full quality gate instead of deferring to GitHub"
+else
+	ok "pre-push leaves the authoritative full quality gate to GitHub"
 fi
 
 # AC2: Makefile has install-git-hooks target
@@ -110,11 +116,11 @@ else
 	fail ".git/hooks/pre-push NOT installed"
 fi
 
-# AC4: check count string persists after install
-if grep -q "all checks" "$TMP_DIR/test-repo/.git/hooks/pre-push" 2>/dev/null; then
-	ok "pre-push 'all checks' string persists after install"
+# AC4: fast ref safety persists after install
+if grep -Eq 'refs/heads/agent/\*[[:space:]]*\|[[:space:]]*refs/heads/epic/\*' "$TMP_DIR/test-repo/.git/hooks/pre-push" 2>/dev/null; then
+	ok "pre-push ref safety persists after install"
 else
-	fail "pre-push 'all checks' string does NOT persist after install"
+	fail "pre-push ref safety does NOT persist after install"
 fi
 
 # AC4: installed hooks are executable
