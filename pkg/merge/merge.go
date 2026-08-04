@@ -221,19 +221,8 @@ func (c *Coordinator) mergePinnedApproval(ctx context.Context, opts Opts, target
 	if err != nil {
 		return nil, err
 	}
-	if target == "main" {
-		if _, _, err := c.git.Run(ctx, primaryRepo, "merge", "--ff-only", opts.ExpectedSourceSHA); err != nil {
-			return nil, fmt.Errorf("ff-only merge of approved commit %s: %w", opts.ExpectedSourceSHA, err)
-		}
-	} else {
-		if _, _, err := c.git.Run(ctx, primaryRepo, "merge-base", "--is-ancestor", opts.ExpectedTargetSHA, opts.ExpectedSourceSHA); err != nil {
-			return nil, fmt.Errorf("approved target %s is not an ancestor of approved source %s: %w",
-				opts.ExpectedTargetSHA, opts.ExpectedSourceSHA, err)
-		}
-		targetRef := "refs/heads/" + strings.TrimPrefix(target, "refs/heads/")
-		if _, _, err := c.git.Run(ctx, primaryRepo, "update-ref", targetRef, opts.ExpectedSourceSHA, opts.ExpectedTargetSHA); err != nil {
-			return nil, fmt.Errorf("fast-forward approved target %s: %w", target, err)
-		}
+	if err := c.advancePinnedTarget(ctx, primaryRepo, target, opts.ExpectedTargetSHA, opts.ExpectedSourceSHA); err != nil {
+		return nil, err
 	}
 	if err := c.verifyPinnedRef(ctx, primaryRepo, target+"^{commit}", opts.ExpectedSourceSHA, "integrated target"); err != nil {
 		return nil, err
@@ -242,6 +231,32 @@ func (c *Coordinator) mergePinnedApproval(ctx context.Context, opts Opts, target
 		return nil, fmt.Errorf("worktree remove failed (approved commit %s merged but worktree lingers): %w", opts.ExpectedSourceSHA, removeErr)
 	}
 	return &Result{CommitSHA: opts.ExpectedSourceSHA, Noop: opts.ExpectedSourceSHA == opts.ExpectedTargetSHA}, nil
+}
+
+func (c *Coordinator) advancePinnedTarget(ctx context.Context, primaryRepo, target, expectedTargetSHA, expectedSourceSHA string) error {
+	if target == "main" {
+		return c.mergePinnedMain(ctx, primaryRepo, expectedSourceSHA)
+	}
+	return c.updatePinnedTargetRef(ctx, primaryRepo, target, expectedTargetSHA, expectedSourceSHA)
+}
+
+func (c *Coordinator) mergePinnedMain(ctx context.Context, primaryRepo, expectedSourceSHA string) error {
+	if _, _, err := c.git.Run(ctx, primaryRepo, "merge", "--ff-only", expectedSourceSHA); err != nil {
+		return fmt.Errorf("ff-only merge of approved commit %s: %w", expectedSourceSHA, err)
+	}
+	return nil
+}
+
+func (c *Coordinator) updatePinnedTargetRef(ctx context.Context, primaryRepo, target, expectedTargetSHA, expectedSourceSHA string) error {
+	if _, _, err := c.git.Run(ctx, primaryRepo, "merge-base", "--is-ancestor", expectedTargetSHA, expectedSourceSHA); err != nil {
+		return fmt.Errorf("approved target %s is not an ancestor of approved source %s: %w",
+			expectedTargetSHA, expectedSourceSHA, err)
+	}
+	targetRef := "refs/heads/" + strings.TrimPrefix(target, "refs/heads/")
+	if _, _, err := c.git.Run(ctx, primaryRepo, "update-ref", targetRef, expectedSourceSHA, expectedTargetSHA); err != nil {
+		return fmt.Errorf("fast-forward approved target %s: %w", target, err)
+	}
+	return nil
 }
 
 func (c *Coordinator) verifyPinnedRef(ctx context.Context, dir, ref, expected, identity string) error {
