@@ -275,28 +275,35 @@ func (d *Dispatcher) filterExecutableBeads(ctx context.Context, allBeads []proto
 	// remain assignable so a decomposition worker can create child beads.
 	executable := make([]protocol.Bead, 0, len(allBeads))
 	for _, b := range allBeads {
-		if strings.EqualFold(b.Type, "epic") {
-			hasChildren, err := d.beads.HasChildren(ctx, b.ID)
-			if err != nil {
-				_ = d.logEvent(ctx, "epic_has_children_error", "dispatcher", b.ID, "", err.Error())
-				continue
-			}
-			if hasChildren {
-				if d.beforeAssignmentSideEffectAdmission != nil {
-					d.beforeAssignmentSideEffectAdmission()
-				}
-				admission, admissionErr := d.acquireAssignmentSideEffectAdmission(ctx, b.ID, "", "bulk_epic_validation")
-				if admissionErr != nil || admission == nil {
-					continue
-				}
-				d.processEpicSkip(ctx, b)
-				d.releaseAssignmentSideEffectAdmission(ctx, admission)
-				continue
-			}
+		if d.executableAfterEpicSideEffects(ctx, b) {
+			executable = append(executable, b)
 		}
-		executable = append(executable, b)
 	}
 	return executable
+}
+
+func (d *Dispatcher) executableAfterEpicSideEffects(ctx context.Context, bead protocol.Bead) bool {
+	if !strings.EqualFold(bead.Type, "epic") {
+		return true
+	}
+	hasChildren, err := d.beads.HasChildren(ctx, bead.ID)
+	if err != nil {
+		_ = d.logEvent(ctx, "epic_has_children_error", "dispatcher", bead.ID, "", err.Error())
+		return false
+	}
+	if !hasChildren {
+		return true
+	}
+	if d.beforeAssignmentSideEffectAdmission != nil {
+		d.beforeAssignmentSideEffectAdmission()
+	}
+	admission, err := d.acquireAssignmentSideEffectAdmission(ctx, bead.ID, "", "bulk_epic_validation")
+	if err != nil || admission == nil {
+		return false
+	}
+	d.processEpicSkip(ctx, bead)
+	d.releaseAssignmentSideEffectAdmission(ctx, admission)
+	return false
 }
 
 func (d *Dispatcher) filterRecoveryQuarantinedBeads(ctx context.Context, allBeads []protocol.Bead) []protocol.Bead {

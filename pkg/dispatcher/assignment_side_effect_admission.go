@@ -4,11 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"sync/atomic"
 	"time"
 )
-
-var assignmentSideEffectAdmissionSequence atomic.Uint64
 
 type assignmentSideEffectAdmission struct {
 	beadID string
@@ -22,7 +19,7 @@ func (d *Dispatcher) acquireAssignmentSideEffectAdmission(
 	if d == nil || d.db == nil || beadID == "" {
 		return nil, fmt.Errorf("acquire assignment side-effect admission: missing dispatcher database or bead ID")
 	}
-	token := fmt.Sprintf("%d-%d", os.Getpid(), assignmentSideEffectAdmissionSequence.Add(1))
+	token := fmt.Sprintf("%d-%d", os.Getpid(), d.assignmentSideEffectAdmissionSeq.Add(1))
 	result, err := d.db.ExecContext(ctx, `
 INSERT INTO assignment_side_effect_admissions (bead_id, owner_token)
 SELECT ?, ?

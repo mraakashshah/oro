@@ -252,36 +252,80 @@ func (s *ReviewCheckpointStore) LoadForOpsRunOrBindLegacy(
 	if err != nil || checkpoint != nil {
 		return checkpoint, err
 	}
+	tx, err := s.beginSerializedOwnershipBind(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	rechecked, err := loadCheckpointForOpsRunTx(ctx, tx, opsRunID)
+	if err != nil {
+		return nil, err
+	}
+	if rechecked != nil {
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("commit exact checkpoint ownership observation: %w", err)
+		}
+		return rechecked, nil
+	}
+	return s.bindLegacyCheckpointOwnership(ctx, tx, opsRunID, beadID)
+}
+
+func (s *ReviewCheckpointStore) beginSerializedOwnershipBind(ctx context.Context) (*sql.Tx, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("begin legacy checkpoint ownership bind: %w", err)
 	}
-	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.ExecContext(ctx, `UPDATE review_checkpoints SET updated_at=updated_at WHERE 0`); err != nil {
+		_ = tx.Rollback()
 		return nil, fmt.Errorf("serialize legacy checkpoint ownership bind: %w", err)
 	}
-	rechecked, err := scanReviewCheckpoint(tx.QueryRowContext(ctx, `
+	return tx, nil
+}
+
+func loadCheckpointForOpsRunTx(ctx context.Context, tx *sql.Tx, opsRunID int64) (*ReviewCheckpoint, error) {
+	checkpoint, err := scanReviewCheckpoint(tx.QueryRowContext(ctx, `
 SELECT id, checkpoint_key, bead_id, origin_assignment_id, COALESCE(current_assignment_id, 0),
        COALESCE(worker_id, ''), worktree, branch, target_branch, head_sha, target_sha,
        acceptance_hash, qg_script_hash, qg_mode, review_policy_hash, triage_revision,
        ready_attempt, COALESCE(ops_run_id, 0), state
 FROM review_checkpoints
 WHERE ops_run_id=? AND state NOT IN ('integrated', 'superseded')`, opsRunID))
-	if err == nil {
-		if err := tx.Commit(); err != nil {
-			return nil, fmt.Errorf("commit exact checkpoint ownership observation: %w", err)
-		}
-		return &rechecked, nil
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
+	if err != nil {
 		return nil, fmt.Errorf("recheck exact checkpoint ownership for ops run %d: %w", opsRunID, err)
 	}
+	return &checkpoint, nil
+}
+
+func (s *ReviewCheckpointStore) bindLegacyCheckpointOwnership(
+	ctx context.Context,
+	tx *sql.Tx,
+	opsRunID int64,
+	beadID string,
+) (*ReviewCheckpoint, error) {
+	ids, err := legacyUnlinkedCheckpointIDs(ctx, tx, beadID)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) > 1 {
+		return nil, fmt.Errorf("bind ops run %d for bead %s: found %d unlinked checkpoints: %w",
+			opsRunID, beadID, len(ids), ErrCheckpointOwnershipAmbiguous)
+	}
+	if len(ids) == 1 {
+		return s.bindSingleLegacyCheckpoint(ctx, tx, opsRunID, ids[0])
+	}
+	return commitAbsentLegacyCheckpointOwnership(ctx, tx, opsRunID, beadID)
+}
+
+func legacyUnlinkedCheckpointIDs(ctx context.Context, tx *sql.Tx, beadID string) ([]int64, error) {
 	rows, err := tx.QueryContext(ctx, `
 SELECT id FROM review_checkpoints
 WHERE bead_id=? AND ops_run_id IS NULL AND state NOT IN ('integrated', 'superseded')
 ORDER BY id`, beadID)
 	if err != nil {
-		return nil, fmt.Errorf("query legacy checkpoint ownership for ops run %d: %w", opsRunID, err)
+		return nil, fmt.Errorf("query legacy checkpoint ownership for bead %s: %w", beadID, err)
 	}
 	var ids []int64
 	for rows.Next() {
@@ -299,25 +343,35 @@ ORDER BY id`, beadID)
 	if err := rows.Close(); err != nil {
 		return nil, fmt.Errorf("close legacy checkpoint ownership rows: %w", err)
 	}
-	if len(ids) > 1 {
-		return nil, fmt.Errorf("bind ops run %d for bead %s: found %d unlinked checkpoints: %w",
-			opsRunID, beadID, len(ids), ErrCheckpointOwnershipAmbiguous)
-	}
-	if len(ids) == 1 {
-		result, err := tx.ExecContext(ctx, `
+	return ids, nil
+}
+
+func (s *ReviewCheckpointStore) bindSingleLegacyCheckpoint(
+	ctx context.Context,
+	tx *sql.Tx,
+	opsRunID, checkpointID int64,
+) (*ReviewCheckpoint, error) {
+	result, err := tx.ExecContext(ctx, `
 UPDATE review_checkpoints SET ops_run_id=?, updated_at=datetime('now')
-WHERE id=? AND ops_run_id IS NULL`, opsRunID, ids[0])
-		if err != nil {
-			return nil, fmt.Errorf("bind legacy checkpoint %d to ops run %d: %w", ids[0], opsRunID, err)
-		}
-		if err := requireOneCheckpointRow(result, ids[0], "bind legacy checkpoint ownership"); err != nil {
-			return nil, err
-		}
-		if err := tx.Commit(); err != nil {
-			return nil, fmt.Errorf("commit legacy checkpoint ownership bind: %w", err)
-		}
-		return s.LoadForOpsRun(ctx, opsRunID)
+WHERE id=? AND ops_run_id IS NULL`, opsRunID, checkpointID)
+	if err != nil {
+		return nil, fmt.Errorf("bind legacy checkpoint %d to ops run %d: %w", checkpointID, opsRunID, err)
 	}
+	if err := requireOneCheckpointRow(result, checkpointID, "bind legacy checkpoint ownership"); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit legacy checkpoint ownership bind: %w", err)
+	}
+	return s.LoadForOpsRun(ctx, opsRunID)
+}
+
+func commitAbsentLegacyCheckpointOwnership(
+	ctx context.Context,
+	tx *sql.Tx,
+	opsRunID int64,
+	beadID string,
+) (*ReviewCheckpoint, error) {
 	var linkedToOther int
 	if err := tx.QueryRowContext(ctx, `
 SELECT COUNT(*) FROM review_checkpoints
