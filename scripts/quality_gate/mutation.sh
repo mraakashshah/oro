@@ -220,6 +220,8 @@ targeted_test_pattern() {
 		printf '^TestInstallAgentBranchGuard'
 	elif [[ "$file" == cmd/oro/cmd_start.go && "$match" == '^(hookPathsWouldLeak)$' ]]; then
 		printf '^(TestHookPathsWouldLeak|TestHookPathsWouldLeak_NonTmpdirSandboxRoot|TestHookPathsWouldLeak_NonstandardGoTempRoot|TestInstallCodexHookConfigRefusesLeakyHooks)$'
+	elif [[ "$file" == pkg/dispatcher/scheduling.go && "$match" == '^(advanceAssignedGeneralIdle)$' ]]; then
+		printf '^TestAdvanceAssignedGeneralIdleConsumesReportedClaimAfterAsyncRelease$'
 	fi
 }
 

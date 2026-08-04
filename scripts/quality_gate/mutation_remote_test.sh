@@ -51,26 +51,29 @@ new_targeted_fixture() {
 	local fixture="$1"
 	local expanded="${2:-false}"
 	local target="${3:-hooks}"
-	mkdir -p "$fixture/bin" "$fixture/cmd/oro"
+	mkdir -p "$fixture/bin" "$fixture/cmd/oro" "$fixture/pkg/dispatcher"
 	git -C "$fixture" init -q
 	git -C "$fixture" config user.email mutation@example.test
 	git -C "$fixture" config user.name mutation-test
-	local source_file test_file function_name test_name
+	local package_name source_file test_file function_name test_name
 	local -a test_names
 	case "$target" in
 	hooks)
+		package_name=main
 		source_file=cmd/oro/hooks.go
 		test_file=cmd/oro/hooks_test.go
 		function_name=isOroDistributedHook
 		test_names=(TestIsOroDistributedHookRecognizesFastPrePush)
 		;;
 	init)
+		package_name=main
 		source_file=cmd/oro/cmd_init.go
 		test_file=cmd/oro/cmd_init_test.go
 		function_name=installAgentBranchGuard
 		test_names=(TestInstallAgentBranchGuard)
 		;;
 	start)
+		package_name=main
 		source_file=cmd/oro/cmd_start.go
 		test_file=cmd/oro/cmd_start_test.go
 		function_name=hookPathsWouldLeak
@@ -81,20 +84,27 @@ new_targeted_fixture() {
 			TestInstallCodexHookConfigRefusesLeakyHooks
 		)
 		;;
+	scheduling)
+		package_name=dispatcher
+		source_file=pkg/dispatcher/scheduling.go
+		test_file=pkg/dispatcher/scheduling_cursor_test.go
+		function_name=advanceAssignedGeneralIdle
+		test_names=(TestAdvanceAssignedGeneralIdleConsumesReportedClaimAfterAsyncRelease)
+		;;
 	*) fail "unknown targeted fixture: $target" ;;
 	esac
-	printf 'package main\n\nfunc %s() bool { return false }\n' "$function_name" >"$fixture/$source_file"
+	printf 'package %s\n\nfunc %s() bool { return false }\n' "$package_name" "$function_name" >"$fixture/$source_file"
 	if [[ "$expanded" = true ]]; then
 		printf '\nfunc anotherHookDecision() bool { return false }\n' >>"$fixture/$source_file"
 	fi
-	printf 'package main\n' >"$fixture/$test_file"
+	printf 'package %s\n' "$package_name" >"$fixture/$test_file"
 	for test_name in "${test_names[@]}"; do
 		printf '\nfunc %s() {}\n' "$test_name" >>"$fixture/$test_file"
 	done
 	git -C "$fixture" add "$source_file" "$test_file"
 	git -C "$fixture" commit -qm base
 	base=$(git -C "$fixture" rev-parse HEAD)
-	printf 'package main\n\nfunc %s() bool { return true }\n' "$function_name" >"$fixture/$source_file"
+	printf 'package %s\n\nfunc %s() bool { return true }\n' "$package_name" "$function_name" >"$fixture/$source_file"
 	if [[ "$expanded" = true ]]; then
 		printf '\nfunc anotherHookDecision() bool { return true }\n' >>"$fixture/$source_file"
 	fi
@@ -116,6 +126,7 @@ if [[ "$1" = test ]]; then
 		case "$*" in
 		*TestInstallAgentBranchGuard*) printf 'TestInstallAgentBranchGuard\n' ;;
 		*TestHookPathsWouldLeak*) printf 'TestHookPathsWouldLeak\nTestHookPathsWouldLeak_NonTmpdirSandboxRoot\nTestHookPathsWouldLeak_NonstandardGoTempRoot\nTestInstallCodexHookConfigRefusesLeakyHooks\n' ;;
+		*TestAdvanceAssignedGeneralIdleConsumesReportedClaimAfterAsyncRelease*) printf 'TestAdvanceAssignedGeneralIdleConsumesReportedClaimAfterAsyncRelease\n' ;;
 		*) printf 'TestIsOroDistributedHookRecognizesFastPrePush\n' ;;
 		esac
 	fi
@@ -329,7 +340,7 @@ TestStrictIncrementalMutationShards() {
 }
 
 TestTargetedMutationScope() {
-	local evidence fixture args_trace list_trace start_pattern
+	local evidence fixture args_trace list_trace scheduling_pattern start_pattern
 	fixture="$tmp/targeted"
 	evidence=$(run_targeted_fixture "$fixture" targeted pass 0)
 	args_trace="$fixture/mutation-args.txt"
@@ -354,6 +365,14 @@ TestTargetedMutationScope() {
 	jq -e --arg pattern "$start_pattern" \
 		'.shards[0].match == "^(hookPathsWouldLeak)$" and .shards[0].test_pattern == $pattern' \
 		"$evidence" >/dev/null || fail 'start hook leak mutation evidence must preserve function and focused test scope'
+
+	scheduling_pattern='^TestAdvanceAssignedGeneralIdleConsumesReportedClaimAfterAsyncRelease$'
+	evidence=$(run_targeted_fixture "$tmp/targeted-scheduling" targeted pass 0 false scheduling)
+	grep -Fq -- "-list $scheduling_pattern ./pkg/dispatcher" "$tmp/targeted-scheduling/mutation-list.txt" ||
+		fail 'dispatcher scheduling mutations must preflight the exact idle-cursor regression test'
+	jq -e --arg pattern "$scheduling_pattern" \
+		'.shards[0].match == "^(advanceAssignedGeneralIdle)$" and .shards[0].test_pattern == $pattern' \
+		"$evidence" >/dev/null || fail 'dispatcher scheduling mutation evidence must preserve function and exact regression test scope'
 
 	evidence=$(run_targeted_fixture "$tmp/targeted-expanded" targeted-fallback pass 0 true)
 	! grep -q -- '--exec=' "$tmp/targeted-expanded/mutation-args.txt" ||
