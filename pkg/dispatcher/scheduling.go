@@ -724,14 +724,18 @@ func (d *Dispatcher) assignGeneralIdleWorkers(ctx context.Context, idle []idleWo
 	idleIdx := 0
 	var done []<-chan struct{}
 	for _, unit := range plan.units {
-		idleIdx = d.assignGeneralSchedulingUnit(ctx, idle, idleIdx, unit, pbSnapshot, assignedBeads, reservedTargets, focusVersion, &done)
+		var deferLowerUnits bool
+		idleIdx, deferLowerUnits = d.assignGeneralSchedulingUnit(ctx, idle, idleIdx, unit, pbSnapshot, assignedBeads, reservedTargets, focusVersion, &done)
+		if deferLowerUnits {
+			break
+		}
 	}
 	return done
 }
 
-func (d *Dispatcher) assignGeneralSchedulingUnit(ctx context.Context, idle []idleWorker, idleIdx int, unit schedulingUnit, pbSnapshot, assignedBeads, reservedTargets map[string]bool, focusVersion uint64, done *[]<-chan struct{}) int {
-	nextIdleIdx := idleIdx
-	for _, bead := range unit.beads {
+func (d *Dispatcher) assignGeneralSchedulingUnit(ctx context.Context, idle []idleWorker, idleIdx int, unit schedulingUnit, pbSnapshot, assignedBeads, reservedTargets map[string]bool, focusVersion uint64, done *[]<-chan struct{}) (nextIdleIdx int, deferLowerUnits bool) {
+	nextIdleIdx = idleIdx
+	for beadIdx, bead := range unit.beads {
 		if assignedBeads[bead.ID] {
 			continue
 		}
@@ -748,8 +752,20 @@ func (d *Dispatcher) assignGeneralSchedulingUnit(ctx context.Context, idle []idl
 			continue
 		}
 		_, nextIdleIdx = d.advanceAssignedGeneralIdle(idle, nextIdleIdx, bead.ID, pbSnapshot)
+		if unit.kind == unitEpic && schedulingUnitHasRemainingCandidate(unit, beadIdx+1, assignedBeads, reservedTargets) {
+			return nextIdleIdx, true
+		}
 	}
-	return nextIdleIdx
+	return nextIdleIdx, false
+}
+
+func schedulingUnitHasRemainingCandidate(unit schedulingUnit, start int, assignedBeads, reservedTargets map[string]bool) bool {
+	for _, bead := range unit.beads[start:] {
+		if !assignedBeads[bead.ID] && !reservedTargets[bead.ID] {
+			return true
+		}
+	}
+	return false
 }
 
 // launchAssignment starts the slow assignment preparation in the background

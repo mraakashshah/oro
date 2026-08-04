@@ -24457,8 +24457,8 @@ func TestTryAssign_FillsIdleWorkersAcrossEpicUnitsByPriority(t *testing.T) {
 	})
 
 	tryAssignAndWait(t, d, context.Background())
-	// Same-epic children race for one branch admission lease. The quiet loser
-	// remains eligible and fills the released worker on the next scheduling pass.
+	// Same-epic children share one branch admission lease, so the next child
+	// remains eligible and fills a released worker on the next scheduling pass.
 	tryAssignAndWait(t, d, context.Background())
 
 	got := assignedBeadIDsSorted(t, d.db)
@@ -24486,8 +24486,8 @@ func TestTryAssign_ConcentratesWorkersOnTopEpic(t *testing.T) {
 	})
 
 	tryAssignAndWait(t, d, context.Background())
-	// The first pass admits one child for the epic; its quiet lease contender
-	// remains eligible to concentrate the second worker on the next pass.
+	// The first pass admits one child for the epic; the next child remains
+	// eligible to concentrate the second worker on the next pass.
 	tryAssignAndWait(t, d, context.Background())
 
 	got := assignedBeadIDsSorted(t, d.db)

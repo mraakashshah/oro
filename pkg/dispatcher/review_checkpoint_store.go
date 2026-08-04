@@ -102,7 +102,15 @@ func (s *ReviewCheckpointStore) CreateOrReuse(ctx context.Context, in Checkpoint
 	}
 
 	for {
-		checkpoint, retry, err := s.createOrReuseAttempt(ctx, in)
+		var (
+			checkpoint ReviewCheckpoint
+			retry      bool
+		)
+		err := retrySQLiteBusyOperation(ctx, func() error {
+			var attemptErr error
+			checkpoint, retry, attemptErr = s.createOrReuseAttempt(ctx, in)
+			return attemptErr
+		})
 		if err != nil {
 			return ReviewCheckpoint{}, err
 		}

@@ -259,12 +259,15 @@ func (d *Dispatcher) reviewCheckpointBlocksAssignment(ctx context.Context, beadI
 		return false, nil
 	}
 	var blocked bool
-	if err := d.db.QueryRowContext(ctx, `
+	err := retrySQLiteBusyOperation(ctx, func() error {
+		return d.db.QueryRowContext(ctx, `
 SELECT EXISTS(
     SELECT 1
     FROM review_checkpoints_blocking_assignment
     WHERE bead_id = ?
-)`, beadID).Scan(&blocked); err != nil {
+)`, beadID).Scan(&blocked)
+	})
+	if err != nil {
 		return false, fmt.Errorf("query blocking review checkpoint: %w", err)
 	}
 	return blocked, nil
