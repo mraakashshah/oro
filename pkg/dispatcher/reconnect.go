@@ -179,10 +179,8 @@ WHERE id=? AND worker_id=? AND status='requeued'`, identity.assignmentID, worker
 		return true
 	}
 
-	result, err := d.db.ExecContext(ctx, `
-UPDATE assignments SET status='requeued', completed_at=datetime('now')
-WHERE id=? AND worker_id=? AND status IN ('active','requeued')`, identity.assignmentID, workerID)
-	if err != nil || rowsAffected(result) != 1 {
+	if err := d.releaseLegacyIdleOwnership(ctx, identity, status); err != nil {
+		_ = d.logEvent(ctx, "legacy_idle_release_failed", "dispatcher", identity.beadID, workerID, err.Error())
 		return true
 	}
 	d.mu.Lock()
@@ -192,6 +190,61 @@ WHERE id=? AND worker_id=? AND status IN ('active','requeued')`, identity.assign
 	}
 	d.mu.Unlock()
 	return true
+}
+
+func (d *Dispatcher) releaseLegacyIdleOwnership(
+	ctx context.Context,
+	identity durableReadyIdentity,
+	originalStatus string,
+) error {
+	if originalStatus == "active" {
+		if err := d.transitionLegacyAssignmentStatus(ctx, identity, "active", "requeued"); err != nil {
+			return err
+		}
+	}
+	opened, err := d.beads.UpdateStatusIf(ctx, identity.beadID, "in_progress", "open")
+	if err == nil && !opened {
+		var detail *protocol.BeadDetail
+		detail, err = d.beads.Show(ctx, identity.beadID)
+		opened = err == nil && detail != nil && detail.Status == "open"
+		if !opened && err == nil {
+			err = errors.New("authoritative bead was not in_progress or open")
+		}
+	}
+	if err == nil && opened {
+		return nil
+	}
+	if originalStatus == "active" {
+		if restoreErr := d.transitionLegacyAssignmentStatus(ctx, identity, "requeued", "active"); restoreErr != nil {
+			return fmt.Errorf("reopen authoritative bead: %w; restore assignment ownership: %w", err, restoreErr)
+		}
+	}
+	return fmt.Errorf("reopen authoritative bead: %w", err)
+}
+
+func (d *Dispatcher) transitionLegacyAssignmentStatus(
+	ctx context.Context,
+	identity durableReadyIdentity,
+	from, to string,
+) error {
+	completedAt := "completed_at=datetime('now')"
+	if to == "active" {
+		completedAt = "completed_at=NULL"
+	}
+	result, err := d.db.ExecContext(ctx, `UPDATE assignments SET status=?, `+completedAt+`
+WHERE id=? AND bead_id=? AND worker_id=? AND status=?`,
+		to, identity.assignmentID, identity.beadID, identity.workerID, from)
+	if err != nil {
+		return fmt.Errorf("transition legacy assignment %d from %s to %s: %w", identity.assignmentID, from, to, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count legacy assignment %d transition: %w", identity.assignmentID, err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("transition legacy assignment %d from %s to %s affected %d rows", identity.assignmentID, from, to, rows)
+	}
+	return nil
 }
 
 func (d *Dispatcher) preserveLegacyReconnectClaim(workerID, beadID string) {
