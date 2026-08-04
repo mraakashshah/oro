@@ -8846,20 +8846,30 @@ func TestDispatcherShutdownOpsCleanup(t *testing.T) {
 
 	sockPath := fmt.Sprintf("/tmp/oro-test-%d.sock", time.Now().UnixNano())
 	t.Cleanup(func() { _ = os.Remove(sockPath) })
+	projectStateRoot := t.TempDir()
 
 	cfg := Config{
-		SocketPath:       sockPath,
-		DBPath:           ":memory:",
-		MaxWorkers:       5,
-		HeartbeatTimeout: 500 * time.Millisecond,
-		PollInterval:     50 * time.Millisecond,
-		ShutdownTimeout:  500 * time.Millisecond,
-		Estimator:        &mockBeadEstimator{},
+		SocketPath:        sockPath,
+		DBPath:            ":memory:",
+		RepoRoot:          projectStateRoot,
+		ReviewEvidenceDir: filepath.Join(projectStateRoot, protocol.OroDir, "review-evidence"),
+		MaxWorkers:        5,
+		HeartbeatTimeout:  500 * time.Millisecond,
+		PollInterval:      50 * time.Millisecond,
+		ShutdownTimeout:   500 * time.Millisecond,
+		Estimator:         &mockBeadEstimator{},
 	}
 
 	d, err := New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, nil)
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
+	}
+	checkoutEvidenceDir, err := filepath.Abs(filepath.Join(protocol.OroDir, "review-evidence"))
+	if err != nil {
+		t.Fatalf("resolve checkout evidence directory: %v", err)
+	}
+	if filepath.Clean(d.cfg.ReviewEvidenceDir) == filepath.Clean(checkoutEvidenceDir) {
+		t.Fatalf("shutdown test evidence directory targets checkout state: %s", d.cfg.ReviewEvidenceDir)
 	}
 	cancel := startDispatcher(t, d)
 
