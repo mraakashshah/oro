@@ -638,7 +638,11 @@ func installCodexHookConfig(codexHome, hooksDir string) error {
 // subprocesses may use /tmp while macOS reports a per-user /var/folders temp dir.
 func hookPathsWouldLeak(codexHome, hooksDir string) bool {
 	var codexUnderTemp, hooksUnderTemp bool
-	for _, tempRoot := range []string{os.TempDir(), "/tmp", "/private/tmp", "/var/folders"} {
+	tempRoots := []string{os.TempDir(), "/tmp", "/private/tmp", "/var/folders"}
+	if goTempDir := os.Getenv("GOTMPDIR"); goTempDir != "" {
+		tempRoots = append(tempRoots, goTempDir)
+	}
+	for _, tempRoot := range tempRoots {
 		codexUnderTemp = codexUnderTemp || pathUnder(tempRoot, codexHome)
 		hooksUnderTemp = hooksUnderTemp || pathUnder(tempRoot, hooksDir)
 	}
