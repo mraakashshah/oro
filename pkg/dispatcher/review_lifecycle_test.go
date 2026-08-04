@@ -566,6 +566,95 @@ WHERE id=?`, baseSHA, approvedSHA, approvedSHA, integrationStepAssignmentComplet
 	}
 }
 
+func TestReviewIntegrationStartupReconciliationRecoversLearningJourneyPartialCommit(t *testing.T) {
+	ctx := context.Background()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	if err := migrations.MigrateToV3(ctx, d.db); err != nil {
+		t.Fatalf("migrate native beadstore: %v", err)
+	}
+	repo, baseSHA, approvedSHA := reviewIntegrationGitFixture(t, true)
+	d.repoRoot = repo
+	d.setCommandRunner(&ExecCommandRunner{})
+	d.beads = beadstore.NewSQLiteStore(d.db)
+
+	const beadID = "integration-learning-journey-partial-commit"
+	if _, err := d.beads.Create(ctx, beadstore.CreateParams{
+		ID: beadID, Title: "Learning journey crash boundary", Type: "task", Status: "in_progress",
+	}); err != nil {
+		t.Fatalf("create native integration bead: %v", err)
+	}
+	if _, err := d.cardStore.AppendLearningPending(ctx, beadID, cards.CardCandidate{
+		Type:        string(cards.CardTypePattern),
+		Title:       "Atomic learning promotion journal",
+		BodySummary: "Promotion and its journey are one durable unit.",
+		BodyFull:    "A journey insert failure cannot strand a resolved learning without audit history.",
+		Confidence:  0.96,
+		Evidence:    []string{"native SQLite partial-commit regression"},
+	}); err != nil {
+		t.Fatalf("append pending learning: %v", err)
+	}
+
+	worktree := filepath.Join(repo, ".worktrees", beadID)
+	assignmentID, err := d.createAssignment(ctx, beadID, "worker-learning-journey", worktree)
+	if err != nil {
+		t.Fatalf("create assignment: %v", err)
+	}
+	if err := d.completeCheckpointAssignment(ctx, assignmentID, beadID); err != nil {
+		t.Fatalf("complete assignment fixture: %v", err)
+	}
+	checkpoint := seedReviewIntegrationCheckpoint(t, d, beadID, assignmentID, worktree,
+		ReviewCheckpointStateIntegrating, baseSHA, approvedSHA)
+	if _, err := d.db.ExecContext(ctx, `
+UPDATE review_checkpoints
+SET integration_target_before_sha=?, integration_approved_head_sha=?,
+    integration_observed_target_sha=?, integration_step=?
+WHERE id=?`, baseSHA, approvedSHA, approvedSHA, integrationStepAssignmentCompleted, checkpoint.ID); err != nil {
+		t.Fatalf("seed durable post-assignment step: %v", err)
+	}
+	if _, err := d.db.ExecContext(ctx, `
+CREATE TRIGGER fail_learning_promoted_journey
+BEFORE INSERT ON bead_journey
+WHEN NEW.event = 'learning_promoted'
+BEGIN
+  SELECT RAISE(ABORT, 'injected learning journey failure');
+END`); err != nil {
+		t.Fatalf("install learning journey failure: %v", err)
+	}
+
+	if err := d.reconcileReviewIntegrationsOnStartup(ctx); err == nil {
+		t.Fatal("first reconciliation succeeded despite injected learning journey failure")
+	}
+	assertIntegrationCheckpointState(t, d, checkpoint.ID,
+		ReviewCheckpointStateIntegrating, integrationStepAssignmentCompleted)
+	if _, err := d.db.ExecContext(ctx, `DROP TRIGGER fail_learning_promoted_journey`); err != nil {
+		t.Fatalf("remove learning journey failure: %v", err)
+	}
+
+	d.beads = beadstore.NewSQLiteStore(d.db)
+	restartedCards, err := cards.NewStore(d.db)
+	if err != nil {
+		t.Fatalf("recreate native card store: %v", err)
+	}
+	d.cardStore = restartedCards
+	if err := d.reconcileReviewIntegrationsOnStartup(ctx); err != nil {
+		t.Fatalf("restart reconciliation: %v", err)
+	}
+
+	assertIntegrationCheckpointState(t, d, checkpoint.ID,
+		ReviewCheckpointStateIntegrated, integrationStepIntegrated)
+	var promotedCards, journeyEvents int
+	if err := d.db.QueryRow(`SELECT COUNT(*) FROM cards WHERE emerged_from=?`, beadID).Scan(&promotedCards); err != nil {
+		t.Fatalf("count promoted cards: %v", err)
+	}
+	if err := d.db.QueryRow(`SELECT COUNT(*) FROM bead_journey WHERE bead_id=? AND event='learning_promoted'`, beadID).
+		Scan(&journeyEvents); err != nil {
+		t.Fatalf("count learning promotion journeys: %v", err)
+	}
+	if promotedCards != 1 || journeyEvents != 1 {
+		t.Fatalf("promoted cards/journeys = %d/%d, want exactly 1/1", promotedCards, journeyEvents)
+	}
+}
+
 type failOnceLearningPromotionStore struct {
 	cards.Store
 	mu   sync.Mutex

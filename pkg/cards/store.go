@@ -45,6 +45,17 @@ type Store interface {
 	WithReadTx(ctx context.Context, fn func(tx ReadTx) error) error
 }
 
+// LearningPromotionJourney describes the audit record committed with a native
+// learning promotion. Payload receives the generated card ID while the same
+// transaction is still open.
+type LearningPromotionJourney struct {
+	BeadID  string
+	Ts      string
+	Actor   string
+	Event   string
+	Payload func(cardID string) (string, error)
+}
+
 // Embedder computes dense embedding vectors for card semantic recall.
 type Embedder interface {
 	Embed(text string) []float32
@@ -66,6 +77,13 @@ func WithEmbedder(embedder Embedder) StoreOption {
 type SQLiteCardStore struct {
 	db       *sql.DB
 	embedder Embedder
+}
+
+// NativeTransactionIdentity identifies the database connection pool used for
+// native transactions. Callers can use it to ensure a cross-store atomic
+// operation is only selected when both stores share the same database.
+func (s *SQLiteCardStore) NativeTransactionIdentity() any {
+	return s.db
 }
 
 type sqlExecutor interface {
@@ -1011,6 +1029,17 @@ func (s *SQLiteCardStore) PromoteLearningAsProposal(ctx context.Context, learnin
 	return s.promoteLearning(ctx, learningID, true)
 }
 
+// PromoteLearningWithJourney creates and resolves a learning together with its
+// bead journey record. A failure in either mutation rolls back both.
+func (s *SQLiteCardStore) PromoteLearningWithJourney(
+	ctx context.Context,
+	learningID int64,
+	asProposal bool,
+	journey LearningPromotionJourney,
+) (cardID string, err error) {
+	return s.promoteLearningWithJourney(ctx, learningID, asProposal, &journey)
+}
+
 // ResolveProposal records a terminal grade outcome for a proposed card.
 func (s *SQLiteCardStore) ResolveProposal(ctx context.Context, cardID string, o GradeOutcome) error {
 	state, err := resolvedProposalState(o.Action)
@@ -1050,6 +1079,15 @@ func resolvedProposalState(action GradeAction) (GradeState, error) {
 }
 
 func (s *SQLiteCardStore) promoteLearning(ctx context.Context, learningID int64, asProposal bool) (cardID string, err error) {
+	return s.promoteLearningWithJourney(ctx, learningID, asProposal, nil)
+}
+
+func (s *SQLiteCardStore) promoteLearningWithJourney(
+	ctx context.Context,
+	learningID int64,
+	asProposal bool,
+	journey *LearningPromotionJourney,
+) (cardID string, err error) {
 	err = s.withTx(ctx, func(tx *sql.Tx) error {
 		learning, err := queryPendingLearningForUpdate(ctx, tx, learningID)
 		if err != nil {
@@ -1091,6 +1129,18 @@ func (s *SQLiteCardStore) promoteLearning(ctx context.Context, learningID int64,
 		}
 		if affected != 1 {
 			return ErrAlreadyResolved
+		}
+		if journey != nil {
+			payload, err := journey.Payload(id)
+			if err != nil {
+				return fmt.Errorf("build learning promotion journey payload: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO bead_journey (bead_id, ts, actor, event, payload)
+				VALUES (?, ?, ?, ?, ?)`,
+				journey.BeadID, journey.Ts, journey.Actor, journey.Event, nullableString(payload)); err != nil {
+				return fmt.Errorf("append learning promotion journey: %w", err)
+			}
 		}
 		cardID = id
 		return nil

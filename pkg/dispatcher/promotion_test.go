@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"oro/pkg/beadstore"
+	"oro/pkg/beadstore/migrations"
 	"oro/pkg/cards"
 	"oro/pkg/protocol"
 )
@@ -144,6 +145,54 @@ func TestBeadCloseRunsPromotion(t *testing.T) {
 			t.Fatalf("CloseBead: %v", err)
 		}
 	})
+}
+
+func TestLearningPromotionUsesAtomicJournalOnlyWithNativeBeadStore(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	if err := migrations.MigrateToV3(ctx, db); err != nil {
+		t.Fatalf("migrate native stores: %v", err)
+	}
+	const beadID = "promotion-mixed-store-boundary"
+	nativeBeads := beadstore.NewSQLiteStore(db)
+	if _, err := nativeBeads.Create(ctx, beadstore.CreateParams{
+		ID: beadID, Title: "Mixed store promotion", Type: "task",
+	}); err != nil {
+		t.Fatalf("create native FK bead: %v", err)
+	}
+	cardStore, err := cards.NewStore(db)
+	if err != nil {
+		t.Fatalf("create native card store: %v", err)
+	}
+	if _, err := cardStore.AppendLearningPending(ctx, beadID, cards.CardCandidate{
+		Type:        string(cards.CardTypePattern),
+		Title:       "Respect bead store boundary",
+		BodySummary: "Journal through the configured bead store.",
+		BodyFull:    "Atomic native journaling is valid only when both stores share the transaction.",
+		Confidence:  0.95,
+		Evidence:    []string{"mixed store regression"},
+	}); err != nil {
+		t.Fatalf("append pending learning: %v", err)
+	}
+	fakeBeads := beadstore.NewFakeStore(protocol.Bead{ID: beadID, Type: "task", Status: "open"})
+	d := &Dispatcher{db: db, beads: fakeBeads, cardStore: cardStore}
+
+	if err := d.CloseBead(ctx, beadID, "Merged: mixed-store"); err != nil {
+		t.Fatalf("close mixed-store bead: %v", err)
+	}
+	events, err := fakeBeads.Journey(ctx, beadID, time.Time{})
+	if err != nil {
+		t.Fatalf("load fake bead journey: %v", err)
+	}
+	count := 0
+	for _, event := range events {
+		if event.Event == "learning_promoted" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("configured bead-store learning journeys = %d, want exactly 1", count)
+	}
 }
 
 type promotionCardStore struct {

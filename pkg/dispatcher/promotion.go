@@ -149,9 +149,41 @@ func (d *Dispatcher) runLearningPromotion(ctx context.Context, beadID, verdict s
 	return nil
 }
 
+type atomicLearningPromotionStore interface {
+	PromoteLearningWithJourney(context.Context, int64, bool, cards.LearningPromotionJourney) (string, error)
+	NativeTransactionIdentity() any
+}
+
+func (d *Dispatcher) nativeLearningPromotionStore() atomicLearningPromotionStore {
+	beads, ok := d.beads.(interface{ NativeTransactionIdentity() any })
+	if !ok {
+		return nil
+	}
+	store, ok := d.cardStore.(atomicLearningPromotionStore)
+	if !ok || beads.NativeTransactionIdentity() != store.NativeTransactionIdentity() {
+		return nil
+	}
+	return store
+}
+
 func (d *Dispatcher) applyLearningPromotionDecision(ctx context.Context, beadID string, learningID int64, decision cards.PromotionDecision) error {
 	switch decision.Action {
 	case cards.PromotionActionPromote:
+		if store := d.nativeLearningPromotionStore(); store != nil {
+			_, err := store.PromoteLearningWithJourney(ctx, learningID, d.cfg.GradeGateEnabled, cards.LearningPromotionJourney{
+				BeadID: beadID,
+				Ts:     time.Now().UTC().Format(time.RFC3339Nano),
+				Actor:  "dispatcher",
+				Event:  "learning_promoted",
+				Payload: func(cardID string) (string, error) {
+					return learningPromotionPayload(learningID, decision, cardID)
+				},
+			})
+			if err != nil {
+				return fmt.Errorf("promote learning %d with journey: %w", learningID, err)
+			}
+			return nil
+		}
 		cardID, err := d.promoteLearningCard(ctx, learningID)
 		if err != nil {
 			return fmt.Errorf("promote learning %d: %w", learningID, err)
@@ -188,12 +220,7 @@ func (d *Dispatcher) promoteLearningCard(ctx context.Context, learningID int64) 
 }
 
 func (d *Dispatcher) appendLearningPromotionEvent(ctx context.Context, beadID, event string, learningID int64, decision cards.PromotionDecision, cardID string) error {
-	payload, err := json.Marshal(map[string]any{
-		"learning_id": learningID,
-		"card_id":     cardID,
-		"reason":      decision.Reason,
-		"confidence":  decision.Confidence,
-	})
+	payload, err := learningPromotionPayload(learningID, decision, cardID)
 	if err != nil {
 		return fmt.Errorf("marshal %s payload: %w", event, err)
 	}
@@ -201,11 +228,24 @@ func (d *Dispatcher) appendLearningPromotionEvent(ctx context.Context, beadID, e
 		Ts:      time.Now().UTC().Format(time.RFC3339Nano),
 		Actor:   "dispatcher",
 		Event:   event,
-		Payload: string(payload),
+		Payload: payload,
 	}); err != nil {
 		return fmt.Errorf("append %s journey event: %w", event, err)
 	}
 	return nil
+}
+
+func learningPromotionPayload(learningID int64, decision cards.PromotionDecision, cardID string) (string, error) {
+	payload, err := json.Marshal(map[string]any{
+		"learning_id": learningID,
+		"card_id":     cardID,
+		"reason":      decision.Reason,
+		"confidence":  decision.Confidence,
+	})
+	if err != nil {
+		return "", err
+	}
+	return string(payload), nil
 }
 
 func cardSummaries(in []cards.Card) []cards.CardSummary {
