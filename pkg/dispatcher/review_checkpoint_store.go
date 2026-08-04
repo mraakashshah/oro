@@ -611,8 +611,9 @@ func scanReviewCheckpoint(row *sql.Row) (ReviewCheckpoint, error) {
 
 // ArtifactRef identifies an artifact eligible for retention pruning.
 type ArtifactRef struct {
-	Path       string
-	QGEvidence bool
+	Path             string
+	QGEvidence       bool
+	RecoveryArtifact bool
 }
 
 var recoveryArtifactFilenamePattern = regexp.MustCompile(`^checkpoint-[1-9]\d*-[0-9a-f]{64}\.json$`)
@@ -627,19 +628,22 @@ func (s *ReviewCheckpointStore) ListPrunableArtifacts(ctx context.Context, older
 
 	rows, err := s.db.QueryContext(ctx, `
 WITH artifact_references AS (
-  SELECT artifact_path AS path, state, COALESCE(completed_at, updated_at, created_at) AS terminal_at, 0 AS qg_evidence
+  SELECT artifact_path AS path, state, COALESCE(completed_at, updated_at, created_at) AS terminal_at,
+         0 AS qg_evidence, 0 AS recovery_artifact
   FROM review_checkpoints
   WHERE COALESCE(artifact_path, '') <> ''
   UNION ALL
-  SELECT recovery_artifact_path AS path, state, COALESCE(completed_at, updated_at, created_at) AS terminal_at, 0 AS qg_evidence
+  SELECT recovery_artifact_path AS path, state, COALESCE(completed_at, updated_at, created_at) AS terminal_at,
+         0 AS qg_evidence, 1 AS recovery_artifact
   FROM review_checkpoints
   WHERE COALESCE(recovery_artifact_path, '') <> ''
   UNION ALL
-  SELECT qg_evidence_path AS path, state, COALESCE(completed_at, updated_at, created_at) AS terminal_at, 1 AS qg_evidence
+  SELECT qg_evidence_path AS path, state, COALESCE(completed_at, updated_at, created_at) AS terminal_at,
+         1 AS qg_evidence, 0 AS recovery_artifact
   FROM review_checkpoints
   WHERE COALESCE(qg_evidence_path, '') <> ''
 )
-SELECT candidate.path, MAX(candidate.qg_evidence)
+SELECT candidate.path, MAX(candidate.qg_evidence), MAX(candidate.recovery_artifact)
 FROM artifact_references AS candidate
 WHERE candidate.state IN (?, ?)
   AND datetime(candidate.terminal_at) < datetime(?)
@@ -665,7 +669,7 @@ ORDER BY candidate.path`,
 	artifacts := make([]ArtifactRef, 0)
 	for rows.Next() {
 		var artifact ArtifactRef
-		if err := rows.Scan(&artifact.Path, &artifact.QGEvidence); err != nil {
+		if err := rows.Scan(&artifact.Path, &artifact.QGEvidence, &artifact.RecoveryArtifact); err != nil {
 			return nil, fmt.Errorf("scan prunable review artifact: %w", err)
 		}
 		artifacts = append(artifacts, artifact)
@@ -804,7 +808,7 @@ func unreferencedRecoveryArtifactCandidate(
 	if _, ok := referenced[canonical]; ok {
 		return ArtifactRef{}, false, nil
 	}
-	return ArtifactRef{Path: path}, true, nil
+	return ArtifactRef{Path: path, RecoveryArtifact: true}, true, nil
 }
 
 func appendUniqueArtifactRefs(existing, additions []ArtifactRef) []ArtifactRef {

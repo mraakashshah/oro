@@ -68,6 +68,12 @@ func (d *Dispatcher) pruneReviewArtifacts(ctx context.Context) {
 }
 
 func (d *Dispatcher) removeReviewArtifact(artifact ArtifactRef) error {
+	if artifact.RecoveryArtifact {
+		if err := removeRecoveryArtifactConfined(artifact.Path); err != nil {
+			return fmt.Errorf("remove review recovery artifact: %w", err)
+		}
+		return nil
+	}
 	if !artifact.QGEvidence {
 		if err := os.Remove(artifact.Path); err != nil {
 			return fmt.Errorf("remove review artifact: %w", err)
