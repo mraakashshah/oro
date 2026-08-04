@@ -201,8 +201,8 @@ func (d *Dispatcher) tryRecoverExternalCloseWork(ctx context.Context, workerID, 
 func (d *Dispatcher) filterAssignable(ctx context.Context, allBeads []protocol.Bead) []protocol.Bead {
 	now := d.nowFunc()
 
-	allBeads = d.filterExecutableBeads(ctx, allBeads)
 	allBeads = d.filterReviewCheckpointBlockedBeads(ctx, allBeads)
+	allBeads = d.filterExecutableBeads(ctx, allBeads)
 	allBeads = d.filterRecoveryQuarantinedBeads(ctx, allBeads)
 
 	d.mu.Lock()

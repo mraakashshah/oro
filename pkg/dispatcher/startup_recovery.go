@@ -133,6 +133,9 @@ func (d *Dispatcher) startupRecovery(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("restore state: %w", err)
 	}
+	if err := d.reconcileReviewIntegrationsOnStartup(ctx); err != nil {
+		return fmt.Errorf("reconcile review integrations: %w", err)
+	}
 	if err := d.reconcileOpsRunsOnStartup(ctx); err != nil {
 		return fmt.Errorf("reconcile ops runs: %w", err)
 	}
@@ -834,8 +837,14 @@ func (d *Dispatcher) resetOrphanedBeads(ctx context.Context, recoverable map[str
 		_ = d.logEvent(ctx, "startup_reset_list_failed", "dispatcher", "", "", err.Error())
 		return 0, 0
 	}
+	checkpointOwned, err := d.reviewCheckpointBlockedBeads(ctx)
+	d.recordAssignmentObservation("review_checkpoint", err)
+	if err != nil {
+		_ = d.logEvent(ctx, "startup_reset_checkpoint_observation_failed", "dispatcher", "", "", err.Error())
+		return 0, len(beads)
+	}
 	for _, b := range beads {
-		if !recoverable[b.ID] {
+		if !recoverable[b.ID] || checkpointOwned[b.ID] {
 			skipped++
 			continue
 		}

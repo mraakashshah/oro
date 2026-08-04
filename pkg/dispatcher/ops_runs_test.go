@@ -970,6 +970,77 @@ func TestRouteOpsRunRoutesReviewOpsRun(t *testing.T) {
 	waitFor(t, func() bool { return spawnMock.SpawnCount() > 2 }, time.Second)
 }
 
+func TestRouteOpsRunRestoresExactReviewCheckpointIdentityWithoutWorker(t *testing.T) {
+	ctx := context.Background()
+	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
+	const (
+		beadID       = "oro-review-durable-target"
+		workerID     = "w-review-durable-target"
+		targetBranch = "epic/custom-review-target"
+	)
+	worktree := t.TempDir()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{
+		ID:                 beadID,
+		Title:              "Restore durable review target",
+		AcceptanceCriteria: "Test: rerouted review uses durable target | Assert: no default fallback",
+	}
+	assignmentID, err := d.createAssignment(ctx, beadID, workerID, worktree)
+	if err != nil {
+		t.Fatalf("create assignment: %v", err)
+	}
+	if err := d.requeueAssignment(ctx, assignmentID); err != nil {
+		t.Fatalf("requeue assignment: %v", err)
+	}
+	checkpoint, err := NewReviewCheckpointStore(d.db).CreateOrReuse(ctx, CheckpointInput{
+		CheckpointKey:       "checkpoint-" + beadID,
+		BeadID:              beadID,
+		OriginAssignmentID:  assignmentID,
+		CurrentAssignmentID: assignmentID,
+		WorkerID:            workerID,
+		Worktree:            worktree,
+		Branch:              protocol.BranchPrefix + beadID,
+		TargetBranch:        targetBranch,
+		HeadSHA:             "approved-head",
+		TargetSHA:           "target-before-review",
+		AcceptanceHash:      "acceptance-hash",
+		QGScriptHash:        "qg-script-hash",
+		QGMode:              "full",
+		ReviewPolicyHash:    "review-policy-hash",
+		TriageRevision:      "triage-revision",
+		ReadyAttempt:        "ready-attempt",
+		State:               ReviewCheckpointStateReviewRunning,
+	})
+	if err != nil {
+		t.Fatalf("create durable checkpoint: %v", err)
+	}
+
+	d.mu.Lock()
+	delete(d.workers, workerID)
+	delete(d.worktreeByBead, beadID)
+	d.mu.Unlock()
+	if !d.routeOpsRun(ctx, OpsRunRecord{
+		ID:       991,
+		Type:     string(ops.OpsReview),
+		BeadID:   beadID,
+		WorkerID: workerID,
+	}) {
+		t.Fatal("routeOpsRun review from durable checkpoint = false, want true")
+	}
+	waitFor(t, func() bool { return spawnMock.SpawnCount() == 1 }, time.Second)
+	spawnMock.mu.Lock()
+	spawn := spawnMock.spawns[0]
+	spawnMock.mu.Unlock()
+	if spawn.workdir != checkpoint.Worktree {
+		t.Fatalf("review workdir = %q, want durable %q", spawn.workdir, checkpoint.Worktree)
+	}
+	if !strings.Contains(spawn.prompt, "merge to "+checkpoint.TargetBranch) {
+		t.Fatalf("review prompt omitted durable target %q:\n%s", checkpoint.TargetBranch, spawn.prompt)
+	}
+	if strings.Contains(spawn.prompt, "merge to "+d.cfg.DefaultBranch) {
+		t.Fatalf("review prompt fell back to default target %q:\n%s", d.cfg.DefaultBranch, spawn.prompt)
+	}
+}
+
 func TestSupersedeOpsReviewRetryPreservesContext(t *testing.T) {
 	ctx := context.Background()
 	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)

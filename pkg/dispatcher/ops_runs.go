@@ -612,23 +612,23 @@ func (d *Dispatcher) routeReviewOpsRun(ctx context.Context, rec OpsRunRecord) bo
 	if err := d.observeStorageController(ctx); err != nil || !d.storageAdmissionAllowed() {
 		return false
 	}
-	worktree, targetBranch := d.reviewContextForOpsRun(rec)
-	if worktree == "" {
+	reviewCtx := d.reviewContextForOpsRun(ctx, rec)
+	if reviewCtx.worktree == "" || reviewCtx.targetBranch == "" {
 		return false
 	}
 	title, acceptance, _ := d.lookupBeadDetail(ctx, rec.BeadID, rec.WorkerID)
 	resultCh := d.ops.Review(ctx, ops.ReviewOpts{
 		BeadID:             rec.BeadID,
 		BeadTitle:          title,
-		Worktree:           worktree,
+		Worktree:           reviewCtx.worktree,
 		AcceptanceCriteria: acceptance,
-		BaseBranch:         targetBranch,
-		ProjectRoot:        worktree,
+		BaseBranch:         reviewCtx.targetBranch,
+		ProjectRoot:        reviewCtx.worktree,
 	})
 	d.watchReroutedOpsRunResult(ctx, rec, resultCh, func(result ops.Result) {
 		forward := make(chan ops.Result, 1)
 		forward <- result
-		d.handleReviewResult(ctx, rec.WorkerID, rec.BeadID, forward)
+		d.handleReviewResultForAssignment(ctx, reviewCtx.workerID, rec.BeadID, reviewCtx.assignmentID, forward)
 	})
 	return true
 }
@@ -683,46 +683,78 @@ func terminalOpsRunResult(result ops.Result) (status, verdict, errorText string)
 	return status, verdict, errorText
 }
 
-func (d *Dispatcher) reviewContextForOpsRun(rec OpsRunRecord) (worktree, targetBranch string) {
+type reviewOpsRunContext struct {
+	worktree     string
+	targetBranch string
+	workerID     string
+	assignmentID int64
+}
+
+func (d *Dispatcher) reviewContextForOpsRun(ctx context.Context, rec OpsRunRecord) reviewOpsRunContext {
 	if d == nil || rec.BeadID == "" {
-		return "", ""
+		return reviewOpsRunContext{}
+	}
+	checkpoint, err := NewReviewCheckpointStore(d.db).LoadOwningForBead(ctx, rec.BeadID)
+	if err != nil {
+		_ = d.logEvent(ctx, "review_checkpoint_context_restore_failed", "dispatcher", rec.BeadID, rec.WorkerID, err.Error())
+		return reviewOpsRunContext{}
+	}
+	if checkpoint != nil {
+		d.mu.Lock()
+		d.worktreeByBead[rec.BeadID] = checkpoint.Worktree
+		d.mu.Unlock()
+		assignmentID := checkpoint.CurrentAssignmentID
+		if assignmentID <= 0 {
+			assignmentID = checkpoint.OriginAssignmentID
+		}
+		return reviewOpsRunContext{
+			worktree:     checkpoint.Worktree,
+			targetBranch: checkpoint.TargetBranch,
+			workerID:     firstNonEmpty(checkpoint.WorkerID, rec.WorkerID),
+			assignmentID: assignmentID,
+		}
 	}
 	d.mu.Lock()
-	worktree, targetBranch = d.reviewContextFromWorkerLocked(rec)
-	if worktree == "" {
-		worktree = d.worktreeByBead[rec.BeadID]
+	reviewCtx := d.reviewContextFromWorkerLocked(rec)
+	if reviewCtx.worktree == "" {
+		reviewCtx.worktree = d.worktreeByBead[rec.BeadID]
 	}
 	d.mu.Unlock()
 
-	if worktree == "" {
-		return "", ""
+	if reviewCtx.worktree == "" {
+		return reviewOpsRunContext{}
 	}
-	if targetBranch == "" {
-		targetBranch = d.cfg.DefaultBranch
+	if reviewCtx.targetBranch == "" {
+		reviewCtx.targetBranch = d.cfg.DefaultBranch
 	}
-	return worktree, targetBranch
+	return reviewCtx
 }
 
-func (d *Dispatcher) reviewContextFromWorkerLocked(rec OpsRunRecord) (worktree, targetBranch string) {
+func (d *Dispatcher) reviewContextFromWorkerLocked(rec OpsRunRecord) reviewOpsRunContext {
 	if w, ok := d.workers[rec.WorkerID]; ok && w != nil && w.beadID == rec.BeadID {
 		w.state = protocol.WorkerReviewing
-		return w.worktree, w.targetBranch
+		return reviewOpsRunContext{worktree: w.worktree, targetBranch: w.targetBranch, workerID: w.id, assignmentID: w.assignmentID}
 	}
 	return d.reviewContextFromAnyWorkerLocked(rec.BeadID)
 }
 
-func (d *Dispatcher) reviewContextFromAnyWorkerLocked(beadID string) (worktree, targetBranch string) {
+func (d *Dispatcher) reviewContextFromAnyWorkerLocked(beadID string) reviewOpsRunContext {
+	var reviewCtx reviewOpsRunContext
 	for _, w := range d.workers {
 		if w == nil || w.beadID != beadID {
 			continue
 		}
-		worktree = firstNonEmpty(worktree, w.worktree)
-		targetBranch = firstNonEmpty(targetBranch, w.targetBranch)
-		if worktree != "" && targetBranch != "" {
-			return worktree, targetBranch
+		reviewCtx.worktree = firstNonEmpty(reviewCtx.worktree, w.worktree)
+		reviewCtx.targetBranch = firstNonEmpty(reviewCtx.targetBranch, w.targetBranch)
+		if reviewCtx.workerID == "" {
+			reviewCtx.workerID = w.id
+			reviewCtx.assignmentID = w.assignmentID
+		}
+		if reviewCtx.worktree != "" && reviewCtx.targetBranch != "" {
+			return reviewCtx
 		}
 	}
-	return worktree, targetBranch
+	return reviewCtx
 }
 
 func firstNonEmpty(current, candidate string) string {

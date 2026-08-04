@@ -29,6 +29,9 @@ func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, 
 	if strings.TrimSpace(bead.ID) == "" {
 		return fmt.Errorf("assignBead: empty bead ID")
 	}
+	if !d.checkpointAssignmentAdmissionAllowed(ctx, bead.ID, w.id, "initial") {
+		return nil
+	}
 	focusVersion := d.currentFocusVersion()
 	if len(focusVersionOpt) > 0 {
 		focusVersion = focusVersionOpt[0]
@@ -48,15 +51,7 @@ func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, 
 		d.notifyAssignLoop()
 		return nil
 	}
-	checkpointBlocked, checkpointErr := d.reviewCheckpointBlocksAssignment(ctx, bead.ID)
-	d.recordAssignmentObservation("review_checkpoint", checkpointErr)
-	if checkpointErr != nil {
-		_ = d.logEvent(ctx, "review_checkpoint_assignment_recheck_failed", "dispatcher", bead.ID, w.id, checkpointErr.Error())
-		return nil
-	}
-	if checkpointBlocked {
-		_ = d.logEvent(ctx, "review_checkpoint_assignment_blocked", "dispatcher", bead.ID, w.id,
-			`{"reason":"durable_nonterminal_review_checkpoint","stage":"final_recheck"}`)
+	if !d.checkpointAssignmentAdmissionAllowed(ctx, bead.ID, w.id, "final_recheck") {
 		return nil
 	}
 
@@ -345,6 +340,22 @@ func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, 
 		_ = d.logEvent(ctx, "worktree_cleanup", "dispatcher", bead.ID, w.id, err.Error())
 	}
 	return nil
+}
+
+func (d *Dispatcher) checkpointAssignmentAdmissionAllowed(ctx context.Context, beadID, workerID, stage string) bool {
+	blocked, err := d.reviewCheckpointBlocksAssignment(ctx, beadID)
+	d.recordAssignmentObservation("review_checkpoint", err)
+	if err != nil {
+		_ = d.logEvent(ctx, "review_checkpoint_assignment_recheck_failed", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"stage":%q,"error":%q}`, stage, err.Error()))
+		return false
+	}
+	if !blocked {
+		return true
+	}
+	_ = d.logEvent(ctx, "review_checkpoint_assignment_blocked", "dispatcher", beadID, workerID,
+		fmt.Sprintf(`{"reason":"durable_nonterminal_review_checkpoint","stage":%q}`, stage))
+	return false
 }
 
 func (d *Dispatcher) prepareAssignmentWorktree(

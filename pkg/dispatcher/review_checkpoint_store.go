@@ -63,6 +63,16 @@ type ReviewCheckpoint struct {
 	CheckpointInput
 }
 
+// ReviewIntegrationCheckpoint adds the durable merge proof used to resume an
+// approved checkpoint without repeating semantic side effects after a crash.
+type ReviewIntegrationCheckpoint struct {
+	ReviewCheckpoint
+	IntegrationTargetBeforeSHA   string
+	IntegrationApprovedHeadSHA   string
+	IntegrationObservedTargetSHA string
+	IntegrationStep              string
+}
+
 // ReviewCheckpointStore persists durable review checkpoint lifecycle changes.
 type ReviewCheckpointStore struct {
 	db *sql.DB
@@ -137,6 +147,198 @@ WHERE id = ? AND state = ?`, to, id, from)
 	}
 	if rows != 1 {
 		return fmt.Errorf("compare and swap review checkpoint %d from %q to %q: %w", id, from, to, ErrCheckpointConflict)
+	}
+	return nil
+}
+
+// LoadOwningForBead returns the newest nonterminal checkpoint that owns beadID.
+func (s *ReviewCheckpointStore) LoadOwningForBead(ctx context.Context, beadID string) (*ReviewCheckpoint, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("load owning review checkpoint: db is nil")
+	}
+	if beadID == "" {
+		return nil, errors.New("load owning review checkpoint: bead ID is empty")
+	}
+	checkpoint, err := scanReviewCheckpoint(s.db.QueryRowContext(ctx, `
+SELECT id, checkpoint_key, bead_id, origin_assignment_id, COALESCE(current_assignment_id, 0),
+       COALESCE(worker_id, ''), worktree, branch, target_branch, head_sha, target_sha,
+       acceptance_hash, qg_script_hash, qg_mode, review_policy_hash, triage_revision,
+       ready_attempt, state
+FROM review_checkpoints
+WHERE bead_id = ? AND state NOT IN ('integrated', 'superseded')
+ORDER BY id DESC
+LIMIT 1`, beadID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load owning review checkpoint for %s: %w", beadID, err)
+	}
+	return &checkpoint, nil
+}
+
+// ListPendingIntegrations returns checkpoints that must be reconciled before
+// ordinary ops routing or assignment admission begins.
+func (s *ReviewCheckpointStore) ListPendingIntegrations(ctx context.Context) ([]ReviewIntegrationCheckpoint, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("list pending review integrations: db is nil")
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, checkpoint_key, bead_id, origin_assignment_id, COALESCE(current_assignment_id, 0),
+       COALESCE(worker_id, ''), worktree, branch, target_branch, head_sha, target_sha,
+       acceptance_hash, qg_script_hash, qg_mode, review_policy_hash, triage_revision,
+       ready_attempt, state, COALESCE(integration_target_before_sha, ''),
+       COALESCE(integration_approved_head_sha, ''), COALESCE(integration_observed_target_sha, ''),
+       COALESCE(integration_step, '')
+FROM review_checkpoints
+WHERE state IN ('approved', 'manual_integration_pending', 'integrating')
+ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("list pending review integrations: %w", err)
+	}
+	defer rows.Close()
+	var checkpoints []ReviewIntegrationCheckpoint
+	for rows.Next() {
+		var checkpoint ReviewIntegrationCheckpoint
+		if err := rows.Scan(
+			&checkpoint.ID, &checkpoint.CheckpointKey, &checkpoint.BeadID,
+			&checkpoint.OriginAssignmentID, &checkpoint.CurrentAssignmentID, &checkpoint.WorkerID,
+			&checkpoint.Worktree, &checkpoint.Branch, &checkpoint.TargetBranch,
+			&checkpoint.HeadSHA, &checkpoint.TargetSHA, &checkpoint.AcceptanceHash,
+			&checkpoint.QGScriptHash, &checkpoint.QGMode, &checkpoint.ReviewPolicyHash,
+			&checkpoint.TriageRevision, &checkpoint.ReadyAttempt, &checkpoint.State,
+			&checkpoint.IntegrationTargetBeforeSHA, &checkpoint.IntegrationApprovedHeadSHA,
+			&checkpoint.IntegrationObservedTargetSHA, &checkpoint.IntegrationStep,
+		); err != nil {
+			return nil, fmt.Errorf("scan pending review integration: %w", err)
+		}
+		checkpoints = append(checkpoints, checkpoint)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate pending review integrations: %w", err)
+	}
+	return checkpoints, nil
+}
+
+// BeginIntegration records immutable merge intent and changes state with one
+// CAS. A successful call is the durable boundary before any merge attempt.
+func (s *ReviewCheckpointStore) BeginIntegration(
+	ctx context.Context,
+	id int64,
+	from, to ReviewCheckpointState,
+	targetBeforeSHA, approvedHeadSHA string,
+) error {
+	if s == nil || s.db == nil {
+		return errors.New("begin review integration: db is nil")
+	}
+	if id <= 0 || targetBeforeSHA == "" || approvedHeadSHA == "" {
+		return errors.New("begin review integration: missing required identity")
+	}
+	result, err := s.db.ExecContext(ctx, `
+UPDATE review_checkpoints
+SET state=?, integration_target_before_sha=?, integration_approved_head_sha=?,
+    integration_step='intent', updated_at=datetime('now')
+WHERE id=? AND state=?`, to, targetBeforeSHA, approvedHeadSHA, id, from)
+	if err != nil {
+		return fmt.Errorf("begin review integration %d: %w", id, err)
+	}
+	return requireOneCheckpointRow(result, id, "begin review integration")
+}
+
+// PromoteManualIntegration records that external integration proof was
+// observed and claims finalization through an exact-state CAS.
+func (s *ReviewCheckpointStore) PromoteManualIntegration(ctx context.Context, id int64, observedSHA string) error {
+	if s == nil || s.db == nil {
+		return errors.New("promote manual review integration: db is nil")
+	}
+	result, err := s.db.ExecContext(ctx, `
+UPDATE review_checkpoints
+SET state='integrating', integration_observed_target_sha=?, integration_step='merge_observed',
+    updated_at=datetime('now')
+WHERE id=? AND state='manual_integration_pending'`, observedSHA, id)
+	if err != nil {
+		return fmt.Errorf("promote manual review integration %d: %w", id, err)
+	}
+	return requireOneCheckpointRow(result, id, "promote manual review integration")
+}
+
+// ObserveIntegration persists exact target proof before any database or bead
+// completion side effect.
+func (s *ReviewCheckpointStore) ObserveIntegration(ctx context.Context, id int64, observedSHA string) error {
+	if s == nil || s.db == nil {
+		return errors.New("observe review integration: db is nil")
+	}
+	result, err := s.db.ExecContext(ctx, `
+UPDATE review_checkpoints
+SET integration_observed_target_sha=?, integration_step='merge_observed', updated_at=datetime('now')
+WHERE id=? AND state='integrating'`, observedSHA, id)
+	if err != nil {
+		return fmt.Errorf("observe review integration %d: %w", id, err)
+	}
+	return requireOneCheckpointRow(result, id, "observe review integration")
+}
+
+// AdvanceIntegrationStep records a completed idempotent finalization step.
+func (s *ReviewCheckpointStore) AdvanceIntegrationStep(ctx context.Context, id int64, step string) error {
+	if s == nil || s.db == nil {
+		return errors.New("advance review integration step: db is nil")
+	}
+	result, err := s.db.ExecContext(ctx, `
+UPDATE review_checkpoints SET integration_step=?, updated_at=datetime('now')
+WHERE id=? AND state='integrating'`, step, id)
+	if err != nil {
+		return fmt.Errorf("advance review integration %d to %q: %w", id, step, err)
+	}
+	return requireOneCheckpointRow(result, id, "advance review integration")
+}
+
+// CompleteIntegration makes the checkpoint terminal after all finalization
+// steps have durably completed.
+func (s *ReviewCheckpointStore) CompleteIntegration(ctx context.Context, id int64) error {
+	if s == nil || s.db == nil {
+		return errors.New("complete review integration: db is nil")
+	}
+	result, err := s.db.ExecContext(ctx, `
+UPDATE review_checkpoints
+SET state='integrated', integration_step='integrated', completed_at=datetime('now'), updated_at=datetime('now')
+WHERE id=? AND state='integrating'`, id)
+	if err != nil {
+		return fmt.Errorf("complete review integration %d: %w", id, err)
+	}
+	return requireOneCheckpointRow(result, id, "complete review integration")
+}
+
+// BlockIntegration creates one durable blocked condition. Repeated startup
+// passes see the terminal-for-reconciliation state and cannot duplicate it.
+func (s *ReviewCheckpointStore) BlockIntegration(ctx context.Context, id int64, reason string) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, errors.New("block review integration: db is nil")
+	}
+	blockers, err := json.Marshal([]string{reason})
+	if err != nil {
+		return false, fmt.Errorf("marshal review integration blocker: %w", err)
+	}
+	result, err := s.db.ExecContext(ctx, `
+UPDATE review_checkpoints
+SET state='blocked', integration_step='blocked', summary=?, blockers_json=?, updated_at=datetime('now')
+WHERE id=? AND state IN ('approved', 'manual_integration_pending', 'integrating')`, reason, blockers, id)
+	if err != nil {
+		return false, fmt.Errorf("block review integration %d: %w", id, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("count blocked review integration %d: %w", id, err)
+	}
+	return rows == 1, nil
+}
+
+func requireOneCheckpointRow(result sql.Result, id int64, operation string) error {
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count %s %d: %w", operation, id, err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("%s %d affected %d rows: %w", operation, id, rows, ErrCheckpointConflict)
 	}
 	return nil
 }
