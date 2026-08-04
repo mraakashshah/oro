@@ -616,6 +616,9 @@ func (d *Dispatcher) routeReviewOpsRun(ctx context.Context, rec OpsRunRecord) bo
 	if reviewCtx.worktree == "" || reviewCtx.targetBranch == "" {
 		return false
 	}
+	if d.worktrees == nil || !d.worktrees.Exists(ctx, reviewCtx.worktree) {
+		return false
+	}
 	title, acceptance, _ := d.lookupBeadDetail(ctx, rec.BeadID, rec.WorkerID)
 	resultCh := d.ops.Review(ctx, ops.ReviewOpts{
 		BeadID:             rec.BeadID,
