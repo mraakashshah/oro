@@ -24,6 +24,8 @@ import (
 // TestReviewCheckpointStartupOrdering ensures startup restores checkpoint work
 // state before reconciling orphaned ops runs or routing pending escalations.
 func TestReviewCheckpointStartupOrdering(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
 
@@ -161,6 +163,8 @@ func TestReviewCheckpointStartupOrdering(t *testing.T) {
 }
 
 func TestReviewIntegrationStartupReconciliationFinalizesProvenCheckpointsIdempotently(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	states := []ReviewCheckpointState{
 		ReviewCheckpointStateApproved,
@@ -225,6 +229,8 @@ FROM review_checkpoints WHERE id=?`, checkpoint.ID).Scan(&gotState, &observedSHA
 }
 
 func TestReviewIntegrationStartupReconciliationManualPendingWithoutProofHasNoSideEffects(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	repo, baseSHA, approvedSHA := reviewIntegrationGitFixture(t, false)
@@ -272,6 +278,8 @@ WHERE id=?`, baseSHA, approvedSHA, checkpoint.ID); err != nil {
 }
 
 func TestReviewIntegrationStartupReconciliationBlocksAmbiguousTargetOnce(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	repo, baseSHA, approvedSHA := reviewIntegrationGitFixture(t, false)
@@ -337,6 +345,8 @@ WHERE id=?`, baseSHA, approvedSHA, checkpoint.ID); err != nil {
 }
 
 func TestReviewIntegrationStartupReconciliationResumesEachFinalizationCrashPoint(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	tests := []struct {
 		step             string
@@ -401,6 +411,8 @@ WHERE id=?`, baseSHA, approvedSHA, approvedSHA, tt.step, checkpoint.ID); err != 
 }
 
 func TestReviewIntegrationStartupReconciliationDoesNotRepeatNativeCloseSideEffects(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	if err := migrations.MigrateToV3(ctx, d.db); err != nil {
@@ -481,6 +493,8 @@ WHERE id=?`, baseSHA, approvedSHA, approvedSHA, integrationStepAssignmentComplet
 }
 
 func TestReviewIntegrationStartupReconciliationReplaysPostCloseEffectsAfterPromotionFailure(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	if err := migrations.MigrateToV3(ctx, d.db); err != nil {
@@ -567,6 +581,8 @@ WHERE id=?`, baseSHA, approvedSHA, approvedSHA, integrationStepAssignmentComplet
 }
 
 func TestReviewIntegrationStartupReconciliationRecoversLearningJourneyPartialCommit(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	if err := migrations.MigrateToV3(ctx, d.db); err != nil {
@@ -718,6 +734,8 @@ func assertNativeCloseSideEffectCounts(t *testing.T, d *Dispatcher, beadID, chil
 }
 
 func TestReviewIntegrationStartupReconciliationIgnoresTerminalCheckpoints(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	for _, state := range []ReviewCheckpointState{ReviewCheckpointStateIntegrated, ReviewCheckpointStateSuperseded} {
 		t.Run(string(state), func(t *testing.T) {
@@ -759,6 +777,8 @@ func TestReviewIntegrationStartupReconciliationIgnoresTerminalCheckpoints(t *tes
 }
 
 func TestReviewIntegrationApprovalDoesNotRebindMovedSourceOrTarget(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	tests := []struct {
 		name       string
@@ -819,6 +839,8 @@ FROM review_checkpoints WHERE id=?`, checkpoint.ID).Scan(&state, &summary, &targ
 }
 
 func TestReviewIntegrationCoordinatorRejectsMovementAfterApprovalCheck(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	tests := []struct {
 		name       string
@@ -895,6 +917,8 @@ func (r *beforeFirstMergeCommandRunner) Run(ctx context.Context, dir string, arg
 }
 
 func TestReviewIntegrationCoordinatorRequiresExactPostMergeTarget(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
 	repo, baseSHA, approvedSHA := reviewIntegrationGitFixture(t, false)
@@ -952,6 +976,8 @@ func (r *afterPinnedMergeCommandRunner) Run(ctx context.Context, dir string, arg
 }
 
 func TestStartupFinalizesProvenIntegrationBeforeMissingWorktreeQuarantine(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
 	repo, baseSHA, approvedSHA := reviewIntegrationGitFixture(t, true)
@@ -1002,6 +1028,8 @@ WHERE id=?`, baseSHA, approvedSHA, checkpoint.ID); err != nil {
 }
 
 func TestAssignmentSideEffectAdmissionSerializesCheckpointInsertion(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	t.Run("direct missing acceptance", func(t *testing.T) {
 		d, beadSrc, _, escalator, _, _ := newTestDispatcher(t)
@@ -1119,6 +1147,8 @@ func seedReviewIntegrationCheckpoint(
 }
 
 func TestReviewCheckpointStartupQuarantineFailsUnroutableReplacementDurably(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	d, beadSrc, wtMgr, _, _, spawnMock := newTestDispatcher(t)
 
@@ -1175,6 +1205,8 @@ WHERE assignment_id=? AND bead_id=? AND status='open'`, assignmentID, beadID).Sc
 }
 
 func TestReviewCheckpointStartupStoragePauseFailsUnroutableReplacementDurably(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
 
@@ -1309,6 +1341,8 @@ func configurePausedStorageAdmission(ctx context.Context, t *testing.T, d *Dispa
 }
 
 func TestReviewCheckpointAdmissionStates(t *testing.T) {
+	t.Parallel()
+
 	states := []ReviewCheckpointState{
 		ReviewCheckpointStateQGPassed,
 		ReviewCheckpointStateReviewRunning,
@@ -1396,6 +1430,8 @@ func TestReviewCheckpointAdmissionStates(t *testing.T) {
 }
 
 func TestResetOrphanedBeadsPreservesNonterminalReviewCheckpointOwnership(t *testing.T) {
+	t.Parallel()
+
 	states := []ReviewCheckpointState{
 		ReviewCheckpointStateQGPassed,
 		ReviewCheckpointStateReviewRunning,
@@ -1470,6 +1506,8 @@ func TestResetOrphanedBeadsPreservesNonterminalReviewCheckpointOwnership(t *test
 }
 
 func TestResetOrphanedBeadsFailsClosedWhenCheckpointOwnershipIsUnobservable(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	d, beads, _, _, _, _ := newTestDispatcher(t)
 	const beadID = "review-reset-observation-failed"
@@ -1497,6 +1535,8 @@ func TestResetOrphanedBeadsFailsClosedWhenCheckpointOwnershipIsUnobservable(t *t
 }
 
 func TestAssignBeadRechecksDurableReviewCheckpointAfterFiltering(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	d, beads, wtMgr, _, _, _ := newTestDispatcher(t)
 	const (
@@ -1567,6 +1607,8 @@ func TestAssignBeadRechecksDurableReviewCheckpointAfterFiltering(t *testing.T) {
 }
 
 func TestAssignBeadCheckpointAdmissionPrecedesMissingAcceptanceSideEffects(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	d, beads, _, esc, _, _ := newTestDispatcher(t)
 	const (
@@ -1617,6 +1659,8 @@ func TestAssignBeadCheckpointAdmissionPrecedesMissingAcceptanceSideEffects(t *te
 }
 
 func TestFilterAssignableCheckpointAdmissionPrecedesEpicAutoClose(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	d, beads, _, _, _, _ := newTestDispatcher(t)
 	const (
@@ -1654,6 +1698,8 @@ func TestFilterAssignableCheckpointAdmissionPrecedesEpicAutoClose(t *testing.T) 
 }
 
 func TestAssignBeadAtomicallyRejectsCheckpointCreatedDuringWorktreeCreation(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	d, beads, wtMgr, _, _, _ := newTestDispatcher(t)
 	const (
