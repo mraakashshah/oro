@@ -167,6 +167,7 @@ func (d *Dispatcher) handleReconnect(ctx context.Context, workerID string, msg p
 		false, alreadyReviewing, protocol.ReadyForReviewPayload{})
 }
 
+//nolint:funlen,gocognit,gocyclo // explicit lock, transaction, and compensation branches preserve fail-closed ordering
 func (d *Dispatcher) handleLegacyIdleReconnect(
 	ctx context.Context,
 	workerID string,
@@ -316,10 +317,16 @@ func (d *Dispatcher) updateLegacyBeadStatus(
 		UpdateStatusIfConn(context.Context, *sql.Conn, string, string, string) (bool, error)
 	}); ok {
 		updated, err = store.UpdateStatusIfConn(ctx, conn, beadID, expected, next)
-		return updated, true, err
+		if err != nil {
+			return false, true, fmt.Errorf("update legacy bead status on admission connection: %w", err)
+		}
+		return updated, true, nil
 	}
 	updated, err = d.beads.UpdateStatusIf(ctx, beadID, expected, next)
-	return updated, false, err
+	if err != nil {
+		return false, false, fmt.Errorf("update legacy bead status: %w", err)
+	}
+	return updated, false, nil
 }
 
 func (d *Dispatcher) compensateLegacyBeadReopen(ctx context.Context, beadID string) {
@@ -556,6 +563,7 @@ func (d *Dispatcher) restoreReconnectWorker(
 	return false, true
 }
 
+//nolint:funlen // lock and admission cleanup stays explicit on every fail-closed return
 func (d *Dispatcher) restoreCanonicalReadyReconnect(
 	ctx context.Context,
 	workerID string,
