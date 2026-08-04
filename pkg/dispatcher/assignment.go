@@ -39,7 +39,7 @@ func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, 
 	if err != nil || sideEffectAdmission == nil {
 		return nil
 	}
-	defer d.releaseAssignmentSideEffectAdmission(ctx, sideEffectAdmission)
+	defer func() { d.releaseAssignmentSideEffectAdmission(ctx, sideEffectAdmission) }()
 	focusVersion := d.currentFocusVersion()
 	if len(focusVersionOpt) > 0 {
 		focusVersion = focusVersionOpt[0]
@@ -52,6 +52,8 @@ func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, 
 
 	// Epic routing: check children before proceeding (requires I/O, must be outside lock).
 	isEpicDecomp, skip := d.checkEpicAssignable(ctx, bead, w.id)
+	d.releaseAssignmentSideEffectAdmission(ctx, sideEffectAdmission)
+	sideEffectAdmission = nil
 	if skip {
 		return nil
 	}
