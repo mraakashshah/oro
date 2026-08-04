@@ -709,17 +709,22 @@ func unreferencedRecoveryArtifactsInDir(
 	if dir == "" {
 		return nil, nil
 	}
-	dirInfo, err := os.Lstat(dir)
+	directory, err := openExistingRecoveryArtifactDirectory(dir)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("inspect recovery artifact directory %q: %w", dir, err)
 	}
+	defer func() { _ = directory.Close() }()
+	dirInfo, err := directory.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat recovery artifact directory %q: %w", dir, err)
+	}
 	if !dirInfo.IsDir() || dirInfo.Mode()&os.ModeSymlink != 0 || dirInfo.Mode().Perm() != recoveryArtifactDirMode {
 		return nil, fmt.Errorf("refuse unsafe recovery artifact directory %q with mode %s", dir, dirInfo.Mode())
 	}
-	entries, err := os.ReadDir(dir)
+	entries, err := directory.ReadDir(-1)
 	if err != nil {
 		return nil, fmt.Errorf("read recovery artifact directory %q: %w", dir, err)
 	}
@@ -728,24 +733,46 @@ func unreferencedRecoveryArtifactsInDir(
 		if !recoveryArtifactFilenamePattern.MatchString(entry.Name()) {
 			continue
 		}
-		path := filepath.Join(dir, entry.Name())
-		info, err := os.Lstat(path)
+		artifact, eligible, err := unreferencedRecoveryArtifactCandidate(directory, dir, entry.Name(), olderThan, referenced)
 		if err != nil {
-			return nil, fmt.Errorf("inspect recovery artifact candidate %q: %w", path, err)
+			return nil, err
 		}
-		if !info.Mode().IsRegular() || !info.ModTime().Before(olderThan) {
+		if !eligible {
 			continue
 		}
-		canonical, err := filepath.Abs(filepath.Clean(path))
-		if err != nil {
-			return nil, fmt.Errorf("canonicalize recovery artifact candidate %q: %w", path, err)
-		}
-		if _, ok := referenced[canonical]; ok {
-			continue
-		}
-		artifacts = append(artifacts, ArtifactRef{Path: path})
+		artifacts = append(artifacts, artifact)
 	}
 	return artifacts, nil
+}
+
+func unreferencedRecoveryArtifactCandidate(
+	directory *os.File,
+	dir string,
+	name string,
+	olderThan time.Time,
+	referenced map[string]struct{},
+) (ArtifactRef, bool, error) {
+	path := filepath.Join(dir, name)
+	candidate, err := openRecoveryArtifactAt(directory, name)
+	if err != nil {
+		return ArtifactRef{}, false, fmt.Errorf("inspect recovery artifact candidate %q: %w", path, err)
+	}
+	info, statErr := candidate.Stat()
+	_ = candidate.Close()
+	if statErr != nil {
+		return ArtifactRef{}, false, fmt.Errorf("inspect recovery artifact candidate %q: %w", path, statErr)
+	}
+	if !info.Mode().IsRegular() || !info.ModTime().Before(olderThan) {
+		return ArtifactRef{}, false, nil
+	}
+	canonical, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return ArtifactRef{}, false, fmt.Errorf("canonicalize recovery artifact candidate %q: %w", path, err)
+	}
+	if _, ok := referenced[canonical]; ok {
+		return ArtifactRef{}, false, nil
+	}
+	return ArtifactRef{Path: path}, true, nil
 }
 
 func appendUniqueArtifactRefs(existing, additions []ArtifactRef) []ArtifactRef {

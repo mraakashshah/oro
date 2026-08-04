@@ -529,6 +529,81 @@ func TestPersistRecoveryArtifactSyncsCreatedDirectoriesBeforeReturningReference(
 	}
 }
 
+func TestLoadRecoveryArtifactRejectsSymlinkedPathComponents(t *testing.T) {
+	findings := []reviewcontract.Finding{reviewOverflowFinding("confined-load", "never follow replacement symlinks")}
+
+	t.Run("artifact file symlink", func(t *testing.T) {
+		root := t.TempDir()
+		ref, err := PersistRecoveryArtifact(filepath.Join(root, ".oro", "review-recovery"), 74, findings)
+		if err != nil {
+			t.Fatalf("persist artifact: %v", err)
+		}
+		data, err := os.ReadFile(ref.Path)
+		if err != nil {
+			t.Fatalf("read persisted artifact: %v", err)
+		}
+		outsidePath := filepath.Join(t.TempDir(), "outside.json")
+		if err := os.WriteFile(outsidePath, data, recoveryArtifactFileMode); err != nil {
+			t.Fatalf("write outside artifact: %v", err)
+		}
+		if err := os.Remove(ref.Path); err != nil {
+			t.Fatalf("remove persisted artifact before replacement: %v", err)
+		}
+		if err := os.Symlink(outsidePath, ref.Path); err != nil {
+			t.Fatalf("replace artifact with symlink: %v", err)
+		}
+
+		if loaded, err := LoadRecoveryArtifact(ref); loaded != nil || !errors.Is(err, ErrRecoveryArtifactCorrupt) {
+			t.Fatalf("load through artifact symlink = %#v, %v; want nil ErrRecoveryArtifactCorrupt", loaded, err)
+		}
+		assertFileContent(t, outsidePath, data)
+	})
+
+	t.Run("intermediate directory symlink", func(t *testing.T) {
+		root := t.TempDir()
+		artifactDir := filepath.Join(root, ".oro", "review-recovery")
+		ref, err := PersistRecoveryArtifact(artifactDir, 75, findings)
+		if err != nil {
+			t.Fatalf("persist artifact: %v", err)
+		}
+		data, err := os.ReadFile(ref.Path)
+		if err != nil {
+			t.Fatalf("read persisted artifact: %v", err)
+		}
+		outsideOro := filepath.Join(t.TempDir(), "outside-oro")
+		outsideArtifactDir := filepath.Join(outsideOro, "review-recovery")
+		if err := os.MkdirAll(outsideArtifactDir, recoveryArtifactDirMode); err != nil {
+			t.Fatalf("create outside artifact directory: %v", err)
+		}
+		outsidePath := filepath.Join(outsideArtifactDir, filepath.Base(ref.Path))
+		if err := os.WriteFile(outsidePath, data, recoveryArtifactFileMode); err != nil {
+			t.Fatalf("write outside artifact: %v", err)
+		}
+		if err := os.Rename(filepath.Join(root, ".oro"), filepath.Join(root, ".oro-original")); err != nil {
+			t.Fatalf("move original .oro directory: %v", err)
+		}
+		if err := os.Symlink(outsideOro, filepath.Join(root, ".oro")); err != nil {
+			t.Fatalf("replace .oro with symlink: %v", err)
+		}
+
+		if loaded, err := LoadRecoveryArtifact(ref); loaded != nil || !errors.Is(err, ErrRecoveryArtifactCorrupt) {
+			t.Fatalf("load through intermediate symlink = %#v, %v; want nil ErrRecoveryArtifactCorrupt", loaded, err)
+		}
+		assertFileContent(t, outsidePath, data)
+	})
+}
+
+func assertFileContent(t *testing.T, path string, want []byte) {
+	t.Helper()
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read protected outside file: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("protected outside file content = %q, want %q", got, want)
+	}
+}
+
 func assertDirectoryUntouched(t *testing.T, path string, wantMode os.FileMode) {
 	t.Helper()
 	info, err := os.Stat(path)

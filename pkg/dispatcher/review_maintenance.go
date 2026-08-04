@@ -52,7 +52,7 @@ func (d *Dispatcher) pruneReviewArtifacts(ctx context.Context) {
 		if d.testReviewArtifactBeforeDelete != nil {
 			d.testReviewArtifactBeforeDelete(artifact)
 		}
-		if err := os.Remove(artifact.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := removeRecoveryArtifactConfined(artifact.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			continue
 		}
 		if err := store.ClearPrunedArtifact(ctx, artifact.Path); err != nil {

@@ -259,24 +259,136 @@ func openSecuredRecoveryArtifactDir(dir string, syncDirectory func(*os.File) err
 }
 
 func recoveryArtifactPathComponents(dir string) (canonicalAnchor string, components []string, err error) {
-	absolute, err := filepath.Abs(dir)
+	return confinedRecoveryArtifactPathComponents(dir, 2)
+}
+
+func confinedRecoveryArtifactPathComponents(
+	path string,
+	protectedComponents int,
+) (canonicalAnchor string, components []string, err error) {
+	absolute, err := filepath.Abs(path)
 	if err != nil {
-		return "", nil, fmt.Errorf("resolve recovery artifact directory: %w", err)
+		return "", nil, fmt.Errorf("resolve recovery artifact path: %w", err)
 	}
-	parent := filepath.Dir(absolute)
-	anchor := filepath.Dir(parent)
+	anchor := absolute
+	for range protectedComponents {
+		parent := filepath.Dir(anchor)
+		if parent == anchor {
+			break
+		}
+		anchor = parent
+	}
 	canonicalAnchor, err = filepath.EvalSymlinks(anchor)
 	if err != nil {
-		return "", nil, fmt.Errorf("resolve recovery artifact directory anchor: %w", err)
+		return "", nil, fmt.Errorf("resolve recovery artifact path anchor: %w", err)
 	}
 	relative, err := filepath.Rel(anchor, absolute)
 	if err != nil {
-		return "", nil, fmt.Errorf("resolve recovery artifact directory components: %w", err)
+		return "", nil, fmt.Errorf("resolve recovery artifact path components: %w", err)
 	}
 	if relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		return "", nil, errors.New("resolve recovery artifact directory: unsafe path")
+		return "", nil, errors.New("resolve recovery artifact path: unsafe path")
 	}
 	return canonicalAnchor, strings.Split(relative, string(filepath.Separator)), nil
+}
+
+func openExistingRecoveryArtifact(path string) (*os.File, error) {
+	canonicalAnchor, components, err := confinedRecoveryArtifactPathComponents(path, 3)
+	if err != nil {
+		return nil, err
+	}
+	return openExistingRecoveryArtifactComponents(canonicalAnchor, components, false)
+}
+
+func openExistingRecoveryArtifactDirectory(path string) (*os.File, error) {
+	canonicalAnchor, components, err := confinedRecoveryArtifactPathComponents(path, 2)
+	if err != nil {
+		return nil, err
+	}
+	return openExistingRecoveryArtifactComponents(canonicalAnchor, components, true)
+}
+
+func openExistingRecoveryArtifactComponents(
+	canonicalAnchor string,
+	components []string,
+	finalDirectory bool,
+) (*os.File, error) {
+	current, err := os.Open(canonicalAnchor) //nolint:gosec // canonical trusted anchor for descriptor-relative traversal.
+	if err != nil {
+		return nil, fmt.Errorf("open recovery artifact path anchor: %w", err)
+	}
+	for index, component := range components {
+		flags := unix.O_RDONLY | unix.O_CLOEXEC | unix.O_NOFOLLOW
+		if index < len(components)-1 || finalDirectory {
+			flags |= unix.O_DIRECTORY
+		} else {
+			flags |= unix.O_NONBLOCK
+		}
+		nextFD, err := unix.Openat(int(current.Fd()), component, flags, 0)
+		if err != nil {
+			_ = current.Close()
+			return nil, fmt.Errorf("open recovery artifact path component %q without following symlinks: %w", component, err)
+		}
+		next := os.NewFile(uintptr(nextFD), filepath.Join(current.Name(), component))
+		if next == nil {
+			_ = unix.Close(nextFD)
+			_ = current.Close()
+			return nil, fmt.Errorf("open recovery artifact path component %q: invalid file descriptor", component)
+		}
+		_ = current.Close()
+		current = next
+	}
+	return current, nil
+}
+
+func openRecoveryArtifactAt(directory *os.File, name string) (*os.File, error) {
+	flags := unix.O_RDONLY | unix.O_CLOEXEC | unix.O_NOFOLLOW | unix.O_NONBLOCK
+	fd, err := unix.Openat(int(directory.Fd()), name, flags, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open recovery artifact candidate %q without following symlinks: %w", name, err)
+	}
+	file := os.NewFile(uintptr(fd), filepath.Join(directory.Name(), name))
+	if file == nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("open recovery artifact candidate %q: invalid file descriptor", name)
+	}
+	return file, nil
+}
+
+func removeRecoveryArtifactConfined(path string) error {
+	canonicalAnchor, components, err := confinedRecoveryArtifactPathComponents(path, 3)
+	if err != nil {
+		return err
+	}
+	if len(components) == 0 {
+		return errors.New("remove recovery artifact: path has no file component")
+	}
+	parent, err := openExistingRecoveryArtifactComponents(canonicalAnchor, components[:len(components)-1], true)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = parent.Close() }()
+	if err := unlinkRecoveryArtifactAt(parent, components[len(components)-1]); err != nil {
+		return fmt.Errorf("remove recovery artifact without following symlinks: %w", err)
+	}
+	if err := syncRecoveryArtifactDirectory(parent); err != nil {
+		return fmt.Errorf("sync recovery artifact deletion: %w", err)
+	}
+	return nil
+}
+
+func unlinkRecoveryArtifactAt(parent *os.File, name string) error {
+	err := unix.Unlinkat(int(parent.Fd()), name, 0)
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, unix.EISDIR) || errors.Is(err, unix.EPERM) {
+		if err := unix.Unlinkat(int(parent.Fd()), name, unix.AT_REMOVEDIR); err != nil {
+			return fmt.Errorf("unlink recovery artifact directory: %w", err)
+		}
+		return nil
+	}
+	return fmt.Errorf("unlink recovery artifact file: %w", err)
 }
 
 func openRecoveryArtifactDirectoryComponent(
@@ -351,7 +463,7 @@ func loadRecoveryArtifactUnlocked(ref ReviewRecoveryArtifactRef) ([]reviewcontra
 	if err := validateRecoveryArtifactRef(ref); err != nil {
 		return nil, recoveryArtifactError(RecoveryArtifactCorrupt, ref.Path, err)
 	}
-	file, err := os.Open(ref.Path) //nolint:gosec // ref is a hash-verified durable checkpoint record.
+	file, err := openExistingRecoveryArtifact(ref.Path)
 	if err != nil {
 		kind := RecoveryArtifactCorrupt
 		if errors.Is(err, os.ErrNotExist) {
