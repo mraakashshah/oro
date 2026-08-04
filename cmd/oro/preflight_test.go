@@ -83,9 +83,7 @@ func TestEnsureSearchHook(t *testing.T) {
 	t.Run("builds binary when it does not exist", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		binPath := filepath.Join(tmpDir, "oro-search-hook")
-
-		// Source dir is the real cmd/oro-search-hook (we're in the repo).
-		srcDir := filepath.Join(repoRoot(t), "cmd", "oro-search-hook")
+		srcDir := newSearchHookSourceFixture(t)
 
 		err := ensureSearchHook(io.Discard, binPath, srcDir)
 		if err != nil {
@@ -104,7 +102,7 @@ func TestEnsureSearchHook(t *testing.T) {
 	t.Run("rebuilds when binary is stale", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		binPath := filepath.Join(tmpDir, "oro-search-hook")
-		srcDir := filepath.Join(repoRoot(t), "cmd", "oro-search-hook")
+		srcDir := newSearchHookSourceFixture(t)
 
 		// Create a stale binary with mod time at the Unix epoch, guaranteeing
 		// it is older than any source file regardless of when they were last touched.
@@ -134,7 +132,7 @@ func TestEnsureSearchHook(t *testing.T) {
 	t.Run("skips build when binary is fresh", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		binPath := filepath.Join(tmpDir, "oro-search-hook")
-		srcDir := filepath.Join(repoRoot(t), "cmd", "oro-search-hook")
+		srcDir := newSearchHookSourceFixture(t)
 
 		// Build it first.
 		if err := ensureSearchHook(io.Discard, binPath, srcDir); err != nil {
@@ -159,6 +157,22 @@ func TestEnsureSearchHook(t *testing.T) {
 			t.Error("expected binary to remain fresh (not rebuilt)")
 		}
 	})
+}
+
+func newSearchHookSourceFixture(t *testing.T) string {
+	t.Helper()
+	repoRoot := t.TempDir()
+	srcDir := filepath.Join(repoRoot, "cmd", "oro-search-hook")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "go.mod"), []byte("module example.com/search-hook-fixture\ngo 1.22\n"), 0o644); err != nil { //nolint:gosec // test-only fixture
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644); err != nil { //nolint:gosec // test-only fixture
+		t.Fatal(err)
+	}
+	return srcDir
 }
 
 // TestEnsureSearchHookFailsClosedWhenBothMissing verifies that ensureSearchHook

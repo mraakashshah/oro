@@ -371,6 +371,91 @@ func TestInstallCommandForTool_BrewFallback(t *testing.T) {
 	}
 }
 
+func TestInstallAgentBranchGuard(t *testing.T) {
+	t.Run("missing git directory is left untouched", func(t *testing.T) {
+		projectRoot := t.TempDir()
+
+		installAgentBranchGuard(projectRoot)
+
+		if _, err := os.Stat(filepath.Join(projectRoot, ".git")); !os.IsNotExist(err) {
+			t.Fatalf("missing .git directory changed: %v", err)
+		}
+	})
+
+	t.Run("existing git directory gets the fast guard", func(t *testing.T) {
+		projectRoot := t.TempDir()
+		if err := os.Mkdir(filepath.Join(projectRoot, ".git"), 0o750); err != nil {
+			t.Fatal(err)
+		}
+
+		stderr := captureInitStderr(t, func() {
+			installAgentBranchGuard(projectRoot)
+		})
+		if stderr != "" {
+			t.Fatalf("successful guard install wrote stderr: %q", stderr)
+		}
+
+		hookPath := filepath.Join(projectRoot, ".git", "hooks", "pre-push")
+		data, err := os.ReadFile(hookPath) //nolint:gosec // test-created hook path
+		if err != nil {
+			t.Fatalf("read installed pre-push hook: %v", err)
+		}
+		for _, want := range []string{"managed by oro", "refs/heads/agent/*", "refs/heads/epic/*"} {
+			if !strings.Contains(string(data), want) {
+				t.Errorf("installed pre-push hook missing %q:\n%s", want, data)
+			}
+		}
+		for _, forbidden := range []string{"quality_gate.sh", "ORO_QG_CONTEXT", "ORO_PRE_PUSH_QG"} {
+			if strings.Contains(string(data), forbidden) {
+				t.Errorf("installed pre-push hook contains full-gate token %q", forbidden)
+			}
+		}
+	})
+
+	t.Run("install failure warns and remains fail open", func(t *testing.T) {
+		projectRoot := t.TempDir()
+		gitDir := filepath.Join(projectRoot, ".git")
+		if err := os.Mkdir(gitDir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(gitDir, "hooks"), []byte("not a directory"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		stderr := captureInitStderr(t, func() {
+			installAgentBranchGuard(projectRoot)
+		})
+		if !strings.Contains(stderr, "warning: install pre-push hook:") {
+			t.Fatalf("install failure did not emit warning: %q", stderr)
+		}
+	})
+}
+
+func captureInitStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	stderrPath := filepath.Join(t.TempDir(), "stderr")
+	stderrFile, err := os.Create(stderrPath) //nolint:gosec // test-created capture path
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalStderr := os.Stderr
+	os.Stderr = stderrFile
+	defer func() {
+		os.Stderr = originalStderr
+	}()
+
+	fn()
+	os.Stderr = originalStderr
+	if err := stderrFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(stderrPath) //nolint:gosec // test-created capture path
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
 // --- allToolsPresent helper ---
 
 func TestAllToolsPresent_True(t *testing.T) {

@@ -50,23 +50,40 @@ new_multi_fixture() {
 new_targeted_fixture() {
 	local fixture="$1"
 	local expanded="${2:-false}"
+	local target="${3:-hooks}"
 	mkdir -p "$fixture/bin" "$fixture/cmd/oro"
 	git -C "$fixture" init -q
 	git -C "$fixture" config user.email mutation@example.test
 	git -C "$fixture" config user.name mutation-test
-	printf 'package main\n\nfunc isOroDistributedHook() bool { return false }\n' >"$fixture/cmd/oro/hooks.go"
+	local source_file test_file function_name test_name
+	case "$target" in
+	hooks)
+		source_file=cmd/oro/hooks.go
+		test_file=cmd/oro/hooks_test.go
+		function_name=isOroDistributedHook
+		test_name=TestIsOroDistributedHookRecognizesFastPrePush
+		;;
+	init)
+		source_file=cmd/oro/cmd_init.go
+		test_file=cmd/oro/cmd_init_test.go
+		function_name=installAgentBranchGuard
+		test_name=TestInstallAgentBranchGuard
+		;;
+	*) fail "unknown targeted fixture: $target" ;;
+	esac
+	printf 'package main\n\nfunc %s() bool { return false }\n' "$function_name" >"$fixture/$source_file"
 	if [[ "$expanded" = true ]]; then
-		printf '\nfunc anotherHookDecision() bool { return false }\n' >>"$fixture/cmd/oro/hooks.go"
+		printf '\nfunc anotherHookDecision() bool { return false }\n' >>"$fixture/$source_file"
 	fi
-	printf 'package main\n\nfunc TestIsOroDistributedHookRecognizesFastPrePush() {}\n' >"$fixture/cmd/oro/hooks_test.go"
-	git -C "$fixture" add cmd/oro/hooks.go cmd/oro/hooks_test.go
+	printf 'package main\n\nfunc %s() {}\n' "$test_name" >"$fixture/$test_file"
+	git -C "$fixture" add "$source_file" "$test_file"
 	git -C "$fixture" commit -qm base
 	base=$(git -C "$fixture" rev-parse HEAD)
-	printf 'package main\n\nfunc isOroDistributedHook() bool { return true }\n' >"$fixture/cmd/oro/hooks.go"
+	printf 'package main\n\nfunc %s() bool { return true }\n' "$function_name" >"$fixture/$source_file"
 	if [[ "$expanded" = true ]]; then
-		printf '\nfunc anotherHookDecision() bool { return true }\n' >>"$fixture/cmd/oro/hooks.go"
+		printf '\nfunc anotherHookDecision() bool { return true }\n' >>"$fixture/$source_file"
 	fi
-	git -C "$fixture" add cmd/oro/hooks.go
+	git -C "$fixture" add "$source_file"
 	git -C "$fixture" commit -qm head
 	head=$(git -C "$fixture" rev-parse HEAD)
 	printf '%s\n%s\n' "$base" "$head"
@@ -81,7 +98,10 @@ set -euo pipefail
 if [[ "$1" = test ]]; then
 	printf '%s\n' "$*" >>"${MUTATION_LIST_TRACE:?}"
 	if [[ "$MUTATION_FIXTURE" != targeted-list-miss ]]; then
-		printf 'TestIsOroDistributedHookRecognizesFastPrePush\n'
+		case "$*" in
+		*TestInstallAgentBranchGuard*) printf 'TestInstallAgentBranchGuard\n' ;;
+		*) printf 'TestIsOroDistributedHookRecognizesFastPrePush\n' ;;
+		esac
 	fi
 	exit 0
 fi
@@ -189,8 +209,9 @@ run_targeted_fixture() {
 	local expected_status="$3"
 	local expected_exit="$4"
 	local expanded="${5:-false}"
+	local target="${6:-hooks}"
 	local base head evidence status args_trace list_trace
-	mapfile -t refs < <(new_targeted_fixture "$fixture" "$expanded")
+	mapfile -t refs < <(new_targeted_fixture "$fixture" "$expanded" "$target")
 	base=${refs[0]}
 	head=${refs[1]}
 	evidence="$fixture/mutation-evidence.json"
@@ -303,6 +324,12 @@ TestTargetedMutationScope() {
 		fail 'targeted mutation scope must preflight the exact package test pattern'
 	jq -e '.shards[0].match == "^(isOroDistributedHook)$" and .shards[0].test_pattern == "^TestIsOroDistributedHook"' \
 		"$evidence" >/dev/null || fail 'targeted mutation evidence must preserve function and test scope'
+
+	evidence=$(run_targeted_fixture "$tmp/targeted-init" targeted pass 0 false init)
+	grep -q -- '-list \^TestInstallAgentBranchGuard ./cmd/oro' "$tmp/targeted-init/mutation-list.txt" ||
+		fail 'init guard mutations must preflight their exact direct test pattern'
+	jq -e '.shards[0].match == "^(installAgentBranchGuard)$" and .shards[0].test_pattern == "^TestInstallAgentBranchGuard"' \
+		"$evidence" >/dev/null || fail 'init guard mutation evidence must preserve function and test scope'
 
 	evidence=$(run_targeted_fixture "$tmp/targeted-expanded" targeted-fallback pass 0 true)
 	! grep -q -- '--exec=' "$tmp/targeted-expanded/mutation-args.txt" ||

@@ -216,6 +216,8 @@ targeted_test_pattern() {
 
 	if [[ "$file" == cmd/oro/hooks.go && "$match" == '^(isOroDistributedHook)$' ]]; then
 		printf '^TestIsOroDistributedHook'
+	elif [[ "$file" == cmd/oro/cmd_init.go && "$match" == '^(installAgentBranchGuard)$' ]]; then
+		printf '^TestInstallAgentBranchGuard'
 	fi
 }
 

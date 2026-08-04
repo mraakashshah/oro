@@ -7,7 +7,7 @@ set -euo pipefail
 : "${MUTATE_TIMEOUT:?}"
 : "${MUTATION_TEST_PATTERN:?}"
 
-# shellcheck disable=SC2329 # invoked by the EXIT trap
+# shellcheck disable=SC2317,SC2329 # invoked by the EXIT trap
 cleanup_mutation() {
 	if [[ -f "$MUTATE_ORIGINAL.tmp" ]]; then
 		mv -- "$MUTATE_ORIGINAL.tmp" "$MUTATE_ORIGINAL"
