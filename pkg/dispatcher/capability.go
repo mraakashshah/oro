@@ -76,6 +76,12 @@ func (d *Dispatcher) issueAssignmentCapabilityWithState(
 	if assignmentID <= 0 || generation <= 0 || role == "" {
 		return AssignmentCapability{}, errors.New("issue assignment capability: invalid capability identity")
 	}
+	// Capability persistence is the final durable step before an assignment is
+	// published to a worker. Serialize it with assignment creation and claim so
+	// a concurrent admission transaction cannot deadlock this transaction and
+	// turn a valid assignment into a cleanup-only completed row.
+	d.assignmentAdmissionMu.Lock()
+	defer d.assignmentAdmissionMu.Unlock()
 
 	capabilityID, err := randomCapabilityValue(16)
 	if err != nil {

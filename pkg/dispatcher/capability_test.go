@@ -126,6 +126,38 @@ func TestIssueAssignmentCapabilityRejectsMissingAssignmentWithoutPersistingCapab
 	}
 }
 
+func TestIssueAssignmentCapabilityHonorsAssignmentAdmission(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	assignmentID, err := d.createAssignment(t.Context(), "capability-admission-bead", "capability-admission-worker", t.TempDir())
+	if err != nil {
+		t.Fatalf("create assignment: %v", err)
+	}
+
+	d.assignmentAdmissionMu.Lock()
+	result := make(chan error, 1)
+	go func() {
+		_, issueErr := d.issueAssignmentCapability(t.Context(), assignmentID, 1, ActorRoleExecutionWorker)
+		result <- issueErr
+	}()
+
+	select {
+	case issueErr := <-result:
+		d.assignmentAdmissionMu.Unlock()
+		t.Fatalf("capability issuance bypassed assignment admission: %v", issueErr)
+	case <-time.After(100 * time.Millisecond):
+	}
+	d.assignmentAdmissionMu.Unlock()
+
+	select {
+	case issueErr := <-result:
+		if issueErr != nil {
+			t.Fatalf("issue capability after assignment admission released: %v", issueErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("capability issuance remained blocked after assignment admission released")
+	}
+}
+
 func TestRecordAssignmentCapabilityNonceReplaysStoredResponseAndRejectsDifferentContent(t *testing.T) {
 	d, _, _, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
