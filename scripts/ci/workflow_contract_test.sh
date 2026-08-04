@@ -111,6 +111,38 @@ TestPortableQGAggregate() {
 	fi
 }
 
+TestIncrementalMutationCheckoutMatchesHead() {
+	local mutation_job
+	mutation_job=$(awk '
+		/^  incremental-mutation:$/ { in_job = 1 }
+		in_job && /^  [a-z0-9][a-z0-9-]*:$/ && $1 != "incremental-mutation:" { exit }
+		in_job { print }
+	' "$workflow_path")
+	[[ -n "$mutation_job" ]] || fail 'workflow must define an incremental-mutation job'
+
+	[[ $(printf '%s\n' "$mutation_job" | grep -Fxc '      - uses: actions/checkout@v4') -eq 1 ]] ||
+		fail 'incremental-mutation must use checkout exactly once'
+	[[ $(printf '%s\n' "$mutation_job" | grep -Fxc '          fetch-depth: 0') -eq 1 ]] ||
+		fail 'incremental-mutation checkout must preserve full history'
+	# These are literal GitHub expressions, not shell expansions.
+	# shellcheck disable=SC2016
+	[[ $(printf '%s\n' "$mutation_job" | grep -Fxc '          ref: ${{ github.sha }}') -eq 1 ]] ||
+		fail 'incremental-mutation checkout must use the exact mutation head'
+	# shellcheck disable=SC2016
+	printf '%s\n' "$mutation_job" | grep -Fq '          base_sha="${{ github.event.pull_request.base.sha || github.event.before }}"' ||
+		fail 'incremental-mutation must preserve pull-request and push base selection'
+	# shellcheck disable=SC2016
+	printf '%s\n' "$mutation_job" | grep -Fq -- '            --base "$base_sha"' ||
+		fail 'incremental-mutation must pass the selected base'
+	# shellcheck disable=SC2016
+	[[ $(printf '%s\n' "$mutation_job" | grep -Fc '            --head "${{ github.sha }}"') -eq 1 ]] ||
+		fail 'incremental-mutation must pass the exact checkout head'
+	# shellcheck disable=SC2016
+	if printf '%s\n' "$mutation_job" | grep -Fq 'github.event.pull_request.merge_commit_sha'; then
+		fail 'incremental-mutation must not use a stale pull-request payload merge SHA'
+	fi
+}
+
 TestExplicitQGStressLane() {
 	local stress_job ordinary_jobs
 	stress_job=$(awk '
@@ -155,6 +187,9 @@ main() {
 		;;
 	TestPortableQGAggregate)
 		TestPortableQGAggregate
+		;;
+	TestIncrementalMutationCheckoutMatchesHead)
+		TestIncrementalMutationCheckoutMatchesHead
 		;;
 	TestExplicitQGStressLane)
 		TestExplicitQGStressLane
