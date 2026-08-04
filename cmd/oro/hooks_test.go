@@ -423,3 +423,18 @@ printf '%s:%s' "${ORO_RUN_MUTATION:-unset}" "${ORO_QG_CONTEXT:-unset}" > "$MARKE
 		}
 	})
 }
+
+func TestIsOroDistributedHookRecognizesFastPrePush(t *testing.T) {
+	content := []byte(`#!/usr/bin/env sh
+# Oro fast pre-push safety checks. GitHub Actions is the authoritative full quality gate.
+while IFS= read -r line; do
+    local_ref=$(echo "$line" | awk '{print $1}')
+    case "$local_ref" in
+        refs/heads/agent/*|refs/heads/epic/*) exit 1 ;;
+    esac
+done
+`)
+	if !isOroDistributedHook("pre-push", content) {
+		t.Fatal("fast repository pre-push hook must be recognized as Oro-distributed")
+	}
+}
