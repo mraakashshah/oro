@@ -288,10 +288,10 @@ func TestReviewCheckpointStoreCapsCompactFindingsJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load overflow recovery after restart: %v", err)
 	}
-	if overflowRecovery.Findings != nil || overflowRecovery.FindingsRef == nil || !reflect.DeepEqual(*overflowRecovery.FindingsRef, overflowRef) {
-		t.Fatalf("overflow recovery after restart = %#v, want exact ref %#v", overflowRecovery, overflowRef)
+	if overflowRecovery.FindingsRef != nil || !reflect.DeepEqual(overflowRecovery.Findings, []ops.Finding{overflowFinding}) {
+		t.Fatalf("overflow recovery after restart = %#v, want exact inline findings", overflowRecovery)
 	}
-	lossless, err := LoadRecoveryArtifact(*overflowRecovery.FindingsRef)
+	lossless, err := LoadRecoveryArtifact(overflowRef)
 	if err != nil {
 		t.Fatalf("load overflow artifact after restart: %v", err)
 	}

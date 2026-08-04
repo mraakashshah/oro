@@ -457,11 +457,7 @@ WHERE id = ?`, checkpointID).Scan(
 			Bytes:        byteCount,
 			FindingCount: findingCount,
 		}
-		if _, err := LoadRecoveryArtifact(ref); err != nil {
-			return protocol.ReviewRecovery{}, fmt.Errorf("load review recovery: %w", err)
-		}
-		recovery.FindingsRef = &ref
-		return recovery, nil
+		return loadReferencedReviewRecovery(recovery, ref)
 	}
 
 	findings, err := s.loadInlineRejectedFindings(ctx, checkpointID)
@@ -469,6 +465,27 @@ WHERE id = ?`, checkpointID).Scan(
 		return protocol.ReviewRecovery{}, err
 	}
 	recovery.Findings = findings
+	return recovery, nil
+}
+
+func loadReferencedReviewRecovery(
+	recovery protocol.ReviewRecovery,
+	ref ReviewRecoveryArtifactRef,
+) (protocol.ReviewRecovery, error) {
+	findings, err := LoadRecoveryArtifact(ref)
+	if err != nil {
+		return protocol.ReviewRecovery{}, fmt.Errorf("load review recovery: %w", err)
+	}
+	recovery.Findings = findings
+	encoded, err := json.Marshal(recovery)
+	if err != nil {
+		return protocol.ReviewRecovery{}, fmt.Errorf("marshal inline review recovery after restart: %w", err)
+	}
+	if len(encoded) <= maxReviewRecoveryInlineBytes {
+		return recovery, nil
+	}
+	recovery.Findings = nil
+	recovery.FindingsRef = &ref
 	return recovery, nil
 }
 

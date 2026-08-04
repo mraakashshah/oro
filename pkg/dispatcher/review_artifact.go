@@ -94,7 +94,8 @@ func (e *RecoveryArtifactError) Is(target error) bool {
 	}
 }
 
-// prepareReviewRecovery keeps bounded findings inline and persists larger findings by reference.
+// prepareReviewRecovery keeps wire-bounded findings inline while returning a
+// separate durable checkpoint reference whenever the compact DB cap requires one.
 // The staged recovery transport is ASSIGN-only: findings are never copied into
 // dispatcher event payloads, so the event-payload clause is intentionally not
 // part of this helper's wire budget.
@@ -105,7 +106,7 @@ func prepareReviewRecovery(
 	acceptanceHash string,
 	attempt int,
 	findings []reviewcontract.Finding,
-) (protocol.ReviewRecovery, error) {
+) (protocol.ReviewRecovery, *ReviewRecoveryArtifactRef, error) {
 	recovery := protocol.ReviewRecovery{
 		CheckpointID:    checkpointID,
 		RejectedHeadSHA: rejectedHeadSHA,
@@ -114,30 +115,38 @@ func prepareReviewRecovery(
 		AcceptanceHash:  acceptanceHash,
 	}
 	if checkpointID <= 0 || rejectedHeadSHA == "" || acceptanceHash == "" || attempt < 0 {
-		return protocol.ReviewRecovery{}, errors.New("prepare review recovery: missing required identity")
+		return protocol.ReviewRecovery{}, nil, errors.New("prepare review recovery: missing required identity")
 	}
 	encoded, err := json.Marshal(recovery)
 	if err != nil {
-		return protocol.ReviewRecovery{}, fmt.Errorf("marshal inline review recovery: %w", err)
+		return protocol.ReviewRecovery{}, nil, fmt.Errorf("marshal inline review recovery: %w", err)
 	}
-	if len(encoded) <= maxReviewRecoveryInlineBytes {
-		return recovery, nil
+	compaction, err := compactRejectedFindingsJSON(findings)
+	if err != nil {
+		return protocol.ReviewRecovery{}, nil, fmt.Errorf("prepare review recovery checkpoint findings: %w", err)
 	}
 
-	ref, err := PersistRecoveryArtifact(dir, checkpointID, findings)
-	if err != nil {
-		return protocol.ReviewRecovery{}, err
+	var checkpointRef *ReviewRecoveryArtifactRef
+	if compaction.compacted || len(encoded) > maxReviewRecoveryInlineBytes {
+		ref, persistErr := PersistRecoveryArtifact(dir, checkpointID, findings)
+		if persistErr != nil {
+			return protocol.ReviewRecovery{}, nil, persistErr
+		}
+		checkpointRef = &ref
+	}
+	if len(encoded) <= maxReviewRecoveryInlineBytes {
+		return recovery, checkpointRef, nil
 	}
 	recovery.Findings = nil
-	recovery.FindingsRef = &ref
+	recovery.FindingsRef = checkpointRef
 	encoded, err = json.Marshal(recovery)
 	if err != nil {
-		return protocol.ReviewRecovery{}, fmt.Errorf("marshal referenced review recovery: %w", err)
+		return protocol.ReviewRecovery{}, nil, fmt.Errorf("marshal referenced review recovery: %w", err)
 	}
 	if len(encoded) > maxReviewRecoveryInlineBytes {
-		return protocol.ReviewRecovery{}, fmt.Errorf("referenced review recovery is %d bytes, exceeds %d-byte cap", len(encoded), maxReviewRecoveryInlineBytes)
+		return protocol.ReviewRecovery{}, nil, fmt.Errorf("referenced review recovery is %d bytes, exceeds %d-byte cap", len(encoded), maxReviewRecoveryInlineBytes)
 	}
-	return recovery, nil
+	return recovery, checkpointRef, nil
 }
 
 // PersistRecoveryArtifact atomically stores exact findings and returns their content identity.

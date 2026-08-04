@@ -32,12 +32,15 @@ func TestReviewArtifactAndFindingOverflow(t *testing.T) {
 
 	t.Run("inline stays inline and bounded", func(t *testing.T) {
 		findings := []reviewcontract.Finding{reviewOverflowFinding("inline", "small")}
-		recovery, err := prepareReviewRecovery(artifactDir, checkpoint.ID, "rejected-head", "acceptance", 1, findings)
+		recovery, checkpointRef, err := prepareReviewRecovery(artifactDir, checkpoint.ID, "rejected-head", "acceptance", 1, findings)
 		if err != nil {
 			t.Fatalf("prepare inline recovery: %v", err)
 		}
 		if recovery.FindingsRef != nil {
 			t.Fatalf("inline recovery reference = %#v, want nil", recovery.FindingsRef)
+		}
+		if checkpointRef != nil {
+			t.Fatalf("small inline checkpoint reference = %#v, want nil", checkpointRef)
 		}
 		if !reflect.DeepEqual(recovery.Findings, findings) {
 			t.Fatalf("inline findings changed: got %#v want %#v", recovery.Findings, findings)
@@ -49,7 +52,7 @@ func TestReviewArtifactAndFindingOverflow(t *testing.T) {
 		reviewOverflowFinding("critical-overflow", strings.Repeat("lossless-detail-", 20_000)),
 		reviewOverflowFinding("important-overflow", strings.Repeat("exact-required-action-", 8_000)),
 	}
-	recovery, err := prepareReviewRecovery(artifactDir, checkpoint.ID, "rejected-head", "acceptance", 2, findings)
+	recovery, checkpointRef, err := prepareReviewRecovery(artifactDir, checkpoint.ID, "rejected-head", "acceptance", 2, findings)
 	if err != nil {
 		t.Fatalf("prepare overflow recovery: %v", err)
 	}
@@ -59,9 +62,12 @@ func TestReviewArtifactAndFindingOverflow(t *testing.T) {
 	if recovery.Findings != nil {
 		t.Fatalf("overflow inline findings = %#v, want nil", recovery.Findings)
 	}
+	if checkpointRef == nil || !reflect.DeepEqual(checkpointRef, recovery.FindingsRef) {
+		t.Fatalf("overflow checkpoint reference = %#v, want payload reference %#v", checkpointRef, recovery.FindingsRef)
+	}
 	assertReviewRecoveryPayloadBounded(t, recovery)
 
-	if err := store.SaveRejectedFindings(ctx, checkpoint.ID, findings, recovery.FindingsRef); err != nil {
+	if err := store.SaveRejectedFindings(ctx, checkpoint.ID, findings, checkpointRef); err != nil {
 		t.Fatalf("commit rejected findings and reference: %v", err)
 	}
 	if err := store.db.Close(); err != nil {
@@ -262,6 +268,193 @@ WHERE COALESCE(payload, '') LIKE '%critical-overflow%'
 	})
 }
 
+func TestReviewRecoveryPersistenceBoundaries(t *testing.T) {
+	cases := []struct {
+		name              string
+		findings          func(t *testing.T, checkpointID int64) []reviewcontract.Finding
+		wantInline        bool
+		wantCheckpointRef bool
+		wantCompactBytes  int
+	}{
+		{
+			name: "128 KiB finding JSON",
+			findings: func(t *testing.T, _ int64) []reviewcontract.Finding {
+				t.Helper()
+				return reviewFindingsForExactJSONSize(t, maxReviewCheckpointFindingsJSONBytes)
+			},
+			wantInline:       true,
+			wantCompactBytes: maxReviewCheckpointFindingsJSONBytes,
+		},
+		{
+			name: "128 KiB plus one finding JSON",
+			findings: func(t *testing.T, _ int64) []reviewcontract.Finding {
+				t.Helper()
+				return reviewFindingsForExactJSONSize(t, maxReviewCheckpointFindingsJSONBytes+1)
+			},
+			wantInline:        true,
+			wantCheckpointRef: true,
+		},
+		{
+			name: "150 KiB recovery JSON",
+			findings: func(t *testing.T, checkpointID int64) []reviewcontract.Finding {
+				t.Helper()
+				return reviewFindingsForExactRecoverySize(t, 150*1024, checkpointID, "head", "acceptance", 1)
+			},
+			wantInline:        true,
+			wantCheckpointRef: true,
+		},
+		{
+			name: "192 KiB recovery JSON",
+			findings: func(t *testing.T, checkpointID int64) []reviewcontract.Finding {
+				t.Helper()
+				return reviewFindingsForExactRecoverySize(t, maxReviewRecoveryInlineBytes, checkpointID, "head", "acceptance", 1)
+			},
+			wantInline:        true,
+			wantCheckpointRef: true,
+		},
+		{
+			name: "192 KiB plus one recovery JSON",
+			findings: func(t *testing.T, checkpointID int64) []reviewcontract.Finding {
+				t.Helper()
+				return reviewFindingsForExactRecoverySize(t, maxReviewRecoveryInlineBytes+1, checkpointID, "head", "acceptance", 1)
+			},
+			wantCheckpointRef: true,
+		},
+	}
+
+	for index, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			root := t.TempDir()
+			dbPath := filepath.Join(root, "checkpoints.sqlite")
+			store := openReviewCheckpointStore(ctx, t, dbPath)
+			checkpoint, err := store.CreateOrReuse(ctx, reviewCheckpointInput(fmt.Sprintf("oro-persistence-boundary-%d", index)))
+			if err != nil {
+				t.Fatalf("create checkpoint: %v", err)
+			}
+			findings := tc.findings(t, checkpoint.ID)
+
+			recovery, checkpointRef, err := prepareReviewRecovery(filepath.Join(root, ".oro", "review-recovery"), checkpoint.ID, "head", "acceptance", 1, findings)
+			if err != nil {
+				t.Fatalf("prepare recovery: %v", err)
+			}
+			if gotInline := recovery.FindingsRef == nil; gotInline != tc.wantInline {
+				t.Fatalf("prepared inline = %t, want %t: %#v", gotInline, tc.wantInline, recovery)
+			}
+			if gotCheckpointRef := checkpointRef != nil; gotCheckpointRef != tc.wantCheckpointRef {
+				t.Fatalf("checkpoint reference present = %t, want %t: %#v", gotCheckpointRef, tc.wantCheckpointRef, checkpointRef)
+			}
+			if tc.wantInline && !reflect.DeepEqual(recovery.Findings, findings) {
+				t.Fatalf("prepared inline findings changed: got %#v want %#v", recovery.Findings, findings)
+			}
+			if !tc.wantInline && (recovery.Findings != nil || !reflect.DeepEqual(recovery.FindingsRef, checkpointRef)) {
+				t.Fatalf("prepared overflow recovery = %#v, want checkpoint ref %#v", recovery, checkpointRef)
+			}
+			assertReviewRecoveryPayloadBounded(t, recovery)
+
+			if err := store.SaveRejectedFindings(ctx, checkpoint.ID, findings, checkpointRef); err != nil {
+				t.Fatalf("save prepared recovery: %v", err)
+			}
+			compactBytes := compactFindingBytes(ctx, t, store, checkpoint.ID)
+			if compactBytes > maxReviewCheckpointFindingsJSONBytes {
+				t.Fatalf("compact DB findings bytes = %d, want <= %d", compactBytes, maxReviewCheckpointFindingsJSONBytes)
+			}
+			if tc.wantCompactBytes != 0 && compactBytes != tc.wantCompactBytes {
+				t.Fatalf("compact DB findings bytes = %d, want %d", compactBytes, tc.wantCompactBytes)
+			}
+			if checkpointRef != nil {
+				artifactFindings, err := LoadRecoveryArtifact(*checkpointRef)
+				if err != nil {
+					t.Fatalf("load checkpoint artifact: %v", err)
+				}
+				if !reflect.DeepEqual(artifactFindings, findings) {
+					t.Fatalf("checkpoint artifact findings changed: got %#v want %#v", artifactFindings, findings)
+				}
+			}
+			if err := store.db.Close(); err != nil {
+				t.Fatalf("close store before restart: %v", err)
+			}
+
+			restarted := openReviewCheckpointStore(ctx, t, dbPath)
+			loaded, err := restarted.LoadReviewRecovery(ctx, checkpoint.ID)
+			if err != nil {
+				t.Fatalf("load recovery after restart: %v", err)
+			}
+			if tc.wantInline {
+				if loaded.FindingsRef != nil || !reflect.DeepEqual(loaded.Findings, findings) {
+					t.Fatalf("restart recovery = %#v, want exact inline findings without payload ref", loaded)
+				}
+			} else {
+				if loaded.Findings != nil || !reflect.DeepEqual(loaded.FindingsRef, checkpointRef) {
+					t.Fatalf("restart recovery = %#v, want checkpoint ref %#v", loaded, checkpointRef)
+				}
+			}
+		})
+	}
+}
+
+func reviewFindingsForExactJSONSize(t *testing.T, target int) []reviewcontract.Finding {
+	t.Helper()
+	finding := reviewOverflowFinding("boundary", "")
+	finding.RequiredAction = "fix boundary"
+	encoded, err := json.Marshal(finding)
+	if err != nil {
+		t.Fatalf("marshal base boundary finding: %v", err)
+	}
+	padding := target - len(encoded)
+	if padding < 0 {
+		t.Fatalf("base boundary finding bytes = %d, want <= %d", len(encoded), target)
+	}
+	finding.Detail = strings.Repeat("x", padding)
+	encoded, err = json.Marshal(finding)
+	if err != nil {
+		t.Fatalf("marshal exact boundary finding: %v", err)
+	}
+	if len(encoded) != target {
+		t.Fatalf("boundary finding bytes = %d, want %d", len(encoded), target)
+	}
+	return []reviewcontract.Finding{finding}
+}
+
+func reviewFindingsForExactRecoverySize(
+	t *testing.T,
+	target int,
+	checkpointID int64,
+	rejectedHeadSHA string,
+	acceptanceHash string,
+	attempt int,
+) []reviewcontract.Finding {
+	t.Helper()
+	finding := reviewOverflowFinding("boundary", "")
+	finding.RequiredAction = "fix boundary"
+	recovery := protocol.ReviewRecovery{
+		CheckpointID:    checkpointID,
+		RejectedHeadSHA: rejectedHeadSHA,
+		Findings:        []reviewcontract.Finding{finding},
+		Attempt:         attempt,
+		AcceptanceHash:  acceptanceHash,
+	}
+	encoded, err := json.Marshal(recovery)
+	if err != nil {
+		t.Fatalf("marshal base boundary recovery: %v", err)
+	}
+	padding := target - len(encoded)
+	if padding < 0 {
+		t.Fatalf("base boundary recovery bytes = %d, want <= %d", len(encoded), target)
+	}
+	finding.Detail = strings.Repeat("x", padding)
+	findings := []reviewcontract.Finding{finding}
+	recovery.Findings = findings
+	encoded, err = json.Marshal(recovery)
+	if err != nil {
+		t.Fatalf("marshal exact boundary recovery: %v", err)
+	}
+	if len(encoded) != target {
+		t.Fatalf("boundary recovery bytes = %d, want %d", len(encoded), target)
+	}
+	return findings
+}
+
 func maximumAssignmentTestCards() cards.RelevantCards {
 	deck := make([]cards.DeckCard, 0, 300)
 	for i := 0; i < cap(deck); i++ {
@@ -436,8 +629,8 @@ func TestReviewRecoveryArtifactRenewalCannotBePrunedBeforeCheckpointCommit(t *te
 	if err != nil {
 		t.Fatalf("load committed recovery after prune race: %v", err)
 	}
-	if loaded.FindingsRef == nil || !reflect.DeepEqual(*loaded.FindingsRef, result.ref) {
-		t.Fatalf("loaded recovery ref = %#v, want %#v", loaded.FindingsRef, result.ref)
+	if loaded.FindingsRef != nil || !reflect.DeepEqual(loaded.Findings, findings) {
+		t.Fatalf("loaded recovery = %#v, want exact inline findings after durable artifact commit", loaded)
 	}
 	got, err := LoadRecoveryArtifact(result.ref)
 	if err != nil {
@@ -650,21 +843,27 @@ func TestPrepareReviewRecoveryExactInlineBoundary(t *testing.T) {
 		t.Fatalf("boundary recovery bytes = %d, want exactly %d", len(encoded), maxReviewRecoveryInlineBytes)
 	}
 
-	inline, err := prepareReviewRecovery(root, boundary.CheckpointID, boundary.RejectedHeadSHA, boundary.AcceptanceHash, boundary.Attempt, findings)
+	inline, inlineCheckpointRef, err := prepareReviewRecovery(root, boundary.CheckpointID, boundary.RejectedHeadSHA, boundary.AcceptanceHash, boundary.Attempt, findings)
 	if err != nil {
 		t.Fatalf("prepare exact boundary recovery: %v", err)
 	}
 	if inline.FindingsRef != nil || !reflect.DeepEqual(inline.Findings, findings) {
 		t.Fatalf("exact boundary recovery = %#v, want findings inline", inline)
 	}
+	if inlineCheckpointRef == nil {
+		t.Fatal("exact 192 KiB inline recovery checkpoint reference is nil")
+	}
 
 	findings[0].Detail += "x"
-	overflow, err := prepareReviewRecovery(root, boundary.CheckpointID, boundary.RejectedHeadSHA, boundary.AcceptanceHash, boundary.Attempt, findings)
+	overflow, overflowCheckpointRef, err := prepareReviewRecovery(root, boundary.CheckpointID, boundary.RejectedHeadSHA, boundary.AcceptanceHash, boundary.Attempt, findings)
 	if err != nil {
 		t.Fatalf("prepare boundary overflow recovery: %v", err)
 	}
 	if overflow.FindingsRef == nil || overflow.Findings != nil {
 		t.Fatalf("boundary overflow recovery = %#v, want artifact reference", overflow)
+	}
+	if overflowCheckpointRef == nil || !reflect.DeepEqual(overflowCheckpointRef, overflow.FindingsRef) {
+		t.Fatalf("overflow checkpoint reference = %#v, want payload reference %#v", overflowCheckpointRef, overflow.FindingsRef)
 	}
 }
 
