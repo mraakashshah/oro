@@ -288,8 +288,9 @@ func (s *SQLiteStore) UpdateStatusIf(ctx context.Context, id, expected, next str
 }
 
 // UpdateStatusIfConn conditionally changes a bead status on an existing
-// SQLite connection. Callers that already own a write transaction must use
-// this form so the store does not re-enter the same database through *sql.DB.
+// SQLite connection. Callers must already own a write transaction. This path
+// intentionally does not acquire writeMu: doing so after BEGIN IMMEDIATE would
+// invert the lock order used by ordinary store writers (writeMu then SQLite).
 func (s *SQLiteStore) UpdateStatusIfConn(ctx context.Context, conn *sql.Conn, id, expected, next string) (bool, error) {
 	if !validStatus(next) {
 		return false, fmt.Errorf("beadstore: invalid status %q", next)
@@ -297,9 +298,6 @@ func (s *SQLiteStore) UpdateStatusIfConn(ctx context.Context, conn *sql.Conn, id
 	if conn == nil {
 		return false, errors.New("beadstore: conditionally update status: nil connection")
 	}
-
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
 
 	res, err := conn.ExecContext(ctx, `UPDATE beads SET status = ? WHERE id = ? AND status = ?`, next, id, expected)
 	if err != nil {
