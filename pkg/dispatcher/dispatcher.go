@@ -309,6 +309,11 @@ type Dispatcher struct {
 	// iteration completes. Tests use this to synchronize without time.Sleep.
 	testPanePollDone func()
 
+	// testLegacyReconnectClaimedHook, if non-nil, is called after the durable
+	// legacy reconnect claim commits and before in-memory ownership is restored.
+	// Tests use this to inject a concurrent durable ownership transfer.
+	testLegacyReconnectClaimedHook func()
+
 	// Review artifact maintenance is serialized so overlapping scheduled ticks
 	// cannot delete or acknowledge the same artifact concurrently.
 	reviewArtifactPruneMu     sync.Mutex

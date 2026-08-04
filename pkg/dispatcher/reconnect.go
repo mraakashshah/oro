@@ -13,6 +13,8 @@ import (
 	"oro/pkg/protocol"
 )
 
+var errLegacyReconnectSuperseded = errors.New("legacy reconnect assignment is not canonical")
+
 func (d *Dispatcher) validateReconnectBead(ctx context.Context, beadID, workerID string) bool {
 	detail, err := d.beads.Show(ctx, beadID)
 	if err != nil || detail == nil {
@@ -158,22 +160,27 @@ func (d *Dispatcher) handleLegacyIdleReconnect(
 		return false
 	}
 
-	identity, status, err := d.loadLegacyReconnectAssignment(ctx, workerID, reconnect.BeadID)
+	identity, status, err := d.claimCanonicalLegacyReconnectAssignment(ctx, workerID, reconnect.BeadID)
 	if err != nil {
+		if errors.Is(err, errLegacyReconnectSuperseded) {
+			d.holdSupersededLegacyReconnect(workerID)
+			_ = d.logEvent(ctx, "legacy_reconnect_superseded", "dispatcher", reconnect.BeadID, workerID, err.Error())
+			return true
+		}
 		d.preserveLegacyReconnectClaim(workerID, reconnect.BeadID)
+		return true
+	}
+	if d.testLegacyReconnectClaimedHook != nil {
+		d.testLegacyReconnectClaimedHook()
+	}
+	if err := d.verifyCanonicalLegacyReconnectAssignment(ctx, identity); err != nil {
+		d.holdSupersededLegacyReconnect(workerID)
+		_ = d.logEvent(ctx, "legacy_reconnect_superseded", "dispatcher", reconnect.BeadID, workerID, err.Error())
 		return true
 	}
 	d.restoreLegacyReconnectOwnership(workerID, identity)
 
 	if bufferedLegacyReady(reconnect.BufferedEvents, workerID, reconnect.BeadID) {
-		if status == "requeued" {
-			result, activateErr := d.db.ExecContext(ctx, `
-UPDATE assignments SET status='active', completed_at=NULL
-WHERE id=? AND worker_id=? AND status='requeued'`, identity.assignmentID, workerID)
-			if activateErr != nil || rowsAffected(result) != 1 {
-				return true
-			}
-		}
 		d.replayReconnectEvents(ctx, workerID, reconnect.BufferedEvents,
 			false, false, protocol.ReadyForReviewPayload{})
 		return true
@@ -190,6 +197,23 @@ WHERE id=? AND worker_id=? AND status='requeued'`, identity.assignmentID, worker
 	}
 	d.mu.Unlock()
 	return true
+}
+
+func (d *Dispatcher) holdSupersededLegacyReconnect(workerID string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if w := d.workers[workerID]; w != nil {
+		w.state = protocol.WorkerReserved
+		w.assignmentID = 0
+		w.beadID = ""
+		w.worktree = ""
+		w.qgEvidenceDir = ""
+		w.qgEvidencePath = ""
+		w.targetSHA = ""
+		w.baseBranch = ""
+		w.targetBranch = ""
+		w.lastSeen = d.nowFunc()
+	}
 }
 
 func (d *Dispatcher) releaseLegacyIdleOwnership(
@@ -227,13 +251,22 @@ func (d *Dispatcher) transitionLegacyAssignmentStatus(
 	identity durableReadyIdentity,
 	from, to string,
 ) error {
-	completedAt := "completed_at=datetime('now')"
-	if to == "active" {
-		completedAt = "completed_at=NULL"
+	var (
+		result sql.Result
+		err    error
+	)
+	if from == "active" && to == "requeued" {
+		result, err = d.db.ExecContext(ctx, `
+UPDATE assignments SET status='requeued', completed_at=datetime('now')
+WHERE id=? AND bead_id=? AND worker_id=? AND status='active'
+  AND id=(SELECT MAX(id) FROM assignments WHERE bead_id=? AND status IN ('active','requeued'))`,
+			identity.assignmentID, identity.beadID, identity.workerID, identity.beadID)
+	} else {
+		result, err = d.db.ExecContext(ctx, `
+UPDATE assignments SET status='active', completed_at=NULL
+WHERE id=? AND bead_id=? AND worker_id=? AND status='requeued'`,
+			identity.assignmentID, identity.beadID, identity.workerID)
 	}
-	result, err := d.db.ExecContext(ctx, `UPDATE assignments SET status=?, `+completedAt+`
-WHERE id=? AND bead_id=? AND worker_id=? AND status=?`,
-		to, identity.assignmentID, identity.beadID, identity.workerID, from)
 	if err != nil {
 		return fmt.Errorf("transition legacy assignment %d from %s to %s: %w", identity.assignmentID, from, to, err)
 	}
@@ -264,27 +297,71 @@ func (d *Dispatcher) workerDrainingAfterAssignment(workerID string) bool {
 	return w != nil && w.drainAfterAssignment
 }
 
-func (d *Dispatcher) loadLegacyReconnectAssignment(
+func (d *Dispatcher) claimCanonicalLegacyReconnectAssignment(
 	ctx context.Context,
 	workerID, beadID string,
 ) (durableReadyIdentity, string, error) {
-	identity := durableReadyIdentity{workerID: workerID, beadID: beadID}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return durableReadyIdentity{}, "", fmt.Errorf("begin legacy reconnect claim: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	identity := durableReadyIdentity{beadID: beadID}
 	var status string
-	err := d.db.QueryRowContext(ctx, `
-SELECT id, worktree, qg_evidence_dir, target_sha, target_branch, status
+	err = tx.QueryRowContext(ctx, `
+SELECT id, worker_id, worktree, qg_evidence_dir, target_sha, target_branch, status
 FROM assignments
-WHERE worker_id=? AND bead_id=? AND status IN ('active','requeued')
-ORDER BY id DESC LIMIT 1`, workerID, beadID).Scan(
-		&identity.assignmentID, &identity.worktree, &identity.evidenceRoot,
+WHERE id=(SELECT MAX(id) FROM assignments WHERE bead_id=? AND status IN ('active','requeued'))
+  AND bead_id=? AND status IN ('active','requeued')`, beadID, beadID).Scan(
+		&identity.assignmentID, &identity.workerID, &identity.worktree, &identity.evidenceRoot,
 		&identity.targetSHA, &identity.targetBranch, &status,
 	)
 	if err != nil {
-		return durableReadyIdentity{}, "", fmt.Errorf("load legacy reconnect assignment: %w", err)
+		return durableReadyIdentity{}, "", fmt.Errorf("load canonical legacy reconnect assignment: %w", err)
+	}
+	if identity.workerID != workerID {
+		return durableReadyIdentity{}, "", fmt.Errorf("%w: assignment %d belongs to %s", errLegacyReconnectSuperseded, identity.assignmentID, identity.workerID)
+	}
+	result, err := tx.ExecContext(ctx, `
+UPDATE assignments
+SET status='active', completed_at=CASE WHEN status='requeued' THEN NULL ELSE completed_at END
+WHERE id=? AND bead_id=? AND worker_id=? AND status=?
+  AND id=(SELECT MAX(id) FROM assignments WHERE bead_id=? AND status IN ('active','requeued'))`,
+		identity.assignmentID, beadID, workerID, status, beadID)
+	if err != nil {
+		return durableReadyIdentity{}, "", fmt.Errorf("claim canonical legacy reconnect assignment: %w", err)
+	}
+	if rowsAffected(result) != 1 {
+		return durableReadyIdentity{}, "", fmt.Errorf("%w: assignment %d changed during claim", errLegacyReconnectSuperseded, identity.assignmentID)
+	}
+	if err := tx.Commit(); err != nil {
+		return durableReadyIdentity{}, "", fmt.Errorf("commit canonical legacy reconnect assignment: %w", err)
 	}
 	if identity.targetBranch == "" {
 		identity.targetBranch = d.cfg.DefaultBranch
 	}
-	return identity, status, nil
+	return identity, "active", nil
+}
+
+func (d *Dispatcher) verifyCanonicalLegacyReconnectAssignment(
+	ctx context.Context,
+	identity durableReadyIdentity,
+) error {
+	var canonical bool
+	err := d.db.QueryRowContext(ctx, `
+SELECT EXISTS(
+	SELECT 1
+	FROM assignments
+	WHERE id=? AND bead_id=? AND worker_id=? AND status='active'
+	  AND id=(SELECT MAX(id) FROM assignments WHERE bead_id=? AND status IN ('active','requeued'))
+)`, identity.assignmentID, identity.beadID, identity.workerID, identity.beadID).Scan(&canonical)
+	if err != nil {
+		return fmt.Errorf("verify canonical legacy reconnect assignment %d: %w", identity.assignmentID, err)
+	}
+	if !canonical {
+		return fmt.Errorf("%w: assignment %d changed before ownership restore", errLegacyReconnectSuperseded, identity.assignmentID)
+	}
+	return nil
 }
 
 func (d *Dispatcher) restoreLegacyReconnectOwnership(workerID string, identity durableReadyIdentity) {
