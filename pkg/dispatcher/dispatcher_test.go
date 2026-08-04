@@ -1808,13 +1808,14 @@ func newTestDispatcher(t *testing.T) (*Dispatcher, *fakeBeadStore, *mockWorktree
 	t.Cleanup(func() { _ = os.Remove(sockPath) })
 
 	cfg := Config{
-		SocketPath:       sockPath,
-		DBPath:           ":memory:",
-		MaxWorkers:       5,
-		HeartbeatTimeout: 500 * time.Millisecond,
-		PollInterval:     50 * time.Millisecond,
-		ShutdownTimeout:  200 * time.Millisecond,
-		Estimator:        &mockBeadEstimator{},
+		SocketPath:        sockPath,
+		DBPath:            ":memory:",
+		ReviewEvidenceDir: filepath.Join(t.TempDir(), "review-evidence"),
+		MaxWorkers:        5,
+		HeartbeatTimeout:  500 * time.Millisecond,
+		PollInterval:      50 * time.Millisecond,
+		ShutdownTimeout:   200 * time.Millisecond,
+		Estimator:         &mockBeadEstimator{},
 	}
 
 	d, err := New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, nil,
@@ -1921,8 +1922,19 @@ func connectWorker(t *testing.T, socketPath string) (net.Conn, *bufio.Scanner) {
 }
 
 // sendMsg sends a protocol.Message as line-delimited JSON over the connection.
+var testAssignPayloadByConn sync.Map
+
 func sendMsg(t *testing.T, conn net.Conn, msg protocol.Message) {
 	t.Helper()
+	if msg.Heartbeat != nil && msg.Heartbeat.ProtocolVersion == 0 && len(msg.Heartbeat.Capabilities) == 0 {
+		msg.Heartbeat.ProtocolVersion = protocol.WorkerProtocolVersion
+		msg.Heartbeat.Capabilities = []string{protocol.CapabilityReadyEvidenceV1}
+	}
+	if msg.Reconnect != nil && msg.Reconnect.ProtocolVersion == 0 && len(msg.Reconnect.Capabilities) == 0 {
+		msg.Reconnect.ProtocolVersion = protocol.WorkerProtocolVersion
+		msg.Reconnect.Capabilities = []string{protocol.CapabilityReadyEvidenceV1}
+	}
+	hydrateReadyEvidenceTestMessage(t, conn, &msg)
 	data, err := json.Marshal(msg)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -1945,7 +1957,45 @@ func readMsg(t *testing.T, conn net.Conn, timeout time.Duration) (protocol.Messa
 	if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
+	if msg.Assign != nil {
+		assign := *msg.Assign
+		testAssignPayloadByConn.Store(conn, assign)
+	}
 	return msg, true
+}
+
+func hydrateReadyEvidenceTestMessage(t *testing.T, conn net.Conn, msg *protocol.Message) {
+	t.Helper()
+	if msg == nil || !legacyReadyEvidenceIdentity(msg.ReadyForReview) {
+		return
+	}
+	value, ok := testAssignPayloadByConn.Load(conn)
+	if !ok {
+		return
+	}
+	assign := value.(protocol.AssignPayload)
+	ready := msg.ReadyForReview
+	if ready.BeadID != assign.BeadID || assign.AssignmentID <= 0 || assign.QGEvidenceDir == "" || assign.TargetSHA == "" {
+		return
+	}
+	path, err := canonicalReadyEvidencePath(assign.QGEvidenceDir, assign.BeadID, assign.AssignmentID)
+	if err != nil {
+		t.Fatalf("canonical READY evidence path: %v", err)
+	}
+	ready.AssignmentID = assign.AssignmentID
+	ready.Worktree = assign.Worktree
+	ready.QGEvidencePath = path
+	ready.TargetSHA = assign.TargetSHA
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("create READY evidence directory: %v", err)
+	}
+	data, err := json.Marshal(ready)
+	if err != nil {
+		t.Fatalf("marshal READY evidence: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write READY evidence: %v", err)
+	}
 }
 
 // sendDirective sends a DIRECTIVE message to the dispatcher via UDS.
@@ -3192,10 +3242,12 @@ func TestReadyForReviewRejectsUntrackedTaskFilesBeforeOpsReview(t *testing.T) {
 		AcceptanceCriteria: "Test: dirty | Assert: no ops review",
 	}
 
+	assignmentID := seedReviewAssignment(t, d, "bead-dirty", "w1", worktree)
 	d.mu.Lock()
 	w := d.workers["w1"]
 	w.state = protocol.WorkerBusy
 	w.beadID = "bead-dirty"
+	w.assignmentID = assignmentID
 	w.worktree = worktree
 	w.targetBranch = "main"
 	d.mu.Unlock()
@@ -3426,11 +3478,12 @@ func TestReadyForReviewRechecksManagedAssignmentCapabilityWithoutReassignment(t 
 		Title:              "Capability hygiene retry",
 		AcceptanceCriteria: "Test: review proceeds | Assert: no replacement assignment",
 	}
+	assignmentID := seedReviewAssignment(t, d, "bead-capability", "w1", worktree)
 	d.mu.Lock()
 	w := d.workers["w1"]
 	w.state = protocol.WorkerBusy
 	w.beadID = "bead-capability"
-	w.assignmentID = 42
+	w.assignmentID = assignmentID
 	w.worktree = worktree
 	w.targetBranch = "main"
 	d.mu.Unlock()
@@ -7559,8 +7612,8 @@ func TestHandleReadyForReview_UnknownWorker(t *testing.T) {
 		ReadyForReview: &protocol.ReadyForReviewPayload{BeadID: "bead-ghost", WorkerID: "w-ghost"},
 	})
 
-	if eventCount(t, d.db, "ready_for_review") == 0 {
-		t.Fatal("expected 'ready_for_review' event even for unknown worker")
+	if eventCount(t, d.db, "ready_for_review") != 0 {
+		t.Fatal("unexpected 'ready_for_review' event for unknown worker")
 	}
 }
 
@@ -8793,20 +8846,30 @@ func TestDispatcherShutdownOpsCleanup(t *testing.T) {
 
 	sockPath := fmt.Sprintf("/tmp/oro-test-%d.sock", time.Now().UnixNano())
 	t.Cleanup(func() { _ = os.Remove(sockPath) })
+	projectStateRoot := t.TempDir()
 
 	cfg := Config{
-		SocketPath:       sockPath,
-		DBPath:           ":memory:",
-		MaxWorkers:       5,
-		HeartbeatTimeout: 500 * time.Millisecond,
-		PollInterval:     50 * time.Millisecond,
-		ShutdownTimeout:  500 * time.Millisecond,
-		Estimator:        &mockBeadEstimator{},
+		SocketPath:        sockPath,
+		DBPath:            ":memory:",
+		RepoRoot:          projectStateRoot,
+		ReviewEvidenceDir: filepath.Join(projectStateRoot, protocol.OroDir, "review-evidence"),
+		MaxWorkers:        5,
+		HeartbeatTimeout:  500 * time.Millisecond,
+		PollInterval:      50 * time.Millisecond,
+		ShutdownTimeout:   500 * time.Millisecond,
+		Estimator:         &mockBeadEstimator{},
 	}
 
 	d, err := New(cfg, db, merger, opsSpawner, beadSrc, wtMgr, esc, nil)
 	if err != nil {
 		t.Fatalf("New() failed: %v", err)
+	}
+	checkoutEvidenceDir, err := filepath.Abs(filepath.Join(protocol.OroDir, "review-evidence"))
+	if err != nil {
+		t.Fatalf("resolve checkout evidence directory: %v", err)
+	}
+	if filepath.Clean(d.cfg.ReviewEvidenceDir) == filepath.Clean(checkoutEvidenceDir) {
+		t.Fatalf("shutdown test evidence directory targets checkout state: %s", d.cfg.ReviewEvidenceDir)
 	}
 	cancel := startDispatcher(t, d)
 
@@ -13240,11 +13303,16 @@ func TestOpsReviewUsesTargetBranch(t *testing.T) {
 	beadSrc.SetBeads(nil)
 
 	// Set targetBranch on the worker (simulates assignBead resolution for epic children)
+	var assignmentID int64
 	d.mu.Lock()
 	if w, wOK := d.workers["w1"]; wOK {
 		w.targetBranch = "epic/my-epic"
+		assignmentID = w.assignmentID
 	}
 	d.mu.Unlock()
+	if _, err := d.db.Exec(`UPDATE assignments SET target_branch = ? WHERE id = ?`, "epic/my-epic", assignmentID); err != nil {
+		t.Fatalf("persist epic target branch: %v", err)
+	}
 
 	// Send READY_FOR_REVIEW
 	sendMsg(t, conn, protocol.Message{
@@ -14265,8 +14333,12 @@ func TestDispatcherBuffering(t *testing.T) {
 	// Send RECONNECT message
 	enc := json.NewEncoder(wConn)
 	_ = enc.Encode(protocol.Message{
-		Type:      protocol.MsgReconnect,
-		Reconnect: &protocol.ReconnectPayload{WorkerID: "w1", BeadID: "bead1", State: "idle"},
+		Type: protocol.MsgReconnect,
+		Reconnect: &protocol.ReconnectPayload{
+			WorkerID: "w1", BeadID: "bead1", State: "idle",
+			ProtocolVersion: protocol.WorkerProtocolVersion,
+			Capabilities:    []string{protocol.CapabilityReadyEvidenceV1},
+		},
 	})
 
 	// 5. Read messages from the new connection — should receive the buffered ASSIGN
@@ -16482,14 +16554,17 @@ func TestProgressUpdatedOnMeaningfulEvents(t *testing.T) {
 
 		workerID := "w-rfr"
 		beadID := "bead-rfr"
+		worktree := t.TempDir()
+		assignmentID := seedReviewAssignment(t, d, beadID, workerID, worktree)
 
 		d.mu.Lock()
 		d.workers[workerID] = &trackedWorker{
 			id:           workerID,
 			conn:         server,
 			state:        protocol.WorkerBusy,
+			assignmentID: assignmentID,
 			beadID:       beadID,
-			worktree:     "/tmp/worktree-rfr",
+			worktree:     worktree,
 			lastSeen:     baseTime,
 			lastProgress: baseTime,
 			encoder:      json.NewEncoder(server),
@@ -19733,7 +19808,9 @@ func TestApplyRestartDaemon(t *testing.T) {
 	hb := protocol.Message{
 		Type: protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{
-			WorkerID: workerID,
+			WorkerID:        workerID,
+			ProtocolVersion: protocol.WorkerProtocolVersion,
+			Capabilities:    []string{protocol.CapabilityReadyEvidenceV1},
 		},
 	}
 	data, _ := json.Marshal(hb)

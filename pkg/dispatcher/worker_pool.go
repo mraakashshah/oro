@@ -48,35 +48,39 @@ type WorkerPool struct {
 
 // trackedWorker holds runtime state for a connected worker.
 type trackedWorker struct {
-	id               string
-	conn             net.Conn
-	state            protocol.WorkerState
-	assignmentID     int64
-	execution        WorkerExecutionContext
-	beadID           string
-	epicID           string // parent epic ID if the assigned bead is a child of an epic
-	isEpicDecomp     bool   // true when worker is assigned an epic for decomposition (no merge on done)
-	worktree         string
-	baseBranch       string // branch the worktree was created from (main or epic/<epicID>)
-	targetBranch     string // branch the worker's changes should merge into (same as baseBranch)
-	runtime          string // resolved runtime for the current bead assignment
-	model            string // resolved model for the current bead assignment
-	reasoning        string // resolved Codex reasoning effort for the current bead assignment
-	lastSeen         time.Time
-	lastProgress     time.Time // last time meaningful progress was observed (DONE/READY_FOR_REVIEW/QG/first STATUS)
-	setupReservedAt  time.Time // start of assignment setup; zero for other reserved-worker flows
-	reservationGen   uint64    // increments on every assignment-reservation transition
-	contextPct       int       // context usage percentage from last heartbeat (0-100)
-	encoder          *json.Encoder
-	pendingMsgs      []protocol.Message // buffered messages for disconnected worker
-	shutdownCancel   context.CancelFunc // cancels previous shutdown goroutine (1nf.5)
-	shutdownApproved bool               // set by handleShutdownApproved; checked by checkShutdownApproved
-	shutdownReason   string             // why graceful shutdown was requested
-	managed          bool               // true if spawned by the dispatcher (vs externally connected)
-	spawnFor         bool               // true for one-shot workers spawned by spawn-for
-	targetBeadID     string             // set for spawn-for workers; only this bead may be assigned
-	prevSession      bool               // true if worker ID predates this dispatcher's startTime (previous session)
-	reviewDeadSince  time.Time          // set when ops review subprocess is detected dead; zero if review is active
+	id                   string
+	conn                 net.Conn
+	state                protocol.WorkerState
+	assignmentID         int64
+	execution            WorkerExecutionContext
+	beadID               string
+	epicID               string // parent epic ID if the assigned bead is a child of an epic
+	isEpicDecomp         bool   // true when worker is assigned an epic for decomposition (no merge on done)
+	worktree             string
+	baseBranch           string // branch the worktree was created from (main or epic/<epicID>)
+	targetBranch         string // branch the worker's changes should merge into (same as baseBranch)
+	qgEvidenceDir        string // immutable evidence root supplied with the assignment
+	qgEvidencePath       string // canonical evidence artifact restored across reconnects
+	targetSHA            string // immutable target revision supplied with the assignment
+	runtime              string // resolved runtime for the current bead assignment
+	model                string // resolved model for the current bead assignment
+	reasoning            string // resolved Codex reasoning effort for the current bead assignment
+	lastSeen             time.Time
+	lastProgress         time.Time // last time meaningful progress was observed (DONE/READY_FOR_REVIEW/QG/first STATUS)
+	setupReservedAt      time.Time // start of assignment setup; zero for other reserved-worker flows
+	reservationGen       uint64    // increments on every assignment-reservation transition
+	contextPct           int       // context usage percentage from last heartbeat (0-100)
+	encoder              *json.Encoder
+	pendingMsgs          []protocol.Message // buffered messages for disconnected worker
+	shutdownCancel       context.CancelFunc // cancels previous shutdown goroutine (1nf.5)
+	shutdownApproved     bool               // set by handleShutdownApproved; checked by checkShutdownApproved
+	shutdownReason       string             // why graceful shutdown was requested
+	managed              bool               // true if spawned by the dispatcher (vs externally connected)
+	spawnFor             bool               // true for one-shot workers spawned by spawn-for
+	targetBeadID         string             // set for spawn-for workers; only this bead may be assigned
+	prevSession          bool               // true if worker ID predates this dispatcher's startTime (previous session)
+	reviewDeadSince      time.Time          // set when ops review subprocess is detected dead; zero if review is active
+	drainAfterAssignment bool               // legacy protocol worker may finish existing work but receives no new assignment
 }
 
 func (w *trackedWorker) markShuttingDownWithoutAssignment() {
@@ -135,6 +139,8 @@ type pendingHandoff struct {
 	worktree       string
 	baseBranch     string // branch the worktree was created from (main or epic/<epicID>)
 	targetBranch   string // branch the worker's changes should merge into (same as baseBranch)
+	qgEvidenceDir  string
+	targetSHA      string
 	runtime        string
 	model          string
 	reasoning      string
@@ -147,14 +153,16 @@ type pendingHandoff struct {
 }
 
 type workerAssignmentSnapshot struct {
-	execution    WorkerExecutionContext
-	worktree     string
-	runtime      string
-	model        string
-	reasoning    string
-	epicID       string
-	baseBranch   string
-	targetBranch string
+	execution     WorkerExecutionContext
+	worktree      string
+	runtime       string
+	model         string
+	reasoning     string
+	epicID        string
+	baseBranch    string
+	targetBranch  string
+	qgEvidenceDir string
+	targetSHA     string
 }
 
 // --- Worker lifecycle ---
@@ -192,6 +200,10 @@ func (d *Dispatcher) upsertWorker(id string, conn net.Conn, managed bool) {
 }
 
 func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
+	d.registerWorkerWithProtocol(id, conn, false)
+}
+
+func (d *Dispatcher) registerWorkerWithProtocol(id string, conn net.Conn, drainAfterAssignment bool) {
 	d.mu.Lock()
 	// Consume the pending managed ID if present (delete is no-op if absent).
 	managed := d.pendingManagedIDs[id]
@@ -209,6 +221,7 @@ func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
 		d.mu.Unlock()
 		return
 	}
+	w.drainAfterAssignment = drainAfterAssignment
 	applyPendingWorkerRegistration(w, spawnFor, pendingTargetBeadID)
 	if d.cfg.MaxWorkers > 0 && d.liveWorkerCountLocked() > d.cfg.MaxWorkers {
 		w.markShuttingDownWithoutAssignment()
@@ -224,23 +237,7 @@ func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
 	}
 	targetBeadID := w.targetBeadID
 
-	// Check for pending ralph handoffs. Spawn-for workers may only consume a
-	// handoff for their target bead; unrelated handoffs must wait for a general
-	// worker or their own handoff respawn.
-	var h *pendingHandoff
-	var handoffBeadID string
-	if targetBeadID != "" {
-		if ph, ok := d.pendingHandoffs[targetBeadID]; ok {
-			h = ph
-			handoffBeadID = targetBeadID
-		}
-	} else {
-		for beadID, ph := range d.pendingHandoffs {
-			h = ph
-			handoffBeadID = beadID
-			break
-		}
-	}
+	handoffBeadID, h := d.pendingHandoffForWorkerLocked(w, targetBeadID)
 
 	if h != nil {
 		d.assignHandoffToWorker(id, handoffBeadID, h)
@@ -255,6 +252,21 @@ func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
 	case d.workerReadyCh <- struct{}{}:
 	default:
 	}
+}
+
+// pendingHandoffForWorkerLocked returns no work for a legacy draining worker.
+// Spawn-for workers may consume only the handoff for their target bead.
+func (d *Dispatcher) pendingHandoffForWorkerLocked(w *trackedWorker, targetBeadID string) (string, *pendingHandoff) {
+	if w.drainAfterAssignment {
+		return "", nil
+	}
+	if targetBeadID != "" {
+		return targetBeadID, d.pendingHandoffs[targetBeadID]
+	}
+	for beadID, handoff := range d.pendingHandoffs {
+		return beadID, handoff
+	}
+	return "", nil
 }
 
 func applyPendingWorkerRegistration(w *trackedWorker, spawnFor bool, pendingTargetBeadID string) {
@@ -322,6 +334,8 @@ func (d *Dispatcher) reserveWorkerForHandoff(w *trackedWorker, h *pendingHandoff
 	w.epicID = h.epicID
 	w.baseBranch = h.baseBranch
 	w.targetBranch = h.targetBranch
+	w.qgEvidenceDir = h.qgEvidenceDir
+	w.targetSHA = h.targetSHA
 	w.lastProgress = d.nowFunc()
 }
 
@@ -331,20 +345,22 @@ func handoffAssignMessage(h *pendingHandoff, cardsCtx cards.RelevantCards) proto
 	return protocol.Message{
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
-			BeadID:       h.beadID,
-			Worktree:     h.worktree,
-			AssignmentID: h.execution.AssignmentID,
-			Generation:   h.execution.Generation,
-			ActorRole:    h.execution.ActorRole,
-			Project:      h.execution.Project,
-			Capability:   h.execution.Capability,
-			Runtime:      h.runtime,
-			Model:        h.model,
-			Reasoning:    h.reasoning,
-			Cards:        cardsCtx,
-			TargetBranch: h.targetBranch,
-			Feedback:     firstNonEmptyQGRetryFeedback(h.feedback, h.nextAction),
-			Attempt:      max(h.attempt, h.checkpointTurn),
+			BeadID:        h.beadID,
+			Worktree:      h.worktree,
+			AssignmentID:  h.execution.AssignmentID,
+			Generation:    h.execution.Generation,
+			ActorRole:     h.execution.ActorRole,
+			Project:       h.execution.Project,
+			Capability:    h.execution.Capability,
+			Runtime:       h.runtime,
+			Model:         h.model,
+			Reasoning:     h.reasoning,
+			Cards:         cardsCtx,
+			TargetBranch:  h.targetBranch,
+			QGEvidenceDir: h.qgEvidenceDir,
+			TargetSHA:     h.targetSHA,
+			Feedback:      firstNonEmptyQGRetryFeedback(h.feedback, h.nextAction),
+			Attempt:       max(h.attempt, h.checkpointTurn),
 		},
 	}
 }
@@ -378,7 +394,7 @@ func (d *Dispatcher) assignPendingHandoffsToIdleWorkers() {
 		var workerID, handoffBeadID string
 		var h *pendingHandoff
 		for id, w := range d.workers {
-			if w.state != protocol.WorkerIdle || w.spawnFor || w.targetBeadID != "" {
+			if w.state != protocol.WorkerIdle || w.drainAfterAssignment || w.spawnFor || w.targetBeadID != "" {
 				continue
 			}
 			workerID = id

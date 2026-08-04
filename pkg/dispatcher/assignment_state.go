@@ -12,7 +12,12 @@ import (
 )
 
 func (d *Dispatcher) createAssignment(ctx context.Context, beadID, workerID, worktree string) (int64, error) {
-	res, err := d.db.ExecContext(ctx,
+	admission, err := d.beginAssignmentAdmission(ctx, "create")
+	if err != nil {
+		return 0, err
+	}
+	defer admission.close()
+	res, err := admission.conn.ExecContext(ctx,
 		`INSERT INTO assignments (bead_id, worker_id, worktree) VALUES (?, ?, ?)`,
 		beadID, workerID, worktree)
 	if err != nil {
@@ -22,7 +27,40 @@ func (d *Dispatcher) createAssignment(ctx context.Context, beadID, workerID, wor
 	if err != nil {
 		return 0, fmt.Errorf("create assignment last insert id: %w", err)
 	}
+	if err := admission.commit(ctx, "create"); err != nil {
+		return 0, err
+	}
 	return id, nil
+}
+
+func (d *Dispatcher) createAssignmentWithEvidence(ctx context.Context, beadID, workerID, worktree, targetBranch string) (assignmentID int64, targetSHA string, err error) {
+	targetSHA, err = d.worktrees.BranchHead(ctx, targetBranch)
+	if err != nil {
+		return 0, "", fmt.Errorf("resolve assignment target SHA: %w", err)
+	}
+	targetSHA = strings.TrimSpace(targetSHA)
+	if targetSHA == "" {
+		return 0, "", errors.New("resolve assignment target SHA: empty SHA")
+	}
+	admission, err := d.beginAssignmentAdmission(ctx, "create with evidence")
+	if err != nil {
+		return 0, "", err
+	}
+	defer admission.close()
+	res, err := admission.conn.ExecContext(ctx,
+		`INSERT INTO assignments (bead_id, worker_id, worktree, qg_evidence_dir, target_sha, target_branch) VALUES (?, ?, ?, ?, ?, ?)`,
+		beadID, workerID, worktree, d.cfg.ReviewEvidenceDir, targetSHA, targetBranch)
+	if err != nil {
+		return 0, "", fmt.Errorf("create assignment: %w", err)
+	}
+	assignmentID, err = res.LastInsertId()
+	if err != nil {
+		return 0, "", fmt.Errorf("create assignment last insert id: %w", err)
+	}
+	if err := admission.commit(ctx, "create with evidence"); err != nil {
+		return 0, "", err
+	}
+	return assignmentID, targetSHA, nil
 }
 
 // persistBeadCount updates a counter column on the active assignment row for a bead.

@@ -65,8 +65,10 @@ func TestDispatcherStartSequence_AssignsWorkerUnderParallelStress(t *testing.T) 
 			data, _ := json.Marshal(protocol.Message{
 				Type: protocol.MsgHeartbeat,
 				Heartbeat: &protocol.HeartbeatPayload{
-					WorkerID:   fmt.Sprintf("stress-worker-%d", i),
-					ContextPct: 5,
+					WorkerID:        fmt.Sprintf("stress-worker-%d", i),
+					ContextPct:      5,
+					ProtocolVersion: protocol.WorkerProtocolVersion,
+					Capabilities:    []string{protocol.CapabilityReadyEvidenceV1},
 				},
 			})
 			data = append(data, '\n')

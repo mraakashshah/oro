@@ -309,8 +309,29 @@ type Dispatcher struct {
 	// iteration completes. Tests use this to synchronize without time.Sleep.
 	testPanePollDone func()
 
+	// testLegacyReconnectClaimedHook, if non-nil, is called after the durable
+	// legacy reconnect claim commits and before in-memory ownership is restored.
+	// Tests use this to inject a concurrent durable ownership transfer.
+	testLegacyReconnectClaimedHook func()
+
+	// testLegacyReconnectVerifiedHook, if non-nil, is called after durable
+	// canonical verification and before in-memory ownership is restored.
+	testLegacyReconnectVerifiedHook func()
+
+	// testLegacyReconnectRequeuedHook, if non-nil, is called after the legacy
+	// assignment is durably requeued and before the authoritative bead reopens.
+	testLegacyReconnectRequeuedHook func()
+	// testLegacyReconnectAdmissionHook, if non-nil, is called after the legacy
+	// drain check and before assignment admission. Tests use it to reproduce
+	// reconnect/READY lock-order interleavings.
+	testLegacyReconnectAdmissionHook func()
+	// testCanonicalReconnectAdmissionHook, if non-nil, is called after the
+	// canonical reconnect reserves assignment admission and before d.mu.
+	testCanonicalReconnectAdmissionHook func()
+
 	// Review artifact maintenance is serialized so overlapping scheduled ticks
 	// cannot delete or acknowledge the same artifact concurrently.
+	assignmentAdmissionMu     sync.Mutex
 	reviewArtifactPruneMu     sync.Mutex
 	reviewArtifactRetention   time.Duration
 	reviewMaintenanceInterval time.Duration
@@ -438,6 +459,9 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 	rootDir, beadsDir := resolved.RepoRoot, resolved.BeadsDir
 	if rootDir == "" {
 		rootDir, _ = os.Getwd()
+	}
+	if resolved.ReviewEvidenceDir == "" {
+		resolved.ReviewEvidenceDir, _ = filepath.Abs(filepath.Join(rootDir, protocol.OroDir, "review-evidence"))
 	}
 	if beadsDir == "" {
 		beadsDir = protocol.BeadsDir

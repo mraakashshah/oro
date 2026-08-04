@@ -20,11 +20,60 @@ import (
 	"unsafe"
 
 	"oro/pkg/dispatcher"
+	"oro/pkg/evidencefs"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
 
 	"github.com/spf13/cobra"
 )
+
+func TestReadyEvidenceDoesNotDirtyWorktree(t *testing.T) {
+	controller := filepath.Join(t.TempDir(), "controller")
+	assigned := filepath.Join(t.TempDir(), "assigned")
+	runGitTestCommand(t, "", "init", controller)
+	runGitTestCommand(t, controller, "config", "user.email", "oro@example.invalid")
+	runGitTestCommand(t, controller, "config", "user.name", "Oro Test")
+	if err := os.WriteFile(filepath.Join(controller, "tracked.txt"), []byte("baseline\n"), 0o600); err != nil {
+		t.Fatalf("write tracked fixture: %v", err)
+	}
+	runGitTestCommand(t, controller, "add", "tracked.txt")
+	runGitTestCommand(t, controller, "commit", "-m", "baseline")
+	runGitTestCommand(t, controller, "worktree", "add", "-b", "agent/evidence-clean", assigned)
+
+	oroHome := filepath.Join(t.TempDir(), "oro-home")
+	if err := os.MkdirAll(oroHome, 0o700); err != nil {
+		t.Fatalf("create ORO_HOME: %v", err)
+	}
+	t.Setenv("ORO_HOME", oroHome)
+	t.Setenv("ORO_PROJECT", "evidence-clean")
+	withChdir(t, controller, func() {
+		paths, err := ResolveDaemonPaths()
+		if err != nil {
+			t.Fatalf("ResolveDaemonPaths: %v", err)
+		}
+		if err := evidencefs.WriteFile(paths.ReviewEvidenceDir,
+			[]string{"oro-evidence-clean", "1"}, "1.json", []byte(`{"assignment_id":1}`)); err != nil {
+			t.Fatalf("write review evidence: %v", err)
+		}
+		for name, worktree := range map[string]string{"controller": controller, "assigned": assigned} {
+			status := runGitTestCommand(t, worktree, "status", "--porcelain")
+			if status != "" {
+				t.Fatalf("%s worktree dirty after evidence write:\n%s", name, status)
+			}
+		}
+	})
+}
+
+func runGitTestCommand(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
 
 func TestStartReadsProjectConfig(t *testing.T) {
 	t.Run("reads project name from .oro/config.yaml", func(t *testing.T) {
@@ -1498,6 +1547,13 @@ func TestStartWiresReviewPatternPaths(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	cfg := d.GetConfig()
+	daemonPaths, err := ResolveDaemonPaths()
+	if err != nil {
+		t.Fatalf("ResolveDaemonPaths: %v", err)
+	}
+	if cfg.ReviewEvidenceDir != daemonPaths.ReviewEvidenceDir {
+		t.Errorf("ReviewEvidenceDir: got %q, want project daemon state %q", cfg.ReviewEvidenceDir, daemonPaths.ReviewEvidenceDir)
+	}
 
 	// Assert: ReviewPatterns must be non-empty and point to a valid path
 	if cfg.ReviewPatterns == "" {

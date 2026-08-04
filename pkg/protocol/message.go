@@ -15,6 +15,13 @@ import (
 // Scanner buffers are configured to accept up to this size.
 const MaxMessageSize = 1 * 1024 * 1024 // 1 MB
 
+// WorkerProtocolVersion identifies the current worker/dispatcher wire contract.
+const WorkerProtocolVersion = 1
+
+// CapabilityReadyEvidenceV1 proves that a worker writes and reports canonical,
+// assignment-bound QG evidence before requesting review.
+const CapabilityReadyEvidenceV1 = "ready-evidence-v1"
+
 // MessageType identifies the kind of UDS message.
 type MessageType string
 
@@ -109,6 +116,8 @@ type AssignPayload struct {
 	BeadID               string              `json:"bead_id"`
 	Worktree             string              `json:"worktree"`
 	AssignmentID         int64               `json:"assignment_id"`
+	QGEvidenceDir        string              `json:"qg_evidence_dir,omitempty"`
+	TargetSHA            string              `json:"target_sha,omitempty"`
 	Generation           int64               `json:"generation"`
 	ActorRole            string              `json:"actor_role"`
 	Project              string              `json:"project"`
@@ -169,9 +178,11 @@ func (a *AssignPayload) Validate() error {
 
 // HeartbeatPayload is sent by a worker to report liveness and context usage.
 type HeartbeatPayload struct {
-	BeadID     string `json:"bead_id"`
-	WorkerID   string `json:"worker_id"`
-	ContextPct int    `json:"context_pct"`
+	BeadID          string   `json:"bead_id"`
+	WorkerID        string   `json:"worker_id"`
+	ContextPct      int      `json:"context_pct"`
+	ProtocolVersion int      `json:"protocol_version,omitempty"`
+	Capabilities    []string `json:"capabilities,omitempty"`
 }
 
 // StatusPayload is sent by a worker to report state transitions.
@@ -244,8 +255,25 @@ type CheckpointAckPayload struct {
 
 // ReadyForReviewPayload is sent by a worker when its bead is ready for review.
 type ReadyForReviewPayload struct {
-	BeadID   string `json:"bead_id"`
-	WorkerID string `json:"worker_id"`
+	BeadID         string `json:"bead_id"`
+	WorkerID       string `json:"worker_id"`
+	AssignmentID   int64  `json:"assignment_id"`
+	Worktree       string `json:"worktree"`
+	QGEvidencePath string `json:"qg_evidence_path"`
+	TargetSHA      string `json:"target_sha"`
+}
+
+// Validate checks that a READY_FOR_REVIEW message carries the complete
+// assignment-scoped evidence identity.
+func (r *ReadyForReviewPayload) Validate() error {
+	if r == nil {
+		return fmt.Errorf("ready-for-review payload cannot be nil")
+	}
+	if r.BeadID == "" || r.WorkerID == "" || r.AssignmentID <= 0 || r.Worktree == "" ||
+		r.QGEvidencePath == "" || r.TargetSHA == "" {
+		return fmt.Errorf("bead ID, worker ID, assignment ID, worktree, evidence path, and target SHA are required")
+	}
+	return nil
 }
 
 // ReviewResultPayload is sent by the dispatcher to a worker after a review
@@ -272,11 +300,32 @@ type ShutdownApprovedPayload struct {
 
 // ReconnectPayload is sent by a worker reconnecting after a disconnect.
 type ReconnectPayload struct {
-	WorkerID       string    `json:"worker_id"`
-	BeadID         string    `json:"bead_id"`
-	State          string    `json:"state"`
-	ContextPct     int       `json:"context_pct"`
-	BufferedEvents []Message `json:"buffered_events"`
+	WorkerID        string    `json:"worker_id"`
+	BeadID          string    `json:"bead_id"`
+	State           string    `json:"state"`
+	ContextPct      int       `json:"context_pct"`
+	BufferedEvents  []Message `json:"buffered_events"`
+	ProtocolVersion int       `json:"protocol_version,omitempty"`
+	Capabilities    []string  `json:"capabilities,omitempty"`
+}
+
+// Supports reports whether the reconnecting worker advertised capability.
+func (r *ReconnectPayload) Supports(capability string) bool {
+	return containsCapability(r.Capabilities, capability)
+}
+
+// Supports reports whether the live worker advertised capability.
+func (h *HeartbeatPayload) Supports(capability string) bool {
+	return containsCapability(h.Capabilities, capability)
+}
+
+func containsCapability(capabilities []string, want string) bool {
+	for _, capability := range capabilities {
+		if capability == want {
+			return true
+		}
+	}
+	return false
 }
 
 // maxBufferedEvents is the maximum number of buffered events allowed in a

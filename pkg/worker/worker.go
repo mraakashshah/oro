@@ -222,6 +222,10 @@ type Worker struct {
 	proc                   Process
 	beadID                 string
 	worktree               string
+	assignmentID           int64
+	qgEvidenceDir          string
+	targetSHA              string
+	qgEvidencePath         string
 	runtime                string
 	model                  string
 	streamFormat           StreamFormat
@@ -608,15 +612,9 @@ func (w *Worker) handlePrepareShutdown(ctx context.Context, msg protocol.Message
 // handleAssign processes an ASSIGN message: stores state, spawns subprocess,
 // starts context watcher, and pipes stdout through memory extraction.
 func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
-	if msg.Assign == nil {
-		return fmt.Errorf("assign message missing payload")
-	}
-	if err := msg.Assign.Validate(); err != nil {
-		return fmt.Errorf("invalid assign payload: %w", err)
-	}
-	execution, err := executionContextForAssign(msg.Assign, w.ID, w.socketPath)
+	execution, err := w.validateAssignMessage(msg)
 	if err != nil {
-		return fmt.Errorf("invalid assign execution context: %w", err)
+		return err
 	}
 
 	if msg.Assign.Attempt > 0 {
@@ -668,6 +666,23 @@ func (w *Worker) handleAssign(ctx context.Context, msg protocol.Message) error {
 	go w.watchContext(ctx)
 	go w.awaitSubprocessAndReport(ctx) // wait for exit, run QG, send DONE
 	return nil
+}
+
+func (w *Worker) validateAssignMessage(msg protocol.Message) (WorkerExecutionContext, error) {
+	if msg.Assign == nil {
+		return WorkerExecutionContext{}, fmt.Errorf("assign message missing payload")
+	}
+	if err := msg.Assign.Validate(); err != nil {
+		return WorkerExecutionContext{}, fmt.Errorf("invalid assign payload: %w", err)
+	}
+	if err := validateAssignmentEvidenceIdentity(msg.Assign); err != nil {
+		return WorkerExecutionContext{}, fmt.Errorf("invalid assign evidence identity: %w", err)
+	}
+	execution, err := executionContextForAssign(msg.Assign, w.ID, w.socketPath)
+	if err != nil {
+		return WorkerExecutionContext{}, fmt.Errorf("invalid assign execution context: %w", err)
+	}
+	return execution, nil
 }
 
 func (w *Worker) startSpawnHeartbeat(ctx context.Context) func() {
@@ -728,6 +743,10 @@ func (w *Worker) resetForNewAssignment(a *protocol.AssignPayload, execution Work
 	atomic.StoreInt32(&w.streamContextPct, 0)
 	w.beadID = a.BeadID
 	w.worktree = a.Worktree
+	w.assignmentID = a.AssignmentID
+	w.qgEvidenceDir = a.QGEvidenceDir
+	w.targetSHA = a.TargetSHA
+	w.qgEvidencePath = ""
 	w.tier = a.Tier
 	w.targetBranch = target
 	w.sessionText.Reset()
@@ -965,6 +984,10 @@ func (w *Worker) runQGAndReport(ctx context.Context) {
 	w.mu.Lock()
 	w.pendingQGOutput = output
 	w.mu.Unlock()
+	if err := w.writeQGEvidence(); err != nil {
+		_ = w.SendDone(ctx, false, err.Error())
+		return
+	}
 
 	_ = w.SendReadyForReview(ctx)
 }
@@ -1469,7 +1492,9 @@ func (w *Worker) reconnect(ctx context.Context) error {
 		w.disconnected = false
 		beadID := w.beadID
 		state := "running"
-		if w.proc == nil {
+		if w.qgEvidencePath != "" {
+			state = "awaiting_review"
+		} else if w.proc == nil {
 			state = "idle"
 		}
 		hook := w.reconnectDialHook
@@ -1484,10 +1509,12 @@ func (w *Worker) reconnect(ctx context.Context) error {
 		reconnMsg := protocol.Message{
 			Type: protocol.MsgReconnect,
 			Reconnect: &protocol.ReconnectPayload{
-				WorkerID:       w.ID,
-				BeadID:         beadID,
-				State:          state,
-				BufferedEvents: buffered,
+				WorkerID:        w.ID,
+				BeadID:          beadID,
+				State:           state,
+				BufferedEvents:  buffered,
+				ProtocolVersion: protocol.WorkerProtocolVersion,
+				Capabilities:    []string{protocol.CapabilityReadyEvidenceV1},
 			},
 		}
 		if err := w.sendMessage(reconnMsg); err != nil {
@@ -1575,9 +1602,11 @@ func (w *Worker) trySendHeartbeat(_ context.Context) {
 	data, err := json.Marshal(protocol.Message{
 		Type: protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{
-			BeadID:     beadID,
-			WorkerID:   w.ID,
-			ContextPct: contextPct,
+			BeadID:          beadID,
+			WorkerID:        w.ID,
+			ContextPct:      contextPct,
+			ProtocolVersion: protocol.WorkerProtocolVersion,
+			Capabilities:    []string{protocol.CapabilityReadyEvidenceV1},
 		},
 	})
 	if err != nil {
@@ -1601,9 +1630,11 @@ func (w *Worker) SendHeartbeat(_ context.Context, contextPct int) error {
 	return w.sendMessage(protocol.Message{
 		Type: protocol.MsgHeartbeat,
 		Heartbeat: &protocol.HeartbeatPayload{
-			BeadID:     beadID,
-			WorkerID:   w.ID,
-			ContextPct: contextPct,
+			BeadID:          beadID,
+			WorkerID:        w.ID,
+			ContextPct:      contextPct,
+			ProtocolVersion: protocol.WorkerProtocolVersion,
+			Capabilities:    []string{protocol.CapabilityReadyEvidenceV1},
 		},
 	})
 }
@@ -1825,15 +1856,19 @@ func (w *Worker) SendShutdownApproved(_ context.Context) error {
 //oro:testonly
 func (w *Worker) SendReadyForReview(_ context.Context) error {
 	w.mu.Lock()
-	beadID := w.beadID
+	ready := &protocol.ReadyForReviewPayload{
+		BeadID:         w.beadID,
+		WorkerID:       w.ID,
+		AssignmentID:   w.assignmentID,
+		Worktree:       w.worktree,
+		QGEvidencePath: w.qgEvidencePath,
+		TargetSHA:      w.targetSHA,
+	}
 	w.mu.Unlock()
 
 	return w.sendMessage(protocol.Message{
-		Type: protocol.MsgReadyForReview,
-		ReadyForReview: &protocol.ReadyForReviewPayload{
-			BeadID:   beadID,
-			WorkerID: w.ID,
-		},
+		Type:           protocol.MsgReadyForReview,
+		ReadyForReview: ready,
 	})
 }
 

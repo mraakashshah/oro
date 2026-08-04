@@ -249,10 +249,16 @@ func readMessageAsync(t *testing.T, conn net.Conn) <-chan protocol.Message {
 // sendMessage writes a line-delimited JSON message to a connection.
 func sendMessage(t *testing.T, conn net.Conn, msg protocol.Message) {
 	t.Helper()
-	if assign := msg.Assign; assign != nil && assign.BeadID != "" && assign.Worktree != "" && assign.AssignmentID == 0 {
-		assign.AssignmentID = 1
-		assign.Generation = 1
-		assign.ActorRole = "execution_worker"
+	if assign := msg.Assign; assign != nil && assign.BeadID != "" && assign.Worktree != "" {
+		if assign.AssignmentID == 0 {
+			assign.AssignmentID = 1
+			assign.Generation = 1
+			assign.ActorRole = "execution_worker"
+		}
+		if assign.QGEvidenceDir == "" && assign.TargetSHA == "" {
+			assign.QGEvidenceDir = t.TempDir()
+			assign.TargetSHA = "test-target-sha"
+		}
 	}
 	data, err := json.Marshal(msg)
 	if err != nil {

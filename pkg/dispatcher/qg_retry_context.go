@@ -89,18 +89,20 @@ func (d *Dispatcher) restoreQGRetryHandoff(ctx context.Context, workerID, beadID
 		return fmt.Errorf("qg retry handoff already pending for bead %q", beadID)
 	}
 	d.pendingHandoffs[beadID] = &pendingHandoff{
-		assignmentID: assignmentID,
-		execution:    snapshot.execution,
-		beadID:       beadID,
-		epicID:       snapshot.epicID,
-		worktree:     snapshot.worktree,
-		baseBranch:   snapshot.baseBranch,
-		targetBranch: snapshot.targetBranch,
-		runtime:      snapshot.runtime,
-		model:        snapshot.model,
-		reasoning:    snapshot.reasoning,
-		feedback:     feedback,
-		attempt:      retry.Attempt,
+		assignmentID:  assignmentID,
+		execution:     snapshot.execution,
+		beadID:        beadID,
+		epicID:        snapshot.epicID,
+		worktree:      snapshot.worktree,
+		baseBranch:    snapshot.baseBranch,
+		targetBranch:  snapshot.targetBranch,
+		qgEvidenceDir: snapshot.qgEvidenceDir,
+		targetSHA:     snapshot.targetSHA,
+		runtime:       snapshot.runtime,
+		model:         snapshot.model,
+		reasoning:     snapshot.reasoning,
+		feedback:      feedback,
+		attempt:       retry.Attempt,
 	}
 	delete(d.pendingQGRetries, workerID)
 	return nil

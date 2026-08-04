@@ -23,6 +23,54 @@ func TestSchemaExecsCleanly(t *testing.T) {
 	}
 }
 
+func TestMigrateBeadSchemaAddsAssignmentEvidenceIdentity(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db, err := dbutil.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("open in-memory db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(`
+CREATE TABLE assignments (
+  id INTEGER PRIMARY KEY,
+  bead_id TEXT NOT NULL,
+  worker_id TEXT NOT NULL,
+  worktree TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  assigned_at TEXT NOT NULL DEFAULT (datetime('now')),
+  completed_at TEXT,
+  attempt_count INTEGER DEFAULT 0,
+  handoff_count INTEGER DEFAULT 0
+)`); err != nil {
+		t.Fatalf("create legacy assignments: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO assignments (id, bead_id, worker_id, worktree) VALUES (1, 'oro-legacy', 'worker-legacy', '/tmp/legacy')`); err != nil {
+		t.Fatalf("seed legacy assignment: %v", err)
+	}
+	if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
+		t.Fatalf("migrate bead schema: %v", err)
+	}
+	for _, column := range []string{"qg_evidence_dir", "target_sha", "target_branch"} {
+		var count int
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM pragma_table_info('assignments') WHERE name = ?`, column,
+		).Scan(&count); err != nil {
+			t.Fatalf("inspect assignments.%s: %v", column, err)
+		}
+		if count != 1 {
+			t.Fatalf("assignments.%s count = %d, want 1", column, count)
+		}
+	}
+	var migratedTargetBranch string
+	if err := db.QueryRowContext(ctx, `SELECT target_branch FROM assignments WHERE id = 1`).Scan(&migratedTargetBranch); err != nil {
+		t.Fatalf("read migrated target branch: %v", err)
+	}
+	if migratedTargetBranch != "" {
+		t.Fatalf("migrated legacy target branch = %q, want empty for tracked-identity fallback", migratedTargetBranch)
+	}
+}
+
 func TestSchemaCreatesExpectedTables(t *testing.T) {
 	db, err := dbutil.OpenDB(":memory:")
 	if err != nil {

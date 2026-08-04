@@ -19,32 +19,13 @@ import (
 	workerstream "oro/pkg/worker"
 )
 
-func (d *Dispatcher) markWorkerReviewing(workerID string) (worktree, targetBranch string, assignmentID int64) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	w, ok := d.workers[workerID]
-	if !ok {
-		return "", "", 0
-	}
-	w.state = protocol.WorkerReviewing
-	return w.worktree, w.targetBranch, w.assignmentID
-}
-
 func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, msg protocol.Message) {
-	if msg.ReadyForReview == nil {
+	admission, admitted := d.admitReadyForReview(ctx, workerID, msg.ReadyForReview)
+	if !admitted {
 		return
 	}
-	if err := d.observeStorageController(ctx); err != nil || !d.storageAdmissionAllowed() {
-		return
-	}
-	beadID := msg.ReadyForReview.BeadID
-
-	d.touchProgress(workerID)
-	d.recordWorkerProgress(ctx, workerID, beadID, "ready_for_review")
-	_ = d.logEvent(ctx, "ready_for_review", workerID, beadID, workerID, "")
-
-	worktree, targetBranch, assignmentID := d.markWorkerReviewing(workerID)
+	beadID, assignmentID := admission.beadID, admission.assignmentID
+	worktree, targetBranch := admission.worktree, admission.targetBranch
 
 	blocked, err := d.blockReviewForDependency(ctx, workerID, beadID, "ready_for_review")
 	if blocked {
@@ -92,6 +73,37 @@ func (d *Dispatcher) handleReadyForReview(ctx context.Context, workerID string, 
 	d.safeGo(func() {
 		d.handleReviewResultForAssignment(ctx, workerID, beadID, assignmentID, resultCh)
 	})
+}
+
+type readyReviewAdmission struct {
+	beadID       string
+	assignmentID int64
+	worktree     string
+	targetBranch string
+}
+
+func (d *Dispatcher) admitReadyForReview(ctx context.Context, workerID string, ready *protocol.ReadyForReviewPayload) (readyReviewAdmission, bool) {
+	if ready == nil {
+		return readyReviewAdmission{}, false
+	}
+	if err := d.observeStorageController(ctx); err != nil || !d.storageAdmissionAllowed() {
+		return readyReviewAdmission{}, false
+	}
+	identity, accepted := d.acceptReadyEvidence(ctx, workerID, ready)
+	if !accepted {
+		return readyReviewAdmission{}, false
+	}
+	d.recordReadyForReviewProgress(ctx, workerID, identity.beadID)
+	return readyReviewAdmission{
+		beadID: identity.beadID, assignmentID: identity.assignmentID,
+		worktree: identity.worktree, targetBranch: identity.targetBranch,
+	}, true
+}
+
+func (d *Dispatcher) recordReadyForReviewProgress(ctx context.Context, workerID, beadID string) {
+	d.touchProgress(workerID)
+	d.recordWorkerProgress(ctx, workerID, beadID, "ready_for_review")
+	_ = d.logEvent(ctx, "ready_for_review", workerID, beadID, workerID, "")
 }
 
 // PreReviewGitHygieneResult describes whether a worker worktree is clean

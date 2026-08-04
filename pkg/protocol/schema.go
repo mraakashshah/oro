@@ -29,6 +29,9 @@ CREATE TABLE IF NOT EXISTS assignments (
     bead_id TEXT NOT NULL,
     worker_id TEXT NOT NULL,
     worktree TEXT NOT NULL,
+    qg_evidence_dir TEXT NOT NULL DEFAULT '',
+    target_sha TEXT NOT NULL DEFAULT '',
+	target_branch TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'active',
     assigned_at TEXT NOT NULL DEFAULT (datetime('now')),
     completed_at TEXT,
@@ -492,6 +495,8 @@ CREATE TABLE IF NOT EXISTS assignments (
     bead_id TEXT NOT NULL,
     worker_id TEXT NOT NULL,
     worktree TEXT NOT NULL,
+    qg_evidence_dir TEXT NOT NULL DEFAULT '',
+    target_sha TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'active',
     assigned_at TEXT NOT NULL DEFAULT (datetime('now')),
     completed_at TEXT,
@@ -809,6 +814,9 @@ func MigrateBeadSchema(ctx context.Context, db *sql.DB) error {
 	if err := ensureBeadContractColumns(ctx, db); err != nil {
 		return fmt.Errorf("migrate bead contract columns: %w", err)
 	}
+	if err := ensureAssignmentEvidenceColumns(ctx, db); err != nil {
+		return fmt.Errorf("migrate assignment evidence columns: %w", err)
+	}
 	if err := ensureReviewCheckpointSchema(ctx, db); err != nil {
 		return fmt.Errorf("migrate review checkpoint schema: %w", err)
 	}
@@ -829,6 +837,32 @@ func MigrateBeadSchema(ctx context.Context, db *sql.DB) error {
 	if rebuiltStatusConstraint {
 		if _, err := db.ExecContext(ctx, `INSERT INTO beads_fts(beads_fts) VALUES('rebuild')`); err != nil {
 			return fmt.Errorf("rebuild beads fts: %w", err)
+		}
+	}
+	return nil
+}
+
+func ensureAssignmentEvidenceColumns(ctx context.Context, db *sql.DB) error {
+	columns, exists, err := sqliteTableColumns(ctx, db, "assignments")
+	if err != nil {
+		return fmt.Errorf("inspect assignments columns: %w", err)
+	}
+	if !exists {
+		return nil
+	}
+	for _, column := range []struct {
+		name string
+		ddl  string
+	}{
+		{name: "qg_evidence_dir", ddl: `ALTER TABLE assignments ADD COLUMN qg_evidence_dir TEXT NOT NULL DEFAULT ''`},
+		{name: "target_sha", ddl: `ALTER TABLE assignments ADD COLUMN target_sha TEXT NOT NULL DEFAULT ''`},
+		{name: "target_branch", ddl: `ALTER TABLE assignments ADD COLUMN target_branch TEXT NOT NULL DEFAULT ''`},
+	} {
+		if columns[column.name] {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, column.ddl); err != nil {
+			return fmt.Errorf("add assignments.%s: %w", column.name, err)
 		}
 	}
 	return nil

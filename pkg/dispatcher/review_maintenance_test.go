@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"oro/pkg/evidencefs"
 	"oro/pkg/protocol"
 )
 
@@ -175,6 +176,263 @@ func TestReviewArtifactJanitorScheduled(t *testing.T) {
 	}
 	if _, err := os.Stat(activePath); err != nil {
 		t.Fatalf("active referenced artifact after duplicate tick: %v", err)
+	}
+}
+
+func TestReviewEvidenceParticipatesInArtifactRetention(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := openReviewCheckpointStore(ctx, t, "file:review-evidence-retention?mode=memory&cache=shared")
+	checkpoint := createMaintenanceCheckpoint(ctx, t, store, 200, ReviewCheckpointStateIntegrated)
+	evidencePath := filepath.Join(t.TempDir(), "1.json")
+	oldTimestamp := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339Nano)
+	if _, err := store.db.ExecContext(ctx, `
+UPDATE review_checkpoints
+SET state = ?, qg_evidence_path = ?, qg_evidence_sha256 = 'evidence-hash', created_at = ?, updated_at = ?
+WHERE id = ?`, ReviewCheckpointStateIntegrated, evidencePath, oldTimestamp, oldTimestamp, checkpoint.ID); err != nil {
+		t.Fatalf("seed retained QG evidence: %v", err)
+	}
+
+	artifacts, err := store.ListPrunableArtifacts(ctx, time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("list prunable QG evidence: %v", err)
+	}
+	if len(artifacts) != 1 || artifacts[0].Path != evidencePath || !artifacts[0].QGEvidence {
+		t.Fatalf("prunable QG evidence = %v, want %q", artifacts, evidencePath)
+	}
+	if err := store.ClearPrunedArtifact(ctx, evidencePath); err != nil {
+		t.Fatalf("clear pruned QG evidence: %v", err)
+	}
+	var retained, retainedHash string
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT COALESCE(qg_evidence_path, ''), COALESCE(qg_evidence_sha256, '') FROM review_checkpoints WHERE id = ?`, checkpoint.ID,
+	).Scan(&retained, &retainedHash); err != nil {
+		t.Fatalf("load cleared QG evidence: %v", err)
+	}
+	if retained != "" || retainedHash != "" {
+		t.Fatalf("QG evidence reference retained after clear: path=%q hash=%q", retained, retainedHash)
+	}
+}
+
+func TestCheckpointReviewEvidencePruneDoesNotFollowReplacedParents(t *testing.T) {
+	for _, replacedParent := range []string{"bead", "assignment"} {
+		t.Run(replacedParent, func(t *testing.T) {
+			ctx := context.Background()
+			d, _, _, _, _, _ := newTestDispatcher(t)
+			migrateReviewMaintenanceSchema(t, d)
+			root := filepath.Join(t.TempDir(), "review-evidence")
+			d.cfg.ReviewEvidenceDir = root
+			d.reviewArtifactRetention = time.Hour
+			now := time.Date(2026, time.August, 3, 12, 0, 0, 0, time.UTC)
+			d.nowFunc = func() time.Time { return now }
+			const (
+				beadID       = "oro-checkpoint-symlink"
+				assignmentID = int64(41)
+			)
+			path := writeMaintenanceEvidence(t, root, beadID, assignmentID, now.Add(-2*time.Hour))
+			checkpointID := seedCheckpointQGEvidence(ctx, t, d, path, now.Add(-2*time.Hour))
+
+			externalParent := t.TempDir()
+			externalAssignment := externalParent
+			if replacedParent == "bead" {
+				externalAssignment = filepath.Join(externalParent, "41")
+				if err := os.Mkdir(externalAssignment, 0o700); err != nil {
+					t.Fatalf("create external assignment: %v", err)
+				}
+			}
+			externalPath := filepath.Join(externalAssignment, readyEvidenceAttempt)
+			if err := os.WriteFile(externalPath, []byte("external"), 0o600); err != nil {
+				t.Fatalf("write external evidence: %v", err)
+			}
+			beadDir := filepath.Join(root, beadID)
+			assignmentDir := filepath.Join(beadDir, "41")
+			replacedPath, heldPath, target := beadDir, filepath.Join(root, "held-bead"), externalParent
+			if replacedParent == "assignment" {
+				replacedPath = assignmentDir
+				heldPath = filepath.Join(beadDir, "held-assignment")
+				target = externalAssignment
+			}
+			if err := os.Rename(replacedPath, heldPath); err != nil {
+				t.Fatalf("hold canonical %s parent: %v", replacedParent, err)
+			}
+			if err := os.Symlink(target, replacedPath); err != nil {
+				t.Fatalf("replace %s parent with symlink: %v", replacedParent, err)
+			}
+
+			d.pruneReviewArtifacts(ctx)
+			data, err := os.ReadFile(externalPath)
+			if err != nil || string(data) != "external" {
+				t.Fatalf("external target changed: data=%q err=%v", data, err)
+			}
+			assertCheckpointQGEvidenceReference(t, d, checkpointID, path)
+		})
+	}
+}
+
+func TestCheckpointReviewEvidencePruneRemovesCanonicalFile(t *testing.T) {
+	ctx := context.Background()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	migrateReviewMaintenanceSchema(t, d)
+	root := filepath.Join(t.TempDir(), "review-evidence")
+	d.cfg.ReviewEvidenceDir = root
+	d.reviewArtifactRetention = time.Hour
+	now := time.Date(2026, time.August, 3, 12, 0, 0, 0, time.UTC)
+	d.nowFunc = func() time.Time { return now }
+	path := writeMaintenanceEvidence(t, root, "oro-checkpoint-canonical", 51, now.Add(-2*time.Hour))
+	checkpointID := seedCheckpointQGEvidence(ctx, t, d, path, now.Add(-2*time.Hour))
+
+	d.pruneReviewArtifacts(ctx)
+	assertMaintenanceFileMissing(t, path)
+	assertCheckpointQGEvidenceReference(t, d, checkpointID, "")
+}
+
+func seedCheckpointQGEvidence(
+	ctx context.Context,
+	t *testing.T,
+	d *Dispatcher,
+	path string,
+	terminalAt time.Time,
+) int64 {
+	t.Helper()
+	checkpoint := createMaintenanceCheckpoint(ctx, t, NewReviewCheckpointStore(d.db), int(terminalAt.UnixNano()), ReviewCheckpointStateIntegrated)
+	timestamp := terminalAt.UTC().Format(time.RFC3339Nano)
+	if _, err := d.db.ExecContext(ctx, `
+UPDATE review_checkpoints
+SET state=?, qg_evidence_path=?, qg_evidence_sha256='evidence-hash', created_at=?, updated_at=?, completed_at=?
+WHERE id=?`, ReviewCheckpointStateIntegrated, path, timestamp, timestamp, timestamp, checkpoint.ID); err != nil {
+		t.Fatalf("seed checkpoint QG evidence: %v", err)
+	}
+	return checkpoint.ID
+}
+
+func assertCheckpointQGEvidenceReference(t *testing.T, d *Dispatcher, checkpointID int64, want string) {
+	t.Helper()
+	var path string
+	if err := d.db.QueryRow(`SELECT COALESCE(qg_evidence_path, '') FROM review_checkpoints WHERE id=?`, checkpointID).Scan(&path); err != nil {
+		t.Fatalf("load checkpoint QG evidence reference: %v", err)
+	}
+	if path != want {
+		t.Fatalf("checkpoint QG evidence reference = %q, want %q", path, want)
+	}
+}
+
+func TestReviewEvidenceOrphanSweepAfterCrashRetainsFreshAndLive(t *testing.T) {
+	ctx := context.Background()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	migrateReviewMaintenanceSchema(t, d)
+	root := filepath.Join(t.TempDir(), "review-evidence")
+	d.cfg.ReviewEvidenceDir = root
+	now := time.Date(2026, time.August, 3, 12, 0, 0, 0, time.UTC)
+	cutoff := now.Add(-time.Hour)
+	d.nowFunc = func() time.Time { return now }
+	d.reviewArtifactRetention = time.Hour
+
+	orphan := writeMaintenanceEvidence(t, root, "oro-crash-orphan", 11, cutoff.Add(-time.Minute))
+	fresh := writeMaintenanceEvidence(t, root, "oro-fresh-contender", 12, cutoff.Add(time.Minute))
+	live := writeMaintenanceEvidence(t, root, "oro-live-assignment", 13, cutoff.Add(-time.Minute))
+	if _, err := d.db.ExecContext(ctx, `
+INSERT INTO assignments (id, bead_id, worker_id, worktree, qg_evidence_dir, status)
+VALUES (?, ?, 'worker-live', '/tmp/live', ?, 'active')`, 13, "oro-live-assignment", root); err != nil {
+		t.Fatalf("seed live assignment: %v", err)
+	}
+
+	d.pruneReviewArtifacts(ctx)
+	assertMaintenanceFileMissing(t, orphan)
+	assertMaintenanceFileExists(t, fresh)
+	assertMaintenanceFileExists(t, live)
+}
+
+func TestReviewEvidenceOrphanSweepRetainsCheckpointReference(t *testing.T) {
+	ctx := context.Background()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	migrateReviewMaintenanceSchema(t, d)
+	root := filepath.Join(t.TempDir(), "review-evidence")
+	d.cfg.ReviewEvidenceDir = root
+	cutoff := time.Date(2026, time.August, 3, 11, 0, 0, 0, time.UTC)
+	path := writeMaintenanceEvidence(t, root, "oro-checkpoint-live", 21, cutoff.Add(-time.Minute))
+	checkpoint := createMaintenanceCheckpoint(ctx, t, NewReviewCheckpointStore(d.db), 321, ReviewCheckpointStateReviewRunning)
+	if _, err := d.db.ExecContext(ctx,
+		`UPDATE review_checkpoints SET qg_evidence_path=? WHERE id=?`, path, checkpoint.ID); err != nil {
+		t.Fatalf("seed checkpoint evidence reference: %v", err)
+	}
+
+	d.pruneReviewEvidenceOrphans(ctx, cutoff)
+	assertMaintenanceFileExists(t, path)
+}
+
+func TestReviewEvidenceOrphanSweepFailsClosedOnDatabaseError(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	migrateReviewMaintenanceSchema(t, d)
+	root := filepath.Join(t.TempDir(), "review-evidence")
+	d.cfg.ReviewEvidenceDir = root
+	cutoff := time.Date(2026, time.August, 3, 11, 0, 0, 0, time.UTC)
+	path := writeMaintenanceEvidence(t, root, "oro-db-failure", 31, cutoff.Add(-time.Minute))
+	if err := d.db.Close(); err != nil {
+		t.Fatalf("close database: %v", err)
+	}
+
+	d.pruneReviewEvidenceOrphans(context.Background(), cutoff)
+	assertMaintenanceFileExists(t, path)
+}
+
+func TestReviewEvidenceOrphanSweepDoesNotEscapeSymlink(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	migrateReviewMaintenanceSchema(t, d)
+	root := filepath.Join(t.TempDir(), "review-evidence")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatalf("create evidence root: %v", err)
+	}
+	d.cfg.ReviewEvidenceDir = root
+	external := t.TempDir()
+	externalAssignment := filepath.Join(external, "41")
+	if err := os.Mkdir(externalAssignment, 0o700); err != nil {
+		t.Fatalf("create external assignment: %v", err)
+	}
+	externalPath := filepath.Join(externalAssignment, "1.json")
+	if err := os.WriteFile(externalPath, []byte("external"), 0o600); err != nil {
+		t.Fatalf("write external evidence: %v", err)
+	}
+	if err := os.Symlink(external, filepath.Join(root, "oro-symlink")); err != nil {
+		t.Fatalf("create bead symlink: %v", err)
+	}
+
+	d.pruneReviewEvidenceOrphans(context.Background(), time.Now().Add(time.Hour))
+	data, err := os.ReadFile(externalPath)
+	if err != nil || string(data) != "external" {
+		t.Fatalf("external evidence changed: data=%q err=%v", data, err)
+	}
+}
+
+func writeMaintenanceEvidence(t *testing.T, root, beadID string, assignmentID int64, modTime time.Time) string {
+	t.Helper()
+	if err := evidencefs.WriteFile(root, []string{beadID, fmt.Sprint(assignmentID)}, "1.json", []byte("evidence")); err != nil {
+		t.Fatalf("write evidence fixture: %v", err)
+	}
+	path := filepath.Join(root, beadID, fmt.Sprint(assignmentID), "1.json")
+	if err := os.Chtimes(path, modTime, modTime); err != nil {
+		t.Fatalf("age evidence fixture: %v", err)
+	}
+	return path
+}
+
+func migrateReviewMaintenanceSchema(t *testing.T, d *Dispatcher) {
+	t.Helper()
+	if err := protocol.MigrateBeadSchema(context.Background(), d.db); err != nil {
+		t.Fatalf("migrate review maintenance schema: %v", err)
+	}
+}
+
+func assertMaintenanceFileExists(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected retained file %s: %v", path, err)
+	}
+}
+
+func assertMaintenanceFileMissing(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected pruned file %s, stat error %v", path, err)
 	}
 }
 

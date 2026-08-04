@@ -1593,9 +1593,19 @@ Throughput reporting should distinguish:
   rollout, but it is no longer authoritative.
 - Old workers that echo passing `DONE` after approval cannot cause duplicate
   integration.
-- New ACK and reconnect fields are optional on the wire. Old workers retain the
-  worker-owned DONE flow, while assignment/checkpoint CAS makes mixed-version
-  duplicate completion harmless.
+- Rolling upgrades are supported through explicit worker capability
+  negotiation. Current workers advertise protocol version 1 and
+  `ready-evidence-v1` in both heartbeat and reconnect messages.
+- A legacy worker with a durable active or requeued assignment may reconnect
+  and finish that assignment through the legacy-compatible path, but is marked
+  for drain and cannot receive a handoff or a new assignment. Once it becomes
+  idle, the dispatcher sends `SHUTDOWN`.
+- A legacy or incompatible worker without an existing assignment receives
+  `SHUTDOWN`, its connection is closed, and a durable
+  `worker_protocol_drained` event records the required version and capability.
+  Incompatible idle workers are never silently left connected.
+- New ACK fields remain optional on the wire during the drain window. Assignment
+  and checkpoint CAS make mixed-version duplicate completion harmless.
 
 ## 20. Testing Strategy
 

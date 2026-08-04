@@ -24,11 +24,12 @@ const (
 // Paths holds all resolved oro state file paths.
 // Use ResolvePaths() to populate this struct with defaults + env overrides.
 type Paths struct {
-	OroHome         string // ~/.oro or ORO_HOME
-	PIDPath         string // oro.pid or ORO_PID_PATH
-	SocketPath      string // oro.sock or ORO_SOCKET_PATH
-	StateDBPath     string // state.db or ORO_DB_PATH
-	CodeIndexDBPath string // code_index.db (respects ORO_HOME)
+	OroHome           string // ~/.oro or ORO_HOME
+	PIDPath           string // oro.pid or ORO_PID_PATH
+	SocketPath        string // oro.sock or ORO_SOCKET_PATH
+	StateDBPath       string // state.db or ORO_DB_PATH
+	CodeIndexDBPath   string // code_index.db (respects ORO_HOME)
+	ReviewEvidenceDir string // review-evidence directory in project-scoped daemon state
 }
 
 var (
@@ -126,11 +127,12 @@ func ResolveDaemonPaths() (*Paths, error) {
 	}
 
 	return &Paths{
-		OroHome:         oroHome,
-		PIDPath:         resolvePathWithEnv("ORO_PID_PATH", stateBase, "oro.pid"),
-		SocketPath:      resolvePathWithEnv("ORO_SOCKET_PATH", stateBase, "oro.sock"),
-		StateDBPath:     resolvePathWithEnv("ORO_DB_PATH", stateBase, "state.db"),
-		CodeIndexDBPath: filepath.Join(stateBase, "code_index.db"),
+		OroHome:           oroHome,
+		PIDPath:           resolvePathWithEnv("ORO_PID_PATH", stateBase, "oro.pid"),
+		SocketPath:        resolvePathWithEnv("ORO_SOCKET_PATH", stateBase, "oro.sock"),
+		StateDBPath:       resolvePathWithEnv("ORO_DB_PATH", stateBase, "state.db"),
+		CodeIndexDBPath:   filepath.Join(stateBase, "code_index.db"),
+		ReviewEvidenceDir: filepath.Join(stateBase, "review-evidence"),
 	}, nil
 }
 

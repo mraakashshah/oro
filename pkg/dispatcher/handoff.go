@@ -113,13 +113,15 @@ func (d *Dispatcher) shutdownWorkerForHandoff(workerID string) workerAssignmentS
 		return workerAssignmentSnapshot{}
 	}
 	snap := workerAssignmentSnapshot{
-		execution:    w.execution,
-		worktree:     w.worktree,
-		runtime:      w.runtime,
-		model:        w.model,
-		epicID:       w.epicID,
-		baseBranch:   w.baseBranch,
-		targetBranch: w.targetBranch,
+		execution:     w.execution,
+		worktree:      w.worktree,
+		runtime:       w.runtime,
+		model:         w.model,
+		epicID:        w.epicID,
+		baseBranch:    w.baseBranch,
+		targetBranch:  w.targetBranch,
+		qgEvidenceDir: w.qgEvidenceDir,
+		targetSHA:     w.targetSHA,
 	}
 	_ = d.sendToWorker(w, protocol.Message{Type: protocol.MsgShutdown})
 	w.state = protocol.WorkerShuttingDown
@@ -200,17 +202,19 @@ func (d *Dispatcher) respawnWorker(ctx context.Context, beadID string, snap work
 	}
 	d.mu.Lock()
 	d.pendingHandoffs[beadID] = &pendingHandoff{
-		assignmentID: assignmentID,
-		execution:    snap.execution,
-		beadID:       beadID,
-		epicID:       snap.epicID,
-		worktree:     snap.worktree,
-		baseBranch:   snap.baseBranch,
-		targetBranch: snap.targetBranch,
-		runtime:      snap.runtime,
-		model:        snap.model,
-		title:        title,
-		labels:       labels,
+		assignmentID:  assignmentID,
+		execution:     snap.execution,
+		beadID:        beadID,
+		epicID:        snap.epicID,
+		worktree:      snap.worktree,
+		baseBranch:    snap.baseBranch,
+		targetBranch:  snap.targetBranch,
+		qgEvidenceDir: snap.qgEvidenceDir,
+		targetSHA:     snap.targetSHA,
+		runtime:       snap.runtime,
+		model:         snap.model,
+		title:         title,
+		labels:        labels,
 	}
 	if newID != "" && d.cfg.MaxWorkers > 0 && d.liveWorkerCountLocked() >= d.cfg.MaxWorkers {
 		newID = ""
