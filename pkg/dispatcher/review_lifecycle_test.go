@@ -56,7 +56,7 @@ func TestReviewCheckpointStartupOrdering(t *testing.T) {
 	if err := d.requeueAssignment(ctx, assignmentID); err != nil {
 		t.Fatalf("requeue checkpoint assignment: %v", err)
 	}
-	seedDurableReviewCheckpoint(t, d, beadID, assignmentID, worktree, ReviewCheckpointStateReviewRunning)
+	durableCheckpoint := seedDurableReviewCheckpoint(t, d, beadID, assignmentID, worktree, ReviewCheckpointStateReviewRunning)
 	orphaned, _, err := CreateOpsRun(ctx, d.db, OpsRunRecord{
 		Type:          string(ops.OpsReview),
 		BeadID:        beadID,
@@ -66,6 +66,9 @@ func TestReviewCheckpointStartupOrdering(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("create orphaned review run: %v", err)
+	}
+	if _, err := d.db.ExecContext(ctx, `UPDATE review_checkpoints SET ops_run_id=? WHERE id=?`, orphaned.ID, durableCheckpoint.ID); err != nil {
+		t.Fatalf("link orphaned review run: %v", err)
 	}
 	escalationID := insertDispatcherTestEscalation(t, d.db, protocol.EscOversizedBead, beadID, workerID)
 
@@ -106,6 +109,14 @@ func TestReviewCheckpointStartupOrdering(t *testing.T) {
 	superseded := fetchOpsRunForTest(t, d.db, orphaned.ID)
 	if superseded.Status != opsRunStatusSuperseded {
 		t.Fatalf("orphaned review status = %q, want %q", superseded.Status, opsRunStatusSuperseded)
+	}
+	var replacementOpsRunID int64
+	if err := d.db.QueryRowContext(ctx, `SELECT ops_run_id FROM review_checkpoints WHERE id=?`, durableCheckpoint.ID).
+		Scan(&replacementOpsRunID); err != nil {
+		t.Fatalf("load replacement checkpoint ownership: %v", err)
+	}
+	if replacementOpsRunID == orphaned.ID || replacementOpsRunID == 0 {
+		t.Fatalf("checkpoint ops run = %d, want exact replacement distinct from orphan %d", replacementOpsRunID, orphaned.ID)
 	}
 
 	spawnMock.mu.Lock()
@@ -423,6 +434,179 @@ func TestReviewIntegrationStartupReconciliationIgnoresTerminalCheckpoints(t *tes
 			}
 		})
 	}
+}
+
+func TestReviewIntegrationApprovalDoesNotRebindMovedSourceOrTarget(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name       string
+		moveSource bool
+		moveTarget bool
+		wantReason string
+	}{
+		{name: "approved source branch advanced", moveSource: true, wantReason: "approved source moved"},
+		{name: "approved target advanced", moveTarget: true, wantReason: "approved target moved"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, beadSrc, _, _, mergeGit, _ := newTestDispatcher(t)
+			repo, baseSHA, approvedSHA := reviewIntegrationGitFixture(t, false)
+			worktree := filepath.Join(t.TempDir(), "approved-worktree")
+			runAssignmentTestGit(t, repo, "worktree", "add", worktree, "agent/review-integration")
+			if tt.moveSource {
+				runAssignmentTestGit(t, worktree, "commit", "--allow-empty", "-m", "unreviewed descendant")
+			}
+			if tt.moveTarget {
+				runAssignmentTestGit(t, repo, "commit", "--allow-empty", "-m", "unapproved target movement")
+			}
+			d.repoRoot = repo
+			d.setCommandRunner(&ExecCommandRunner{})
+			const beadID = "immutable-approved-integration"
+			beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress"}
+			assignmentID, err := d.createAssignment(ctx, beadID, "worker-approved", worktree)
+			if err != nil {
+				t.Fatalf("create assignment: %v", err)
+			}
+			if err := d.requeueAssignment(ctx, assignmentID); err != nil {
+				t.Fatalf("requeue assignment: %v", err)
+			}
+			checkpoint := seedReviewIntegrationCheckpoint(t, d, beadID, assignmentID, worktree,
+				ReviewCheckpointStateApproved, baseSHA, approvedSHA)
+
+			if err := d.reconcileReviewIntegrationsOnStartup(ctx); err != nil {
+				t.Fatalf("reconcile: %v", err)
+			}
+
+			var state, summary, targetBefore string
+			if err := d.db.QueryRowContext(ctx, `
+SELECT state, summary, COALESCE(integration_target_before_sha, '')
+FROM review_checkpoints WHERE id=?`, checkpoint.ID).Scan(&state, &summary, &targetBefore); err != nil {
+				t.Fatalf("load checkpoint: %v", err)
+			}
+			if state != string(ReviewCheckpointStateBlocked) || !strings.Contains(summary, tt.wantReason) {
+				t.Fatalf("checkpoint = state %q summary %q, want blocked reason containing %q", state, summary, tt.wantReason)
+			}
+			if targetBefore != "" && targetBefore != baseSHA {
+				t.Fatalf("integration target-before rebound to %q, want empty or approved %q", targetBefore, baseSHA)
+			}
+			if calls := mergeGit.Calls(); len(calls) != 0 {
+				t.Fatalf("merge git calls = %v, want zero before immutable identity proof", calls)
+			}
+		})
+	}
+}
+
+func TestStartupFinalizesProvenIntegrationBeforeMissingWorktreeQuarantine(t *testing.T) {
+	ctx := context.Background()
+	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+	repo, baseSHA, approvedSHA := reviewIntegrationGitFixture(t, true)
+	d.repoRoot = repo
+	d.setCommandRunner(&ExecCommandRunner{})
+	const beadID = "startup-proven-integration-missing-worktree"
+	missingWorktree := filepath.Join(repo, ".worktrees", "already-removed-after-merge")
+	wtMgr.existsFn = func(_ context.Context, _ string) bool { return false }
+	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress"}
+	seedReviewCheckpointBead(ctx, t, d, beadID, "Finalize proven integration")
+	assignmentID, err := d.createAssignment(ctx, beadID, "worker-proven", missingWorktree)
+	if err != nil {
+		t.Fatalf("create assignment: %v", err)
+	}
+	if err := d.requeueAssignment(ctx, assignmentID); err != nil {
+		t.Fatalf("requeue assignment: %v", err)
+	}
+	checkpoint := seedReviewIntegrationCheckpoint(t, d, beadID, assignmentID, missingWorktree,
+		ReviewCheckpointStateIntegrating, baseSHA, approvedSHA)
+	if _, err := d.db.ExecContext(ctx, `
+UPDATE review_checkpoints
+SET integration_target_before_sha=?, integration_approved_head_sha=?, integration_step='intent'
+WHERE id=?`, baseSHA, approvedSHA, checkpoint.ID); err != nil {
+		t.Fatalf("seed integration intent: %v", err)
+	}
+
+	if err := d.startupRecovery(ctx); err != nil {
+		t.Fatalf("startupRecovery: %v", err)
+	}
+
+	var state, assignmentStatus string
+	if err := d.db.QueryRowContext(ctx, `SELECT state FROM review_checkpoints WHERE id=?`, checkpoint.ID).Scan(&state); err != nil {
+		t.Fatalf("load checkpoint: %v", err)
+	}
+	if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&assignmentStatus); err != nil {
+		t.Fatalf("load assignment: %v", err)
+	}
+	if state != string(ReviewCheckpointStateIntegrated) || assignmentStatus != "completed" {
+		t.Fatalf("checkpoint/assignment = %q/%q, want integrated/completed", state, assignmentStatus)
+	}
+	var quarantines int
+	if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM recovery_quarantines WHERE assignment_id=?`, assignmentID).Scan(&quarantines); err != nil {
+		t.Fatalf("count quarantines: %v", err)
+	}
+	if quarantines != 0 {
+		t.Fatalf("recovery quarantines = %d, want 0 after proven merge", quarantines)
+	}
+}
+
+func TestAssignmentSideEffectAdmissionSerializesCheckpointInsertion(t *testing.T) {
+	ctx := context.Background()
+	t.Run("direct missing acceptance", func(t *testing.T) {
+		d, beadSrc, _, escalator, _, _ := newTestDispatcher(t)
+		const beadID = "assignment-admission-race-missing-ac"
+		beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Title: "Missing acceptance", Status: "open"}
+		conn := newMockConn()
+		worker := &trackedWorker{
+			id: "worker-admission-race", conn: conn, encoder: json.NewEncoder(conn), state: protocol.WorkerIdle,
+		}
+		d.mu.Lock()
+		d.workers[worker.id] = worker
+		d.mu.Unlock()
+		seamCalled := false
+		d.beforeAssignmentSideEffectAdmission = func() {
+			seamCalled = true
+			seedDurableReviewCheckpoint(t, d, beadID, 9001, "/tmp/checkpoint-admission-race", ReviewCheckpointStateReviewRunning)
+		}
+
+		if err := d.assignBead(ctx, worker, protocol.Bead{ID: beadID, Title: "Missing acceptance", Status: "open"}); err != nil {
+			t.Fatalf("assignBead: %v", err)
+		}
+		if !seamCalled {
+			t.Fatal("deterministic admission seam was not called")
+		}
+		if messages := escalator.Messages(); len(messages) != 0 {
+			t.Fatalf("escalations = %v, want zero", messages)
+		}
+		if got := eventCount(t, d.db, "bead_skipped_missing_ac"); got != 0 {
+			t.Fatalf("missing-AC events = %d, want 0", got)
+		}
+	})
+
+	t.Run("bulk epic auto-close", func(t *testing.T) {
+		d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+		const beadID = "assignment-admission-race-epic"
+		beadSrc.hasChildrenMap = map[string]bool{beadID: true}
+		beadSrc.allChildrenClosedMap = map[string]bool{beadID: true}
+		seamCalled := false
+		d.beforeAssignmentSideEffectAdmission = func() {
+			seamCalled = true
+			seedDurableReviewCheckpoint(t, d, beadID, 9002, "/tmp/checkpoint-epic-race", ReviewCheckpointStateIntegrating)
+		}
+
+		got := d.filterAssignable(ctx, []protocol.Bead{{ID: beadID, Title: "Epic", Type: "epic", Status: "open"}})
+		if !seamCalled {
+			t.Fatal("deterministic admission seam was not called")
+		}
+		if len(got) != 0 {
+			t.Fatalf("assignable = %v, want empty", got)
+		}
+		beadSrc.mu.Lock()
+		closed := append([]string(nil), beadSrc.closed...)
+		beadSrc.mu.Unlock()
+		if len(closed) != 0 {
+			t.Fatalf("closed beads = %v, want zero", closed)
+		}
+		if got := eventCount(t, d.db, "epic_auto_closed"); got != 0 {
+			t.Fatalf("epic auto-close events = %d, want 0", got)
+		}
+	})
 }
 
 func reviewIntegrationGitFixture(t *testing.T, mergeApproved bool) (repo, baseSHA, approvedSHA string) {

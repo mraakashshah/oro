@@ -241,13 +241,14 @@ type Dispatcher struct {
 	// mergesSinceJanitor tracks completed merges until the janitor has enough
 	// work to justify a scan. janitorRunsSinceAudit tracks eligible cycles so
 	// an audit can replace the configured periodic janitor run.
-	mergesSinceJanitor    uint64
-	janitorRunsSinceAudit uint64
-	janitorSpawnFn        func(context.Context)                           // test hook; nil records the scheduled janitor run
-	auditSpawnFn          func(context.Context)                           // test hook; nil records the scheduled audit run
-	auditResultFn         func(context.Context, ops.AuditOpts) ops.Result // test hook; nil runs the ops audit
-	cleanlinessRoleMu     sync.Mutex
-	cleanlinessCycleMu    sync.Mutex
+	mergesSinceJanitor                  uint64
+	janitorRunsSinceAudit               uint64
+	janitorSpawnFn                      func(context.Context)                           // test hook; nil records the scheduled janitor run
+	auditSpawnFn                        func(context.Context)                           // test hook; nil records the scheduled audit run
+	auditResultFn                       func(context.Context, ops.AuditOpts) ops.Result // test hook; nil runs the ops audit
+	beforeAssignmentSideEffectAdmission func()                                          // test seam for checkpoint-admission races
+	cleanlinessRoleMu                   sync.Mutex
+	cleanlinessCycleMu                  sync.Mutex
 
 	// dreamExecuteFn, if non-nil, is called by handleDreamResult instead of
 	// memoryServices.ExecuteDream. Tests inject this to capture calls.

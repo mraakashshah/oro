@@ -282,7 +282,15 @@ func (d *Dispatcher) filterExecutableBeads(ctx context.Context, allBeads []proto
 				continue
 			}
 			if hasChildren {
+				if d.beforeAssignmentSideEffectAdmission != nil {
+					d.beforeAssignmentSideEffectAdmission()
+				}
+				admission, admissionErr := d.acquireAssignmentSideEffectAdmission(ctx, b.ID, "", "bulk_epic_validation")
+				if admissionErr != nil || admission == nil {
+					continue
+				}
 				d.processEpicSkip(ctx, b)
+				d.releaseAssignmentSideEffectAdmission(ctx, admission)
 				continue
 			}
 		}

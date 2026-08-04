@@ -14,6 +14,10 @@ import (
 // ErrCheckpointConflict reports that a checkpoint changed before a requested transition.
 var ErrCheckpointConflict = errors.New("review checkpoint conflict")
 
+// ErrCheckpointOwnershipAmbiguous reports that durable ownership cannot be
+// resolved to one checkpoint without guessing.
+var ErrCheckpointOwnershipAmbiguous = errors.New("review checkpoint ownership is ambiguous")
+
 // ReviewCheckpointState is the durable lifecycle state for a review checkpoint.
 type ReviewCheckpointState string
 
@@ -54,6 +58,7 @@ type CheckpointInput struct {
 	ReviewPolicyHash    string
 	TriageRevision      string
 	ReadyAttempt        string
+	OpsRunID            int64
 	State               ReviewCheckpointState
 }
 
@@ -96,33 +101,59 @@ func (s *ReviewCheckpointStore) CreateOrReuse(ctx context.Context, in Checkpoint
 		return ReviewCheckpoint{}, err
 	}
 
+	for {
+		checkpoint, retry, err := s.createOrReuseAttempt(ctx, in)
+		if err != nil {
+			return ReviewCheckpoint{}, err
+		}
+		if !retry {
+			return checkpoint, nil
+		}
+		timer := time.NewTimer(5 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ReviewCheckpoint{}, fmt.Errorf("wait for assignment side-effect admission on %s: %w", in.BeadID, ctx.Err())
+		case <-timer.C:
+		}
+	}
+}
+
+func (s *ReviewCheckpointStore) createOrReuseAttempt(ctx context.Context, in CheckpointInput) (ReviewCheckpoint, bool, error) {
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO review_checkpoints (
   checkpoint_key, bead_id, origin_assignment_id, current_assignment_id, worker_id,
   worktree, branch, target_branch, head_sha, target_sha, acceptance_hash,
-  qg_script_hash, qg_mode, review_policy_hash, triage_revision, ready_attempt, state
-) VALUES (?, ?, ?, NULLIF(?, 0), NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  qg_script_hash, qg_mode, review_policy_hash, triage_revision, ready_attempt, ops_run_id, state
+) SELECT ?, ?, ?, NULLIF(?, 0), NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, 0), ?
+WHERE NOT EXISTS (
+  SELECT 1 FROM assignment_side_effect_admissions WHERE bead_id = ?
+)
 ON CONFLICT(checkpoint_key) WHERE state <> 'superseded' DO NOTHING`,
 		in.CheckpointKey, in.BeadID, in.OriginAssignmentID, in.CurrentAssignmentID, in.WorkerID,
 		in.Worktree, in.Branch, in.TargetBranch, in.HeadSHA, in.TargetSHA, in.AcceptanceHash,
-		in.QGScriptHash, in.QGMode, in.ReviewPolicyHash, in.TriageRevision, in.ReadyAttempt, in.State)
+		in.QGScriptHash, in.QGMode, in.ReviewPolicyHash, in.TriageRevision, in.ReadyAttempt, in.OpsRunID, in.State,
+		in.BeadID)
 	if err != nil {
-		return ReviewCheckpoint{}, fmt.Errorf("insert review checkpoint: %w", err)
+		return ReviewCheckpoint{}, false, fmt.Errorf("insert review checkpoint: %w", err)
 	}
 
 	checkpoint, err := scanReviewCheckpoint(s.db.QueryRowContext(ctx, `
 SELECT id, checkpoint_key, bead_id, origin_assignment_id, COALESCE(current_assignment_id, 0),
        COALESCE(worker_id, ''), worktree, branch, target_branch, head_sha, target_sha,
        acceptance_hash, qg_script_hash, qg_mode, review_policy_hash, triage_revision,
-       ready_attempt, state
+       ready_attempt, COALESCE(ops_run_id, 0), state
 FROM review_checkpoints
 WHERE checkpoint_key = ? AND state <> 'superseded'
 ORDER BY id DESC
 LIMIT 1`, in.CheckpointKey))
-	if err != nil {
-		return ReviewCheckpoint{}, fmt.Errorf("load active review checkpoint: %w", err)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ReviewCheckpoint{}, true, nil
 	}
-	return checkpoint, nil
+	if err != nil {
+		return ReviewCheckpoint{}, false, fmt.Errorf("load active review checkpoint: %w", err)
+	}
+	return checkpoint, false, nil
 }
 
 // CompareAndSwap transitions a checkpoint only when it is still in from.
@@ -151,7 +182,7 @@ WHERE id = ? AND state = ?`, to, id, from)
 	return nil
 }
 
-// LoadOwningForBead returns the newest nonterminal checkpoint that owns beadID.
+// LoadOwningForBead returns the unique nonterminal checkpoint that owns beadID.
 func (s *ReviewCheckpointStore) LoadOwningForBead(ctx context.Context, beadID string) (*ReviewCheckpoint, error) {
 	if s == nil || s.db == nil {
 		return nil, errors.New("load owning review checkpoint: db is nil")
@@ -159,11 +190,20 @@ func (s *ReviewCheckpointStore) LoadOwningForBead(ctx context.Context, beadID st
 	if beadID == "" {
 		return nil, errors.New("load owning review checkpoint: bead ID is empty")
 	}
+	var count int
+	if err := s.db.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM review_checkpoints
+WHERE bead_id=? AND state NOT IN ('integrated', 'superseded')`, beadID).Scan(&count); err != nil {
+		return nil, fmt.Errorf("count owning review checkpoints for %s: %w", beadID, err)
+	}
+	if count > 1 {
+		return nil, fmt.Errorf("load owning review checkpoint for %s: found %d: %w", beadID, count, ErrCheckpointOwnershipAmbiguous)
+	}
 	checkpoint, err := scanReviewCheckpoint(s.db.QueryRowContext(ctx, `
 SELECT id, checkpoint_key, bead_id, origin_assignment_id, COALESCE(current_assignment_id, 0),
        COALESCE(worker_id, ''), worktree, branch, target_branch, head_sha, target_sha,
        acceptance_hash, qg_script_hash, qg_mode, review_policy_hash, triage_revision,
-       ready_attempt, state
+       ready_attempt, COALESCE(ops_run_id, 0), state
 FROM review_checkpoints
 WHERE bead_id = ? AND state NOT IN ('integrated', 'superseded')
 ORDER BY id DESC
@@ -177,6 +217,123 @@ LIMIT 1`, beadID))
 	return &checkpoint, nil
 }
 
+// LoadForOpsRun returns the checkpoint durably linked to opsRunID.
+func (s *ReviewCheckpointStore) LoadForOpsRun(ctx context.Context, opsRunID int64) (*ReviewCheckpoint, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("load review checkpoint for ops run: db is nil")
+	}
+	if opsRunID <= 0 {
+		return nil, fmt.Errorf("load review checkpoint for ops run: invalid ID %d", opsRunID)
+	}
+	checkpoint, err := scanReviewCheckpoint(s.db.QueryRowContext(ctx, `
+SELECT id, checkpoint_key, bead_id, origin_assignment_id, COALESCE(current_assignment_id, 0),
+       COALESCE(worker_id, ''), worktree, branch, target_branch, head_sha, target_sha,
+       acceptance_hash, qg_script_hash, qg_mode, review_policy_hash, triage_revision,
+       ready_attempt, COALESCE(ops_run_id, 0), state
+FROM review_checkpoints
+WHERE ops_run_id=? AND state NOT IN ('integrated', 'superseded')`, opsRunID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load review checkpoint for ops run %d: %w", opsRunID, err)
+	}
+	return &checkpoint, nil
+}
+
+// LoadForOpsRunOrBindLegacy resolves exact ownership, backfilling only when
+// one unlinked nonterminal checkpoint exists and no guess is required.
+func (s *ReviewCheckpointStore) LoadForOpsRunOrBindLegacy(
+	ctx context.Context,
+	opsRunID int64,
+	beadID string,
+) (*ReviewCheckpoint, error) {
+	checkpoint, err := s.LoadForOpsRun(ctx, opsRunID)
+	if err != nil || checkpoint != nil {
+		return checkpoint, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin legacy checkpoint ownership bind: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `UPDATE review_checkpoints SET updated_at=updated_at WHERE 0`); err != nil {
+		return nil, fmt.Errorf("serialize legacy checkpoint ownership bind: %w", err)
+	}
+	rechecked, err := scanReviewCheckpoint(tx.QueryRowContext(ctx, `
+SELECT id, checkpoint_key, bead_id, origin_assignment_id, COALESCE(current_assignment_id, 0),
+       COALESCE(worker_id, ''), worktree, branch, target_branch, head_sha, target_sha,
+       acceptance_hash, qg_script_hash, qg_mode, review_policy_hash, triage_revision,
+       ready_attempt, COALESCE(ops_run_id, 0), state
+FROM review_checkpoints
+WHERE ops_run_id=? AND state NOT IN ('integrated', 'superseded')`, opsRunID))
+	if err == nil {
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("commit exact checkpoint ownership observation: %w", err)
+		}
+		return &rechecked, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("recheck exact checkpoint ownership for ops run %d: %w", opsRunID, err)
+	}
+	rows, err := tx.QueryContext(ctx, `
+SELECT id FROM review_checkpoints
+WHERE bead_id=? AND ops_run_id IS NULL AND state NOT IN ('integrated', 'superseded')
+ORDER BY id`, beadID)
+	if err != nil {
+		return nil, fmt.Errorf("query legacy checkpoint ownership for ops run %d: %w", opsRunID, err)
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("scan legacy checkpoint ownership: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, fmt.Errorf("iterate legacy checkpoint ownership: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close legacy checkpoint ownership rows: %w", err)
+	}
+	if len(ids) > 1 {
+		return nil, fmt.Errorf("bind ops run %d for bead %s: found %d unlinked checkpoints: %w",
+			opsRunID, beadID, len(ids), ErrCheckpointOwnershipAmbiguous)
+	}
+	if len(ids) == 1 {
+		result, err := tx.ExecContext(ctx, `
+UPDATE review_checkpoints SET ops_run_id=?, updated_at=datetime('now')
+WHERE id=? AND ops_run_id IS NULL`, opsRunID, ids[0])
+		if err != nil {
+			return nil, fmt.Errorf("bind legacy checkpoint %d to ops run %d: %w", ids[0], opsRunID, err)
+		}
+		if err := requireOneCheckpointRow(result, ids[0], "bind legacy checkpoint ownership"); err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("commit legacy checkpoint ownership bind: %w", err)
+		}
+		return s.LoadForOpsRun(ctx, opsRunID)
+	}
+	var linkedToOther int
+	if err := tx.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM review_checkpoints
+WHERE bead_id=? AND state NOT IN ('integrated', 'superseded')`, beadID).Scan(&linkedToOther); err != nil {
+		return nil, fmt.Errorf("count checkpoint ownership for bead %s: %w", beadID, err)
+	}
+	if linkedToOther != 0 {
+		return nil, fmt.Errorf("ops run %d has no exact checkpoint among %d for bead %s: %w",
+			opsRunID, linkedToOther, beadID, ErrCheckpointOwnershipAmbiguous)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit absent checkpoint ownership observation: %w", err)
+	}
+	return nil, nil
+}
+
 // ListPendingIntegrations returns checkpoints that must be reconciled before
 // ordinary ops routing or assignment admission begins.
 func (s *ReviewCheckpointStore) ListPendingIntegrations(ctx context.Context) ([]ReviewIntegrationCheckpoint, error) {
@@ -187,7 +344,7 @@ func (s *ReviewCheckpointStore) ListPendingIntegrations(ctx context.Context) ([]
 SELECT id, checkpoint_key, bead_id, origin_assignment_id, COALESCE(current_assignment_id, 0),
        COALESCE(worker_id, ''), worktree, branch, target_branch, head_sha, target_sha,
        acceptance_hash, qg_script_hash, qg_mode, review_policy_hash, triage_revision,
-       ready_attempt, state, COALESCE(integration_target_before_sha, ''),
+       ready_attempt, COALESCE(ops_run_id, 0), state, COALESCE(integration_target_before_sha, ''),
        COALESCE(integration_approved_head_sha, ''), COALESCE(integration_observed_target_sha, ''),
        COALESCE(integration_step, '')
 FROM review_checkpoints
@@ -206,7 +363,8 @@ ORDER BY id`)
 			&checkpoint.Worktree, &checkpoint.Branch, &checkpoint.TargetBranch,
 			&checkpoint.HeadSHA, &checkpoint.TargetSHA, &checkpoint.AcceptanceHash,
 			&checkpoint.QGScriptHash, &checkpoint.QGMode, &checkpoint.ReviewPolicyHash,
-			&checkpoint.TriageRevision, &checkpoint.ReadyAttempt, &checkpoint.State,
+			&checkpoint.TriageRevision, &checkpoint.ReadyAttempt, &checkpoint.OpsRunID,
+			&checkpoint.State,
 			&checkpoint.IntegrationTargetBeforeSHA, &checkpoint.IntegrationApprovedHeadSHA,
 			&checkpoint.IntegrationObservedTargetSHA, &checkpoint.IntegrationStep,
 		); err != nil {
@@ -447,6 +605,7 @@ func scanReviewCheckpoint(row *sql.Row) (ReviewCheckpoint, error) {
 		&checkpoint.ReviewPolicyHash,
 		&checkpoint.TriageRevision,
 		&checkpoint.ReadyAttempt,
+		&checkpoint.OpsRunID,
 		&checkpoint.State,
 	)
 	if err != nil {

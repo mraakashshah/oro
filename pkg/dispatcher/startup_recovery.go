@@ -120,6 +120,9 @@ func (d *Dispatcher) startupRecovery(ctx context.Context) error {
 	if err := protocol.MigrateBeadSchema(ctx, d.db); err != nil {
 		return fmt.Errorf("init bead schema: %w", err)
 	}
+	if err := d.clearStaleAssignmentSideEffectAdmissions(ctx); err != nil {
+		return err
+	}
 	if err := d.repairBlockedEpicBranchRecoveries(ctx); err != nil {
 		return fmt.Errorf("repair blocked epic branch recoveries: %w", err)
 	}
@@ -129,12 +132,12 @@ func (d *Dispatcher) startupRecovery(ctx context.Context) error {
 	d.logAssignmentInvariantViolations(ctx)
 	d.detectAndResolveDuplicateActiveAssignments(ctx)
 
+	if err := d.reconcileReviewIntegrationsOnStartup(ctx); err != nil {
+		return fmt.Errorf("reconcile review integrations: %w", err)
+	}
 	recoverableBeads, recoveryStats, err := d.restoreState(ctx)
 	if err != nil {
 		return fmt.Errorf("restore state: %w", err)
-	}
-	if err := d.reconcileReviewIntegrationsOnStartup(ctx); err != nil {
-		return fmt.Errorf("reconcile review integrations: %w", err)
 	}
 	if err := d.reconcileOpsRunsOnStartup(ctx); err != nil {
 		return fmt.Errorf("reconcile ops runs: %w", err)

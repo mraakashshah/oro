@@ -32,6 +32,14 @@ func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, 
 	if !d.checkpointAssignmentAdmissionAllowed(ctx, bead.ID, w.id, "initial") {
 		return nil
 	}
+	if d.beforeAssignmentSideEffectAdmission != nil {
+		d.beforeAssignmentSideEffectAdmission()
+	}
+	sideEffectAdmission, err := d.acquireAssignmentSideEffectAdmission(ctx, bead.ID, w.id, "direct_validation")
+	if err != nil || sideEffectAdmission == nil {
+		return nil
+	}
+	defer d.releaseAssignmentSideEffectAdmission(ctx, sideEffectAdmission)
 	focusVersion := d.currentFocusVersion()
 	if len(focusVersionOpt) > 0 {
 		focusVersion = focusVersionOpt[0]
@@ -125,7 +133,6 @@ func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, 
 
 	var worktree, branch string
 	var createdWorktree bool
-	var err error
 	// Resolve the base/target branch for this bead.
 	// resolveEpicBranch walks the parent chain to find the actual epic ancestor —
 	// bead.Epic maps to the JSON "parent" field and may point to a non-epic bead.

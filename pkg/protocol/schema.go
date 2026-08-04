@@ -448,7 +448,18 @@ const reviewCheckpointSchemaDDL = reviewCheckpointTableDDL + `
 CREATE UNIQUE INDEX IF NOT EXISTS idx_review_checkpoints_active_key
 ON review_checkpoints(checkpoint_key)
 WHERE state <> 'superseded';
-` + reviewCheckpointFindingsTableDDL + reviewRecoveryAttemptsTableDDL + reviewQuarantineDeliveriesTableDDL
+CREATE UNIQUE INDEX IF NOT EXISTS idx_review_checkpoints_ops_run
+ON review_checkpoints(ops_run_id)
+WHERE ops_run_id IS NOT NULL;
+` + assignmentSideEffectAdmissionsTableDDL + reviewCheckpointFindingsTableDDL + reviewRecoveryAttemptsTableDDL + reviewQuarantineDeliveriesTableDDL
+
+const assignmentSideEffectAdmissionsTableDDL = `
+CREATE TABLE IF NOT EXISTS assignment_side_effect_admissions (
+    bead_id TEXT PRIMARY KEY,
+    owner_token TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`
 
 const reviewCheckpointFindingsTableDDL = `
 CREATE TABLE IF NOT EXISTS review_checkpoint_findings (

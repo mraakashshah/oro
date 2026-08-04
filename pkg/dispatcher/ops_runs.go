@@ -551,6 +551,11 @@ func replaceOpsRun(
 	if !wasCreated {
 		return created, false, nil
 	}
+	if _, err := tx.ExecContext(ctx, `
+UPDATE review_checkpoints SET ops_run_id=?, updated_at=datetime('now')
+WHERE ops_run_id=?`, created.ID, current.ID); err != nil {
+		return OpsRunRecord{}, false, fmt.Errorf("relink review checkpoint from ops run %d to %d: %w", current.ID, created.ID, err)
+	}
 	if err := tx.Commit(); err != nil {
 		return OpsRunRecord{}, false, fmt.Errorf("commit ops run replacement: %w", err)
 	}
@@ -697,7 +702,14 @@ func (d *Dispatcher) reviewContextForOpsRun(ctx context.Context, rec OpsRunRecor
 	if d == nil || rec.BeadID == "" {
 		return reviewOpsRunContext{}
 	}
-	checkpoint, err := NewReviewCheckpointStore(d.db).LoadOwningForBead(ctx, rec.BeadID)
+	store := NewReviewCheckpointStore(d.db)
+	var checkpoint *ReviewCheckpoint
+	var err error
+	if rec.ID > 0 {
+		checkpoint, err = store.LoadForOpsRunOrBindLegacy(ctx, rec.ID, rec.BeadID)
+	} else {
+		checkpoint, err = store.LoadOwningForBead(ctx, rec.BeadID)
+	}
 	if err != nil {
 		_ = d.logEvent(ctx, "review_checkpoint_context_restore_failed", "dispatcher", rec.BeadID, rec.WorkerID, err.Error())
 		return reviewOpsRunContext{}

@@ -1041,6 +1041,142 @@ func TestRouteOpsRunRestoresExactReviewCheckpointIdentityWithoutWorker(t *testin
 	}
 }
 
+func TestRouteOpsRunRestoresCheckpointLinkedToExactOpsRun(t *testing.T) {
+	ctx := context.Background()
+	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
+	const (
+		beadID      = "oro-review-exact-ops-checkpoint"
+		workerID    = "w-review-exact-ops-checkpoint"
+		exactRunID  = int64(4101)
+		newerRunID  = int64(4102)
+		exactTarget = "epic/exact-ops-target"
+		newerTarget = "epic/newer-wrong-target"
+	)
+	exactWorktree := t.TempDir()
+	newerWorktree := t.TempDir()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{
+		ID:                 beadID,
+		Title:              "Restore exact ops checkpoint",
+		AcceptanceCriteria: "Assert: rerouted review uses the checkpoint linked to its ops run",
+	}
+	assignmentID, err := d.createAssignment(ctx, beadID, workerID, exactWorktree)
+	if err != nil {
+		t.Fatalf("create assignment: %v", err)
+	}
+	if err := d.requeueAssignment(ctx, assignmentID); err != nil {
+		t.Fatalf("requeue assignment: %v", err)
+	}
+	store := NewReviewCheckpointStore(d.db)
+	exactCheckpoint, err := store.CreateOrReuse(ctx, CheckpointInput{
+		CheckpointKey:       "checkpoint-exact-ops-run",
+		BeadID:              beadID,
+		OriginAssignmentID:  assignmentID,
+		CurrentAssignmentID: assignmentID,
+		WorkerID:            workerID,
+		Worktree:            exactWorktree,
+		Branch:              protocol.BranchPrefix + beadID,
+		TargetBranch:        exactTarget,
+		HeadSHA:             "exact-head",
+		TargetSHA:           "exact-target-before",
+		AcceptanceHash:      "acceptance-hash",
+		QGScriptHash:        "qg-script-hash",
+		QGMode:              "full",
+		ReviewPolicyHash:    "review-policy-hash",
+		TriageRevision:      "triage-revision",
+		ReadyAttempt:        "ready-exact",
+		State:               ReviewCheckpointStateReviewRunning,
+	})
+	if err != nil {
+		t.Fatalf("create exact checkpoint: %v", err)
+	}
+	newerCheckpoint, err := store.CreateOrReuse(ctx, CheckpointInput{
+		CheckpointKey:       "checkpoint-newer-wrong-ops-run",
+		BeadID:              beadID,
+		OriginAssignmentID:  assignmentID,
+		CurrentAssignmentID: assignmentID,
+		WorkerID:            workerID,
+		Worktree:            newerWorktree,
+		Branch:              protocol.BranchPrefix + beadID,
+		TargetBranch:        newerTarget,
+		HeadSHA:             "newer-head",
+		TargetSHA:           "newer-target-before",
+		AcceptanceHash:      "acceptance-hash",
+		QGScriptHash:        "qg-script-hash",
+		QGMode:              "full",
+		ReviewPolicyHash:    "review-policy-hash",
+		TriageRevision:      "triage-revision",
+		ReadyAttempt:        "ready-newer",
+		State:               ReviewCheckpointStateReviewRunning,
+	})
+	if err != nil {
+		t.Fatalf("create newer checkpoint: %v", err)
+	}
+	if _, err := d.db.ExecContext(ctx, `UPDATE review_checkpoints SET ops_run_id=? WHERE id=?`, exactRunID, exactCheckpoint.ID); err != nil {
+		t.Fatalf("link exact checkpoint: %v", err)
+	}
+	if _, err := d.db.ExecContext(ctx, `UPDATE review_checkpoints SET ops_run_id=? WHERE id=?`, newerRunID, newerCheckpoint.ID); err != nil {
+		t.Fatalf("link newer checkpoint: %v", err)
+	}
+
+	if !d.routeOpsRun(ctx, OpsRunRecord{ID: exactRunID, Type: string(ops.OpsReview), BeadID: beadID, WorkerID: workerID}) {
+		t.Fatal("route exact review ops run = false, want true")
+	}
+	waitFor(t, func() bool { return spawnMock.SpawnCount() == 1 }, time.Second)
+	spawnMock.mu.Lock()
+	spawn := spawnMock.spawns[0]
+	spawnMock.mu.Unlock()
+	if spawn.workdir != exactWorktree {
+		t.Fatalf("review workdir = %q, want exact linked %q (newest-by-bead was %q)", spawn.workdir, exactWorktree, newerWorktree)
+	}
+	if !strings.Contains(spawn.prompt, "merge to "+exactTarget) || strings.Contains(spawn.prompt, "merge to "+newerTarget) {
+		t.Fatalf("review prompt did not use exact linked target %q:\n%s", exactTarget, spawn.prompt)
+	}
+}
+
+func TestRouteOpsRunFailsClosedForAmbiguousLegacyCheckpointOwnership(t *testing.T) {
+	ctx := context.Background()
+	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
+	const beadID = "oro-review-ambiguous-legacy-checkpoints"
+	beadSrc.shown[beadID] = &protocol.BeadDetail{
+		ID:                 beadID,
+		Title:              "Reject ambiguous checkpoint ownership",
+		AcceptanceCriteria: "Assert: an ops run never guesses between checkpoints",
+	}
+	assignmentID, err := d.createAssignment(ctx, beadID, "worker-ambiguous", t.TempDir())
+	if err != nil {
+		t.Fatalf("create assignment: %v", err)
+	}
+	first := seedDurableReviewCheckpoint(t, d, beadID, assignmentID, t.TempDir(), ReviewCheckpointStateReviewRunning)
+	if _, err := d.db.ExecContext(ctx, `
+INSERT INTO review_checkpoints (
+  checkpoint_key, bead_id, origin_assignment_id, current_assignment_id, worker_id,
+  worktree, branch, target_branch, head_sha, target_sha, acceptance_hash,
+  qg_script_hash, qg_mode, review_policy_hash, triage_revision, ready_attempt, state
+)
+SELECT checkpoint_key || '-ambiguous', bead_id, origin_assignment_id, current_assignment_id, worker_id,
+       ?, branch, 'epic/ambiguous-other-target', head_sha || '-other', target_sha,
+       acceptance_hash, qg_script_hash, qg_mode, review_policy_hash, triage_revision,
+       ready_attempt || '-other', state
+FROM review_checkpoints WHERE id=?`, t.TempDir(), first.ID); err != nil {
+		t.Fatalf("seed ambiguous checkpoint: %v", err)
+	}
+
+	if d.routeOpsRun(ctx, OpsRunRecord{ID: 4201, Type: string(ops.OpsReview), BeadID: beadID, WorkerID: "worker-ambiguous"}) {
+		t.Fatal("route ambiguous review ops run = true, want fail closed")
+	}
+	if got := spawnMock.SpawnCount(); got != 0 {
+		t.Fatalf("review spawns = %d, want zero", got)
+	}
+	var linked int
+	if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM review_checkpoints WHERE bead_id=? AND ops_run_id IS NOT NULL`, beadID).
+		Scan(&linked); err != nil {
+		t.Fatalf("count linked checkpoints: %v", err)
+	}
+	if linked != 0 {
+		t.Fatalf("legacy checkpoints linked = %d, want zero under ambiguity", linked)
+	}
+}
+
 func TestSupersedeOpsReviewRetryPreservesContext(t *testing.T) {
 	ctx := context.Background()
 	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)

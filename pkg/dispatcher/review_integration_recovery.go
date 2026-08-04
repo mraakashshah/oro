@@ -77,24 +77,28 @@ func (d *Dispatcher) prepareApprovedReviewIntegration(
 	checkpoint *ReviewIntegrationCheckpoint,
 	currentTargetSHA, approvedHeadSHA string,
 ) error {
-	alreadyMerged, proofErr := d.reviewIntegrationAncestor(ctx, approvedHeadSHA, currentTargetSHA)
+	alreadyMerged, proofErr := d.reviewIntegrationProof(ctx, checkpoint.TargetSHA, approvedHeadSHA, currentTargetSHA)
 	if proofErr != nil {
 		return d.blockReviewIntegration(ctx, store, checkpoint,
 			fmt.Sprintf("cannot prove approved head against integration target: %v", proofErr))
 	}
-	targetBeforeSHA := currentTargetSHA
-	if alreadyMerged {
-		targetBeforeSHA = checkpoint.TargetSHA
+	if !alreadyMerged && currentTargetSHA != checkpoint.TargetSHA {
+		return d.blockReviewIntegration(ctx, store, checkpoint, "approved target moved before integration intent")
+	}
+	if !alreadyMerged {
+		if err := d.verifyApprovedIntegrationSource(ctx, checkpoint, approvedHeadSHA); err != nil {
+			return d.blockReviewIntegration(ctx, store, checkpoint, fmt.Sprintf("approved source moved before integration intent: %v", err))
+		}
 	}
 	nextState := ReviewCheckpointStateIntegrating
 	if d.cfg.ManualIntegration {
 		nextState = ReviewCheckpointStateManualIntegrationPending
 	}
-	if err := store.BeginIntegration(ctx, checkpoint.ID, checkpoint.State, nextState, targetBeforeSHA, approvedHeadSHA); err != nil {
+	if err := store.BeginIntegration(ctx, checkpoint.ID, checkpoint.State, nextState, checkpoint.TargetSHA, approvedHeadSHA); err != nil {
 		return err
 	}
 	checkpoint.State = nextState
-	checkpoint.IntegrationTargetBeforeSHA = targetBeforeSHA
+	checkpoint.IntegrationTargetBeforeSHA = checkpoint.TargetSHA
 	checkpoint.IntegrationApprovedHeadSHA = approvedHeadSHA
 	checkpoint.IntegrationStep = integrationStepIntent
 	return nil
@@ -169,7 +173,17 @@ func (d *Dispatcher) retryReviewIntegrationMerge(ctx context.Context, checkpoint
 	if d.merger == nil {
 		return errors.New("merge coordinator is unavailable")
 	}
-	_, err := d.merger.Merge(ctx, merge.Opts{
+	currentTargetSHA, err := d.reviewIntegrationTargetSHA(ctx, checkpoint.TargetBranch)
+	if err != nil {
+		return err
+	}
+	if currentTargetSHA != checkpoint.IntegrationTargetBeforeSHA {
+		return fmt.Errorf("approved target moved from %s to %s before merge", checkpoint.IntegrationTargetBeforeSHA, currentTargetSHA)
+	}
+	if err := d.verifyApprovedIntegrationSource(ctx, checkpoint, checkpoint.IntegrationApprovedHeadSHA); err != nil {
+		return fmt.Errorf("approved source moved before merge: %w", err)
+	}
+	_, err = d.merger.Merge(ctx, merge.Opts{
 		Branch:       checkpoint.Branch,
 		Worktree:     checkpoint.Worktree,
 		BeadID:       checkpoint.BeadID,
@@ -179,6 +193,43 @@ func (d *Dispatcher) retryReviewIntegrationMerge(ctx context.Context, checkpoint
 		return fmt.Errorf("retry durable review integration merge: %w", err)
 	}
 	return nil
+}
+
+func (d *Dispatcher) verifyApprovedIntegrationSource(
+	ctx context.Context,
+	checkpoint *ReviewIntegrationCheckpoint,
+	approvedHeadSHA string,
+) error {
+	branchSHA, err := d.reviewIntegrationRefSHA(ctx, d.repoRoot, checkpoint.Branch+"^{commit}")
+	if err != nil {
+		return fmt.Errorf("resolve approved branch %s: %w", checkpoint.Branch, err)
+	}
+	if branchSHA != approvedHeadSHA {
+		return fmt.Errorf("branch %s is %s, approved %s", checkpoint.Branch, branchSHA, approvedHeadSHA)
+	}
+	worktreeSHA, err := d.reviewIntegrationRefSHA(ctx, checkpoint.Worktree, "HEAD^{commit}")
+	if err != nil {
+		return fmt.Errorf("resolve approved worktree HEAD: %w", err)
+	}
+	if worktreeSHA != approvedHeadSHA {
+		return fmt.Errorf("worktree HEAD is %s, approved %s", worktreeSHA, approvedHeadSHA)
+	}
+	return nil
+}
+
+func (d *Dispatcher) reviewIntegrationRefSHA(ctx context.Context, workdir, ref string) (string, error) {
+	if workdir == "" || ref == "" {
+		return "", errors.New("missing workdir or ref")
+	}
+	out, err := d.commandRunner().Run(ctx, "git", "-C", workdir, "rev-parse", ref)
+	if err != nil {
+		return "", fmt.Errorf("resolve %s in %s: %w", ref, workdir, err)
+	}
+	sha := strings.TrimSpace(string(out))
+	if sha == "" {
+		return "", fmt.Errorf("resolve %s in %s: empty object ID", ref, workdir)
+	}
+	return sha, nil
 }
 
 func (d *Dispatcher) finalizeReviewIntegration(
