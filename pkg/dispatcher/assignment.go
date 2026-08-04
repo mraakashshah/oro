@@ -207,7 +207,9 @@ func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, 
 			_ = d.logEvent(ctx, "assignment_persist_failed", "dispatcher", bead.ID, w.id, assignErr.Error())
 			d.recordAssignmentFailure(bead.ID)
 		}
-		_ = d.updateBeadStatus(ctx, bead.ID, "open")
+		if d.assignmentInsertFailureAllowsReopen(ctx, bead.ID, w.id) {
+			_ = d.updateBeadStatus(ctx, bead.ID, "open")
+		}
 		if createdWorktree {
 			_ = d.worktrees.Remove(ctx, worktree)
 			d.mu.Lock()
@@ -349,6 +351,17 @@ func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, 
 		_ = d.logEvent(ctx, "worktree_cleanup", "dispatcher", bead.ID, w.id, err.Error())
 	}
 	return nil
+}
+
+func (d *Dispatcher) assignmentInsertFailureAllowsReopen(ctx context.Context, beadID, workerID string) bool {
+	blocked, err := d.reviewCheckpointBlocksAssignment(ctx, beadID)
+	d.recordAssignmentObservation("review_checkpoint", err)
+	if err != nil {
+		_ = d.logEvent(ctx, "review_checkpoint_assignment_cleanup_observation_failed", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"error":%q}`, err.Error()))
+		return false
+	}
+	return !blocked
 }
 
 func (d *Dispatcher) checkpointAssignmentAdmissionAllowed(ctx context.Context, beadID, workerID, stage string) bool {

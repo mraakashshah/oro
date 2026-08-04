@@ -40,10 +40,12 @@ type WorktreeRemover interface {
 
 // Opts holds parameters for a single merge operation.
 type Opts struct {
-	Branch       string // branch to merge (e.g., "agent/abc")
-	Worktree     string // path to the worktree
-	BeadID       string // for logging/context
-	TargetBranch string // branch to merge into; empty defaults to "main"
+	Branch            string // branch to merge (e.g., "agent/abc")
+	Worktree          string // path to the worktree
+	BeadID            string // for logging/context
+	TargetBranch      string // branch to merge into; empty defaults to "main"
+	ExpectedSourceSHA string // immutable approved commit; requires ExpectedTargetSHA
+	ExpectedTargetSHA string // exact target head approved before integration
 	// PreFFCheck validates the final rebased worktree immediately before the
 	// target branch advances. It runs while ffLock is held.
 	PreFFCheck func(ctx context.Context, worktree string) error
@@ -165,6 +167,14 @@ func (c *Coordinator) Merge(ctx context.Context, opts Opts) (*Result, error) {
 	targetMu := c.getOrCreateRebaseLock(target)
 	targetMu.Lock()
 	defer targetMu.Unlock()
+	if opts.ExpectedSourceSHA != "" || opts.ExpectedTargetSHA != "" {
+		if opts.ExpectedSourceSHA == "" || opts.ExpectedTargetSHA == "" {
+			return nil, errors.New("pinned merge requires both expected source and target SHAs")
+		}
+		c.ffLock.Lock()
+		defer c.ffLock.Unlock()
+		return c.mergePinnedApproval(ctx, opts, target)
+	}
 
 	// Register worktree for abort support during the rebase phase.
 	c.activeWorktrees.Store(target, opts.Worktree)
@@ -197,6 +207,72 @@ func (c *Coordinator) Merge(ctx context.Context, opts Opts) (*Result, error) {
 	return c.worktreeRemoveAndFFMerge(ctx, opts)
 }
 
+func (c *Coordinator) mergePinnedApproval(ctx context.Context, opts Opts, target string) (*Result, error) {
+	if err := c.verifyPinnedRef(ctx, opts.Worktree, opts.Branch+"^{commit}", opts.ExpectedSourceSHA, "approved source branch"); err != nil {
+		return nil, err
+	}
+	if err := c.verifyPinnedRef(ctx, opts.Worktree, "HEAD^{commit}", opts.ExpectedSourceSHA, "approved worktree HEAD"); err != nil {
+		return nil, err
+	}
+	if err := c.verifyPinnedRef(ctx, opts.Worktree, target+"^{commit}", opts.ExpectedTargetSHA, "approved target"); err != nil {
+		return nil, err
+	}
+	primaryRepo, err := c.primaryRepoForWorktree(ctx, opts.Worktree)
+	if err != nil {
+		return nil, err
+	}
+	if target == "main" {
+		if _, _, err := c.git.Run(ctx, primaryRepo, "merge", "--ff-only", opts.ExpectedSourceSHA); err != nil {
+			return nil, fmt.Errorf("ff-only merge of approved commit %s: %w", opts.ExpectedSourceSHA, err)
+		}
+	} else {
+		if _, _, err := c.git.Run(ctx, primaryRepo, "merge-base", "--is-ancestor", opts.ExpectedTargetSHA, opts.ExpectedSourceSHA); err != nil {
+			return nil, fmt.Errorf("approved target %s is not an ancestor of approved source %s: %w",
+				opts.ExpectedTargetSHA, opts.ExpectedSourceSHA, err)
+		}
+		targetRef := "refs/heads/" + strings.TrimPrefix(target, "refs/heads/")
+		if _, _, err := c.git.Run(ctx, primaryRepo, "update-ref", targetRef, opts.ExpectedSourceSHA, opts.ExpectedTargetSHA); err != nil {
+			return nil, fmt.Errorf("fast-forward approved target %s: %w", target, err)
+		}
+	}
+	if err := c.verifyPinnedRef(ctx, primaryRepo, target+"^{commit}", opts.ExpectedSourceSHA, "integrated target"); err != nil {
+		return nil, err
+	}
+	if removeErr := c.removeWorktree(ctx, primaryRepo, opts.Worktree); removeErr != nil {
+		return nil, fmt.Errorf("worktree remove failed (approved commit %s merged but worktree lingers): %w", opts.ExpectedSourceSHA, removeErr)
+	}
+	return &Result{CommitSHA: opts.ExpectedSourceSHA, Noop: opts.ExpectedSourceSHA == opts.ExpectedTargetSHA}, nil
+}
+
+func (c *Coordinator) verifyPinnedRef(ctx context.Context, dir, ref, expected, identity string) error {
+	stdout, _, err := c.git.Run(ctx, dir, "rev-parse", ref)
+	if err != nil {
+		return fmt.Errorf("resolve %s %s: %w", identity, ref, err)
+	}
+	observed := strings.TrimSpace(stdout)
+	if observed != expected {
+		return fmt.Errorf("%s moved from %s to %s", identity, expected, observed)
+	}
+	return nil
+}
+
+func (c *Coordinator) primaryRepoForWorktree(ctx context.Context, worktree string) (string, error) {
+	commonDir, _, err := c.git.Run(ctx, worktree, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return "", fmt.Errorf("failed to get git common dir: %w", err)
+	}
+	commonDir = strings.TrimSpace(commonDir)
+	primaryRepo := strings.TrimSuffix(strings.TrimRight(commonDir, "/"), "/.git")
+	if primaryRepo != commonDir {
+		return primaryRepo, nil
+	}
+	primaryRepo, _, err = c.git.Run(ctx, worktree, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", fmt.Errorf("failed to get primary repo path: %w", err)
+	}
+	return strings.TrimSpace(primaryRepo), nil
+}
+
 // worktreeRemoveAndFFMerge fast-forward merges the rebased branch onto the
 // target branch, then removes the agent worktree.
 //
@@ -207,20 +283,9 @@ func (c *Coordinator) Merge(ctx context.Context, opts Opts) (*Result, error) {
 // ffLock, main cannot move during the retry. This prevents the dispatcher
 // assignment spam loop (oro-mz9v).
 func (c *Coordinator) worktreeRemoveAndFFMerge(ctx context.Context, opts Opts) (*Result, error) {
-	// Derive the primary repository path from the worktree's git common dir.
-	commonDir, _, err := c.git.Run(ctx, opts.Worktree, "rev-parse", "--git-common-dir")
+	primaryRepo, err := c.primaryRepoForWorktree(ctx, opts.Worktree)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get git common dir: %w", err)
-	}
-	commonDir = strings.TrimSpace(commonDir)
-
-	primaryRepo := strings.TrimSuffix(strings.TrimRight(commonDir, "/"), "/.git")
-	if primaryRepo == commonDir {
-		primaryRepo, _, err = c.git.Run(ctx, opts.Worktree, "rev-parse", "--show-toplevel")
-		if err != nil {
-			return nil, fmt.Errorf("failed to get primary repo path: %w", err)
-		}
-		primaryRepo = strings.TrimSpace(primaryRepo)
+		return nil, err
 	}
 
 	if target := effectiveTarget(opts); target != "main" {

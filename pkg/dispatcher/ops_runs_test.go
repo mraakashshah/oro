@@ -1133,6 +1133,48 @@ func TestRouteOpsRunRestoresCheckpointLinkedToExactOpsRun(t *testing.T) {
 	}
 }
 
+func TestRouteOpsRunFailsClosedForCrossBeadCheckpointLink(t *testing.T) {
+	ctx := context.Background()
+	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
+	const (
+		requestedBeadID = "oro-review-requested-bead"
+		linkedBeadID    = "oro-review-cross-linked-bead"
+		workerID        = "w-review-cross-linked"
+		opsRunID        = int64(4150)
+	)
+	linkedWorktree := t.TempDir()
+	beadSrc.shown[requestedBeadID] = &protocol.BeadDetail{
+		ID:                 requestedBeadID,
+		Title:              "Reject cross-bead checkpoint ownership",
+		AcceptanceCriteria: "Assert: review never restores another bead's checkpoint",
+	}
+	beadSrc.shown[linkedBeadID] = &protocol.BeadDetail{ID: linkedBeadID, Title: "Corrupt linked bead"}
+	assignmentID, err := d.createAssignment(ctx, linkedBeadID, workerID, linkedWorktree)
+	if err != nil {
+		t.Fatalf("create linked assignment: %v", err)
+	}
+	if err := d.requeueAssignment(ctx, assignmentID); err != nil {
+		t.Fatalf("requeue linked assignment: %v", err)
+	}
+	checkpoint := seedDurableReviewCheckpoint(t, d, linkedBeadID, assignmentID, linkedWorktree, ReviewCheckpointStateReviewRunning)
+	if _, err := d.db.ExecContext(ctx, `UPDATE review_checkpoints SET ops_run_id=? WHERE id=?`, opsRunID, checkpoint.ID); err != nil {
+		t.Fatalf("cross-link checkpoint: %v", err)
+	}
+
+	if d.routeOpsRun(ctx, OpsRunRecord{ID: opsRunID, Type: string(ops.OpsReview), BeadID: requestedBeadID, WorkerID: workerID}) {
+		t.Fatal("route cross-bead review ops run = true, want fail closed")
+	}
+	if got := spawnMock.SpawnCount(); got != 0 {
+		t.Fatalf("review spawns = %d, want zero", got)
+	}
+	d.mu.Lock()
+	restored := d.worktreeByBead[requestedBeadID]
+	d.mu.Unlock()
+	if restored != "" {
+		t.Fatalf("requested bead restored cross-linked worktree %q", restored)
+	}
+}
+
 func TestRouteOpsRunFailsClosedForAmbiguousLegacyCheckpointOwnership(t *testing.T) {
 	ctx := context.Background()
 	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)

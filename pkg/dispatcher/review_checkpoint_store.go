@@ -18,6 +18,10 @@ var ErrCheckpointConflict = errors.New("review checkpoint conflict")
 // resolved to one checkpoint without guessing.
 var ErrCheckpointOwnershipAmbiguous = errors.New("review checkpoint ownership is ambiguous")
 
+// ErrCheckpointOwnershipCorrupt reports that an exact durable link disagrees
+// with the ops run or checkpoint identity it is required to own.
+var ErrCheckpointOwnershipCorrupt = errors.New("review checkpoint ownership is corrupt")
+
 // ReviewCheckpointState is the durable lifecycle state for a review checkpoint.
 type ReviewCheckpointState string
 
@@ -226,12 +230,12 @@ LIMIT 1`, beadID))
 }
 
 // LoadForOpsRun returns the checkpoint durably linked to opsRunID.
-func (s *ReviewCheckpointStore) LoadForOpsRun(ctx context.Context, opsRunID int64) (*ReviewCheckpoint, error) {
+func (s *ReviewCheckpointStore) LoadForOpsRun(ctx context.Context, opsRunID int64, beadID string) (*ReviewCheckpoint, error) {
 	if s == nil || s.db == nil {
 		return nil, errors.New("load review checkpoint for ops run: db is nil")
 	}
-	if opsRunID <= 0 {
-		return nil, fmt.Errorf("load review checkpoint for ops run: invalid ID %d", opsRunID)
+	if opsRunID <= 0 || beadID == "" {
+		return nil, fmt.Errorf("load review checkpoint for ops run: invalid identity %d/%q", opsRunID, beadID)
 	}
 	checkpoint, err := scanReviewCheckpoint(s.db.QueryRowContext(ctx, `
 SELECT id, checkpoint_key, bead_id, origin_assignment_id, COALESCE(current_assignment_id, 0),
@@ -239,12 +243,15 @@ SELECT id, checkpoint_key, bead_id, origin_assignment_id, COALESCE(current_assig
        acceptance_hash, qg_script_hash, qg_mode, review_policy_hash, triage_revision,
        ready_attempt, COALESCE(ops_run_id, 0), state
 FROM review_checkpoints
-WHERE ops_run_id=? AND state NOT IN ('integrated', 'superseded')`, opsRunID))
+WHERE ops_run_id=?`, opsRunID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("load review checkpoint for ops run %d: %w", opsRunID, err)
+	}
+	if err := validateOpsRunCheckpointIdentity(checkpoint, opsRunID, beadID); err != nil {
+		return nil, err
 	}
 	return &checkpoint, nil
 }
@@ -256,7 +263,7 @@ func (s *ReviewCheckpointStore) LoadForOpsRunOrBindLegacy(
 	opsRunID int64,
 	beadID string,
 ) (*ReviewCheckpoint, error) {
-	checkpoint, err := s.LoadForOpsRun(ctx, opsRunID)
+	checkpoint, err := s.LoadForOpsRun(ctx, opsRunID, beadID)
 	if err != nil || checkpoint != nil {
 		return checkpoint, err
 	}
@@ -265,7 +272,7 @@ func (s *ReviewCheckpointStore) LoadForOpsRunOrBindLegacy(
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	rechecked, err := loadCheckpointForOpsRunTx(ctx, tx, opsRunID)
+	rechecked, err := loadCheckpointForOpsRunTx(ctx, tx, opsRunID, beadID)
 	if err != nil {
 		return nil, err
 	}
@@ -290,21 +297,40 @@ func (s *ReviewCheckpointStore) beginSerializedOwnershipBind(ctx context.Context
 	return tx, nil
 }
 
-func loadCheckpointForOpsRunTx(ctx context.Context, tx *sql.Tx, opsRunID int64) (*ReviewCheckpoint, error) {
+func loadCheckpointForOpsRunTx(ctx context.Context, tx *sql.Tx, opsRunID int64, beadID string) (*ReviewCheckpoint, error) {
 	checkpoint, err := scanReviewCheckpoint(tx.QueryRowContext(ctx, `
 SELECT id, checkpoint_key, bead_id, origin_assignment_id, COALESCE(current_assignment_id, 0),
        COALESCE(worker_id, ''), worktree, branch, target_branch, head_sha, target_sha,
        acceptance_hash, qg_script_hash, qg_mode, review_policy_hash, triage_revision,
        ready_attempt, COALESCE(ops_run_id, 0), state
 FROM review_checkpoints
-WHERE ops_run_id=? AND state NOT IN ('integrated', 'superseded')`, opsRunID))
+WHERE ops_run_id=?`, opsRunID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("recheck exact checkpoint ownership for ops run %d: %w", opsRunID, err)
 	}
+	if err := validateOpsRunCheckpointIdentity(checkpoint, opsRunID, beadID); err != nil {
+		return nil, err
+	}
 	return &checkpoint, nil
+}
+
+func validateOpsRunCheckpointIdentity(checkpoint ReviewCheckpoint, opsRunID int64, beadID string) error {
+	if checkpoint.OpsRunID != opsRunID || checkpoint.BeadID != beadID {
+		return fmt.Errorf("ops run %d bead %s linked checkpoint %d identity is ops %d bead %s: %w",
+			opsRunID, beadID, checkpoint.ID, checkpoint.OpsRunID, checkpoint.BeadID, ErrCheckpointOwnershipCorrupt)
+	}
+	if checkpoint.State == ReviewCheckpointStateIntegrated || checkpoint.State == ReviewCheckpointStateSuperseded {
+		return fmt.Errorf("ops run %d bead %s linked terminal checkpoint %d in state %s: %w",
+			opsRunID, beadID, checkpoint.ID, checkpoint.State, ErrCheckpointOwnershipCorrupt)
+	}
+	if err := validateCheckpointInput(checkpoint.CheckpointInput); err != nil {
+		return fmt.Errorf("ops run %d bead %s linked checkpoint %d has invalid immutable identity: %w: %w",
+			opsRunID, beadID, checkpoint.ID, err, ErrCheckpointOwnershipCorrupt)
+	}
+	return nil
 }
 
 func (s *ReviewCheckpointStore) bindLegacyCheckpointOwnership(
@@ -322,7 +348,7 @@ func (s *ReviewCheckpointStore) bindLegacyCheckpointOwnership(
 			opsRunID, beadID, len(ids), ErrCheckpointOwnershipAmbiguous)
 	}
 	if len(ids) == 1 {
-		return s.bindSingleLegacyCheckpoint(ctx, tx, opsRunID, ids[0])
+		return s.bindSingleLegacyCheckpoint(ctx, tx, opsRunID, beadID, ids[0])
 	}
 	return commitAbsentLegacyCheckpointOwnership(ctx, tx, opsRunID, beadID)
 }
@@ -357,7 +383,9 @@ ORDER BY id`, beadID)
 func (s *ReviewCheckpointStore) bindSingleLegacyCheckpoint(
 	ctx context.Context,
 	tx *sql.Tx,
-	opsRunID, checkpointID int64,
+	opsRunID int64,
+	beadID string,
+	checkpointID int64,
 ) (*ReviewCheckpoint, error) {
 	result, err := tx.ExecContext(ctx, `
 UPDATE review_checkpoints SET ops_run_id=?, updated_at=datetime('now')
@@ -371,7 +399,7 @@ WHERE id=? AND ops_run_id IS NULL`, opsRunID, checkpointID)
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit legacy checkpoint ownership bind: %w", err)
 	}
-	return s.LoadForOpsRun(ctx, opsRunID)
+	return s.LoadForOpsRun(ctx, opsRunID, beadID)
 }
 
 func commitAbsentLegacyCheckpointOwnership(

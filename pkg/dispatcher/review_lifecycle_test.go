@@ -7,10 +7,14 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"oro/pkg/beadstore"
+	"oro/pkg/beadstore/migrations"
+	"oro/pkg/cards"
+	"oro/pkg/merge"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
 	"oro/pkg/storage"
@@ -395,6 +399,108 @@ WHERE id=?`, baseSHA, approvedSHA, approvedSHA, tt.step, checkpoint.ID); err != 
 	}
 }
 
+func TestReviewIntegrationStartupReconciliationDoesNotRepeatNativeCloseSideEffects(t *testing.T) {
+	ctx := context.Background()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	if err := migrations.MigrateToV3(ctx, d.db); err != nil {
+		t.Fatalf("migrate native beadstore: %v", err)
+	}
+	repo, baseSHA, approvedSHA := reviewIntegrationGitFixture(t, true)
+	d.repoRoot = repo
+	d.setCommandRunner(&ExecCommandRunner{})
+	d.beads = beadstore.NewSQLiteStore(d.db)
+
+	const (
+		beadID  = "integration-native-close-restart"
+		childID = "integration-native-close-child"
+	)
+	if _, err := d.beads.Create(ctx, beadstore.CreateParams{
+		ID: beadID, Title: "Integrated research parent", Type: "research", Status: "in_progress",
+	}); err != nil {
+		t.Fatalf("create native integration bead: %v", err)
+	}
+	if _, err := d.beads.Create(ctx, beadstore.CreateParams{
+		ID: childID, Title: "Child waiting for close", Type: "task", ParentID: beadID,
+		Tags: []string{tagAwaitsParentClose},
+	}); err != nil {
+		t.Fatalf("create native child bead: %v", err)
+	}
+	if _, err := d.cardStore.AppendLearningPending(ctx, beadID, cards.CardCandidate{
+		Type:        string(cards.CardTypePattern),
+		Title:       "Restart-safe integration close",
+		BodySummary: "Integration recovery does not repeat close effects.",
+		BodyFull:    "A durable completed close is observed before integration finalization resumes.",
+		Confidence:  0.95,
+		Evidence:    []string{"native SQLite restart regression"},
+	}); err != nil {
+		t.Fatalf("append pending learning: %v", err)
+	}
+
+	worktree := filepath.Join(repo, ".worktrees", beadID)
+	assignmentID, err := d.createAssignment(ctx, beadID, "worker-native-restart", worktree)
+	if err != nil {
+		t.Fatalf("create assignment: %v", err)
+	}
+	if err := d.completeCheckpointAssignment(ctx, assignmentID, beadID); err != nil {
+		t.Fatalf("complete assignment fixture: %v", err)
+	}
+	checkpoint := seedReviewIntegrationCheckpoint(t, d, beadID, assignmentID, worktree,
+		ReviewCheckpointStateIntegrating, baseSHA, approvedSHA)
+	if _, err := d.db.ExecContext(ctx, `
+UPDATE review_checkpoints
+SET integration_target_before_sha=?, integration_approved_head_sha=?,
+    integration_observed_target_sha=?, integration_step=?
+WHERE id=?`, baseSHA, approvedSHA, approvedSHA, integrationStepAssignmentCompleted, checkpoint.ID); err != nil {
+		t.Fatalf("seed durable post-assignment step: %v", err)
+	}
+
+	// Simulate the crash boundary: CloseBead and every side effect succeeded,
+	// but the checkpoint step was not advanced to bead_closed.
+	if err := d.CloseBead(ctx, beadID, "Merged: "+approvedSHA); err != nil {
+		t.Fatalf("close bead before restart: %v", err)
+	}
+	assertNativeCloseSideEffectCounts(t, d, beadID, childID, 1)
+
+	// Recreate the native store to exercise restart observation rather than
+	// relying on any in-memory state in the store instance that performed Close.
+	d.beads = beadstore.NewSQLiteStore(d.db)
+	if err := d.reconcileReviewIntegrationsOnStartup(ctx); err != nil {
+		t.Fatalf("restart reconciliation: %v", err)
+	}
+	assertNativeCloseSideEffectCounts(t, d, beadID, childID, 1)
+
+	var gotState, gotStep string
+	if err := d.db.QueryRowContext(ctx, `SELECT state, integration_step FROM review_checkpoints WHERE id=?`, checkpoint.ID).
+		Scan(&gotState, &gotStep); err != nil {
+		t.Fatalf("load reconciled checkpoint: %v", err)
+	}
+	if gotState != string(ReviewCheckpointStateIntegrated) || gotStep != integrationStepIntegrated {
+		t.Fatalf("checkpoint = %q/%q, want integrated/integrated", gotState, gotStep)
+	}
+}
+
+func assertNativeCloseSideEffectCounts(t *testing.T, d *Dispatcher, beadID, childID string, want int) {
+	t.Helper()
+	queries := []struct {
+		name  string
+		query string
+		args  []any
+	}{
+		{name: "bead_closed", query: `SELECT COUNT(*) FROM events WHERE type='bead_closed' AND source='beadstore' AND bead_id=?`, args: []any{beadID}},
+		{name: "child promotion", query: `SELECT COUNT(*) FROM bead_journey WHERE bead_id=? AND event='parent_closed_promoted'`, args: []any{childID}},
+		{name: "learning promotion", query: `SELECT COUNT(*) FROM bead_journey WHERE bead_id=? AND event='learning_promoted'`, args: []any{beadID}},
+	}
+	for _, check := range queries {
+		var got int
+		if err := d.db.QueryRow(check.query, check.args...).Scan(&got); err != nil {
+			t.Fatalf("count %s: %v", check.name, err)
+		}
+		if got != want {
+			t.Fatalf("%s count = %d, want %d", check.name, got, want)
+		}
+	}
+}
+
 func TestReviewIntegrationStartupReconciliationIgnoresTerminalCheckpoints(t *testing.T) {
 	ctx := context.Background()
 	for _, state := range []ReviewCheckpointState{ReviewCheckpointStateIntegrated, ReviewCheckpointStateSuperseded} {
@@ -494,6 +600,139 @@ FROM review_checkpoints WHERE id=?`, checkpoint.ID).Scan(&state, &summary, &targ
 			}
 		})
 	}
+}
+
+func TestReviewIntegrationCoordinatorRejectsMovementAfterApprovalCheck(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name       string
+		moveSource bool
+		wantReason string
+	}{
+		{name: "source moves before coordinator consumes it", moveSource: true, wantReason: "source"},
+		{name: "target moves before coordinator consumes it", wantReason: "target"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+			repo, baseSHA, approvedSHA := reviewIntegrationGitFixture(t, false)
+			worktree := filepath.Join(t.TempDir(), "approved-worktree")
+			runAssignmentTestGit(t, repo, "worktree", "add", worktree, "agent/review-integration")
+			d.repoRoot = repo
+			d.setCommandRunner(&ExecCommandRunner{})
+			var targetAfterMovement string
+			d.merger = merge.NewCoordinator(&beforeFirstMergeCommandRunner{
+				delegate: &merge.ExecGitRunner{},
+				before: func() {
+					if tt.moveSource {
+						runAssignmentTestGit(t, worktree, "commit", "--allow-empty", "-m", "unapproved source movement")
+						return
+					}
+					runAssignmentTestGit(t, repo, "commit", "--allow-empty", "-m", "unapproved target movement")
+					targetAfterMovement = gitOut(t, repo, "rev-parse", "main^{commit}")
+				},
+			})
+			const beadID = "coordinator-immutable-approved-integration"
+			beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress"}
+			assignmentID, err := d.createAssignment(ctx, beadID, "worker-approved", worktree)
+			if err != nil {
+				t.Fatalf("create assignment: %v", err)
+			}
+			if err := d.requeueAssignment(ctx, assignmentID); err != nil {
+				t.Fatalf("requeue assignment: %v", err)
+			}
+			checkpoint := seedReviewIntegrationCheckpoint(t, d, beadID, assignmentID, worktree,
+				ReviewCheckpointStateApproved, baseSHA, approvedSHA)
+
+			if err := d.reconcileReviewIntegrationsOnStartup(ctx); err != nil {
+				t.Fatalf("reconcile: %v", err)
+			}
+
+			var state, summary string
+			if err := d.db.QueryRowContext(ctx, `SELECT state, summary FROM review_checkpoints WHERE id=?`, checkpoint.ID).
+				Scan(&state, &summary); err != nil {
+				t.Fatalf("load checkpoint: %v", err)
+			}
+			if state != string(ReviewCheckpointStateBlocked) || !strings.Contains(summary, tt.wantReason) {
+				t.Fatalf("checkpoint = state %q summary %q, want blocked reason containing %q", state, summary, tt.wantReason)
+			}
+			wantTarget := baseSHA
+			if targetAfterMovement != "" {
+				wantTarget = targetAfterMovement
+			}
+			if got := gitOut(t, repo, "rev-parse", "main^{commit}"); got != wantTarget {
+				t.Fatalf("target head = %s, want no coordinator advance beyond %s", got, wantTarget)
+			}
+		})
+	}
+}
+
+type beforeFirstMergeCommandRunner struct {
+	once     sync.Once
+	before   func()
+	delegate merge.GitRunner
+}
+
+func (r *beforeFirstMergeCommandRunner) Run(ctx context.Context, dir string, args ...string) (string, string, error) {
+	r.once.Do(r.before)
+	return r.delegate.Run(ctx, dir, args...)
+}
+
+func TestReviewIntegrationCoordinatorRequiresExactPostMergeTarget(t *testing.T) {
+	ctx := context.Background()
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	repo, baseSHA, approvedSHA := reviewIntegrationGitFixture(t, false)
+	worktree := filepath.Join(t.TempDir(), "approved-worktree")
+	runAssignmentTestGit(t, repo, "worktree", "add", worktree, "agent/review-integration")
+	d.repoRoot = repo
+	d.setCommandRunner(&ExecCommandRunner{})
+	d.merger = merge.NewCoordinator(&afterPinnedMergeCommandRunner{
+		delegate: &merge.ExecGitRunner{},
+		after: func() {
+			runAssignmentTestGit(t, repo, "commit", "--allow-empty", "-m", "movement after approved merge")
+		},
+	})
+	const beadID = "coordinator-exact-post-merge-target"
+	beadSrc.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress"}
+	assignmentID, err := d.createAssignment(ctx, beadID, "worker-approved", worktree)
+	if err != nil {
+		t.Fatalf("create assignment: %v", err)
+	}
+	if err := d.requeueAssignment(ctx, assignmentID); err != nil {
+		t.Fatalf("requeue assignment: %v", err)
+	}
+	checkpoint := seedReviewIntegrationCheckpoint(t, d, beadID, assignmentID, worktree,
+		ReviewCheckpointStateApproved, baseSHA, approvedSHA)
+
+	if err := d.reconcileReviewIntegrationsOnStartup(ctx); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	var state, summary string
+	if err := d.db.QueryRowContext(ctx, `SELECT state, summary FROM review_checkpoints WHERE id=?`, checkpoint.ID).
+		Scan(&state, &summary); err != nil {
+		t.Fatalf("load checkpoint: %v", err)
+	}
+	if state != string(ReviewCheckpointStateBlocked) || !strings.Contains(summary, "integrated target moved") {
+		t.Fatalf("checkpoint = state %q summary %q, want exact post-merge target block", state, summary)
+	}
+	if got := gitOut(t, repo, "rev-parse", "main^{commit}"); got == approvedSHA {
+		t.Fatalf("test hook did not move target after approved merge: target = %s", got)
+	}
+}
+
+type afterPinnedMergeCommandRunner struct {
+	once     sync.Once
+	after    func()
+	delegate merge.GitRunner
+}
+
+func (r *afterPinnedMergeCommandRunner) Run(ctx context.Context, dir string, args ...string) (string, string, error) {
+	stdout, stderr, err := r.delegate.Run(ctx, dir, args...)
+	if err == nil && len(args) >= 2 && args[0] == "merge" && args[1] == "--ff-only" {
+		r.once.Do(r.after)
+	}
+	return stdout, stderr, err
 }
 
 func TestStartupFinalizesProvenIntegrationBeforeMissingWorktreeQuarantine(t *testing.T) {
@@ -1265,6 +1504,12 @@ func TestAssignBeadAtomicallyRejectsCheckpointCreatedDuringWorktreeCreation(t *t
 	}
 	if worker.state != protocol.WorkerIdle || worker.beadID != "" || worker.assignmentID != 0 {
 		t.Fatalf("worker after blocked insert = state %q bead %q assignment %d, want idle/unassigned", worker.state, worker.beadID, worker.assignmentID)
+	}
+	beads.mu.Lock()
+	beadStatus := beads.updated[beadID]
+	beads.mu.Unlock()
+	if beadStatus != "in_progress" {
+		t.Fatalf("checkpoint-owned bead status = %q, want preserved in_progress", beadStatus)
 	}
 }
 

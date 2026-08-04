@@ -184,10 +184,12 @@ func (d *Dispatcher) retryReviewIntegrationMerge(ctx context.Context, checkpoint
 		return fmt.Errorf("approved source moved before merge: %w", err)
 	}
 	_, err = d.merger.Merge(ctx, merge.Opts{
-		Branch:       checkpoint.Branch,
-		Worktree:     checkpoint.Worktree,
-		BeadID:       checkpoint.BeadID,
-		TargetBranch: checkpoint.TargetBranch,
+		Branch:            checkpoint.Branch,
+		Worktree:          checkpoint.Worktree,
+		BeadID:            checkpoint.BeadID,
+		TargetBranch:      checkpoint.TargetBranch,
+		ExpectedSourceSHA: checkpoint.IntegrationApprovedHeadSHA,
+		ExpectedTargetSHA: checkpoint.IntegrationTargetBeforeSHA,
 	})
 	if err != nil {
 		return fmt.Errorf("retry durable review integration merge: %w", err)
@@ -254,8 +256,8 @@ func (d *Dispatcher) finalizeReviewIntegration(
 		checkpoint.IntegrationStep = integrationStepAssignmentCompleted
 		fallthrough
 	case integrationStepAssignmentCompleted:
-		if err := d.CloseBead(ctx, checkpoint.BeadID,
-			fmt.Sprintf("Merged: %s", checkpoint.IntegrationObservedTargetSHA)); err != nil {
+		if err := d.closeIntegratedBeadOnce(ctx, checkpoint.BeadID,
+			checkpoint.IntegrationObservedTargetSHA); err != nil {
 			return fmt.Errorf("close integrated bead %s: %w", checkpoint.BeadID, err)
 		}
 		if err := store.AdvanceIntegrationStep(ctx, checkpoint.ID, integrationStepBeadClosed); err != nil {
@@ -279,6 +281,32 @@ func (d *Dispatcher) finalizeReviewIntegration(
 		return d.blockReviewIntegration(ctx, store, checkpoint,
 			fmt.Sprintf("unknown durable integration step %q", checkpoint.IntegrationStep))
 	}
+}
+
+// closeIntegratedBeadOnce makes the checkpoint step following CloseBead
+// restart-safe. A process can die after the native store and all close side
+// effects commit but before integration_step advances to bead_closed. In that
+// case the durable closed status and exact merge reason prove the operation
+// already completed, so replay must not append another bead_closed event.
+func (d *Dispatcher) closeIntegratedBeadOnce(ctx context.Context, beadID, observedTargetSHA string) error {
+	if beadID == "" || observedTargetSHA == "" {
+		return errors.New("missing integrated bead or observed target identity")
+	}
+	expectedReason := fmt.Sprintf("Merged: %s", observedTargetSHA)
+	bead, err := d.beads.Show(ctx, beadID)
+	if err != nil {
+		return fmt.Errorf("observe integrated bead before close: %w", err)
+	}
+	if bead == nil {
+		return fmt.Errorf("observe integrated bead before close: bead %s not found", beadID)
+	}
+	if bead.Status == "closed" {
+		if bead.CloseReason != expectedReason {
+			return fmt.Errorf("bead is already closed with reason %q, want %q", bead.CloseReason, expectedReason)
+		}
+		return nil
+	}
+	return d.CloseBead(ctx, beadID, expectedReason)
 }
 
 func (d *Dispatcher) completeCheckpointAssignment(ctx context.Context, assignmentID int64, beadID string) error {
