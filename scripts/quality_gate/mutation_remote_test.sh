@@ -432,8 +432,8 @@ TestStrictIncrementalMutation() {
 		fail 'incremental-mutation artifact loss must fail the job'
 	grep -q 'timeout-minutes: 35' "$tmp/incremental-mutation.yml" ||
 		fail 'incremental-mutation job must have a bounded outer deadline'
-	grep -q 'MUTATION_MAX_WORKERS: 4' "$tmp/incremental-mutation.yml" ||
-		fail 'incremental-mutation job must declare bounded shard concurrency'
+	grep -q 'MUTATION_MAX_WORKERS: 2' "$tmp/incremental-mutation.yml" ||
+		fail 'incremental-mutation shard concurrency must match hosted runner capacity'
 	grep -q 'MUTATION_FILE_TIMEOUT_SECONDS: 240' "$tmp/incremental-mutation.yml" ||
 		fail 'incremental-mutation job must declare a per-file deadline'
 }

@@ -30,6 +30,15 @@ workflow_job_names() {
 	' "$workflow_path"
 }
 
+workflow_job_block() {
+	local job="$1"
+	awk -v job="$job" '
+		$0 == "  " job ":" { in_job = 1 }
+		in_job && /^  [a-z0-9][a-z0-9-]*:$/ && $1 != job ":" { exit }
+		in_job { print }
+	' "$workflow_path"
+}
+
 portable_job_names() {
 	workflow_job_names | grep -vx 'oro-portable-qg'
 }
@@ -143,6 +152,68 @@ TestIncrementalMutationCheckoutMatchesHead() {
 	fi
 }
 
+TestGoCacheRestoresBeforeSetup() {
+	local job job_block initialize_line cache_line setup_line
+	for job in incremental-mutation go cgo-free qg-stress; do
+		job_block=$(workflow_job_block "$job")
+		[[ -n "$job_block" ]] || fail "workflow must define the $job Go job"
+
+		# The cache must restore before setup-go invokes `go env`. With a toolchain
+		# directive, setup-go otherwise populates GOMODCACHE before trying to
+		# extract a cache archive into it.
+		# shellcheck disable=SC2016
+		for required in \
+			'      GOMODCACHE: ${{ runner.temp }}/oro-go-cache/go-mod' \
+			'      GOCACHE: ${{ runner.temp }}/oro-go-cache/go-build' \
+			'      GOTMPDIR: ${{ runner.temp }}/oro-go-cache/go-tmp' \
+			'      - uses: actions/cache@v4' \
+			'            ${{ env.GOMODCACHE }}' \
+			'            ${{ env.GOCACHE }}' \
+			'      - uses: actions/setup-go@v5' \
+			'          cache: false'; do
+			printf '%s\n' "$job_block" | grep -Fqx -- "$required" ||
+				fail "$job must restore an explicit job-isolated Go cache before setup-go: $required"
+		done
+
+		# The quoted workflow command is intentionally matched literally.
+		# shellcheck disable=SC2016
+		initialize_line=$(printf '%s\n' "$job_block" | grep -nF 'mkdir -p "$GOMODCACHE" "$GOCACHE" "$GOTMPDIR"' | cut -d: -f1)
+		cache_line=$(printf '%s\n' "$job_block" | grep -nF '      - uses: actions/cache@v4' | cut -d: -f1)
+		setup_line=$(printf '%s\n' "$job_block" | grep -nF '      - uses: actions/setup-go@v5' | cut -d: -f1)
+		[[ -n "$initialize_line" && -n "$cache_line" && -n "$setup_line" ]] ||
+			fail "$job must initialize, restore, and configure its Go cache"
+		((initialize_line < cache_line && cache_line < setup_line)) ||
+			fail "$job must restore into empty cache roots before setup-go resolves the toolchain"
+	done
+}
+
+TestGoDispatcherIsolation() {
+	local go_job
+	go_job=$(workflow_job_block go)
+	[[ -n "$go_job" ]] || fail 'workflow must define the Go job'
+
+	# These workflow shell expressions are intentionally matched literally.
+	# shellcheck disable=SC2016
+	for required in \
+		'mapfile -t TEST_PKGS < <(go list ./internal/... ./pkg/... ./cmd/... | grep -vx '\''oro/pkg/dispatcher'\'')' \
+		'go test -race -shuffle=on "${TEST_PKGS[@]}"' \
+		'go test -race -shuffle=on -p 1 ./pkg/dispatcher' \
+		'mapfile -t COVERAGE_PKGS < <(go list ./internal/... ./pkg/... | grep -v '\''pkg/dashboard/'\'' | grep -vx '\''oro/pkg/dispatcher'\'')' \
+		'go test -race -shuffle=on -coverprofile=coverage-other.out "${COVERAGE_PKGS[@]}"' \
+		'go test -race -shuffle=on -p 1 -coverprofile=coverage-dispatcher.out ./pkg/dispatcher' \
+		'test "$(head -n 1 coverage-other.out)" = "mode: atomic"' \
+		'test "$(head -n 1 coverage-dispatcher.out)" = "mode: atomic"' \
+		'tail -n +2 coverage-dispatcher.out' \
+		'} >coverage.out'; do
+		printf '%s\n' "$go_job" | grep -Fq -- "$required" ||
+			fail "Go Test + Coverage must isolate dispatcher without weakening race, shuffle, or coverage: $required"
+	done
+
+	if printf '%s\n' "$go_job" | grep -Fq 'go test -race -shuffle=on ./internal/... ./pkg/... ./cmd/...'; then
+		fail 'Go correctness must not couple dispatcher to the broad concurrent package invocation'
+	fi
+}
+
 TestExplicitQGStressLane() {
 	local stress_job ordinary_jobs
 	stress_job=$(awk '
@@ -157,8 +228,8 @@ TestExplicitQGStressLane() {
 	# shellcheck disable=SC2016
 	for required in \
 		'ORO_QG_STRESS_LANE: "1"' \
-		'GOCACHE: ${{ runner.temp }}/oro-qg-stress/go-build' \
-		'GOTMPDIR: ${{ runner.temp }}/oro-qg-stress/go-tmp' \
+		'GOCACHE: ${{ runner.temp }}/oro-go-cache/go-build' \
+		'GOTMPDIR: ${{ runner.temp }}/oro-go-cache/go-tmp' \
 		"-run '^TestConcurrentGatesNoTimingFlakeSerialLaneCatchesRegression\$'" \
 		'-count=1' \
 		'-p 1' \
@@ -190,6 +261,12 @@ main() {
 		;;
 	TestIncrementalMutationCheckoutMatchesHead)
 		TestIncrementalMutationCheckoutMatchesHead
+		;;
+	TestGoCacheRestoresBeforeSetup)
+		TestGoCacheRestoresBeforeSetup
+		;;
+	TestGoDispatcherIsolation)
+		TestGoDispatcherIsolation
 		;;
 	TestExplicitQGStressLane)
 		TestExplicitQGStressLane

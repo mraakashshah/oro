@@ -15,17 +15,31 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     env:
-      MUTATION_MAX_WORKERS: 4
+      MUTATION_MAX_WORKERS: 2
       MUTATION_FILE_TIMEOUT_SECONDS: 240
+      GOMODCACHE: ${{ runner.temp }}/oro-go-cache/go-mod
+      GOCACHE: ${{ runner.temp }}/oro-go-cache/go-build
+      GOTMPDIR: ${{ runner.temp }}/oro-go-cache/go-tmp
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: ${{ github.sha }}
 
+      - name: Initialize isolated Go cache roots
+        run: mkdir -p "$GOMODCACHE" "$GOCACHE" "$GOTMPDIR"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.GOMODCACHE }}
+            ${{ env.GOCACHE }}
+          key: oro-go-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.mod', 'go.sum') }}
+
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache: false
 
       - name: Run strict incremental mutation
         run: |
@@ -48,12 +62,26 @@ jobs:
     runs-on: ubuntu-latest
     env:
       ORO_QG_STRESS_LANE: "0"
+      GOMODCACHE: ${{ runner.temp }}/oro-go-cache/go-mod
+      GOCACHE: ${{ runner.temp }}/oro-go-cache/go-build
+      GOTMPDIR: ${{ runner.temp }}/oro-go-cache/go-tmp
     steps:
       - uses: actions/checkout@v4
+
+      - name: Initialize isolated Go cache roots
+        run: mkdir -p "$GOMODCACHE" "$GOCACHE" "$GOTMPDIR"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.GOMODCACHE }}
+            ${{ env.GOCACHE }}
+          key: oro-go-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.mod', 'go.sum') }}
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache: false
 
       # ripgrep is required by scripts/check-task-terminology.sh
       - name: Install ripgrep
@@ -107,12 +135,24 @@ jobs:
 
       - name: Test + Coverage
         run: |
-          # Run all tests for correctness (including dashboard TUI)
-          go test -race -shuffle=on ./internal/... ./pkg/... ./cmd/...
+          # Run all tests for correctness (including dashboard TUI), but keep
+          # the resource-heavy dispatcher package out of the broad package fanout.
+          mapfile -t TEST_PKGS < <(go list ./internal/... ./pkg/... ./cmd/... | grep -vx 'oro/pkg/dispatcher')
+          go test -race -shuffle=on "${TEST_PKGS[@]}"
+          go test -race -shuffle=on -p 1 ./pkg/dispatcher
+
           # Measure coverage for library packages, excluding dashboard TUI packages.
           # Command packages are still tested above, but are not part of the coverage gate.
-          COVERAGE_PKGS=$(go list ./internal/... ./pkg/... | grep -v 'pkg/dashboard/' | tr '\n' ' ')
-          go test -race -shuffle=on -coverprofile=coverage.out $COVERAGE_PKGS
+          mapfile -t COVERAGE_PKGS < <(go list ./internal/... ./pkg/... | grep -v 'pkg/dashboard/' | grep -vx 'oro/pkg/dispatcher')
+          go test -race -shuffle=on -coverprofile=coverage-other.out "${COVERAGE_PKGS[@]}"
+          go test -race -shuffle=on -p 1 -coverprofile=coverage-dispatcher.out ./pkg/dispatcher
+          test "$(head -n 1 coverage-other.out)" = "mode: atomic"
+          test "$(head -n 1 coverage-dispatcher.out)" = "mode: atomic"
+          {
+            head -n 1 coverage-other.out
+            tail -n +2 coverage-other.out
+            tail -n +2 coverage-dispatcher.out
+          } >coverage.out
           COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
           echo "Total coverage (non-TUI): ${COVERAGE}%"
           awk "BEGIN {exit ($COVERAGE < 78)}"
@@ -138,12 +178,26 @@ jobs:
     runs-on: ubuntu-latest
     env:
       ORO_QG_STRESS_LANE: "0"
+      GOMODCACHE: ${{ runner.temp }}/oro-go-cache/go-mod
+      GOCACHE: ${{ runner.temp }}/oro-go-cache/go-build
+      GOTMPDIR: ${{ runner.temp }}/oro-go-cache/go-tmp
     steps:
       - uses: actions/checkout@v4
+
+      - name: Initialize isolated Go cache roots
+        run: mkdir -p "$GOMODCACHE" "$GOCACHE" "$GOTMPDIR"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.GOMODCACHE }}
+            ${{ env.GOCACHE }}
+          key: oro-go-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.mod', 'go.sum') }}
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache: false
 
       # ripgrep is required by scripts/check-task-terminology.sh (run by tests)
       - name: Install ripgrep
@@ -258,12 +312,27 @@ jobs:
     name: QG Stress
     needs: [go, cgo-free, shell, docs, python, incremental-mutation]
     runs-on: ubuntu-latest
+    env:
+      GOMODCACHE: ${{ runner.temp }}/oro-go-cache/go-mod
+      GOCACHE: ${{ runner.temp }}/oro-go-cache/go-build
+      GOTMPDIR: ${{ runner.temp }}/oro-go-cache/go-tmp
     steps:
       - uses: actions/checkout@v4
+
+      - name: Initialize isolated Go cache roots
+        run: mkdir -p "$GOMODCACHE" "$GOCACHE" "$GOTMPDIR"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.GOMODCACHE }}
+            ${{ env.GOCACHE }}
+          key: oro-go-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.mod', 'go.sum') }}
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache: false
 
       - name: Stage assets
         run: make stage-assets
@@ -274,10 +343,7 @@ jobs:
         timeout-minutes: 12
         env:
           ORO_QG_STRESS_LANE: "1"
-          GOCACHE: ${{ runner.temp }}/oro-qg-stress/go-build
-          GOTMPDIR: ${{ runner.temp }}/oro-qg-stress/go-tmp
         run: |
-          mkdir -p "$GOCACHE" "$GOTMPDIR"
           set -o pipefail
           go test -json -count=1 -p 1 -timeout=10m ./pkg/dispatcher \
             -run '^TestConcurrentGatesNoTimingFlakeSerialLaneCatchesRegression$' \
