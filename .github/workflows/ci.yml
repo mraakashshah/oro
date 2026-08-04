@@ -13,6 +13,10 @@ jobs:
   incremental-mutation:
     name: Incremental Mutation
     runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      MUTATION_MAX_WORKERS: 4
+      MUTATION_FILE_TIMEOUT_SECONDS: 240
     steps:
       - uses: actions/checkout@v4
         with:
