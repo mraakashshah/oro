@@ -112,6 +112,62 @@ func TestMigrateToV4RejectsActiveAssignments(t *testing.T) {
 	assertBeadsColumn(t, db, "gate_state")
 }
 
+func TestMigrateToV4PreservesReviewCheckpointReadyExclusion(t *testing.T) {
+	ctx := context.Background()
+	db := openV20DB(t)
+	if err := migrations.MigrateToV3(ctx, db); err != nil {
+		t.Fatalf("MigrateToV3: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO beads (id, title, status) VALUES ('review-owned', 'review owned', 'open')`); err != nil {
+		t.Fatalf("insert review-owned bead: %v", err)
+	}
+	assignment, err := db.ExecContext(ctx, `
+INSERT INTO assignments (bead_id, worker_id, worktree, status)
+VALUES ('review-owned', 'review-worker', '/tmp/review-owned', 'requeued')`)
+	if err != nil {
+		t.Fatalf("insert requeued assignment: %v", err)
+	}
+	assignmentID, err := assignment.LastInsertId()
+	if err != nil {
+		t.Fatalf("requeued assignment ID: %v", err)
+	}
+	seedMigrationReviewCheckpoint(ctx, t, db, assignmentID, "review_running")
+
+	if err := migrations.MigrateToV4(ctx, db); err != nil {
+		t.Fatalf("MigrateToV4: %v", err)
+	}
+	assertMigrationReadyCount(ctx, t, db, 0)
+	if _, err := db.ExecContext(ctx, `UPDATE review_checkpoints SET state='superseded' WHERE bead_id='review-owned'`); err != nil {
+		t.Fatalf("supersede review checkpoint: %v", err)
+	}
+	assertMigrationReadyCount(ctx, t, db, 1)
+}
+
+func seedMigrationReviewCheckpoint(ctx context.Context, t *testing.T, db *sql.DB, assignmentID int64, state string) {
+	t.Helper()
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO review_checkpoints (
+  checkpoint_key, bead_id, origin_assignment_id, worktree, branch, target_branch,
+  head_sha, target_sha, acceptance_hash, qg_script_hash, qg_mode,
+  review_policy_hash, triage_revision, ready_attempt, state
+) VALUES ('checkpoint-review-owned', 'review-owned', ?, '/tmp/review-owned', 'agent/review-owned',
+          'main', 'head', 'target', 'acceptance', 'qg', 'full', 'policy', 'triage', 'ready', ?)`,
+		assignmentID, state); err != nil {
+		t.Fatalf("insert review checkpoint: %v", err)
+	}
+}
+
+func assertMigrationReadyCount(ctx context.Context, t *testing.T, db *sql.DB, want int) {
+	t.Helper()
+	var got int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM beads_ready WHERE id='review-owned'`).Scan(&got); err != nil {
+		t.Fatalf("query beads_ready: %v", err)
+	}
+	if got != want {
+		t.Fatalf("beads_ready count = %d, want %d", got, want)
+	}
+}
+
 func insertLegacyPremortemState(ctx context.Context, t *testing.T, db *sql.DB) {
 	t.Helper()
 	if _, err := db.ExecContext(ctx, `PRAGMA ignore_check_constraints=ON`); err != nil {

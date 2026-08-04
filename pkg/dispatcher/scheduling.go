@@ -419,6 +419,7 @@ func (d *Dispatcher) readyBeadsForScheduling(ctx context.Context) ([]protocol.Be
 	// filtering still admits unrelated work.
 	_ = d.reconcileEpicBranchAdmissions(ctx, d.nowFunc())
 	beads, err := d.beads.Ready(ctx)
+	d.recordAssignmentObservation("ready", err)
 	if err != nil {
 		return nil, fmt.Errorf("load ready beads for scheduling: %w", err)
 	}
@@ -723,14 +724,18 @@ func (d *Dispatcher) assignGeneralIdleWorkers(ctx context.Context, idle []idleWo
 	idleIdx := 0
 	var done []<-chan struct{}
 	for _, unit := range plan.units {
-		idleIdx = d.assignGeneralSchedulingUnit(ctx, idle, idleIdx, unit, pbSnapshot, assignedBeads, reservedTargets, focusVersion, &done)
+		var deferLowerUnits bool
+		idleIdx, deferLowerUnits = d.assignGeneralSchedulingUnit(ctx, idle, idleIdx, unit, pbSnapshot, assignedBeads, reservedTargets, focusVersion, &done)
+		if deferLowerUnits {
+			break
+		}
 	}
 	return done
 }
 
-func (d *Dispatcher) assignGeneralSchedulingUnit(ctx context.Context, idle []idleWorker, idleIdx int, unit schedulingUnit, pbSnapshot, assignedBeads, reservedTargets map[string]bool, focusVersion uint64, done *[]<-chan struct{}) int {
-	nextIdleIdx := idleIdx
-	for _, bead := range unit.beads {
+func (d *Dispatcher) assignGeneralSchedulingUnit(ctx context.Context, idle []idleWorker, idleIdx int, unit schedulingUnit, pbSnapshot, assignedBeads, reservedTargets map[string]bool, focusVersion uint64, done *[]<-chan struct{}) (nextIdleIdx int, deferLowerUnits bool) {
+	nextIdleIdx = idleIdx
+	for beadIdx, bead := range unit.beads {
 		if assignedBeads[bead.ID] {
 			continue
 		}
@@ -741,14 +746,27 @@ func (d *Dispatcher) assignGeneralSchedulingUnit(ctx context.Context, idle []idl
 		if nextIdleIdx >= len(idle) {
 			break
 		}
-		claimed, setupDone := d.launchAssignment(ctx, idle[nextIdleIdx].worker, bead, focusVersion)
+		claimed, setupDone, setupOutcome := d.launchAssignmentWithResult(ctx, idle[nextIdleIdx].worker, bead, focusVersion)
 		*done = append(*done, setupDone)
 		if !claimed {
 			continue
 		}
 		_, nextIdleIdx = d.advanceAssignedGeneralIdle(idle, nextIdleIdx, bead.ID, pbSnapshot)
+		if unit.kind == unitEpic && schedulingUnitHasRemainingCandidate(unit, beadIdx+1, assignedBeads, reservedTargets) {
+			d.notifyAssignLoopAfterSuccessfulSetup(ctx, setupOutcome)
+			return nextIdleIdx, true
+		}
 	}
-	return nextIdleIdx
+	return nextIdleIdx, false
+}
+
+func schedulingUnitHasRemainingCandidate(unit schedulingUnit, start int, assignedBeads, reservedTargets map[string]bool) bool {
+	for _, bead := range unit.beads[start:] {
+		if !assignedBeads[bead.ID] && !reservedTargets[bead.ID] {
+			return true
+		}
+	}
+	return false
 }
 
 // launchAssignment starts the slow assignment preparation in the background
@@ -757,15 +775,41 @@ func (d *Dispatcher) assignGeneralSchedulingUnit(ctx context.Context, idle []idl
 // the returned done channel closes when that background setup finishes, but
 // launchAssignment itself never waits on it — callers decide whether to.
 func (d *Dispatcher) launchAssignment(ctx context.Context, w *trackedWorker, bead protocol.Bead, focusVersion uint64) (claimed bool, done <-chan struct{}) {
+	claimed, done, _ = d.launchAssignmentWithResult(ctx, w, bead, focusVersion)
+	return claimed, done
+}
+
+func (d *Dispatcher) launchAssignmentWithResult(ctx context.Context, w *trackedWorker, bead protocol.Bead, focusVersion uint64) (claimed bool, done <-chan struct{}, outcome <-chan assignmentSetupOutcome) {
 	claimedCh := make(chan bool, 1)
 	setupDone := make(chan struct{})
+	setupOutcome := make(chan assignmentSetupOutcome, 1)
 	d.safeGo(func() {
 		defer close(setupDone)
+		defer close(setupOutcome)
 		_ = d.assignBeadWithClaim(ctx, w, bead, []uint64{focusVersion}, func(claimed bool) {
 			claimedCh <- claimed
+		}, func(outcome assignmentSetupOutcome) {
+			setupOutcome <- outcome
 		})
 	})
-	return <-claimedCh, setupDone
+	return <-claimedCh, setupDone, setupOutcome
+}
+
+// notifyAssignLoopAfterSuccessfulSetup serializes one top-epic admission per
+// pass without paying the polling interval before filling the next idle
+// worker. Failed setup deliberately does not enqueue a retry; its durable
+// cleanup/recovery path remains the sole owner of retry policy.
+func (d *Dispatcher) notifyAssignLoopAfterSuccessfulSetup(ctx context.Context, outcome <-chan assignmentSetupOutcome) {
+	d.safeGo(func() {
+		select {
+		case observed, ok := <-outcome:
+			if ok && observed == assignmentSetupDelivered {
+				d.notifyAssignLoop()
+			}
+		case <-ctx.Done():
+		case <-d.shutdownCh:
+		}
+	})
 }
 
 func (d *Dispatcher) nextGeneralIdleIndex(idle []idleWorker, idleIdx int) int {

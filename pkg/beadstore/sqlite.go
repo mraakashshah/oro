@@ -70,6 +70,13 @@ func NewSQLiteStore(db *sql.DB, opts ...Option) *SQLiteStore {
 	return store
 }
 
+// NativeTransactionIdentity identifies the database connection pool used for
+// native transactions. Callers can use it to ensure a cross-store atomic
+// operation is only selected when both stores share the same database.
+func (s *SQLiteStore) NativeTransactionIdentity() any {
+	return s.db
+}
+
 // Ready returns open beads with no active blockers or active assignment.
 func (s *SQLiteStore) Ready(ctx context.Context) ([]protocol.Bead, error) {
 	beads, err := s.queryBeads(ctx, `SELECT `+beadColumns+` FROM beads_ready ORDER BY priority ASC, created_at ASC, id ASC`)
@@ -219,11 +226,18 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 
 // Update applies non-nil fields from params to id.
 func (s *SQLiteStore) Update(ctx context.Context, id string, params UpdateParams) error {
-	if params.Status != nil && !validStatus(*params.Status) {
-		return fmt.Errorf("beadstore: invalid status %q", *params.Status)
-	}
-	if params.Draft != nil && !*params.Draft {
-		return fmt.Errorf("beadstore: clearing draft requires validated publish")
+	return s.updateWithOptionalJourney(ctx, id, params, nil)
+}
+
+// UpdateWithJourney applies an update and appends its journey record in the
+// same transaction. A failure in either mutation rolls back both.
+func (s *SQLiteStore) UpdateWithJourney(ctx context.Context, id string, params UpdateParams, journey JourneyEvent) error {
+	return s.updateWithOptionalJourney(ctx, id, params, &journey)
+}
+
+func (s *SQLiteStore) updateWithOptionalJourney(ctx context.Context, id string, params UpdateParams, journey *JourneyEvent) error {
+	if err := validateNativeUpdateParams(params); err != nil {
+		return err
 	}
 
 	s.writeMu.Lock()
@@ -235,10 +249,8 @@ func (s *SQLiteStore) Update(ctx context.Context, id string, params UpdateParams
 	}
 	defer rollback(tx)
 
-	if params.ParentID != nil && *params.ParentID != "" {
-		if err := ensureBeadExists(ctx, tx, *params.ParentID); err != nil {
-			return err
-		}
+	if err := ensureUpdatedParentExists(ctx, tx, params.ParentID); err != nil {
+		return err
 	}
 
 	stmt := newUpdateStatement(params)
@@ -261,10 +273,37 @@ func (s *SQLiteStore) Update(ctx context.Context, id string, params UpdateParams
 	if err := insertEvent(ctx, tx, "bead_updated", id, updatePayload(params)); err != nil {
 		return err
 	}
+	if err := insertOptionalJourneyEvent(ctx, tx, id, journey); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("beadstore: commit update %s: %w", id, err)
 	}
 	return nil
+}
+
+func validateNativeUpdateParams(params UpdateParams) error {
+	if params.Status != nil && !validStatus(*params.Status) {
+		return fmt.Errorf("beadstore: invalid status %q", *params.Status)
+	}
+	if params.Draft != nil && !*params.Draft {
+		return fmt.Errorf("beadstore: clearing draft requires validated publish")
+	}
+	return nil
+}
+
+func ensureUpdatedParentExists(ctx context.Context, tx *sql.Tx, parentID *string) error {
+	if parentID == nil || *parentID == "" {
+		return nil
+	}
+	return ensureBeadExists(ctx, tx, *parentID)
+}
+
+func insertOptionalJourneyEvent(ctx context.Context, tx *sql.Tx, beadID string, journey *JourneyEvent) error {
+	if journey == nil {
+		return nil
+	}
+	return insertJourneyEvent(ctx, tx, beadID, *journey)
 }
 
 // UpdateStatusIf atomically changes id from expected to next status.

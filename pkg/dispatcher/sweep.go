@@ -46,17 +46,27 @@ func PromoteChildrenOnParentClose(ctx context.Context, store beadstore.Store, pa
 		newTags := slices.DeleteFunc(slices.Clone(child.Tags), func(t string) bool {
 			return t == tagAwaitsParentClose
 		})
-		if err := store.Update(ctx, child.ID, beadstore.UpdateParams{Tags: &newTags}); err != nil {
-			return fmt.Errorf("sweep: remove tag from child %s: %w", child.ID, err)
-		}
 		payload := fmt.Sprintf(`{"parent_id":%q,"child_id":%q}`, parentID, child.ID)
-		if err := store.AppendJourney(ctx, child.ID, beadstore.JourneyEvent{
+		journey := beadstore.JourneyEvent{
 			BeadID:  child.ID,
 			Ts:      time.Now().UTC().Format(time.RFC3339Nano),
 			Actor:   "dispatcher",
 			Event:   "parent_closed_promoted",
 			Payload: payload,
-		}); err != nil {
+		}
+		params := beadstore.UpdateParams{Tags: &newTags}
+		if atomicStore, ok := store.(interface {
+			UpdateWithJourney(context.Context, string, beadstore.UpdateParams, beadstore.JourneyEvent) error
+		}); ok {
+			if err := atomicStore.UpdateWithJourney(ctx, child.ID, params, journey); err != nil {
+				return fmt.Errorf("sweep: promote child %s atomically: %w", child.ID, err)
+			}
+			continue
+		}
+		if err := store.Update(ctx, child.ID, params); err != nil {
+			return fmt.Errorf("sweep: remove tag from child %s: %w", child.ID, err)
+		}
+		if err := store.AppendJourney(ctx, child.ID, journey); err != nil {
 			return fmt.Errorf("sweep: append journey for child %s: %w", child.ID, err)
 		}
 	}

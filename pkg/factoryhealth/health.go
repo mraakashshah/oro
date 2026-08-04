@@ -62,6 +62,7 @@ const (
 	FindingStorageFailure                     = "storage_failure"
 	FindingStorageCancellation                = "storage_cancellation"
 	FindingStorageAdmissionPaused             = "storage_admission_paused"
+	FindingAssignmentAdmissionUnknown         = "assignment_admission_unknown"
 )
 
 // OpsRunStaleAfter is the age threshold after which a running ops run is
@@ -237,6 +238,7 @@ type Snapshot struct {
 	OpsRuns                      OpsRunMetrics
 	PendingEscalations           EscalationMetrics
 	Storage                      *StorageHealth
+	AssignmentObservationErrors  []string
 }
 
 // Evaluate converts an observed snapshot into the FactoryHealth contract.
@@ -292,6 +294,15 @@ func metricsFromSnapshot(snapshot Snapshot) Metrics {
 //nolint:gocognit,gocyclo,funlen // Canonical finding policy is clearer as one ordered rule list.
 func evaluateFindings(snapshot Snapshot, metrics *Metrics) []Finding {
 	var findings []Finding
+	if len(snapshot.AssignmentObservationErrors) > 0 {
+		findings = append(findings, Finding{
+			Code:              FindingAssignmentAdmissionUnknown,
+			Severity:          SeverityWarning,
+			Component:         "dispatcher",
+			Message:           "assignment admission observation is unknown: " + strings.Join(snapshot.AssignmentObservationErrors, "; "),
+			RecommendedAction: "inspect dispatcher logs and restore ready-queue/checkpoint storage observation before trusting queue depth or resuming assignment",
+		})
+	}
 	if snapshot.OpenRecoveryQuarantines > 0 {
 		findings = append(findings, Finding{
 			Code:              FindingRecoveryQuarantineOpen,

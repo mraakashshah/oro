@@ -11,17 +11,38 @@ import (
 	"oro/pkg/protocol"
 )
 
+var (
+	errAssignmentBlockedByReviewCheckpoint = errors.New("assignment blocked by nonterminal review checkpoint")
+	errAssignmentAdmissionUnknown          = errors.New("assignment checkpoint admission observation failed")
+)
+
 func (d *Dispatcher) createAssignment(ctx context.Context, beadID, workerID, worktree string) (int64, error) {
 	admission, err := d.beginAssignmentAdmission(ctx, "create")
 	if err != nil {
 		return 0, err
 	}
 	defer admission.close()
-	res, err := admission.conn.ExecContext(ctx,
-		`INSERT INTO assignments (bead_id, worker_id, worktree) VALUES (?, ?, ?)`,
-		beadID, workerID, worktree)
+	res, err := admission.conn.ExecContext(ctx, `
+INSERT INTO assignments (bead_id, worker_id, worktree)
+SELECT ?, ?, ?
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM review_checkpoints_blocking_assignment
+    WHERE bead_id = ?
+)`, beadID, workerID, worktree, beadID)
 	if err != nil {
+		if _, observationErr := d.reviewCheckpointBlocksAssignment(ctx, beadID); observationErr != nil {
+			d.recordAssignmentObservation("review_checkpoint", observationErr)
+			return 0, fmt.Errorf("%w: %w", errAssignmentAdmissionUnknown, observationErr)
+		}
 		return 0, fmt.Errorf("create assignment: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("create assignment rows affected: %w", err)
+	}
+	if rows != 1 {
+		return 0, fmt.Errorf("create assignment for %s: %w", beadID, errAssignmentBlockedByReviewCheckpoint)
 	}
 	id, err := res.LastInsertId()
 	if err != nil {
@@ -47,11 +68,27 @@ func (d *Dispatcher) createAssignmentWithEvidence(ctx context.Context, beadID, w
 		return 0, "", err
 	}
 	defer admission.close()
-	res, err := admission.conn.ExecContext(ctx,
-		`INSERT INTO assignments (bead_id, worker_id, worktree, qg_evidence_dir, target_sha, target_branch) VALUES (?, ?, ?, ?, ?, ?)`,
-		beadID, workerID, worktree, d.cfg.ReviewEvidenceDir, targetSHA, targetBranch)
+	res, err := admission.conn.ExecContext(ctx, `
+INSERT INTO assignments (bead_id, worker_id, worktree, qg_evidence_dir, target_sha, target_branch)
+SELECT ?, ?, ?, ?, ?, ?
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM review_checkpoints_blocking_assignment
+    WHERE bead_id = ?
+)`, beadID, workerID, worktree, d.cfg.ReviewEvidenceDir, targetSHA, targetBranch, beadID)
 	if err != nil {
+		if _, observationErr := d.reviewCheckpointBlocksAssignment(ctx, beadID); observationErr != nil {
+			d.recordAssignmentObservation("review_checkpoint", observationErr)
+			return 0, "", fmt.Errorf("%w: %w", errAssignmentAdmissionUnknown, observationErr)
+		}
 		return 0, "", fmt.Errorf("create assignment: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return 0, "", fmt.Errorf("create assignment rows affected: %w", err)
+	}
+	if rows != 1 {
+		return 0, "", fmt.Errorf("create assignment for %s: %w", beadID, errAssignmentBlockedByReviewCheckpoint)
 	}
 	assignmentID, err = res.LastInsertId()
 	if err != nil {

@@ -2,6 +2,7 @@ package dispatcher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -12,10 +13,17 @@ import (
 )
 
 func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead protocol.Bead, focusVersionOpt ...uint64) error { //nolint:funlen,gocognit,gocyclo // orchestration logic, splitting would obscure flow
-	return d.assignBeadWithClaim(ctx, w, bead, focusVersionOpt, nil)
+	return d.assignBeadWithClaim(ctx, w, bead, focusVersionOpt, nil, nil)
 }
 
-func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, bead protocol.Bead, focusVersionOpt []uint64, onClaim func(bool)) error { //nolint:funlen,gocognit,gocyclo // orchestration logic, splitting would obscure flow
+type assignmentSetupOutcome uint8
+
+const (
+	assignmentSetupNotDelivered assignmentSetupOutcome = iota
+	assignmentSetupDelivered
+)
+
+func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, bead protocol.Bead, focusVersionOpt []uint64, onClaim func(bool), onOutcome func(assignmentSetupOutcome)) error { //nolint:funlen,gocognit,gocyclo // orchestration logic, splitting would obscure flow
 	claimReported := false
 	reportClaim := func(claimed bool) {
 		if onClaim != nil && !claimReported {
@@ -24,10 +32,29 @@ func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, 
 		}
 	}
 	defer reportClaim(false)
+	outcomeReported := false
+	reportOutcome := func(outcome assignmentSetupOutcome) {
+		if onOutcome != nil && !outcomeReported {
+			onOutcome(outcome)
+			outcomeReported = true
+		}
+	}
+	defer reportOutcome(assignmentSetupNotDelivered)
 
 	if strings.TrimSpace(bead.ID) == "" {
 		return fmt.Errorf("assignBead: empty bead ID")
 	}
+	if !d.checkpointAssignmentAdmissionAllowed(ctx, bead.ID, w.id, "initial") {
+		return nil
+	}
+	if d.beforeAssignmentSideEffectAdmission != nil {
+		d.beforeAssignmentSideEffectAdmission()
+	}
+	sideEffectAdmission, err := d.acquireAssignmentSideEffectAdmission(ctx, bead.ID, w.id, "direct_validation")
+	if err != nil || sideEffectAdmission == nil {
+		return nil
+	}
+	defer func() { d.releaseAssignmentSideEffectAdmission(ctx, sideEffectAdmission) }()
 	focusVersion := d.currentFocusVersion()
 	if len(focusVersionOpt) > 0 {
 		focusVersion = focusVersionOpt[0]
@@ -40,11 +67,16 @@ func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, 
 
 	// Epic routing: check children before proceeding (requires I/O, must be outside lock).
 	isEpicDecomp, skip := d.checkEpicAssignable(ctx, bead, w.id)
+	d.releaseAssignmentSideEffectAdmission(ctx, sideEffectAdmission)
+	sideEffectAdmission = nil
 	if skip {
 		return nil
 	}
 	if d.focusChangedSince(focusVersion) {
 		d.notifyAssignLoop()
+		return nil
+	}
+	if !d.checkpointAssignmentAdmissionAllowed(ctx, bead.ID, w.id, "final_recheck") {
 		return nil
 	}
 
@@ -118,7 +150,6 @@ func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, 
 
 	var worktree, branch string
 	var createdWorktree bool
-	var err error
 	// Resolve the base/target branch for this bead.
 	// resolveEpicBranch walks the parent chain to find the actual epic ancestor —
 	// bead.Epic maps to the JSON "parent" field and may point to a non-epic bead.
@@ -180,9 +211,23 @@ func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, 
 
 	assignmentID, targetSHA, assignErr := d.createAssignmentWithEvidence(ctx, bead.ID, w.id, worktree, targetBranch)
 	if assignErr != nil {
-		_ = d.logEvent(ctx, "assignment_persist_failed", "dispatcher", bead.ID, w.id, assignErr.Error())
-		d.recordAssignmentFailure(bead.ID)
-		_ = d.updateBeadStatus(ctx, bead.ID, "open")
+		switch {
+		case errors.Is(assignErr, errAssignmentAdmissionUnknown):
+			_ = d.logEvent(ctx, "review_checkpoint_assignment_recheck_failed", "dispatcher", bead.ID, w.id,
+				fmt.Sprintf(`{"stage":"atomic_insert","error":%q}`, assignErr.Error()))
+		case errors.Is(assignErr, errAssignmentBlockedByReviewCheckpoint):
+			_ = d.logEvent(ctx, "review_checkpoint_assignment_blocked", "dispatcher", bead.ID, w.id,
+				`{"reason":"durable_nonterminal_review_checkpoint","stage":"atomic_insert"}`)
+		default:
+			_ = d.logEvent(ctx, "assignment_persist_failed", "dispatcher", bead.ID, w.id, assignErr.Error())
+			d.recordAssignmentFailure(bead.ID)
+		}
+		if d.afterAssignmentInsertFailure != nil {
+			d.afterAssignmentInsertFailure(assignErr)
+		}
+		if d.assignmentInsertFailureAllowsReopen(ctx, bead.ID, w.id, assignErr) {
+			_ = d.updateBeadStatus(ctx, bead.ID, "open")
+		}
 		if createdWorktree {
 			_ = d.worktrees.Remove(ctx, worktree)
 			d.mu.Lock()
@@ -326,8 +371,40 @@ func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, 
 		}
 		_ = d.worktrees.Remove(ctx, worktree)
 		_ = d.logEvent(ctx, "worktree_cleanup", "dispatcher", bead.ID, w.id, err.Error())
+		return nil
 	}
+	reportOutcome(assignmentSetupDelivered)
 	return nil
+}
+
+func (d *Dispatcher) assignmentInsertFailureAllowsReopen(ctx context.Context, beadID, workerID string, cause error) bool {
+	if errors.Is(cause, errAssignmentBlockedByReviewCheckpoint) {
+		return false
+	}
+	blocked, err := d.reviewCheckpointBlocksAssignment(ctx, beadID)
+	d.recordAssignmentObservation("review_checkpoint", err)
+	if err != nil {
+		_ = d.logEvent(ctx, "review_checkpoint_assignment_cleanup_observation_failed", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"error":%q}`, err.Error()))
+		return false
+	}
+	return !blocked
+}
+
+func (d *Dispatcher) checkpointAssignmentAdmissionAllowed(ctx context.Context, beadID, workerID, stage string) bool {
+	blocked, err := d.reviewCheckpointBlocksAssignment(ctx, beadID)
+	d.recordAssignmentObservation("review_checkpoint", err)
+	if err != nil {
+		_ = d.logEvent(ctx, "review_checkpoint_assignment_recheck_failed", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"stage":%q,"error":%q}`, stage, err.Error()))
+		return false
+	}
+	if !blocked {
+		return true
+	}
+	_ = d.logEvent(ctx, "review_checkpoint_assignment_blocked", "dispatcher", beadID, workerID,
+		fmt.Sprintf(`{"reason":"durable_nonterminal_review_checkpoint","stage":%q}`, stage))
+	return false
 }
 
 func (d *Dispatcher) prepareAssignmentWorktree(
@@ -524,11 +601,8 @@ func (d *Dispatcher) attachAssignmentToReservation(workerID, beadID string, rese
 
 func (d *Dispatcher) releaseAssignmentReservation(workerID, beadID string, reservationGen uint64) {
 	d.mu.Lock()
-	released := d.releaseAssignmentReservationLocked(workerID, beadID, reservationGen)
+	d.releaseAssignmentReservationLocked(workerID, beadID, reservationGen)
 	d.mu.Unlock()
-	if released {
-		d.notifyAssignLoop()
-	}
 }
 
 func (d *Dispatcher) releaseAssignmentReservationLocked(workerID, beadID string, reservationGen uint64) bool {

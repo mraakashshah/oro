@@ -89,6 +89,120 @@ func TestOpsRunPersistenceLifecycle(t *testing.T) {
 	}
 }
 
+func TestCreateOpsRunPropagatesNonUniqueInsertFailure(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	const beadID = "oro-create-ops-arbitrary-insert-error"
+
+	original, _, err := CreateOpsRun(ctx, db, OpsRunRecord{Type: string(ops.OpsDecompose), BeadID: beadID})
+	if err != nil {
+		t.Fatalf("CreateOpsRun original: %v", err)
+	}
+	installOpsRunInsertFailureTrigger(ctx, t, db, beadID)
+
+	_, wasCreated, err := CreateOpsRun(ctx, db, OpsRunRecord{Type: string(ops.OpsDecompose), BeadID: beadID})
+	if err == nil {
+		t.Fatal("CreateOpsRun arbitrary insert error = nil, want propagated error")
+	}
+	if wasCreated {
+		t.Fatal("CreateOpsRun arbitrary insert error created = true, want false")
+	}
+	if !strings.Contains(err.Error(), "injected replacement insert failure") {
+		t.Fatalf("CreateOpsRun error = %q, want injected replacement insert failure", err)
+	}
+	if got := fetchOpsRunForTest(t, db, original.ID).Status; got != opsRunStatusRunning {
+		t.Fatalf("original status = %q, want %q", got, opsRunStatusRunning)
+	}
+}
+
+func TestStartupOpsRunReplacementInsertFailureRollsBackSupersede(t *testing.T) {
+	ctx := context.Background()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	const beadID = "oro-startup-replacement-insert-rollback"
+
+	original, _, err := CreateOpsRun(ctx, d.db, OpsRunRecord{
+		Type:          string(ops.OpsDecompose),
+		BeadID:        beadID,
+		DispatcherPID: -1,
+		ProcessPID:    -1,
+	})
+	if err != nil {
+		t.Fatalf("CreateOpsRun original: %v", err)
+	}
+	installOpsRunInsertFailureTrigger(ctx, t, d.db, beadID)
+
+	err = d.reconcileOpsRunsOnStartup(ctx)
+	if err == nil {
+		t.Fatal("reconcileOpsRunsOnStartup replacement insert error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "injected replacement insert failure") {
+		t.Fatalf("reconcileOpsRunsOnStartup error = %q, want injected replacement insert failure", err)
+	}
+	after := fetchOpsRunForTest(t, d.db, original.ID)
+	if after.Status != opsRunStatusRunning || after.CompletedAt != "" {
+		t.Fatalf("original after failed replacement = status %q completed_at %q, want running/empty", after.Status, after.CompletedAt)
+	}
+	assertOpsRunCount(t, d.db, string(ops.OpsDecompose), beadID, 1)
+}
+
+func TestManualOpsRunReplacementInsertFailureRollsBackSupersede(t *testing.T) {
+	ctx := context.Background()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	const beadID = "oro-manual-replacement-insert-rollback"
+
+	original, _, err := CreateOpsRun(ctx, d.db, OpsRunRecord{
+		Type:   string(ops.OpsDecompose),
+		BeadID: beadID,
+	})
+	if err != nil {
+		t.Fatalf("CreateOpsRun original: %v", err)
+	}
+	if err := CompleteOpsRun(ctx, d.db, original.ID, opsRunStatusFailed, "failed", "original feedback", "original failure"); err != nil {
+		t.Fatalf("CompleteOpsRun original: %v", err)
+	}
+	before := fetchOpsRunForTest(t, d.db, original.ID)
+	installOpsRunInsertFailureTrigger(ctx, t, d.db, beadID)
+
+	_, _, err = d.supersedeOpsRunForRetry(before)
+	if err == nil {
+		t.Fatal("supersedeOpsRunForRetry replacement insert error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "injected replacement insert failure") {
+		t.Fatalf("supersedeOpsRunForRetry error = %q, want injected replacement insert failure", err)
+	}
+	after := fetchOpsRunForTest(t, d.db, original.ID)
+	if after != before {
+		t.Fatalf("original after failed manual replacement = %#v, want unchanged %#v", after, before)
+	}
+	assertOpsRunCount(t, d.db, string(ops.OpsDecompose), beadID, 1)
+}
+
+func installOpsRunInsertFailureTrigger(ctx context.Context, t *testing.T, db *sql.DB, beadID string) {
+	t.Helper()
+	if _, err := db.ExecContext(ctx, fmt.Sprintf(`
+CREATE TRIGGER fail_ops_run_replacement_insert
+BEFORE INSERT ON ops_runs
+WHEN NEW.bead_id = %q
+BEGIN
+    SELECT RAISE(FAIL, 'injected replacement insert failure');
+END`, beadID)); err != nil {
+		t.Fatalf("create ops-run insert failure trigger: %v", err)
+	}
+}
+
+func assertOpsRunCount(t *testing.T, db *sql.DB, runType, beadID string, want int) {
+	t.Helper()
+	var got int
+	if err := db.QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM ops_runs WHERE type=? AND bead_id=?`, runType, beadID,
+	).Scan(&got); err != nil {
+		t.Fatalf("count ops runs: %v", err)
+	}
+	if got != want {
+		t.Fatalf("ops run count = %d, want %d", got, want)
+	}
+}
+
 func TestFindBlockingOpsRun(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(t)
@@ -182,6 +296,133 @@ func TestOpsRunCompletionStates(t *testing.T) {
 	}
 }
 
+func TestCompleteOpsRunCASPreservesTerminalRowsAndAllowsExactReplay(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+
+	replay, _, err := CreateOpsRun(ctx, db, OpsRunRecord{Type: "decompose", BeadID: "oro-ops-exact-replay"})
+	if err != nil {
+		t.Fatalf("CreateOpsRun replay: %v", err)
+	}
+	if err := CompleteOpsRun(ctx, db, replay.ID, opsRunStatusResolved, "original-verdict", "original-feedback", "original-error"); err != nil {
+		t.Fatalf("CompleteOpsRun original replay outcome: %v", err)
+	}
+	wantReplay := fetchOpsRunForTest(t, db, replay.ID)
+	if err := CompleteOpsRun(ctx, db, replay.ID, opsRunStatusResolved, "original-verdict", "original-feedback", "original-error"); err != nil {
+		t.Fatalf("CompleteOpsRun exact replay: %v", err)
+	}
+	if got := fetchOpsRunForTest(t, db, replay.ID); got != wantReplay {
+		t.Fatalf("exact replay changed terminal row\n got: %#v\nwant: %#v", got, wantReplay)
+	}
+
+	for _, terminalStatus := range []string{
+		opsRunStatusFailed,
+		opsRunStatusStale,
+		opsRunStatusResolved,
+		opsRunStatusSuperseded,
+	} {
+		t.Run(terminalStatus, func(t *testing.T) {
+			rec, _, err := CreateOpsRun(ctx, db, OpsRunRecord{
+				Type:   "decompose",
+				BeadID: "oro-ops-late-result-" + terminalStatus,
+			})
+			if err != nil {
+				t.Fatalf("CreateOpsRun: %v", err)
+			}
+			if err := CompleteOpsRun(ctx, db, rec.ID, terminalStatus, "original-verdict", "original-feedback", "original-error"); err != nil {
+				t.Fatalf("CompleteOpsRun original terminal outcome: %v", err)
+			}
+			want := fetchOpsRunForTest(t, db, rec.ID)
+
+			err = CompleteOpsRun(ctx, db, rec.ID, opsRunStatusResolved, "late-verdict", "late-feedback", "late-error")
+			if err == nil {
+				t.Fatal("CompleteOpsRun late result = nil, want compare-and-swap rejection")
+			}
+			if got := fetchOpsRunForTest(t, db, rec.ID); got != want {
+				t.Fatalf("late result changed terminal row\n got: %#v\nwant: %#v", got, want)
+			}
+		})
+	}
+}
+
+func TestWatchReroutedOpsRunResultRunsSideEffectsOnlyForAcquiredCompletion(t *testing.T) {
+	tests := []struct {
+		name          string
+		prepare       func(context.Context, *testing.T, *Dispatcher, OpsRunRecord)
+		wantCallbacks int
+		wantStatus    string
+	}{
+		{
+			name:          "running owner",
+			wantCallbacks: 1,
+			wantStatus:    opsRunStatusResolved,
+		},
+		{
+			name: "exact terminal replay",
+			prepare: func(ctx context.Context, t *testing.T, d *Dispatcher, rec OpsRunRecord) {
+				t.Helper()
+				if err := CompleteOpsRun(ctx, d.db, rec.ID, opsRunStatusResolved, string(ops.VerdictResolved), "rerouted result", ""); err != nil {
+					t.Fatalf("prepare exact replay: %v", err)
+				}
+			},
+			wantStatus: opsRunStatusResolved,
+		},
+		{
+			name: "superseded before result",
+			prepare: func(ctx context.Context, t *testing.T, d *Dispatcher, rec OpsRunRecord) {
+				t.Helper()
+				if err := CompleteOpsRun(ctx, d.db, rec.ID, opsRunStatusSuperseded, "superseded", "replacement owns work", "manual retry"); err != nil {
+					t.Fatalf("prepare superseded run: %v", err)
+				}
+			},
+			wantStatus: opsRunStatusSuperseded,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			d, _, _, _, _, _ := newTestDispatcher(t)
+			rec, _, err := CreateOpsRun(ctx, d.db, OpsRunRecord{
+				Type:     string(ops.OpsReview),
+				BeadID:   "oro-rerouted-side-effect-" + strings.ReplaceAll(tt.name, " ", "-"),
+				WorkerID: "worker-rerouted-side-effect",
+			})
+			if err != nil {
+				t.Fatalf("CreateOpsRun: %v", err)
+			}
+			if tt.prepare != nil {
+				tt.prepare(ctx, t, d, rec)
+			}
+			before := fetchOpsRunForTest(t, d.db, rec.ID)
+			resultCh := make(chan ops.Result, 1)
+			resultCh <- ops.Result{
+				Type:     ops.OpsReview,
+				BeadID:   rec.BeadID,
+				Verdict:  ops.VerdictResolved,
+				Feedback: "rerouted result",
+			}
+			callbacks := 0
+
+			d.watchReroutedOpsRunResult(ctx, rec, resultCh, func(ops.Result) {
+				callbacks++
+			})
+			d.wg.Wait()
+
+			if callbacks != tt.wantCallbacks {
+				t.Fatalf("afterComplete callbacks = %d, want %d", callbacks, tt.wantCallbacks)
+			}
+			after := fetchOpsRunForTest(t, d.db, rec.ID)
+			if after.Status != tt.wantStatus {
+				t.Fatalf("ops run status = %q, want %q", after.Status, tt.wantStatus)
+			}
+			if tt.wantCallbacks == 0 && after != before {
+				t.Fatalf("unowned result changed terminal row\n got: %#v\nwant: %#v", after, before)
+			}
+		})
+	}
+}
+
 func TestDecomposeOpsRunPersistsTerminalOutcome(t *testing.T) {
 	ctx := context.Background()
 	d, _, _, _, _, spawnMock := newTestDispatcher(t)
@@ -207,7 +448,7 @@ func TestDecomposeOpsRunPersistsTerminalOutcome(t *testing.T) {
 		Feedback: feedback,
 	}
 
-	d.handleEscalationResult(ctx, escalationID, string(protocol.EscOversizedBead), beadID, workerID, resultCh)
+	d.handleEscalationResult(ctx, runID, escalationID, string(protocol.EscOversizedBead), beadID, workerID, resultCh)
 
 	afterResult := fetchOpsRunForTest(t, d.db, runID)
 	if afterResult.Status != opsRunStatusResolved {
@@ -260,7 +501,7 @@ func TestDecomposeOpsRunPersistsFailedVerdict(t *testing.T) {
 		Feedback: feedback,
 	}
 
-	d.handleEscalationResult(ctx, escalationID, string(protocol.EscOversizedBead), beadID, workerID, resultCh)
+	d.handleEscalationResult(ctx, runID, escalationID, string(protocol.EscOversizedBead), beadID, workerID, resultCh)
 
 	afterResult := fetchOpsRunForTest(t, d.db, runID)
 	if afterResult.Status != opsRunStatusFailed {
@@ -284,9 +525,152 @@ func TestDecomposeOpsRunPersistsFailedVerdict(t *testing.T) {
 	}
 }
 
+func TestEscalationResultCannotCompleteOrAcknowledgeReplacementOpsRun(t *testing.T) {
+	tests := []struct {
+		name    string
+		escType protocol.EscalationType
+		runType ops.Type
+	}{
+		{name: "decompose", escType: protocol.EscOversizedBead, runType: ops.OpsDecompose},
+		{name: "write_ac", escType: protocol.EscMissingAC, runType: ops.OpsWriteAC},
+		{name: "escalation", escType: protocol.EscStuckWorker, runType: ops.OpsEscalation},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			d, _, _, _, _, _ := newTestDispatcher(t)
+			beadID := "oro-late-" + tt.name
+			workerID := "w-late-" + tt.name
+			escalationID := insertDispatcherTestEscalation(t, d.db, tt.escType, beadID, workerID)
+
+			original, created, err := CreateOpsRun(ctx, d.db, OpsRunRecord{
+				EscalationID:  escalationID,
+				Type:          string(tt.runType),
+				BeadID:        beadID,
+				WorkerID:      workerID,
+				DispatcherPID: os.Getpid(),
+				Status:        opsRunStatusRunning,
+			})
+			if err != nil || !created {
+				t.Fatalf("create original ops run: created=%t err=%v", created, err)
+			}
+			next := original
+			next.ID = 0
+			next.Status = opsRunStatusRunning
+			next.Verdict = ""
+			next.Feedback = ""
+			next.Error = ""
+			next.StartedAt = ""
+			next.CompletedAt = ""
+			replacement, replaced, err := replaceOpsRun(ctx, d.db, original, next, "test replacement before late result")
+			if err != nil || !replaced {
+				t.Fatalf("replace original ops run: replaced=%t err=%v", replaced, err)
+			}
+
+			originalBefore := fetchOpsRunForTest(t, d.db, original.ID)
+			replacementBefore := fetchOpsRunForTest(t, d.db, replacement.ID)
+			resultCh := make(chan ops.Result, 1)
+			resultCh <- ops.Result{
+				Type:    tt.runType,
+				BeadID:  beadID,
+				Verdict: ops.VerdictFailed,
+				Err:     errors.New("late process failed after replacement"),
+			}
+
+			d.handleEscalationResult(ctx, original.ID, escalationID, string(tt.escType), beadID, workerID, resultCh)
+
+			if got := fetchOpsRunForTest(t, d.db, original.ID); got != originalBefore {
+				t.Fatalf("late result changed superseded original\n got: %#v\nwant: %#v", got, originalBefore)
+			}
+			if got := fetchOpsRunForTest(t, d.db, replacement.ID); got != replacementBefore {
+				t.Fatalf("late result changed replacement\n got: %#v\nwant: %#v", got, replacementBefore)
+			}
+			if got := dispatcherTestEscalationStatus(t, d.db, escalationID); got != "pending" {
+				t.Fatalf("late result escalation status = %q, want pending", got)
+			}
+			d.mu.Lock()
+			_, inCooldown := d.worktreeFailures[beadID]
+			d.mu.Unlock()
+			if inCooldown {
+				t.Fatalf("late result changed assignment cooldown for %s", beadID)
+			}
+		})
+	}
+}
+
+func TestRouteExistingRoutableEscalationCarriesExactOpsRunIDToCompletion(t *testing.T) {
+	ctx := context.Background()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	spawner := &slowBatchSpawner{}
+	d.ops = ops.NewSpawner(spawner)
+
+	const (
+		beadID   = "oro-routed-exact-owner"
+		workerID = "w-routed-exact-owner"
+	)
+	escalationID := insertDispatcherTestEscalation(t, d.db, protocol.EscOversizedBead, beadID, workerID)
+	msg := protocol.FormatEscalation(protocol.EscOversizedBead, beadID, "needs decomposition", "")
+	if err := d.routeExistingRoutableEscalation(ctx, escalationID, protocol.EscOversizedBead, beadID, workerID, msg); err != nil {
+		t.Fatalf("route existing escalation: %v", err)
+	}
+
+	waitFor(t, func() bool {
+		spawner.mu.Lock()
+		defer spawner.mu.Unlock()
+		return len(spawner.processes) == 1
+	}, time.Second)
+	original, err := FindBlockingOpsRun(ctx, d.db, string(ops.OpsDecompose), beadID)
+	if err != nil || original == nil {
+		t.Fatalf("find routed original: rec=%#v err=%v", original, err)
+	}
+	next := *original
+	next.ID = 0
+	next.Status = opsRunStatusRunning
+	next.ProcessPID = 0
+	next.Verdict = ""
+	next.Feedback = ""
+	next.Error = ""
+	next.StartedAt = ""
+	next.CompletedAt = ""
+	replacement, created, err := replaceOpsRun(ctx, d.db, *original, next, "test replacement while routed process is live")
+	if err != nil || !created {
+		t.Fatalf("replace routed original: created=%t err=%v", created, err)
+	}
+	originalBefore := fetchOpsRunForTest(t, d.db, original.ID)
+	replacementBefore := fetchOpsRunForTest(t, d.db, replacement.ID)
+
+	spawner.mu.Lock()
+	process := spawner.processes[0]
+	spawner.mu.Unlock()
+	if err := process.Kill(); err != nil {
+		t.Fatalf("release original process: %v", err)
+	}
+	d.wg.Wait()
+
+	if got := fetchOpsRunForTest(t, d.db, original.ID); got != originalBefore {
+		t.Fatalf("routed late result changed original\n got: %#v\nwant: %#v", got, originalBefore)
+	}
+	if got := fetchOpsRunForTest(t, d.db, replacement.ID); got != replacementBefore {
+		t.Fatalf("routed late result changed replacement\n got: %#v\nwant: %#v", got, replacementBefore)
+	}
+	if got := dispatcherTestEscalationStatus(t, d.db, escalationID); got != "pending" {
+		t.Fatalf("routed late result escalation status = %q, want pending", got)
+	}
+	d.mu.Lock()
+	_, inCooldown := d.worktreeFailures[beadID]
+	d.mu.Unlock()
+	if inCooldown {
+		t.Fatalf("routed late result changed assignment cooldown for %s", beadID)
+	}
+}
+
 func TestDispatcherStartupMarksOrphanedOpsRunsStale(t *testing.T) {
 	ctx := context.Background()
 	d, _, _, _, _, spawnMock := newTestDispatcher(t)
+	release := make(chan struct{})
+	spawnMock.wait = release
+	defer close(release)
 
 	live, _, err := CreateOpsRun(ctx, d.db, OpsRunRecord{
 		Type:          "decompose",
@@ -338,6 +722,131 @@ func TestDispatcherStartupMarksOrphanedOpsRunsStale(t *testing.T) {
 	waitFor(t, func() bool {
 		return spawnMock.SpawnCount() > 0
 	}, time.Second)
+}
+
+func TestDispatcherStartupReturnsUnroutableReplacementFailureWriteError(t *testing.T) {
+	ctx := context.Background()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+
+	orphaned, _, err := CreateOpsRun(ctx, d.db, OpsRunRecord{
+		Type:          string(ops.OpsReview),
+		BeadID:        "oro-review-replacement-failure-write",
+		WorkerID:      "w-review-replacement-failure-write",
+		DispatcherPID: -1,
+		ProcessPID:    -1,
+	})
+	if err != nil {
+		t.Fatalf("CreateOpsRun orphaned review: %v", err)
+	}
+	if _, err := d.db.ExecContext(ctx, fmt.Sprintf(`
+CREATE TRIGGER fail_unroutable_replacement_terminal_write
+BEFORE UPDATE OF status ON ops_runs
+WHEN OLD.id <> %d AND NEW.status = 'failed'
+BEGIN
+    SELECT RAISE(FAIL, 'injected replacement failure write');
+END`, orphaned.ID)); err != nil {
+		t.Fatalf("create failure-write trigger: %v", err)
+	}
+
+	err = d.reconcileOpsRunsOnStartup(ctx)
+	if err == nil {
+		t.Fatal("reconcileOpsRunsOnStartup error = nil, want replacement failure-write error")
+	}
+	if !strings.Contains(err.Error(), "injected replacement failure write") {
+		t.Fatalf("reconcileOpsRunsOnStartup error = %q, want injected replacement failure write", err)
+	}
+	if got := fetchOpsRunForTest(t, d.db, orphaned.ID).Status; got != opsRunStatusSuperseded {
+		t.Fatalf("orphaned review status = %q, want %q", got, opsRunStatusSuperseded)
+	}
+}
+
+func TestDispatcherStartupReroutedOpsRunsCompleteExactReplacement(t *testing.T) {
+	tests := []struct {
+		name        string
+		runType     ops.Type
+		output      string
+		spawnErr    error
+		wantStatus  string
+		wantVerdict string
+		wantError   string
+	}{
+		{name: "review resolved", runType: ops.OpsReview, output: "review complete\nVERDICT: APPROVED", wantStatus: opsRunStatusResolved, wantVerdict: string(ops.VerdictApproved)},
+		{name: "review failed", runType: ops.OpsReview, spawnErr: errors.New("review spawn failed"), wantStatus: opsRunStatusFailed, wantVerdict: string(ops.VerdictFailed), wantError: "review spawn failed"},
+		{name: "decompose resolved", runType: ops.OpsDecompose, output: "VERDICT: RESOLVED\ndecomposition complete", wantStatus: opsRunStatusResolved, wantVerdict: string(ops.VerdictResolved)},
+		{name: "decompose failed", runType: ops.OpsDecompose, spawnErr: errors.New("decompose spawn failed"), wantStatus: opsRunStatusFailed, wantVerdict: string(ops.VerdictFailed), wantError: "decompose spawn failed"},
+		{name: "write ac resolved", runType: ops.OpsWriteAC, output: "acceptance criteria written", wantStatus: opsRunStatusResolved, wantVerdict: string(ops.VerdictResolved)},
+		{name: "write ac failed", runType: ops.OpsWriteAC, spawnErr: errors.New("write ac spawn failed"), wantStatus: opsRunStatusFailed, wantVerdict: string(ops.VerdictFailed), wantError: "write ac spawn failed"},
+		{name: "diagnosis resolved", runType: ops.OpsDiagnosis, output: "diagnosis complete", wantStatus: opsRunStatusResolved, wantVerdict: string(ops.VerdictResolved)},
+		{name: "diagnosis failed", runType: ops.OpsDiagnosis, spawnErr: errors.New("diagnosis spawn failed"), wantStatus: opsRunStatusFailed, wantVerdict: string(ops.VerdictFailed), wantError: "diagnosis spawn failed"},
+		{name: "escalation resolved", runType: ops.OpsEscalation, output: "ACK: escalation complete", wantStatus: opsRunStatusResolved, wantVerdict: string(ops.VerdictResolved)},
+		{name: "escalation failed", runType: ops.OpsEscalation, spawnErr: errors.New("escalation spawn failed"), wantStatus: opsRunStatusFailed, wantVerdict: string(ops.VerdictFailed), wantError: "escalation spawn failed"},
+		{name: "dream resolved", runType: ops.OpsDream, output: "dream complete", wantStatus: opsRunStatusResolved, wantVerdict: string(ops.VerdictResolved)},
+		{name: "dream failed", runType: ops.OpsDream, spawnErr: errors.New("dream spawn failed"), wantStatus: opsRunStatusFailed, wantVerdict: string(ops.VerdictFailed), wantError: "dream spawn failed"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			d, _, _, _, _, spawnMock := newTestDispatcher(t)
+			spawnMock.verdict = tt.output
+			spawnMock.spawnErr = tt.spawnErr
+			beadID := "oro-rerouted-" + strings.ReplaceAll(tt.name, " ", "-")
+			workerID := "worker-" + beadID
+			if tt.runType == ops.OpsReview {
+				d.mu.Lock()
+				d.worktreeByBead[beadID] = t.TempDir()
+				d.mu.Unlock()
+			}
+
+			orphaned, _, err := CreateOpsRun(ctx, d.db, OpsRunRecord{
+				Type:          string(tt.runType),
+				BeadID:        beadID,
+				WorkerID:      workerID,
+				DispatcherPID: -1,
+				ProcessPID:    -1,
+			})
+			if err != nil {
+				t.Fatalf("CreateOpsRun orphaned %s: %v", tt.runType, err)
+			}
+			if err := d.reconcileOpsRunsOnStartup(ctx); err != nil {
+				t.Fatalf("reconcileOpsRunsOnStartup: %v", err)
+			}
+
+			var replacementID int64
+			if err := d.db.QueryRowContext(ctx, `
+SELECT id FROM ops_runs
+WHERE type=? AND bead_id=? AND id<>?
+ORDER BY id DESC LIMIT 1`, tt.runType, beadID, orphaned.ID).Scan(&replacementID); err != nil {
+				t.Fatalf("query replacement %s run: %v", tt.runType, err)
+			}
+			waitFor(t, func() bool {
+				return fetchOpsRunForTest(t, d.db, replacementID).Status == tt.wantStatus
+			}, time.Second)
+			replacement := fetchOpsRunForTest(t, d.db, replacementID)
+			if replacement.CompletedAt == "" {
+				t.Fatal("replacement completed_at is empty")
+			}
+			if replacement.Verdict != tt.wantVerdict {
+				t.Fatalf("replacement verdict = %q, want %q", replacement.Verdict, tt.wantVerdict)
+			}
+			if !strings.Contains(replacement.Error, tt.wantError) {
+				t.Fatalf("replacement error = %q, want substring %q", replacement.Error, tt.wantError)
+			}
+
+			if err := d.reconcileOpsRunsOnStartup(ctx); err != nil {
+				t.Fatalf("second reconcileOpsRunsOnStartup: %v", err)
+			}
+			var runCount int
+			if err := d.db.QueryRowContext(ctx,
+				`SELECT COUNT(*) FROM ops_runs WHERE type=? AND bead_id=?`, tt.runType, beadID,
+			).Scan(&runCount); err != nil {
+				t.Fatalf("count %s runs: %v", tt.runType, err)
+			}
+			if runCount != 2 {
+				t.Fatalf("ops run count after second reconciliation = %d, want 2", runCount)
+			}
+		})
+	}
 }
 
 func TestRouteOpsRunRoutesReviewOpsRun(t *testing.T) {
@@ -461,9 +970,261 @@ func TestRouteOpsRunRoutesReviewOpsRun(t *testing.T) {
 	waitFor(t, func() bool { return spawnMock.SpawnCount() > 2 }, time.Second)
 }
 
+func TestRouteOpsRunRestoresExactReviewCheckpointIdentityWithoutWorker(t *testing.T) {
+	ctx := context.Background()
+	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
+	const (
+		beadID       = "oro-review-durable-target"
+		workerID     = "w-review-durable-target"
+		targetBranch = "epic/custom-review-target"
+	)
+	worktree := t.TempDir()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{
+		ID:                 beadID,
+		Title:              "Restore durable review target",
+		AcceptanceCriteria: "Test: rerouted review uses durable target | Assert: no default fallback",
+	}
+	assignmentID, err := d.createAssignment(ctx, beadID, workerID, worktree)
+	if err != nil {
+		t.Fatalf("create assignment: %v", err)
+	}
+	if err := d.requeueAssignment(ctx, assignmentID); err != nil {
+		t.Fatalf("requeue assignment: %v", err)
+	}
+	checkpoint, err := NewReviewCheckpointStore(d.db).CreateOrReuse(ctx, CheckpointInput{
+		CheckpointKey:       "checkpoint-" + beadID,
+		BeadID:              beadID,
+		OriginAssignmentID:  assignmentID,
+		CurrentAssignmentID: assignmentID,
+		WorkerID:            workerID,
+		Worktree:            worktree,
+		Branch:              protocol.BranchPrefix + beadID,
+		TargetBranch:        targetBranch,
+		HeadSHA:             "approved-head",
+		TargetSHA:           "target-before-review",
+		AcceptanceHash:      "acceptance-hash",
+		QGScriptHash:        "qg-script-hash",
+		QGMode:              "full",
+		ReviewPolicyHash:    "review-policy-hash",
+		TriageRevision:      "triage-revision",
+		ReadyAttempt:        "ready-attempt",
+		State:               ReviewCheckpointStateReviewRunning,
+	})
+	if err != nil {
+		t.Fatalf("create durable checkpoint: %v", err)
+	}
+
+	d.mu.Lock()
+	delete(d.workers, workerID)
+	delete(d.worktreeByBead, beadID)
+	d.mu.Unlock()
+	if !d.routeOpsRun(ctx, OpsRunRecord{
+		ID:       991,
+		Type:     string(ops.OpsReview),
+		BeadID:   beadID,
+		WorkerID: workerID,
+	}) {
+		t.Fatal("routeOpsRun review from durable checkpoint = false, want true")
+	}
+	waitFor(t, func() bool { return spawnMock.SpawnCount() == 1 }, time.Second)
+	spawnMock.mu.Lock()
+	spawn := spawnMock.spawns[0]
+	spawnMock.mu.Unlock()
+	if spawn.workdir != checkpoint.Worktree {
+		t.Fatalf("review workdir = %q, want durable %q", spawn.workdir, checkpoint.Worktree)
+	}
+	if !strings.Contains(spawn.prompt, "merge to "+checkpoint.TargetBranch) {
+		t.Fatalf("review prompt omitted durable target %q:\n%s", checkpoint.TargetBranch, spawn.prompt)
+	}
+	if strings.Contains(spawn.prompt, "merge to "+d.cfg.DefaultBranch) {
+		t.Fatalf("review prompt fell back to default target %q:\n%s", d.cfg.DefaultBranch, spawn.prompt)
+	}
+}
+
+func TestRouteOpsRunRestoresCheckpointLinkedToExactOpsRun(t *testing.T) {
+	ctx := context.Background()
+	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
+	const (
+		beadID      = "oro-review-exact-ops-checkpoint"
+		workerID    = "w-review-exact-ops-checkpoint"
+		exactRunID  = int64(4101)
+		newerRunID  = int64(4102)
+		exactTarget = "epic/exact-ops-target"
+		newerTarget = "epic/newer-wrong-target"
+	)
+	exactWorktree := t.TempDir()
+	newerWorktree := t.TempDir()
+	beadSrc.shown[beadID] = &protocol.BeadDetail{
+		ID:                 beadID,
+		Title:              "Restore exact ops checkpoint",
+		AcceptanceCriteria: "Assert: rerouted review uses the checkpoint linked to its ops run",
+	}
+	assignmentID, err := d.createAssignment(ctx, beadID, workerID, exactWorktree)
+	if err != nil {
+		t.Fatalf("create assignment: %v", err)
+	}
+	if err := d.requeueAssignment(ctx, assignmentID); err != nil {
+		t.Fatalf("requeue assignment: %v", err)
+	}
+	store := NewReviewCheckpointStore(d.db)
+	exactCheckpoint, err := store.CreateOrReuse(ctx, CheckpointInput{
+		CheckpointKey:       "checkpoint-exact-ops-run",
+		BeadID:              beadID,
+		OriginAssignmentID:  assignmentID,
+		CurrentAssignmentID: assignmentID,
+		WorkerID:            workerID,
+		Worktree:            exactWorktree,
+		Branch:              protocol.BranchPrefix + beadID,
+		TargetBranch:        exactTarget,
+		HeadSHA:             "exact-head",
+		TargetSHA:           "exact-target-before",
+		AcceptanceHash:      "acceptance-hash",
+		QGScriptHash:        "qg-script-hash",
+		QGMode:              "full",
+		ReviewPolicyHash:    "review-policy-hash",
+		TriageRevision:      "triage-revision",
+		ReadyAttempt:        "ready-exact",
+		State:               ReviewCheckpointStateReviewRunning,
+	})
+	if err != nil {
+		t.Fatalf("create exact checkpoint: %v", err)
+	}
+	newerCheckpoint, err := store.CreateOrReuse(ctx, CheckpointInput{
+		CheckpointKey:       "checkpoint-newer-wrong-ops-run",
+		BeadID:              beadID,
+		OriginAssignmentID:  assignmentID,
+		CurrentAssignmentID: assignmentID,
+		WorkerID:            workerID,
+		Worktree:            newerWorktree,
+		Branch:              protocol.BranchPrefix + beadID,
+		TargetBranch:        newerTarget,
+		HeadSHA:             "newer-head",
+		TargetSHA:           "newer-target-before",
+		AcceptanceHash:      "acceptance-hash",
+		QGScriptHash:        "qg-script-hash",
+		QGMode:              "full",
+		ReviewPolicyHash:    "review-policy-hash",
+		TriageRevision:      "triage-revision",
+		ReadyAttempt:        "ready-newer",
+		State:               ReviewCheckpointStateReviewRunning,
+	})
+	if err != nil {
+		t.Fatalf("create newer checkpoint: %v", err)
+	}
+	if _, err := d.db.ExecContext(ctx, `UPDATE review_checkpoints SET ops_run_id=? WHERE id=?`, exactRunID, exactCheckpoint.ID); err != nil {
+		t.Fatalf("link exact checkpoint: %v", err)
+	}
+	if _, err := d.db.ExecContext(ctx, `UPDATE review_checkpoints SET ops_run_id=? WHERE id=?`, newerRunID, newerCheckpoint.ID); err != nil {
+		t.Fatalf("link newer checkpoint: %v", err)
+	}
+
+	if !d.routeOpsRun(ctx, OpsRunRecord{ID: exactRunID, Type: string(ops.OpsReview), BeadID: beadID, WorkerID: workerID}) {
+		t.Fatal("route exact review ops run = false, want true")
+	}
+	waitFor(t, func() bool { return spawnMock.SpawnCount() == 1 }, time.Second)
+	spawnMock.mu.Lock()
+	spawn := spawnMock.spawns[0]
+	spawnMock.mu.Unlock()
+	if spawn.workdir != exactWorktree {
+		t.Fatalf("review workdir = %q, want exact linked %q (newest-by-bead was %q)", spawn.workdir, exactWorktree, newerWorktree)
+	}
+	if !strings.Contains(spawn.prompt, "merge to "+exactTarget) || strings.Contains(spawn.prompt, "merge to "+newerTarget) {
+		t.Fatalf("review prompt did not use exact linked target %q:\n%s", exactTarget, spawn.prompt)
+	}
+}
+
+func TestRouteOpsRunFailsClosedForCrossBeadCheckpointLink(t *testing.T) {
+	ctx := context.Background()
+	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
+	const (
+		requestedBeadID = "oro-review-requested-bead"
+		linkedBeadID    = "oro-review-cross-linked-bead"
+		workerID        = "w-review-cross-linked"
+		opsRunID        = int64(4150)
+	)
+	linkedWorktree := t.TempDir()
+	beadSrc.shown[requestedBeadID] = &protocol.BeadDetail{
+		ID:                 requestedBeadID,
+		Title:              "Reject cross-bead checkpoint ownership",
+		AcceptanceCriteria: "Assert: review never restores another bead's checkpoint",
+	}
+	beadSrc.shown[linkedBeadID] = &protocol.BeadDetail{ID: linkedBeadID, Title: "Corrupt linked bead"}
+	assignmentID, err := d.createAssignment(ctx, linkedBeadID, workerID, linkedWorktree)
+	if err != nil {
+		t.Fatalf("create linked assignment: %v", err)
+	}
+	if err := d.requeueAssignment(ctx, assignmentID); err != nil {
+		t.Fatalf("requeue linked assignment: %v", err)
+	}
+	checkpoint := seedDurableReviewCheckpoint(t, d, linkedBeadID, assignmentID, linkedWorktree, ReviewCheckpointStateReviewRunning)
+	if _, err := d.db.ExecContext(ctx, `UPDATE review_checkpoints SET ops_run_id=? WHERE id=?`, opsRunID, checkpoint.ID); err != nil {
+		t.Fatalf("cross-link checkpoint: %v", err)
+	}
+
+	if d.routeOpsRun(ctx, OpsRunRecord{ID: opsRunID, Type: string(ops.OpsReview), BeadID: requestedBeadID, WorkerID: workerID}) {
+		t.Fatal("route cross-bead review ops run = true, want fail closed")
+	}
+	if got := spawnMock.SpawnCount(); got != 0 {
+		t.Fatalf("review spawns = %d, want zero", got)
+	}
+	d.mu.Lock()
+	restored := d.worktreeByBead[requestedBeadID]
+	d.mu.Unlock()
+	if restored != "" {
+		t.Fatalf("requested bead restored cross-linked worktree %q", restored)
+	}
+}
+
+func TestRouteOpsRunFailsClosedForAmbiguousLegacyCheckpointOwnership(t *testing.T) {
+	ctx := context.Background()
+	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
+	const beadID = "oro-review-ambiguous-legacy-checkpoints"
+	beadSrc.shown[beadID] = &protocol.BeadDetail{
+		ID:                 beadID,
+		Title:              "Reject ambiguous checkpoint ownership",
+		AcceptanceCriteria: "Assert: an ops run never guesses between checkpoints",
+	}
+	assignmentID, err := d.createAssignment(ctx, beadID, "worker-ambiguous", t.TempDir())
+	if err != nil {
+		t.Fatalf("create assignment: %v", err)
+	}
+	first := seedDurableReviewCheckpoint(t, d, beadID, assignmentID, t.TempDir(), ReviewCheckpointStateReviewRunning)
+	if _, err := d.db.ExecContext(ctx, `
+INSERT INTO review_checkpoints (
+  checkpoint_key, bead_id, origin_assignment_id, current_assignment_id, worker_id,
+  worktree, branch, target_branch, head_sha, target_sha, acceptance_hash,
+  qg_script_hash, qg_mode, review_policy_hash, triage_revision, ready_attempt, state
+)
+SELECT checkpoint_key || '-ambiguous', bead_id, origin_assignment_id, current_assignment_id, worker_id,
+       ?, branch, 'epic/ambiguous-other-target', head_sha || '-other', target_sha,
+       acceptance_hash, qg_script_hash, qg_mode, review_policy_hash, triage_revision,
+       ready_attempt || '-other', state
+FROM review_checkpoints WHERE id=?`, t.TempDir(), first.ID); err != nil {
+		t.Fatalf("seed ambiguous checkpoint: %v", err)
+	}
+
+	if d.routeOpsRun(ctx, OpsRunRecord{ID: 4201, Type: string(ops.OpsReview), BeadID: beadID, WorkerID: "worker-ambiguous"}) {
+		t.Fatal("route ambiguous review ops run = true, want fail closed")
+	}
+	if got := spawnMock.SpawnCount(); got != 0 {
+		t.Fatalf("review spawns = %d, want zero", got)
+	}
+	var linked int
+	if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM review_checkpoints WHERE bead_id=? AND ops_run_id IS NOT NULL`, beadID).
+		Scan(&linked); err != nil {
+		t.Fatalf("count linked checkpoints: %v", err)
+	}
+	if linked != 0 {
+		t.Fatalf("legacy checkpoints linked = %d, want zero under ambiguity", linked)
+	}
+}
+
 func TestSupersedeOpsReviewRetryPreservesContext(t *testing.T) {
 	ctx := context.Background()
 	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
+	release := make(chan struct{})
+	spawnMock.wait = release
+	defer close(release)
 	beadID := "oro-review-retry"
 	workerID := "w-review-retry"
 	worktree := t.TempDir()
@@ -585,6 +1346,9 @@ WHERE type = ? AND bead_id = ? AND status = ?`, string(ops.OpsReview), beadID, o
 func TestSupersedeRuntimeIncidentRetryPreservesContext(t *testing.T) {
 	ctx := context.Background()
 	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
+	release := make(chan struct{})
+	spawnMock.wait = release
+	defer close(release)
 	beadID := "oro-runtime-retry"
 	workerID := "w-runtime-retry"
 	worktree := t.TempDir()
@@ -701,6 +1465,9 @@ WHERE type = ? AND bead_id = ? AND status = ?`, string(ops.OpsDecompose), beadID
 func TestRouteOpsRunRetriesDecomposeIncident(t *testing.T) {
 	ctx := context.Background()
 	d, _, _, _, _, spawnMock := newTestDispatcher(t)
+	release := make(chan struct{})
+	spawnMock.wait = release
+	defer close(release)
 	beadID := "oro-decompose-retry"
 	worktree := t.TempDir()
 	incidentErr := "runtime incident: worker exceeded retry budget"
