@@ -1,3 +1,4 @@
+//nolint:testpackage // Reanchor coexistence checks internal admission locks and sentinels.
 package dispatcher
 
 import (
