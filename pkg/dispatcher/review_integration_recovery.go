@@ -52,26 +52,9 @@ func (d *Dispatcher) reconcileReviewIntegration(
 	}
 
 	if checkpoint.State == ReviewCheckpointStateApproved {
-		alreadyMerged, proofErr := d.reviewIntegrationAncestor(ctx, approvedHeadSHA, currentTargetSHA)
-		if proofErr != nil {
-			return d.blockReviewIntegration(ctx, store, checkpoint,
-				fmt.Sprintf("cannot prove approved head against integration target: %v", proofErr))
-		}
-		targetBeforeSHA := currentTargetSHA
-		if alreadyMerged {
-			targetBeforeSHA = checkpoint.TargetSHA
-		}
-		nextState := ReviewCheckpointStateIntegrating
-		if d.cfg.ManualIntegration {
-			nextState = ReviewCheckpointStateManualIntegrationPending
-		}
-		if err := store.BeginIntegration(ctx, checkpoint.ID, checkpoint.State, nextState, targetBeforeSHA, approvedHeadSHA); err != nil {
+		if err := d.prepareApprovedReviewIntegration(ctx, store, checkpoint, currentTargetSHA, approvedHeadSHA); err != nil {
 			return err
 		}
-		checkpoint.State = nextState
-		checkpoint.IntegrationTargetBeforeSHA = targetBeforeSHA
-		checkpoint.IntegrationApprovedHeadSHA = approvedHeadSHA
-		checkpoint.IntegrationStep = integrationStepIntent
 	}
 
 	if checkpoint.IntegrationTargetBeforeSHA == "" || approvedHeadSHA == "" {
@@ -86,6 +69,35 @@ func (d *Dispatcher) reconcileReviewIntegration(
 	default:
 		return nil
 	}
+}
+
+func (d *Dispatcher) prepareApprovedReviewIntegration(
+	ctx context.Context,
+	store *ReviewCheckpointStore,
+	checkpoint *ReviewIntegrationCheckpoint,
+	currentTargetSHA, approvedHeadSHA string,
+) error {
+	alreadyMerged, proofErr := d.reviewIntegrationAncestor(ctx, approvedHeadSHA, currentTargetSHA)
+	if proofErr != nil {
+		return d.blockReviewIntegration(ctx, store, checkpoint,
+			fmt.Sprintf("cannot prove approved head against integration target: %v", proofErr))
+	}
+	targetBeforeSHA := currentTargetSHA
+	if alreadyMerged {
+		targetBeforeSHA = checkpoint.TargetSHA
+	}
+	nextState := ReviewCheckpointStateIntegrating
+	if d.cfg.ManualIntegration {
+		nextState = ReviewCheckpointStateManualIntegrationPending
+	}
+	if err := store.BeginIntegration(ctx, checkpoint.ID, checkpoint.State, nextState, targetBeforeSHA, approvedHeadSHA); err != nil {
+		return err
+	}
+	checkpoint.State = nextState
+	checkpoint.IntegrationTargetBeforeSHA = targetBeforeSHA
+	checkpoint.IntegrationApprovedHeadSHA = approvedHeadSHA
+	checkpoint.IntegrationStep = integrationStepIntent
+	return nil
 }
 
 func (d *Dispatcher) reconcileManualReviewIntegration(
@@ -163,7 +175,10 @@ func (d *Dispatcher) retryReviewIntegrationMerge(ctx context.Context, checkpoint
 		BeadID:       checkpoint.BeadID,
 		TargetBranch: checkpoint.TargetBranch,
 	})
-	return err
+	if err != nil {
+		return fmt.Errorf("retry durable review integration merge: %w", err)
+	}
+	return nil
 }
 
 func (d *Dispatcher) finalizeReviewIntegration(
@@ -253,7 +268,7 @@ func (d *Dispatcher) reviewIntegrationTargetSHA(ctx context.Context, targetBranc
 	}
 	out, err := d.commandRunner().Run(ctx, "git", "-C", d.repoRoot, "rev-parse", targetBranch+"^{commit}")
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("resolve integration target %s: %w", targetBranch, err)
 	}
 	sha := strings.TrimSpace(string(out))
 	if sha == "" {
@@ -286,7 +301,7 @@ func (d *Dispatcher) reviewIntegrationAncestor(ctx context.Context, olderSHA, ne
 	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
 		return false, nil
 	}
-	return false, err
+	return false, fmt.Errorf("prove integration ancestry %s..%s: %w", olderSHA, newerSHA, err)
 }
 
 func (d *Dispatcher) blockReviewIntegration(
