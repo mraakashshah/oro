@@ -17,9 +17,6 @@ jobs:
     env:
       MUTATION_MAX_WORKERS: 2
       MUTATION_FILE_TIMEOUT_SECONDS: 240
-      GOMODCACHE: ${{ runner.temp }}/oro-go-cache/go-mod
-      GOCACHE: ${{ runner.temp }}/oro-go-cache/go-build
-      GOTMPDIR: ${{ runner.temp }}/oro-go-cache/go-tmp
     steps:
       - uses: actions/checkout@v4
         with:
@@ -27,7 +24,14 @@ jobs:
           ref: ${{ github.sha }}
 
       - name: Initialize isolated Go cache roots
-        run: mkdir -p "$GOMODCACHE" "$GOCACHE" "$GOTMPDIR"
+        run: |
+          cache_root="$RUNNER_TEMP/oro-go-cache"
+          {
+            printf 'GOMODCACHE=%s/go-mod\n' "$cache_root"
+            printf 'GOCACHE=%s/go-build\n' "$cache_root"
+            printf 'GOTMPDIR=%s/go-tmp\n' "$cache_root"
+          } >>"$GITHUB_ENV"
+          mkdir -p "$cache_root/go-mod" "$cache_root/go-build" "$cache_root/go-tmp"
 
       - uses: actions/cache@v4
         with:
@@ -62,14 +66,18 @@ jobs:
     runs-on: ubuntu-latest
     env:
       ORO_QG_STRESS_LANE: "0"
-      GOMODCACHE: ${{ runner.temp }}/oro-go-cache/go-mod
-      GOCACHE: ${{ runner.temp }}/oro-go-cache/go-build
-      GOTMPDIR: ${{ runner.temp }}/oro-go-cache/go-tmp
     steps:
       - uses: actions/checkout@v4
 
       - name: Initialize isolated Go cache roots
-        run: mkdir -p "$GOMODCACHE" "$GOCACHE" "$GOTMPDIR"
+        run: |
+          cache_root="$RUNNER_TEMP/oro-go-cache"
+          {
+            printf 'GOMODCACHE=%s/go-mod\n' "$cache_root"
+            printf 'GOCACHE=%s/go-build\n' "$cache_root"
+            printf 'GOTMPDIR=%s/go-tmp\n' "$cache_root"
+          } >>"$GITHUB_ENV"
+          mkdir -p "$cache_root/go-mod" "$cache_root/go-build" "$cache_root/go-tmp"
 
       - uses: actions/cache@v4
         with:
@@ -178,14 +186,18 @@ jobs:
     runs-on: ubuntu-latest
     env:
       ORO_QG_STRESS_LANE: "0"
-      GOMODCACHE: ${{ runner.temp }}/oro-go-cache/go-mod
-      GOCACHE: ${{ runner.temp }}/oro-go-cache/go-build
-      GOTMPDIR: ${{ runner.temp }}/oro-go-cache/go-tmp
     steps:
       - uses: actions/checkout@v4
 
       - name: Initialize isolated Go cache roots
-        run: mkdir -p "$GOMODCACHE" "$GOCACHE" "$GOTMPDIR"
+        run: |
+          cache_root="$RUNNER_TEMP/oro-go-cache"
+          {
+            printf 'GOMODCACHE=%s/go-mod\n' "$cache_root"
+            printf 'GOCACHE=%s/go-build\n' "$cache_root"
+            printf 'GOTMPDIR=%s/go-tmp\n' "$cache_root"
+          } >>"$GITHUB_ENV"
+          mkdir -p "$cache_root/go-mod" "$cache_root/go-build" "$cache_root/go-tmp"
 
       - uses: actions/cache@v4
         with:
@@ -312,15 +324,18 @@ jobs:
     name: QG Stress
     needs: [go, cgo-free, shell, docs, python, incremental-mutation]
     runs-on: ubuntu-latest
-    env:
-      GOMODCACHE: ${{ runner.temp }}/oro-go-cache/go-mod
-      GOCACHE: ${{ runner.temp }}/oro-go-cache/go-build
-      GOTMPDIR: ${{ runner.temp }}/oro-go-cache/go-tmp
     steps:
       - uses: actions/checkout@v4
 
       - name: Initialize isolated Go cache roots
-        run: mkdir -p "$GOMODCACHE" "$GOCACHE" "$GOTMPDIR"
+        run: |
+          cache_root="$RUNNER_TEMP/oro-go-cache"
+          {
+            printf 'GOMODCACHE=%s/go-mod\n' "$cache_root"
+            printf 'GOCACHE=%s/go-build\n' "$cache_root"
+            printf 'GOTMPDIR=%s/go-tmp\n' "$cache_root"
+          } >>"$GITHUB_ENV"
+          mkdir -p "$cache_root/go-mod" "$cache_root/go-build" "$cache_root/go-tmp"
 
       - uses: actions/cache@v4
         with:

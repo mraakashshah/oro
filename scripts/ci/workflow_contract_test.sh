@@ -153,19 +153,34 @@ TestIncrementalMutationCheckoutMatchesHead() {
 }
 
 TestGoCacheRestoresBeforeSetup() {
-	local job job_block initialize_line cache_line setup_line
+	local job job_block job_env initialize_line cache_line setup_line
 	for job in incremental-mutation go cgo-free qg-stress; do
 		job_block=$(workflow_job_block "$job")
 		[[ -n "$job_block" ]] || fail "workflow must define the $job Go job"
+		job_env=$(printf '%s\n' "$job_block" | awk '
+			/^    env:$/ { in_env = 1; next }
+			in_env && /^    [^ ]/ { exit }
+			in_env { print }
+		')
+		# The GitHub expression is intentionally matched literally.
+		# shellcheck disable=SC2016
+		if printf '%s\n' "$job_env" | grep -Fq '${{ runner.'; then
+			fail "$job job-level env must not use the runner context before a runner exists"
+		fi
 
-		# The cache must restore before setup-go invokes `go env`. With a toolchain
-		# directive, setup-go otherwise populates GOMODCACHE before trying to
-		# extract a cache archive into it.
+		# Resolve RUNNER_TEMP on the runner and export the roots through GITHUB_ENV.
+		# Job-level env cannot use the runner context because GitHub validates that
+		# mapping before assigning a runner. The cache must still restore before
+		# setup-go invokes `go env` and populates GOMODCACHE.
 		# shellcheck disable=SC2016
 		for required in \
-			'      GOMODCACHE: ${{ runner.temp }}/oro-go-cache/go-mod' \
-			'      GOCACHE: ${{ runner.temp }}/oro-go-cache/go-build' \
-			'      GOTMPDIR: ${{ runner.temp }}/oro-go-cache/go-tmp' \
+			'      - name: Initialize isolated Go cache roots' \
+			'          cache_root="$RUNNER_TEMP/oro-go-cache"' \
+			'            printf '\''GOMODCACHE=%s/go-mod\n'\'' "$cache_root"' \
+			'            printf '\''GOCACHE=%s/go-build\n'\'' "$cache_root"' \
+			'            printf '\''GOTMPDIR=%s/go-tmp\n'\'' "$cache_root"' \
+			'          } >>"$GITHUB_ENV"' \
+			'          mkdir -p "$cache_root/go-mod" "$cache_root/go-build" "$cache_root/go-tmp"' \
 			'      - uses: actions/cache@v4' \
 			'            ${{ env.GOMODCACHE }}' \
 			'            ${{ env.GOCACHE }}' \
@@ -177,7 +192,7 @@ TestGoCacheRestoresBeforeSetup() {
 
 		# The quoted workflow command is intentionally matched literally.
 		# shellcheck disable=SC2016
-		initialize_line=$(printf '%s\n' "$job_block" | grep -nF 'mkdir -p "$GOMODCACHE" "$GOCACHE" "$GOTMPDIR"' | cut -d: -f1)
+		initialize_line=$(printf '%s\n' "$job_block" | grep -nF 'cache_root="$RUNNER_TEMP/oro-go-cache"' | cut -d: -f1)
 		cache_line=$(printf '%s\n' "$job_block" | grep -nF '      - uses: actions/cache@v4' | cut -d: -f1)
 		setup_line=$(printf '%s\n' "$job_block" | grep -nF '      - uses: actions/setup-go@v5' | cut -d: -f1)
 		[[ -n "$initialize_line" && -n "$cache_line" && -n "$setup_line" ]] ||
@@ -228,8 +243,8 @@ TestExplicitQGStressLane() {
 	# shellcheck disable=SC2016
 	for required in \
 		'ORO_QG_STRESS_LANE: "1"' \
-		'GOCACHE: ${{ runner.temp }}/oro-go-cache/go-build' \
-		'GOTMPDIR: ${{ runner.temp }}/oro-go-cache/go-tmp' \
+		'      - name: Initialize isolated Go cache roots' \
+		'cache_root="$RUNNER_TEMP/oro-go-cache"' \
 		"-run '^TestConcurrentGatesNoTimingFlakeSerialLaneCatchesRegression\$'" \
 		'-count=1' \
 		'-p 1' \
