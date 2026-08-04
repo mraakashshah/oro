@@ -121,6 +121,8 @@ TestExplicitQGStressLane() {
 	[[ -n "$stress_job" ]] || fail 'workflow must define an explicit qg-stress job'
 	printf '%s\n' "$stress_job" | grep -q '^    needs: \[go, cgo-free, shell, docs, python, incremental-mutation\]$' ||
 		fail 'qg-stress must wait for every ordinary portable job before consuming stress resources'
+	# These are literal GitHub-expression contracts, not shell expansions.
+	# shellcheck disable=SC2016
 	for required in \
 		'ORO_QG_STRESS_LANE: "1"' \
 		'GOCACHE: ${{ runner.temp }}/oro-qg-stress/go-build' \
