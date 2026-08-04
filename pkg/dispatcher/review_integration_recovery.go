@@ -304,6 +304,12 @@ func (d *Dispatcher) closeIntegratedBeadOnce(ctx context.Context, beadID, observ
 		if bead.CloseReason != expectedReason {
 			return fmt.Errorf("bead is already closed with reason %q, want %q", bead.CloseReason, expectedReason)
 		}
+		if err := PromoteChildrenOnParentClose(ctx, d.beads, beadID); err != nil {
+			d.warnSweepFailure(ctx, beadID, err)
+		}
+		if err := d.runLearningPromotion(ctx, beadID, promotionVerdictFromCloseReason(expectedReason)); err != nil {
+			return fmt.Errorf("resume learning promotion for %s: %w", beadID, err)
+		}
 		return nil
 	}
 	return d.CloseBead(ctx, beadID, expectedReason)

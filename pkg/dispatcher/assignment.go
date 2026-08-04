@@ -13,10 +13,17 @@ import (
 )
 
 func (d *Dispatcher) assignBead(ctx context.Context, w *trackedWorker, bead protocol.Bead, focusVersionOpt ...uint64) error { //nolint:funlen,gocognit,gocyclo // orchestration logic, splitting would obscure flow
-	return d.assignBeadWithClaim(ctx, w, bead, focusVersionOpt, nil)
+	return d.assignBeadWithClaim(ctx, w, bead, focusVersionOpt, nil, nil)
 }
 
-func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, bead protocol.Bead, focusVersionOpt []uint64, onClaim func(bool)) error { //nolint:funlen,gocognit,gocyclo // orchestration logic, splitting would obscure flow
+type assignmentSetupOutcome uint8
+
+const (
+	assignmentSetupNotDelivered assignmentSetupOutcome = iota
+	assignmentSetupDelivered
+)
+
+func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, bead protocol.Bead, focusVersionOpt []uint64, onClaim func(bool), onOutcome func(assignmentSetupOutcome)) error { //nolint:funlen,gocognit,gocyclo // orchestration logic, splitting would obscure flow
 	claimReported := false
 	reportClaim := func(claimed bool) {
 		if onClaim != nil && !claimReported {
@@ -25,6 +32,14 @@ func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, 
 		}
 	}
 	defer reportClaim(false)
+	outcomeReported := false
+	reportOutcome := func(outcome assignmentSetupOutcome) {
+		if onOutcome != nil && !outcomeReported {
+			onOutcome(outcome)
+			outcomeReported = true
+		}
+	}
+	defer reportOutcome(assignmentSetupNotDelivered)
 
 	if strings.TrimSpace(bead.ID) == "" {
 		return fmt.Errorf("assignBead: empty bead ID")
@@ -207,7 +222,10 @@ func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, 
 			_ = d.logEvent(ctx, "assignment_persist_failed", "dispatcher", bead.ID, w.id, assignErr.Error())
 			d.recordAssignmentFailure(bead.ID)
 		}
-		if d.assignmentInsertFailureAllowsReopen(ctx, bead.ID, w.id) {
+		if d.afterAssignmentInsertFailure != nil {
+			d.afterAssignmentInsertFailure(assignErr)
+		}
+		if d.assignmentInsertFailureAllowsReopen(ctx, bead.ID, w.id, assignErr) {
 			_ = d.updateBeadStatus(ctx, bead.ID, "open")
 		}
 		if createdWorktree {
@@ -349,11 +367,16 @@ func (d *Dispatcher) assignBeadWithClaim(ctx context.Context, w *trackedWorker, 
 		}
 		_ = d.worktrees.Remove(ctx, worktree)
 		_ = d.logEvent(ctx, "worktree_cleanup", "dispatcher", bead.ID, w.id, err.Error())
+		return nil
 	}
+	reportOutcome(assignmentSetupDelivered)
 	return nil
 }
 
-func (d *Dispatcher) assignmentInsertFailureAllowsReopen(ctx context.Context, beadID, workerID string) bool {
+func (d *Dispatcher) assignmentInsertFailureAllowsReopen(ctx context.Context, beadID, workerID string, cause error) bool {
+	if errors.Is(cause, errAssignmentBlockedByReviewCheckpoint) {
+		return false
+	}
 	blocked, err := d.reviewCheckpointBlocksAssignment(ctx, beadID)
 	d.recordAssignmentObservation("review_checkpoint", err)
 	if err != nil {
@@ -574,11 +597,8 @@ func (d *Dispatcher) attachAssignmentToReservation(workerID, beadID string, rese
 
 func (d *Dispatcher) releaseAssignmentReservation(workerID, beadID string, reservationGen uint64) {
 	d.mu.Lock()
-	released := d.releaseAssignmentReservationLocked(workerID, beadID, reservationGen)
+	d.releaseAssignmentReservationLocked(workerID, beadID, reservationGen)
 	d.mu.Unlock()
-	if released {
-		d.notifyAssignLoop()
-	}
 }
 
 func (d *Dispatcher) releaseAssignmentReservationLocked(workerID, beadID string, reservationGen uint64) bool {

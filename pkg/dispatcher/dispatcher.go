@@ -247,6 +247,7 @@ type Dispatcher struct {
 	auditSpawnFn                        func(context.Context)                           // test hook; nil records the scheduled audit run
 	auditResultFn                       func(context.Context, ops.AuditOpts) ops.Result // test hook; nil runs the ops audit
 	beforeAssignmentSideEffectAdmission func()                                          // test seam for checkpoint-admission races
+	afterAssignmentInsertFailure        func(error)                                     // test seam for atomic-insert cleanup races
 	assignmentSideEffectAdmissionSeq    atomic.Uint64
 	cleanlinessRoleMu                   sync.Mutex
 	cleanlinessCycleMu                  sync.Mutex

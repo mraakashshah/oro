@@ -746,14 +746,14 @@ func (d *Dispatcher) assignGeneralSchedulingUnit(ctx context.Context, idle []idl
 		if nextIdleIdx >= len(idle) {
 			break
 		}
-		claimed, setupDone, setupSucceeded := d.launchAssignmentWithResult(ctx, idle[nextIdleIdx].worker, bead, focusVersion)
+		claimed, setupDone, setupOutcome := d.launchAssignmentWithResult(ctx, idle[nextIdleIdx].worker, bead, focusVersion)
 		*done = append(*done, setupDone)
 		if !claimed {
 			continue
 		}
 		_, nextIdleIdx = d.advanceAssignedGeneralIdle(idle, nextIdleIdx, bead.ID, pbSnapshot)
 		if unit.kind == unitEpic && schedulingUnitHasRemainingCandidate(unit, beadIdx+1, assignedBeads, reservedTargets) {
-			d.notifyAssignLoopAfterSuccessfulSetup(ctx, setupSucceeded)
+			d.notifyAssignLoopAfterSuccessfulSetup(ctx, setupOutcome)
 			return nextIdleIdx, true
 		}
 	}
@@ -779,32 +779,31 @@ func (d *Dispatcher) launchAssignment(ctx context.Context, w *trackedWorker, bea
 	return claimed, done
 }
 
-func (d *Dispatcher) launchAssignmentWithResult(ctx context.Context, w *trackedWorker, bead protocol.Bead, focusVersion uint64) (claimed bool, done <-chan struct{}, succeeded <-chan bool) {
+func (d *Dispatcher) launchAssignmentWithResult(ctx context.Context, w *trackedWorker, bead protocol.Bead, focusVersion uint64) (claimed bool, done <-chan struct{}, outcome <-chan assignmentSetupOutcome) {
 	claimedCh := make(chan bool, 1)
 	setupDone := make(chan struct{})
-	setupSucceeded := make(chan bool, 1)
+	setupOutcome := make(chan assignmentSetupOutcome, 1)
 	d.safeGo(func() {
 		defer close(setupDone)
-		defer close(setupSucceeded)
-		err := d.assignBeadWithClaim(ctx, w, bead, []uint64{focusVersion}, func(claimed bool) {
+		defer close(setupOutcome)
+		_ = d.assignBeadWithClaim(ctx, w, bead, []uint64{focusVersion}, func(claimed bool) {
 			claimedCh <- claimed
+		}, func(outcome assignmentSetupOutcome) {
+			setupOutcome <- outcome
 		})
-		if err == nil {
-			setupSucceeded <- true
-		}
 	})
-	return <-claimedCh, setupDone, setupSucceeded
+	return <-claimedCh, setupDone, setupOutcome
 }
 
 // notifyAssignLoopAfterSuccessfulSetup serializes one top-epic admission per
 // pass without paying the polling interval before filling the next idle
 // worker. Failed setup deliberately does not enqueue a retry; its durable
 // cleanup/recovery path remains the sole owner of retry policy.
-func (d *Dispatcher) notifyAssignLoopAfterSuccessfulSetup(ctx context.Context, succeeded <-chan bool) {
+func (d *Dispatcher) notifyAssignLoopAfterSuccessfulSetup(ctx context.Context, outcome <-chan assignmentSetupOutcome) {
 	d.safeGo(func() {
 		select {
-		case success, ok := <-succeeded:
-			if ok && success {
+		case observed, ok := <-outcome:
+			if ok && observed == assignmentSetupDelivered {
 				d.notifyAssignLoop()
 			}
 		case <-ctx.Done():

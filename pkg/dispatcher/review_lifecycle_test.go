@@ -4,6 +4,7 @@ package dispatcher
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -479,24 +480,150 @@ WHERE id=?`, baseSHA, approvedSHA, approvedSHA, integrationStepAssignmentComplet
 	}
 }
 
-func assertNativeCloseSideEffectCounts(t *testing.T, d *Dispatcher, beadID, childID string, want int) {
+func TestReviewIntegrationStartupReconciliationReplaysPostCloseEffectsAfterPromotionFailure(t *testing.T) {
+	ctx := context.Background()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	if err := migrations.MigrateToV3(ctx, d.db); err != nil {
+		t.Fatalf("migrate native beadstore: %v", err)
+	}
+	repo, baseSHA, approvedSHA := reviewIntegrationGitFixture(t, true)
+	d.repoRoot = repo
+	d.setCommandRunner(&ExecCommandRunner{})
+	d.beads = beadstore.NewSQLiteStore(d.db)
+
+	const (
+		beadID  = "integration-native-close-promotion-retry"
+		childID = "integration-native-close-promotion-child"
+	)
+	if _, err := d.beads.Create(ctx, beadstore.CreateParams{
+		ID: beadID, Title: "Integrated research parent", Type: "research", Status: "in_progress",
+	}); err != nil {
+		t.Fatalf("create native integration bead: %v", err)
+	}
+	if _, err := d.beads.Create(ctx, beadstore.CreateParams{
+		ID: childID, Title: "Child waiting for close", Type: "task", ParentID: beadID,
+		Tags: []string{tagAwaitsParentClose},
+	}); err != nil {
+		t.Fatalf("create native child bead: %v", err)
+	}
+	if _, err := d.cardStore.AppendLearningPending(ctx, beadID, cards.CardCandidate{
+		Type:        string(cards.CardTypePattern),
+		Title:       "Retry post-close promotion",
+		BodySummary: "Restart resumes post-close effects.",
+		BodyFull:    "A failed learning promotion is retried after the native close commit.",
+		Confidence:  0.95,
+		Evidence:    []string{"native SQLite restart regression"},
+	}); err != nil {
+		t.Fatalf("append pending learning: %v", err)
+	}
+
+	worktree := filepath.Join(repo, ".worktrees", beadID)
+	assignmentID, err := d.createAssignment(ctx, beadID, "worker-native-promotion-retry", worktree)
+	if err != nil {
+		t.Fatalf("create assignment: %v", err)
+	}
+	if err := d.completeCheckpointAssignment(ctx, assignmentID, beadID); err != nil {
+		t.Fatalf("complete assignment fixture: %v", err)
+	}
+	checkpoint := seedReviewIntegrationCheckpoint(t, d, beadID, assignmentID, worktree,
+		ReviewCheckpointStateIntegrating, baseSHA, approvedSHA)
+	if _, err := d.db.ExecContext(ctx, `
+UPDATE review_checkpoints
+SET integration_target_before_sha=?, integration_approved_head_sha=?,
+    integration_observed_target_sha=?, integration_step=?
+WHERE id=?`, baseSHA, approvedSHA, approvedSHA, integrationStepAssignmentCompleted, checkpoint.ID); err != nil {
+		t.Fatalf("seed durable post-assignment step: %v", err)
+	}
+
+	d.cardStore = &failOnceLearningPromotionStore{Store: d.cardStore, fail: true}
+	if err := d.reconcileReviewIntegrationsOnStartup(ctx); err == nil {
+		t.Fatal("first reconciliation succeeded despite injected learning promotion failure")
+	}
+	assertNativeCloseSideEffectCounts(t, d, beadID, childID, 1, 1, 0)
+	assertIntegrationCheckpointState(t, d, checkpoint.ID,
+		ReviewCheckpointStateIntegrating, integrationStepAssignmentCompleted)
+
+	// Recreate both native stores to prove recovery uses only durable state.
+	d.beads = beadstore.NewSQLiteStore(d.db)
+	restartedCards, err := cards.NewStore(d.db)
+	if err != nil {
+		t.Fatalf("recreate native card store: %v", err)
+	}
+	d.cardStore = restartedCards
+	if err := d.reconcileReviewIntegrationsOnStartup(ctx); err != nil {
+		t.Fatalf("restart reconciliation: %v", err)
+	}
+
+	assertNativeCloseSideEffectCounts(t, d, beadID, childID, 1, 1, 1)
+	assertIntegrationCheckpointState(t, d, checkpoint.ID,
+		ReviewCheckpointStateIntegrated, integrationStepIntegrated)
+	pending, err := d.cardStore.PendingLearnings(ctx, beadID)
+	if err != nil {
+		t.Fatalf("load pending learnings: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("pending learnings after restart = %d, want 0", len(pending))
+	}
+}
+
+type failOnceLearningPromotionStore struct {
+	cards.Store
+	mu   sync.Mutex
+	fail bool
+}
+
+func (s *failOnceLearningPromotionStore) PromoteLearning(ctx context.Context, learningID int64) (string, error) {
+	s.mu.Lock()
+	if s.fail {
+		s.fail = false
+		s.mu.Unlock()
+		return "", errors.New("injected learning promotion failure after native close")
+	}
+	s.mu.Unlock()
+	return s.Store.PromoteLearning(ctx, learningID)
+}
+
+func assertIntegrationCheckpointState(
+	t *testing.T,
+	d *Dispatcher,
+	checkpointID int64,
+	wantState ReviewCheckpointState,
+	wantStep string,
+) {
 	t.Helper()
+	var gotState, gotStep string
+	if err := d.db.QueryRow(`SELECT state, integration_step FROM review_checkpoints WHERE id=?`, checkpointID).
+		Scan(&gotState, &gotStep); err != nil {
+		t.Fatalf("load checkpoint state: %v", err)
+	}
+	if gotState != string(wantState) || gotStep != wantStep {
+		t.Fatalf("checkpoint = %q/%q, want %q/%q", gotState, gotStep, wantState, wantStep)
+	}
+}
+
+func assertNativeCloseSideEffectCounts(t *testing.T, d *Dispatcher, beadID, childID string, want int, wantRest ...int) {
+	t.Helper()
+	wantClosed, wantChild, wantLearning := want, want, want
+	if len(wantRest) == 2 {
+		wantChild, wantLearning = wantRest[0], wantRest[1]
+	}
 	queries := []struct {
 		name  string
 		query string
 		args  []any
+		want  int
 	}{
-		{name: "bead_closed", query: `SELECT COUNT(*) FROM events WHERE type='bead_closed' AND source='beadstore' AND bead_id=?`, args: []any{beadID}},
-		{name: "child promotion", query: `SELECT COUNT(*) FROM bead_journey WHERE bead_id=? AND event='parent_closed_promoted'`, args: []any{childID}},
-		{name: "learning promotion", query: `SELECT COUNT(*) FROM bead_journey WHERE bead_id=? AND event='learning_promoted'`, args: []any{beadID}},
+		{name: "bead_closed", query: `SELECT COUNT(*) FROM events WHERE type='bead_closed' AND source='beadstore' AND bead_id=?`, args: []any{beadID}, want: wantClosed},
+		{name: "child promotion", query: `SELECT COUNT(*) FROM bead_journey WHERE bead_id=? AND event='parent_closed_promoted'`, args: []any{childID}, want: wantChild},
+		{name: "learning promotion", query: `SELECT COUNT(*) FROM bead_journey WHERE bead_id=? AND event='learning_promoted'`, args: []any{beadID}, want: wantLearning},
 	}
 	for _, check := range queries {
 		var got int
 		if err := d.db.QueryRow(check.query, check.args...).Scan(&got); err != nil {
 			t.Fatalf("count %s: %v", check.name, err)
 		}
-		if got != want {
-			t.Fatalf("%s count = %d, want %d", check.name, got, want)
+		if got != check.want {
+			t.Fatalf("%s count = %d, want %d", check.name, got, check.want)
 		}
 	}
 }
@@ -1464,12 +1591,23 @@ func TestAssignBeadAtomicallyRejectsCheckpointCreatedDuringWorktreeCreation(t *t
 		t.Fatalf("candidate did not pass initial filtering: %+v", got)
 	}
 
+	var racedCheckpoint ReviewCheckpoint
 	wtMgr.createFn = func(_ context.Context, gotBeadID, _ string) (string, string, error) {
 		if gotBeadID != beadID {
 			t.Fatalf("worktree bead ID = %q, want %q", gotBeadID, beadID)
 		}
-		seedDurableReviewCheckpoint(t, d, beadID, originAssignmentID, originWorktree, ReviewCheckpointStateReviewRunning)
+		racedCheckpoint = seedDurableReviewCheckpoint(t, d, beadID, originAssignmentID, originWorktree, ReviewCheckpointStateReviewRunning)
 		return newWorktree, protocol.BranchPrefix + beadID, nil
+	}
+	d.afterAssignmentInsertFailure = func(assignErr error) {
+		if !errors.Is(assignErr, errAssignmentBlockedByReviewCheckpoint) {
+			t.Fatalf("assignment insert error = %v, want checkpoint block", assignErr)
+		}
+		if err := NewReviewCheckpointStore(d.db).CompareAndSwap(
+			ctx, racedCheckpoint.ID, ReviewCheckpointStateReviewRunning, ReviewCheckpointStateSuperseded,
+		); err != nil {
+			t.Fatalf("terminalize raced checkpoint before cleanup: %v", err)
+		}
 	}
 	conn := newMockConn()
 	worker := &trackedWorker{id: "ordinary-worker", conn: conn, encoder: json.NewEncoder(conn), state: protocol.WorkerIdle}

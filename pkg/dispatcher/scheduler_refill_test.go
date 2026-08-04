@@ -91,3 +91,59 @@ func TestNativeSchedulerSingleTriggerRefillsTopEpicWithoutPollDelay(t *testing.T
 		t.Fatalf("single-trigger assignments = %v, want top epic refill %v", got, want)
 	}
 }
+
+func TestEpicSchedulerDoesNotRefillAfterClaimedSetupCleansUp(t *testing.T) {
+	d, beadSrc, workers := setupTryAssignSchedulingTest(t, 2)
+	seedTryAssignEpic(t, beadSrc, "epic-no-refill-after-cleanup", 0, "2026-08-03T00:00:00Z")
+	for priority, beadID := range []string{"cleanup-child-a", "cleanup-child-b"} {
+		seedTryAssignBead(t, beadSrc, protocol.Bead{
+			ID: beadID, Priority: priority, Epic: "epic-no-refill-after-cleanup",
+		})
+	}
+	beadSrc.SetBeads([]protocol.Bead{
+		{ID: "cleanup-child-a", Priority: 0, Epic: "epic-no-refill-after-cleanup"},
+		{ID: "cleanup-child-b", Priority: 1, Epic: "epic-no-refill-after-cleanup"},
+	})
+	if _, err := d.db.Exec(`
+CREATE TRIGGER fail_scheduler_assignment_capability
+BEFORE INSERT ON assignment_capabilities
+BEGIN
+  SELECT RAISE(ABORT, 'injected capability persistence failure');
+END`); err != nil {
+		t.Fatalf("install capability failure trigger: %v", err)
+	}
+	for {
+		select {
+		case <-d.workerReadyCh:
+		default:
+			goto drained
+		}
+	}
+
+drained:
+	handles := d.tryAssignBatch(context.Background())
+	waitForSetup(t, handles)
+
+	notifyCount := 0
+	quiet := time.NewTimer(100 * time.Millisecond)
+	defer quiet.Stop()
+	for {
+		select {
+		case <-d.workerReadyCh:
+			notifyCount++
+		case <-quiet.C:
+			if notifyCount != 0 {
+				t.Fatalf("immediate refill notifications after cleaned-up setup = %d, want 0", notifyCount)
+			}
+			assertMockWorkerAssignCount(t, workers, 0)
+			var active int
+			if err := d.db.QueryRow(`SELECT COUNT(*) FROM assignments WHERE status='active'`).Scan(&active); err != nil {
+				t.Fatalf("count active assignments: %v", err)
+			}
+			if active != 0 {
+				t.Fatalf("active assignments after capability cleanup = %d, want 0", active)
+			}
+			return
+		}
+	}
+}
