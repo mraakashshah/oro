@@ -2,12 +2,15 @@ package dispatcher //nolint:testpackage // Protocol drain assertions require int
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"net"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"oro/pkg/dbutil"
 	"oro/pkg/protocol"
 )
 
@@ -320,78 +323,257 @@ func TestLegacyIdleReconnectOwnershipTransferBeforeRestoreFailsClosed(t *testing
 		liveWorkerID  = "worker-raced-live-owner"
 		beadID        = "oro-legacy-raced-owner"
 	)
+	useFileBackedLegacyAssignmentDB(t, d)
 	seedLegacyAuthoritativeBead(beads, beadID)
 	liveWorktree := t.TempDir()
-	staleAssignmentIDs := make(chan int64, 1)
-	liveAssignmentIDs := make(chan int64, 1)
+	transferConn := prepareLegacyTransferConn(t, d)
+	transferResults := make(chan legacyOwnershipTransferResult, 1)
 	d.testLegacyReconnectClaimedHook = func() {
-		staleAssignmentID := <-staleAssignmentIDs
-		if _, err := d.db.Exec(`UPDATE assignments SET status='requeued' WHERE id=? AND status='active'`, staleAssignmentID); err != nil {
-			t.Errorf("transfer stale assignment: %v", err)
-			return
-		}
-		result, err := d.db.Exec(`INSERT INTO assignments (bead_id, worker_id, worktree, status) VALUES (?, ?, ?, 'active')`,
-			beadID, liveWorkerID, liveWorktree)
-		if err != nil {
-			t.Errorf("create raced live assignment: %v", err)
-			return
-		}
-		liveAssignmentID, err := result.LastInsertId()
-		if err != nil {
-			t.Errorf("load raced live assignment ID: %v", err)
-			return
-		}
-		liveAssignmentIDs <- liveAssignmentID
+		transferResults <- attemptLegacyOwnershipTransfer(transferConn, beadID, liveWorkerID, liveWorktree)
 	}
 	startDispatcher(t, d)
 	staleAssignmentID := insertActiveAssignment(t, d, beadID, staleWorkerID, t.TempDir())
 	if _, err := d.db.Exec(`UPDATE assignments SET status='requeued' WHERE id=?`, staleAssignmentID); err != nil {
 		t.Fatalf("seed stale requeued assignment: %v", err)
 	}
-	staleAssignmentIDs <- staleAssignmentID
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendLegacyReconnect(t, conn, protocol.ReconnectPayload{
+		WorkerID: staleWorkerID,
+		BeadID:   beadID,
+		State:    "idle",
+		BufferedEvents: []protocol.Message{{
+			Type: protocol.MsgReadyForReview,
+			ReadyForReview: &protocol.ReadyForReviewPayload{
+				WorkerID: staleWorkerID,
+				BeadID:   beadID,
+			},
+		}},
+	})
+	transfer := <-transferResults
+	assertLegacyTransferSerialized(t, transfer)
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		w := d.workers[staleWorkerID]
+		if w == nil {
+			return false
+		}
+		return w.assignmentID == staleAssignmentID && w.beadID == beadID
+	}, time.Second)
+
+	canonicalAssignmentID, canonicalWorkerID := canonicalLegacyOwner(t, d, beadID)
+	d.mu.Lock()
+	staleWorker := d.workers[staleWorkerID]
+	memoryAssignmentID, memoryBeadID := staleWorker.assignmentID, staleWorker.beadID
+	d.mu.Unlock()
+	if memoryAssignmentID != staleAssignmentID || memoryBeadID != beadID ||
+		canonicalAssignmentID != staleAssignmentID || canonicalWorkerID != staleWorkerID {
+		t.Fatalf("serialized ownership mismatch: transfer=%+v memory=(%d,%q) canonical=(%d,%q)",
+			transfer, memoryAssignmentID, memoryBeadID, canonicalAssignmentID, canonicalWorkerID)
+	}
+	assertLegacyBeadInProgressAndNotReady(t, beads, beadID)
+}
+
+func TestLegacyIdleReconnectTransferAfterCanonicalVerifyNeverRestoresStaleOwner(t *testing.T) {
+	d, beads, _, _, _, _ := newTestDispatcher(t)
+	const (
+		staleWorkerID = "worker-legacy-post-verify"
+		liveWorkerID  = "worker-live-post-verify"
+		beadID        = "oro-legacy-post-verify"
+	)
+	useFileBackedLegacyAssignmentDB(t, d)
+	seedLegacyAuthoritativeBead(beads, beadID)
+	liveWorktree := t.TempDir()
+	transferConn := prepareLegacyTransferConn(t, d)
+	transferResults := make(chan legacyOwnershipTransferResult, 1)
+	d.testLegacyReconnectVerifiedHook = func() {
+		transferResults <- attemptLegacyOwnershipTransfer(transferConn, beadID, liveWorkerID, liveWorktree)
+	}
+	startDispatcher(t, d)
+	staleAssignmentID := insertActiveAssignment(t, d, beadID, staleWorkerID, t.TempDir())
+
+	conn, _ := connectWorker(t, d.cfg.SocketPath)
+	sendLegacyReconnect(t, conn, protocol.ReconnectPayload{
+		WorkerID: staleWorkerID,
+		BeadID:   beadID,
+		State:    "idle",
+		BufferedEvents: []protocol.Message{{
+			Type: protocol.MsgReadyForReview,
+			ReadyForReview: &protocol.ReadyForReviewPayload{
+				WorkerID: staleWorkerID,
+				BeadID:   beadID,
+			},
+		}},
+	})
+	transfer := <-transferResults
+	assertLegacyTransferSerialized(t, transfer)
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		w := d.workers[staleWorkerID]
+		return w != nil && w.assignmentID != 0
+	}, time.Second)
+
+	canonicalAssignmentID, canonicalWorkerID := canonicalLegacyOwner(t, d, beadID)
+	d.mu.Lock()
+	staleWorker := d.workers[staleWorkerID]
+	memoryAssignmentID, memoryBeadID := staleWorker.assignmentID, staleWorker.beadID
+	d.mu.Unlock()
+	if memoryAssignmentID != canonicalAssignmentID || memoryBeadID != beadID || canonicalWorkerID != staleWorkerID {
+		t.Fatalf("post-verify ownership mismatch: transfer=%+v stale_assignment=%d memory=(%d,%q) canonical=(%d,%q)",
+			transfer, staleAssignmentID, memoryAssignmentID, memoryBeadID, canonicalAssignmentID, canonicalWorkerID)
+	}
+	assertLegacyBeadInProgressAndNotReady(t, beads, beadID)
+}
+
+func TestLegacyIdleReconnectTransferAfterRequeueNeverReopensOwnedBead(t *testing.T) {
+	d, beads, _, _, _, _ := newTestDispatcher(t)
+	const (
+		staleWorkerID = "worker-legacy-post-requeue"
+		liveWorkerID  = "worker-live-post-requeue"
+		beadID        = "oro-legacy-post-requeue"
+	)
+	useFileBackedLegacyAssignmentDB(t, d)
+	seedLegacyAuthoritativeBead(beads, beadID)
+	liveWorktree := t.TempDir()
+	transferConn := prepareLegacyTransferConn(t, d)
+	transferResults := make(chan legacyOwnershipTransferResult, 1)
+	d.testLegacyReconnectRequeuedHook = func() {
+		transferResults <- attemptLegacyAssignmentCreate(transferConn, beadID, liveWorkerID, liveWorktree)
+	}
+	startDispatcher(t, d)
+	staleAssignmentID := insertActiveAssignment(t, d, beadID, staleWorkerID, t.TempDir())
 
 	conn, _ := connectWorker(t, d.cfg.SocketPath)
 	sendLegacyReconnect(t, conn, protocol.ReconnectPayload{WorkerID: staleWorkerID, BeadID: beadID, State: "idle"})
-	_ = conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-	var reply protocol.Message
-	err := json.NewDecoder(conn).Decode(&reply)
-	if err == nil {
-		d.mu.Lock()
-		worker := d.workers[staleWorkerID]
-		var state protocol.WorkerState
-		if worker != nil {
-			state = worker.state
-		}
-		d.mu.Unlock()
-		var supersededEvents int
-		_ = d.db.QueryRow(`SELECT COUNT(*) FROM events WHERE type='legacy_reconnect_superseded' AND worker_id=?`, staleWorkerID).Scan(&supersededEvents)
-		t.Fatalf("raced reconnect received reply %#v, want fail-closed connection (state=%q superseded_events=%d)", reply, state, supersededEvents)
+	transfer := <-transferResults
+	assertLegacyTransferSerialized(t, transfer)
+	reply, ok := readMsg(t, conn, time.Second)
+	if !ok || reply.Type != protocol.MsgShutdown {
+		t.Fatalf("drain reply = %#v, want SHUTDOWN", reply)
 	}
-	var timeout net.Error
-	if !errors.As(err, &timeout) || !timeout.Timeout() {
-		t.Fatalf("raced reconnect connection closed: %v", err)
-	}
-	_ = conn.SetReadDeadline(time.Time{})
-	liveAssignmentID := <-liveAssignmentIDs
 
-	d.mu.Lock()
-	staleWorker := d.workers[staleWorkerID]
-	staleClaimed := staleWorker != nil && (staleWorker.assignmentID != 0 || staleWorker.beadID != "")
-	d.mu.Unlock()
-	if staleClaimed {
-		t.Fatal("stale worker restored ownership after concurrent durable transfer")
+	var activeCount int
+	if err := d.db.QueryRow(`SELECT COUNT(*) FROM assignments WHERE bead_id=? AND status='active'`, beadID).Scan(&activeCount); err != nil {
+		t.Fatalf("count active assignments: %v", err)
 	}
-	var staleStatus, liveStatus string
-	if err := d.db.QueryRow(`SELECT status FROM assignments WHERE id=?`, staleAssignmentID).Scan(&staleStatus); err != nil {
-		t.Fatalf("load raced stale assignment: %v", err)
+	if activeCount == 0 {
+		assertLegacyBeadOpenAndReady(t, beads, beadID)
+		return
 	}
-	if err := d.db.QueryRow(`SELECT status FROM assignments WHERE id=?`, liveAssignmentID).Scan(&liveStatus); err != nil {
-		t.Fatalf("load raced live assignment: %v", err)
-	}
-	if staleStatus != "requeued" || liveStatus != "active" {
-		t.Fatalf("raced durable ownership: stale=%q live=%q", staleStatus, liveStatus)
+	canonicalAssignmentID, canonicalWorkerID := canonicalLegacyOwner(t, d, beadID)
+	if canonicalAssignmentID != transfer.assignmentID || canonicalWorkerID != liveWorkerID {
+		t.Fatalf("unexpected post-requeue owner: transfer=%+v canonical=(%d,%q) stale=%d",
+			transfer, canonicalAssignmentID, canonicalWorkerID, staleAssignmentID)
 	}
 	assertLegacyBeadInProgressAndNotReady(t, beads, beadID)
+}
+
+type legacyOwnershipTransferResult struct {
+	assignmentID int64
+	succeeded    bool
+	err          error
+}
+
+func attemptLegacyOwnershipTransfer(
+	conn *sql.Conn,
+	beadID, workerID, worktree string,
+) legacyOwnershipTransferResult {
+	ctx := context.Background()
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return legacyOwnershipTransferResult{err: err}
+	}
+	defer func() { _, _ = conn.ExecContext(context.Background(), `ROLLBACK`) }()
+	result, err := conn.ExecContext(ctx, `
+UPDATE assignments SET status='requeued', completed_at=datetime('now')
+WHERE bead_id=? AND status='active'`, beadID)
+	if err != nil {
+		return legacyOwnershipTransferResult{err: err}
+	}
+	if rowsAffected(result) != 1 {
+		return legacyOwnershipTransferResult{err: errors.New("ownership transfer did not requeue one active assignment")}
+	}
+	result, err = conn.ExecContext(ctx, `
+INSERT INTO assignments (bead_id, worker_id, worktree, status)
+VALUES (?, ?, ?, 'active')`, beadID, workerID, worktree)
+	if err != nil {
+		return legacyOwnershipTransferResult{err: err}
+	}
+	assignmentID, err := result.LastInsertId()
+	if err != nil {
+		return legacyOwnershipTransferResult{err: err}
+	}
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return legacyOwnershipTransferResult{err: err}
+	}
+	return legacyOwnershipTransferResult{assignmentID: assignmentID, succeeded: true}
+}
+
+func attemptLegacyAssignmentCreate(
+	conn *sql.Conn,
+	beadID, workerID, worktree string,
+) legacyOwnershipTransferResult {
+	ctx := context.Background()
+	result, err := conn.ExecContext(ctx, `
+INSERT INTO assignments (bead_id, worker_id, worktree, status)
+VALUES (?, ?, ?, 'active')`, beadID, workerID, worktree)
+	if err != nil {
+		return legacyOwnershipTransferResult{err: err}
+	}
+	assignmentID, err := result.LastInsertId()
+	if err != nil {
+		return legacyOwnershipTransferResult{err: err}
+	}
+	return legacyOwnershipTransferResult{assignmentID: assignmentID, succeeded: true}
+}
+
+func prepareLegacyTransferConn(t *testing.T, d *Dispatcher) *sql.Conn {
+	t.Helper()
+	conn, err := d.db.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("open legacy transfer connection: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if _, err := conn.ExecContext(context.Background(), `PRAGMA busy_timeout=10`); err != nil {
+		t.Fatalf("set legacy transfer busy timeout: %v", err)
+	}
+	return conn
+}
+
+func assertLegacyTransferSerialized(t *testing.T, transfer legacyOwnershipTransferResult) {
+	t.Helper()
+	if transfer.succeeded {
+		t.Fatalf("competing ownership transfer bypassed assignment admission: %+v", transfer)
+	}
+	if !isSQLiteBusyError(transfer.err) {
+		t.Fatalf("competing ownership transfer error = %v, want SQLite writer exclusion", transfer.err)
+	}
+}
+
+func useFileBackedLegacyAssignmentDB(t *testing.T, d *Dispatcher) {
+	t.Helper()
+	db, err := dbutil.OpenDB(filepath.Join(t.TempDir(), "legacy-assignment.db"))
+	if err != nil {
+		t.Fatalf("open file-backed legacy assignment database: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(protocol.SchemaDDL); err != nil {
+		t.Fatalf("initialize file-backed legacy assignment database: %v", err)
+	}
+	d.db = db
+}
+
+func canonicalLegacyOwner(t *testing.T, d *Dispatcher, beadID string) (int64, string) {
+	t.Helper()
+	var assignmentID int64
+	var workerID string
+	if err := d.db.QueryRow(`
+SELECT id, worker_id FROM assignments
+WHERE bead_id=? AND status='active' ORDER BY id DESC LIMIT 1`, beadID).Scan(&assignmentID, &workerID); err != nil {
+		t.Fatalf("load canonical legacy owner: %v", err)
+	}
+	return assignmentID, workerID
 }
 
 func sendLegacyReconnect(t *testing.T, conn net.Conn, reconnect protocol.ReconnectPayload) {

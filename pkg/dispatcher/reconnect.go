@@ -78,20 +78,36 @@ func (d *Dispatcher) reactivateRequeuedAssignment(ctx context.Context, beadID, w
 	if d.db == nil || beadID == "" {
 		return 0
 	}
-	var assignmentID int64
-	if err := d.db.QueryRowContext(ctx,
-		`SELECT id FROM assignments WHERE bead_id=? AND status='requeued' ORDER BY id DESC LIMIT 1`,
-		beadID,
-	).Scan(&assignmentID); err != nil {
-		return d.activeAssignmentIDForBead(ctx, beadID)
-	}
-	if _, err := d.db.ExecContext(ctx,
-		`UPDATE assignments SET status='active', completed_at=NULL, worker_id=? WHERE id=?`,
-		workerID, assignmentID,
-	); err != nil {
+	admission, err := d.beginAssignmentAdmission(ctx, "reactivate requeued")
+	if err != nil {
 		_ = d.logEvent(ctx, "assignment_reactivate_failed", "dispatcher", beadID, workerID, err.Error())
 		return 0
 	}
+	defer admission.close()
+	var assignmentID int64
+	if err := admission.conn.QueryRowContext(ctx,
+		`SELECT id FROM assignments WHERE bead_id=? AND status='requeued' ORDER BY id DESC LIMIT 1`,
+		beadID,
+	).Scan(&assignmentID); err != nil {
+		_ = admission.conn.QueryRowContext(ctx,
+			`SELECT id FROM assignments WHERE bead_id=? AND status='active' ORDER BY id DESC LIMIT 1`,
+			beadID).Scan(&assignmentID)
+		return assignmentID
+	}
+	if _, err := admission.conn.ExecContext(ctx,
+		`UPDATE assignments SET status='active', completed_at=NULL, worker_id=? WHERE id=?`,
+		workerID, assignmentID,
+	); err != nil {
+		admission.close()
+		_ = d.logEvent(ctx, "assignment_reactivate_failed", "dispatcher", beadID, workerID, err.Error())
+		return 0
+	}
+	if err := admission.commit(ctx, "reactivate requeued"); err != nil {
+		admission.close()
+		_ = d.logEvent(ctx, "assignment_reactivate_failed", "dispatcher", beadID, workerID, err.Error())
+		return 0
+	}
+	admission.close()
 	_ = d.logEvent(ctx, "assignment_reactivated", "dispatcher", beadID, workerID,
 		fmt.Sprintf(`{"assignment_id":%d}`, assignmentID))
 	return assignmentID
@@ -160,8 +176,14 @@ func (d *Dispatcher) handleLegacyIdleReconnect(
 		return false
 	}
 
-	identity, status, err := d.claimCanonicalLegacyReconnectAssignment(ctx, workerID, reconnect.BeadID)
+	admission, err := d.beginAssignmentAdmission(ctx, "legacy reconnect")
 	if err != nil {
+		d.preserveLegacyReconnectClaim(workerID, reconnect.BeadID)
+		return true
+	}
+	identity, status, err := d.claimCanonicalLegacyReconnectAssignment(ctx, admission.conn, workerID, reconnect.BeadID)
+	if err != nil {
+		admission.close()
 		if errors.Is(err, errLegacyReconnectSuperseded) {
 			d.holdSupersededLegacyReconnect(workerID)
 			_ = d.logEvent(ctx, "legacy_reconnect_superseded", "dispatcher", reconnect.BeadID, workerID, err.Error())
@@ -173,21 +195,61 @@ func (d *Dispatcher) handleLegacyIdleReconnect(
 	if d.testLegacyReconnectClaimedHook != nil {
 		d.testLegacyReconnectClaimedHook()
 	}
-	if err := d.verifyCanonicalLegacyReconnectAssignment(ctx, identity); err != nil {
+	if err := d.verifyCanonicalLegacyReconnectAssignment(ctx, admission.conn, identity); err != nil {
+		admission.close()
 		d.holdSupersededLegacyReconnect(workerID)
 		_ = d.logEvent(ctx, "legacy_reconnect_superseded", "dispatcher", reconnect.BeadID, workerID, err.Error())
 		return true
 	}
+	if d.testLegacyReconnectVerifiedHook != nil {
+		d.testLegacyReconnectVerifiedHook()
+	}
 	d.restoreLegacyReconnectOwnership(workerID, identity)
 
 	if bufferedLegacyReady(reconnect.BufferedEvents, workerID, reconnect.BeadID) {
-		d.replayReconnectEvents(ctx, workerID, reconnect.BufferedEvents,
-			false, false, protocol.ReadyForReviewPayload{})
+		return d.finishBufferedLegacyReconnect(ctx, workerID, reconnect, admission)
+	}
+	return d.finishLegacyIdleRelease(ctx, workerID, identity, status, admission)
+}
+
+func (d *Dispatcher) finishBufferedLegacyReconnect(
+	ctx context.Context,
+	workerID string,
+	reconnect *protocol.ReconnectPayload,
+	admission *assignmentAdmission,
+) bool {
+	if err := admission.commit(ctx, "legacy reconnect"); err != nil {
+		admission.close()
+		d.holdSupersededLegacyReconnect(workerID)
+		_ = d.logEvent(ctx, "legacy_reconnect_commit_failed", "dispatcher", reconnect.BeadID, workerID, err.Error())
 		return true
 	}
+	admission.close()
+	d.replayReconnectEvents(ctx, workerID, reconnect.BufferedEvents,
+		false, false, protocol.ReadyForReviewPayload{})
+	return true
+}
 
-	if err := d.releaseLegacyIdleOwnership(ctx, identity, status); err != nil {
-		_ = d.logEvent(ctx, "legacy_idle_release_failed", "dispatcher", identity.beadID, workerID, err.Error())
+func (d *Dispatcher) finishLegacyIdleRelease(
+	ctx context.Context,
+	workerID string,
+	identity durableReadyIdentity,
+	status string,
+	admission *assignmentAdmission,
+) bool {
+	releaseErr := d.releaseLegacyIdleOwnership(ctx, admission.conn, identity, status)
+	commitErr := admission.commit(ctx, "legacy idle release")
+	admission.close()
+	if commitErr != nil {
+		if releaseErr == nil {
+			d.compensateLegacyBeadReopen(ctx, identity.beadID)
+		}
+		d.holdSupersededLegacyReconnect(workerID)
+		_ = d.logEvent(ctx, "legacy_idle_release_failed", "dispatcher", identity.beadID, workerID, commitErr.Error())
+		return true
+	}
+	if releaseErr != nil {
+		_ = d.logEvent(ctx, "legacy_idle_release_failed", "dispatcher", identity.beadID, workerID, releaseErr.Error())
 		return true
 	}
 	d.mu.Lock()
@@ -218,12 +280,16 @@ func (d *Dispatcher) holdSupersededLegacyReconnect(workerID string) {
 
 func (d *Dispatcher) releaseLegacyIdleOwnership(
 	ctx context.Context,
+	ex execer,
 	identity durableReadyIdentity,
 	originalStatus string,
 ) error {
 	if originalStatus == "active" {
-		if err := d.transitionLegacyAssignmentStatus(ctx, identity, "active", "requeued"); err != nil {
+		if err := transitionLegacyAssignmentStatus(ctx, ex, identity, "active", "requeued"); err != nil {
 			return err
+		}
+		if d.testLegacyReconnectRequeuedHook != nil {
+			d.testLegacyReconnectRequeuedHook()
 		}
 	}
 	opened, err := d.beads.UpdateStatusIf(ctx, identity.beadID, "in_progress", "open")
@@ -239,15 +305,27 @@ func (d *Dispatcher) releaseLegacyIdleOwnership(
 		return nil
 	}
 	if originalStatus == "active" {
-		if restoreErr := d.transitionLegacyAssignmentStatus(ctx, identity, "requeued", "active"); restoreErr != nil {
+		if restoreErr := transitionLegacyAssignmentStatus(ctx, ex, identity, "requeued", "active"); restoreErr != nil {
 			return fmt.Errorf("reopen authoritative bead: %w; restore assignment ownership: %w", err, restoreErr)
 		}
 	}
 	return fmt.Errorf("reopen authoritative bead: %w", err)
 }
 
-func (d *Dispatcher) transitionLegacyAssignmentStatus(
+func (d *Dispatcher) compensateLegacyBeadReopen(ctx context.Context, beadID string) {
+	restored, err := d.beads.UpdateStatusIf(ctx, beadID, "open", "in_progress")
+	if err != nil || !restored {
+		payload := fmt.Sprintf(`{"restored":%t}`, restored)
+		if err != nil {
+			payload = err.Error()
+		}
+		_ = d.logEvent(ctx, "legacy_bead_reopen_compensation_failed", "dispatcher", beadID, "", payload)
+	}
+}
+
+func transitionLegacyAssignmentStatus(
 	ctx context.Context,
+	ex execer,
 	identity durableReadyIdentity,
 	from, to string,
 ) error {
@@ -256,13 +334,13 @@ func (d *Dispatcher) transitionLegacyAssignmentStatus(
 		err    error
 	)
 	if from == "active" && to == "requeued" {
-		result, err = d.db.ExecContext(ctx, `
+		result, err = ex.ExecContext(ctx, `
 UPDATE assignments SET status='requeued', completed_at=datetime('now')
 WHERE id=? AND bead_id=? AND worker_id=? AND status='active'
   AND id=(SELECT MAX(id) FROM assignments WHERE bead_id=? AND status IN ('active','requeued'))`,
 			identity.assignmentID, identity.beadID, identity.workerID, identity.beadID)
 	} else {
-		result, err = d.db.ExecContext(ctx, `
+		result, err = ex.ExecContext(ctx, `
 UPDATE assignments SET status='active', completed_at=NULL
 WHERE id=? AND bead_id=? AND worker_id=? AND status='requeued'`,
 			identity.assignmentID, identity.beadID, identity.workerID)
@@ -299,16 +377,12 @@ func (d *Dispatcher) workerDrainingAfterAssignment(workerID string) bool {
 
 func (d *Dispatcher) claimCanonicalLegacyReconnectAssignment(
 	ctx context.Context,
+	ex execer,
 	workerID, beadID string,
 ) (durableReadyIdentity, string, error) {
-	tx, err := d.db.BeginTx(ctx, nil)
-	if err != nil {
-		return durableReadyIdentity{}, "", fmt.Errorf("begin legacy reconnect claim: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
 	identity := durableReadyIdentity{beadID: beadID}
 	var status string
-	err = tx.QueryRowContext(ctx, `
+	err := ex.QueryRowContext(ctx, `
 SELECT id, worker_id, worktree, qg_evidence_dir, target_sha, target_branch, status
 FROM assignments
 WHERE id=(SELECT MAX(id) FROM assignments WHERE bead_id=? AND status IN ('active','requeued'))
@@ -322,7 +396,7 @@ WHERE id=(SELECT MAX(id) FROM assignments WHERE bead_id=? AND status IN ('active
 	if identity.workerID != workerID {
 		return durableReadyIdentity{}, "", fmt.Errorf("%w: assignment %d belongs to %s", errLegacyReconnectSuperseded, identity.assignmentID, identity.workerID)
 	}
-	result, err := tx.ExecContext(ctx, `
+	result, err := ex.ExecContext(ctx, `
 UPDATE assignments
 SET status='active', completed_at=CASE WHEN status='requeued' THEN NULL ELSE completed_at END
 WHERE id=? AND bead_id=? AND worker_id=? AND status=?
@@ -334,9 +408,6 @@ WHERE id=? AND bead_id=? AND worker_id=? AND status=?
 	if rowsAffected(result) != 1 {
 		return durableReadyIdentity{}, "", fmt.Errorf("%w: assignment %d changed during claim", errLegacyReconnectSuperseded, identity.assignmentID)
 	}
-	if err := tx.Commit(); err != nil {
-		return durableReadyIdentity{}, "", fmt.Errorf("commit canonical legacy reconnect assignment: %w", err)
-	}
 	if identity.targetBranch == "" {
 		identity.targetBranch = d.cfg.DefaultBranch
 	}
@@ -345,10 +416,11 @@ WHERE id=? AND bead_id=? AND worker_id=? AND status=?
 
 func (d *Dispatcher) verifyCanonicalLegacyReconnectAssignment(
 	ctx context.Context,
+	ex execer,
 	identity durableReadyIdentity,
 ) error {
 	var canonical bool
-	err := d.db.QueryRowContext(ctx, `
+	err := ex.QueryRowContext(ctx, `
 SELECT EXISTS(
 	SELECT 1
 	FROM assignments
@@ -487,47 +559,88 @@ func (d *Dispatcher) restoreCanonicalReadyReconnect(
 		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, false, false
 	}
 
+	admission, err := d.beginAssignmentAdmission(ctx, "canonical ready reconnect")
+	if err != nil {
+		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, false, false
+	}
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	w := d.workers[workerID]
 	if w == nil {
+		d.mu.Unlock()
+		admission.close()
 		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, false, false
 	}
 
-	tx, err := d.db.BeginTx(ctx, nil)
+	prepared, err := d.prepareCanonicalReadyReconnect(
+		ctx, admission.conn, w, workerID, reconnect.BeadID,
+	)
 	if err != nil {
-		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, false, false
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	identity, status, err := loadCanonicalReconnectCandidate(ctx, tx, workerID, reconnect.BeadID)
-	if err != nil {
-		_ = tx.Rollback()
+		d.mu.Unlock()
+		admission.close()
 		if !errors.Is(err, sql.ErrNoRows) {
 			_ = d.logEvent(ctx, "reconnect_ready_restore_failed", "dispatcher", reconnect.BeadID, workerID, err.Error())
 		}
 		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, false, false
+	}
+	if !prepared.valid {
+		d.mu.Unlock()
+		admission.close()
+		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, false, false
+	}
+
+	if claimCanonicalReconnectAssignment(ctx, admission.conn, prepared.identity, prepared.status) != nil {
+		d.mu.Unlock()
+		admission.close()
+		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, false, false
+	}
+	priorWorker := *w
+	if !d.restoreCanonicalReadyWorkerLocked(w, prepared.identity, prepared.alreadyReviewing) {
+		d.mu.Unlock()
+		admission.close()
+		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, false, false
+	}
+	if err := admission.commit(ctx, "canonical ready reconnect"); err != nil {
+		*w = priorWorker
+		d.mu.Unlock()
+		admission.close()
+		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, false, false
+	}
+	d.mu.Unlock()
+	admission.close()
+	return prepared.identity, prepared.ready, prepared.alreadyReviewing, true
+}
+
+type canonicalReadyReconnectPreparation struct {
+	identity         durableReadyIdentity
+	ready            protocol.ReadyForReviewPayload
+	status           string
+	alreadyReviewing bool
+	valid            bool
+}
+
+func (d *Dispatcher) prepareCanonicalReadyReconnect(
+	ctx context.Context,
+	ex execer,
+	w *trackedWorker,
+	workerID, beadID string,
+) (canonicalReadyReconnectPreparation, error) {
+	identity, status, err := loadCanonicalReconnectCandidate(ctx, ex, workerID, beadID)
+	if err != nil {
+		return canonicalReadyReconnectPreparation{}, err
 	}
 	if identity.targetBranch == "" {
 		identity.targetBranch = d.cfg.DefaultBranch
 	}
 	ready, valid := d.canonicalReconnectReady(identity)
 	if !valid || !d.canonicalReadyWorkerRestorableLocked(w, identity) {
-		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, false, false
+		return canonicalReadyReconnectPreparation{}, nil
 	}
-
 	alreadyReviewing := w.state == protocol.WorkerReviewing &&
 		w.assignmentID == identity.assignmentID && w.beadID == identity.beadID
-	if claimCanonicalReconnectAssignment(ctx, tx, identity, status) != nil {
-		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, false, false
-	}
-	if err := tx.Commit(); err != nil {
-		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, false, false
-	}
-	if !d.restoreCanonicalReadyWorkerLocked(w, identity, alreadyReviewing) {
-		return durableReadyIdentity{}, protocol.ReadyForReviewPayload{}, false, false
-	}
-	return identity, ready, alreadyReviewing, true
+	return canonicalReadyReconnectPreparation{
+		identity: identity, ready: ready, status: status,
+		alreadyReviewing: alreadyReviewing, valid: true,
+	}, nil
 }
 
 func canonicalReconnectRequestValid(reconnect *protocol.ReconnectPayload, db *sql.DB) bool {
@@ -536,10 +649,10 @@ func canonicalReconnectRequestValid(reconnect *protocol.ReconnectPayload, db *sq
 
 func loadCanonicalReconnectCandidate(
 	ctx context.Context,
-	tx *sql.Tx,
+	ex execer,
 	workerID, beadID string,
 ) (identity durableReadyIdentity, status string, err error) {
-	err = tx.QueryRowContext(ctx, `
+	err = ex.QueryRowContext(ctx, `
 SELECT id, bead_id, worker_id, worktree, qg_evidence_dir, target_sha, target_branch, status
 FROM assignments
 WHERE id = (SELECT MAX(id) FROM assignments WHERE bead_id = ?)
@@ -568,11 +681,11 @@ func (d *Dispatcher) canonicalReconnectReady(identity durableReadyIdentity) (pro
 
 func claimCanonicalReconnectAssignment(
 	ctx context.Context,
-	tx *sql.Tx,
+	ex execer,
 	identity durableReadyIdentity,
 	status string,
 ) error {
-	result, err := tx.ExecContext(ctx, `
+	result, err := ex.ExecContext(ctx, `
 UPDATE assignments
 SET status = 'active',
     completed_at = CASE WHEN status = 'requeued' THEN NULL ELSE completed_at END

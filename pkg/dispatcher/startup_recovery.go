@@ -423,7 +423,12 @@ func (d *Dispatcher) assignmentActive(ctx context.Context, assignmentID int64, b
 }
 
 func (d *Dispatcher) restoreDisconnectedAssignmentActive(ctx context.Context, assignmentID int64) error {
-	res, err := d.db.ExecContext(ctx,
+	admission, err := d.beginAssignmentAdmission(ctx, "restore disconnected")
+	if err != nil {
+		return err
+	}
+	defer admission.close()
+	res, err := admission.conn.ExecContext(ctx,
 		`UPDATE assignments SET status='active', completed_at=NULL WHERE id=? AND status='quarantined'`, assignmentID)
 	if err != nil {
 		return fmt.Errorf("restore disconnected assignment active: %w", err)
@@ -435,7 +440,7 @@ func (d *Dispatcher) restoreDisconnectedAssignmentActive(ctx context.Context, as
 	if rows != 1 {
 		return fmt.Errorf("restore disconnected assignment active: assignment_id %d affected %d rows", assignmentID, rows)
 	}
-	return nil
+	return admission.commit(ctx, "restore disconnected")
 }
 
 func (d *Dispatcher) reconcilePreemptedDisconnect(workerID, beadID string, assignmentID int64, worktree string) {

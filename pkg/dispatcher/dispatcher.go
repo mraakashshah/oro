@@ -314,8 +314,17 @@ type Dispatcher struct {
 	// Tests use this to inject a concurrent durable ownership transfer.
 	testLegacyReconnectClaimedHook func()
 
+	// testLegacyReconnectVerifiedHook, if non-nil, is called after durable
+	// canonical verification and before in-memory ownership is restored.
+	testLegacyReconnectVerifiedHook func()
+
+	// testLegacyReconnectRequeuedHook, if non-nil, is called after the legacy
+	// assignment is durably requeued and before the authoritative bead reopens.
+	testLegacyReconnectRequeuedHook func()
+
 	// Review artifact maintenance is serialized so overlapping scheduled ticks
 	// cannot delete or acknowledge the same artifact concurrently.
+	assignmentAdmissionMu     sync.Mutex
 	reviewArtifactPruneMu     sync.Mutex
 	reviewArtifactRetention   time.Duration
 	reviewMaintenanceInterval time.Duration
