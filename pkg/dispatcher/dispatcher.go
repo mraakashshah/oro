@@ -329,12 +329,17 @@ type Dispatcher struct {
 	// canonical reconnect reserves assignment admission and before d.mu.
 	testCanonicalReconnectAdmissionHook func()
 
+	// testReviewArtifactBeforeDelete pauses retention after classification and
+	// before removal so tests can prove renewal/commit synchronization.
+	testReviewArtifactBeforeDelete func(ArtifactRef)
+
 	// Review artifact maintenance is serialized so overlapping scheduled ticks
 	// cannot delete or acknowledge the same artifact concurrently.
 	assignmentAdmissionMu     sync.Mutex
 	reviewArtifactPruneMu     sync.Mutex
 	reviewArtifactRetention   time.Duration
 	reviewMaintenanceInterval time.Duration
+	reviewRecoveryArtifactDir string
 
 	// escalationRetryInterval controls how often escalationRetryLoop fires.
 	// Defaults to 2 minutes; tests may set this to a shorter value.
@@ -555,6 +560,7 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		epicAdmissionRenewEvery:   epicBranchAdmissionLeaseRenewInterval,
 		reviewArtifactRetention:   defaultReviewArtifactRetention,
 		reviewMaintenanceInterval: defaultReviewMaintenanceInterval,
+		reviewRecoveryArtifactDir: filepath.Join(rootDir, ".oro", "review-recovery"),
 		acceptSem:                 make(chan struct{}, 100), // limit to 100 concurrent connection handlers
 	}
 	for _, opt := range opts {

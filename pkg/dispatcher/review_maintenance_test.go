@@ -7,11 +7,13 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"oro/pkg/evidencefs"
 	"oro/pkg/protocol"
+	"oro/pkg/reviewcontract"
 )
 
 func TestReviewArtifactTerminalStateMatrix(t *testing.T) {
@@ -265,6 +267,127 @@ func TestCheckpointReviewEvidencePruneDoesNotFollowReplacedParents(t *testing.T)
 				t.Fatalf("external target changed: data=%q err=%v", data, err)
 			}
 			assertCheckpointQGEvidenceReference(t, d, checkpointID, path)
+		})
+	}
+}
+
+func TestListPrunableArtifactsRejectsIntermediateDirectorySymlink(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	outsideOro := filepath.Join(t.TempDir(), "outside-oro")
+	outsideArtifactDir := filepath.Join(outsideOro, "review-recovery")
+	if err := os.MkdirAll(outsideArtifactDir, recoveryArtifactDirMode); err != nil {
+		t.Fatalf("create outside artifact directory: %v", err)
+	}
+	name := "checkpoint-76-" + strings.Repeat("a", 64) + ".json"
+	outsidePath := filepath.Join(outsideArtifactDir, name)
+	data := []byte("outside retention target")
+	if err := os.WriteFile(outsidePath, data, recoveryArtifactFileMode); err != nil {
+		t.Fatalf("write outside artifact: %v", err)
+	}
+	old := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(outsidePath, old, old); err != nil {
+		t.Fatalf("age outside artifact: %v", err)
+	}
+	if err := os.Symlink(outsideOro, filepath.Join(root, ".oro")); err != nil {
+		t.Fatalf("symlink intermediate directory: %v", err)
+	}
+
+	store := openReviewCheckpointStore(ctx, t, filepath.Join(root, "checkpoints.sqlite"))
+	artifacts, err := store.ListPrunableArtifacts(ctx, time.Now().Add(-time.Hour), filepath.Join(root, ".oro", "review-recovery"))
+	if err == nil {
+		t.Fatalf("list through intermediate symlink = %#v, want error", artifacts)
+	}
+	assertFileContent(t, outsidePath, data)
+}
+
+func TestPruneReviewArtifactsDoesNotFollowReplacementSymlinks(t *testing.T) {
+	cases := []struct {
+		name    string
+		replace func(t *testing.T, root, artifactDir, outsideRoot, artifactName string) (outsidePath, originalPath string)
+	}{
+		{
+			name: "intermediate directory",
+			replace: func(t *testing.T, root, artifactDir, outsideRoot, artifactName string) (string, string) {
+				t.Helper()
+				outsideOro := filepath.Join(outsideRoot, "outside-oro")
+				outsideDir := filepath.Join(outsideOro, "review-recovery")
+				if err := os.MkdirAll(outsideDir, recoveryArtifactDirMode); err != nil {
+					t.Fatalf("create outside directory: %v", err)
+				}
+				originalOro := filepath.Join(root, ".oro-original")
+				if err := os.Rename(filepath.Join(root, ".oro"), originalOro); err != nil {
+					t.Fatalf("move original .oro: %v", err)
+				}
+				if err := os.Symlink(outsideOro, filepath.Join(root, ".oro")); err != nil {
+					t.Fatalf("replace .oro with symlink: %v", err)
+				}
+				return filepath.Join(outsideDir, artifactName), filepath.Join(originalOro, "review-recovery", artifactName)
+			},
+		},
+		{
+			name: "final directory",
+			replace: func(t *testing.T, _, artifactDir, outsideRoot, artifactName string) (string, string) {
+				t.Helper()
+				outsideDir := filepath.Join(outsideRoot, "outside-review-recovery")
+				if err := os.Mkdir(outsideDir, recoveryArtifactDirMode); err != nil {
+					t.Fatalf("create outside directory: %v", err)
+				}
+				originalDir := artifactDir + "-original"
+				if err := os.Rename(artifactDir, originalDir); err != nil {
+					t.Fatalf("move original artifact directory: %v", err)
+				}
+				if err := os.Symlink(outsideDir, artifactDir); err != nil {
+					t.Fatalf("replace artifact directory with symlink: %v", err)
+				}
+				return filepath.Join(outsideDir, artifactName), filepath.Join(originalDir, artifactName)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			root := t.TempDir()
+			artifactDir := filepath.Join(root, ".oro", "review-recovery")
+			store := openReviewCheckpointStore(ctx, t, filepath.Join(root, "checkpoints.sqlite"))
+			ref, err := PersistRecoveryArtifact(artifactDir, 77, []reviewcontract.Finding{reviewOverflowFinding("prune-confined", "do not delete outside")})
+			if err != nil {
+				t.Fatalf("persist artifact: %v", err)
+			}
+			old := time.Now().Add(-2 * time.Hour)
+			if err := os.Chtimes(ref.Path, old, old); err != nil {
+				t.Fatalf("age artifact: %v", err)
+			}
+			data, err := os.ReadFile(ref.Path)
+			if err != nil {
+				t.Fatalf("read artifact: %v", err)
+			}
+
+			var outsidePath, originalPath string
+			replaced := false
+			d := &Dispatcher{
+				db:                        store.db,
+				nowFunc:                   time.Now,
+				reviewArtifactRetention:   time.Hour,
+				reviewRecoveryArtifactDir: artifactDir,
+				testReviewArtifactBeforeDelete: func(artifact ArtifactRef) {
+					if artifact.Path != ref.Path || replaced {
+						return
+					}
+					replaced = true
+					outsidePath, originalPath = tc.replace(t, root, artifactDir, t.TempDir(), filepath.Base(ref.Path))
+					if err := os.WriteFile(outsidePath, data, recoveryArtifactFileMode); err != nil {
+						t.Fatalf("write outside replacement artifact: %v", err)
+					}
+				},
+			}
+			d.pruneReviewArtifacts(ctx)
+			if !replaced {
+				t.Fatal("prune did not classify persisted unreferenced artifact")
+			}
+			assertFileContent(t, outsidePath, data)
+			assertFileContent(t, originalPath, data)
 		})
 	}
 }
