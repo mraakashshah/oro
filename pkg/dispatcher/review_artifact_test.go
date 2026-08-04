@@ -485,6 +485,50 @@ func TestPersistRecoveryArtifactRejectsSymlinkedDirectoryComponents(t *testing.T
 	})
 }
 
+func TestPersistRecoveryArtifactSyncsCreatedDirectoriesBeforeReturningReference(t *testing.T) {
+	root := t.TempDir()
+	artifactDir := filepath.Join(root, ".oro", "review-recovery")
+	findings := []reviewcontract.Finding{reviewOverflowFinding("durable-directories", "sync every created directory entry")}
+	syncFailure := errors.New("injected parent directory sync failure")
+	var syncs []string
+	failed := false
+	syncDirectory := func(directory *os.File) error {
+		syncs = append(syncs, filepath.Base(directory.Name()))
+		if filepath.Base(directory.Name()) == filepath.Base(root) && !failed {
+			failed = true
+			return syncFailure
+		}
+		return directory.Sync()
+	}
+
+	ref, err := persistRecoveryArtifactWithDirSync(artifactDir, 73, findings, syncDirectory)
+	if !errors.Is(err, syncFailure) {
+		t.Fatalf("first persist error = %v, want injected sync failure", err)
+	}
+	if ref != (ReviewRecoveryArtifactRef{}) {
+		t.Fatalf("first persist returned reference before directory durability: %#v", ref)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".oro")); err != nil {
+		t.Fatalf("created .oro directory after failed sync: %v", err)
+	}
+
+	ref, err = persistRecoveryArtifactWithDirSync(artifactDir, 73, findings, syncDirectory)
+	if err != nil {
+		t.Fatalf("retry persist after parent sync failure: %v", err)
+	}
+	wantSyncs := []string{filepath.Base(root), filepath.Base(root), ".oro", "review-recovery"}
+	if !reflect.DeepEqual(syncs, wantSyncs) {
+		t.Fatalf("directory sync sequence = %v, want retry durability sequence %v", syncs, wantSyncs)
+	}
+	loaded, err := LoadRecoveryArtifact(ref)
+	if err != nil {
+		t.Fatalf("load artifact after durable retry: %v", err)
+	}
+	if !reflect.DeepEqual(loaded, findings) {
+		t.Fatalf("loaded findings = %#v, want %#v", loaded, findings)
+	}
+}
+
 func assertDirectoryUntouched(t *testing.T, path string, wantMode os.FileMode) {
 	t.Helper()
 	info, err := os.Stat(path)
