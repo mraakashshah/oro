@@ -95,13 +95,21 @@ malformed)
 malformed-annotated)
 	printf 'The mutation score is 1.000000 (38 passed, total is nope)\n'
 	;;
-aggregate | aggregate-below | shard-timeout)
+aggregate | aggregate-below | aggregate-zero | shard-timeout)
 	target=${*: -1}
-	printf '%s\t%s\t%s\n' "$target" "$PWD" "${GOCACHE:-}" >>"${MUTATION_TRACE:?}"
+	match=""
+	for arg in "$@"; do
+		case "$arg" in
+		--match=*) match=${arg#--match=} ;;
+		esac
+	done
+	printf '%s\t%s\t%s\t%s\n' "$target" "$PWD" "${GOCACHE:-}" "$match" >>"${MUTATION_TRACE:?}"
 	case "$target" in
 	*pkg/example/value.go)
 		sleep 0.2
-		if [[ "$MUTATION_FIXTURE" = aggregate-below ]]; then
+		if [[ "$MUTATION_FIXTURE" = aggregate-zero ]]; then
+			printf 'The mutation score is 0.000000 (0 passed, 0 failed, 0 duplicated, 0 skipped, total is 0)\n'
+		elif [[ "$MUTATION_FIXTURE" = aggregate-below ]]; then
 			printf 'The mutation score is 0.500000 (5 passed, 5 failed, 1 duplicated, 0 skipped, total is 10)\n'
 		else
 			printf 'The mutation score is 0.900000 (9 passed, 1 failed, 1 duplicated, 0 skipped, total is 10)\n'
@@ -184,6 +192,10 @@ TestStrictIncrementalMutationShards() {
 	[[ "$(cut -f2 "$trace" | sort -u | wc -l | tr -d ' ')" = 2 ]] || fail 'mutation shards must use isolated worktrees'
 	[[ "$(cut -f3 "$trace" | sort -u | wc -l | tr -d ' ')" = 2 ]] || fail 'mutation shards must use isolated Go build caches'
 	! grep -q $'\t\t' "$trace" || fail 'mutation shard GOCACHE must be non-empty'
+	[[ "$(cut -f4 "$trace" | sort | tr '\n' ' ')" = "^(Other)$ ^(Value)$ " ]] ||
+		fail 'mutation shards must target only functions touched in each changed file'
+	jq -e '[.shards[].match] == ["^(Value)$", "^(Other)$"]' "$evidence" >/dev/null ||
+		fail 'mutation evidence must preserve each deterministic touched-function match'
 
 	evidence=$(run_multi_fixture "$tmp/below" aggregate-below deterministic_failure 1)
 	jq -e '.mutation_exit_code == 0 and .score == 0.7 and .total == 20' "$evidence" >/dev/null ||
@@ -195,6 +207,14 @@ TestStrictIncrementalMutationShards() {
 		 [.shards[].conclusion] == ["completed", "infrastructure_failure"] and
 		 .shards[1].exit_code == 124' \
 		"$evidence" >/dev/null || fail 'per-file timeout did not preserve completed and infrastructure shard evidence'
+
+	evidence=$(run_multi_fixture "$tmp/zero-shard" aggregate-zero pass 0)
+	jq -e \
+		'.mutation_exit_code == 0 and .score == 0.9 and .total == 10 and
+		 .shards[0].conclusion == "completed" and .shards[0].reason == "no mutants generated" and
+		 .shards[0].score == null and .shards[0].total == 0 and
+		 .shards[1].conclusion == "completed" and .shards[1].total == 10' \
+		"$evidence" >/dev/null || fail 'one legitimate zero-mutant shard must not erase completed strict score evidence'
 }
 
 run_fixture() {
