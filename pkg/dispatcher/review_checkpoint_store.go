@@ -264,7 +264,8 @@ func scanReviewCheckpoint(row *sql.Row) (ReviewCheckpoint, error) {
 
 // ArtifactRef identifies an artifact eligible for retention pruning.
 type ArtifactRef struct {
-	Path string
+	Path       string
+	QGEvidence bool
 }
 
 // ListPrunableArtifacts returns artifacts whose every checkpoint reference is
@@ -277,19 +278,19 @@ func (s *ReviewCheckpointStore) ListPrunableArtifacts(ctx context.Context, older
 
 	rows, err := s.db.QueryContext(ctx, `
 WITH artifact_references AS (
-  SELECT artifact_path AS path, state, COALESCE(completed_at, updated_at, created_at) AS terminal_at
+  SELECT artifact_path AS path, state, COALESCE(completed_at, updated_at, created_at) AS terminal_at, 0 AS qg_evidence
   FROM review_checkpoints
   WHERE COALESCE(artifact_path, '') <> ''
   UNION ALL
-  SELECT recovery_artifact_path AS path, state, COALESCE(completed_at, updated_at, created_at) AS terminal_at
+  SELECT recovery_artifact_path AS path, state, COALESCE(completed_at, updated_at, created_at) AS terminal_at, 0 AS qg_evidence
   FROM review_checkpoints
   WHERE COALESCE(recovery_artifact_path, '') <> ''
   UNION ALL
-  SELECT qg_evidence_path AS path, state, COALESCE(completed_at, updated_at, created_at) AS terminal_at
+  SELECT qg_evidence_path AS path, state, COALESCE(completed_at, updated_at, created_at) AS terminal_at, 1 AS qg_evidence
   FROM review_checkpoints
   WHERE COALESCE(qg_evidence_path, '') <> ''
 )
-SELECT DISTINCT candidate.path
+SELECT candidate.path, MAX(candidate.qg_evidence)
 FROM artifact_references AS candidate
 WHERE candidate.state IN (?, ?)
   AND datetime(candidate.terminal_at) < datetime(?)
@@ -299,6 +300,7 @@ WHERE candidate.state IN (?, ?)
     WHERE reference.path = candidate.path
       AND (reference.state NOT IN (?, ?) OR datetime(reference.terminal_at) >= datetime(?))
   )
+GROUP BY candidate.path
 ORDER BY candidate.path`,
 		ReviewCheckpointStateIntegrated,
 		ReviewCheckpointStateSuperseded,
@@ -314,7 +316,7 @@ ORDER BY candidate.path`,
 	artifacts := make([]ArtifactRef, 0)
 	for rows.Next() {
 		var artifact ArtifactRef
-		if err := rows.Scan(&artifact.Path); err != nil {
+		if err := rows.Scan(&artifact.Path, &artifact.QGEvidence); err != nil {
 			return nil, fmt.Errorf("scan prunable review artifact: %w", err)
 		}
 		artifacts = append(artifacts, artifact)

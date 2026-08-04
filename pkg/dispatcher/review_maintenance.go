@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"oro/pkg/evidencefs"
@@ -50,7 +51,7 @@ func (d *Dispatcher) pruneReviewArtifacts(ctx context.Context) {
 	artifacts, err := store.ListPrunableArtifacts(ctx, before)
 	if err == nil {
 		for _, artifact := range artifacts {
-			if err := os.Remove(artifact.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			if err := d.removeReviewArtifact(artifact); err != nil && !errors.Is(err, os.ErrNotExist) {
 				continue
 			}
 			if err := store.ClearPrunedArtifact(ctx, artifact.Path); err != nil {
@@ -59,6 +60,40 @@ func (d *Dispatcher) pruneReviewArtifacts(ctx context.Context) {
 		}
 	}
 	d.pruneReviewEvidenceOrphans(ctx, before)
+}
+
+func (d *Dispatcher) removeReviewArtifact(artifact ArtifactRef) error {
+	if !artifact.QGEvidence {
+		if err := os.Remove(artifact.Path); err != nil {
+			return fmt.Errorf("remove review artifact: %w", err)
+		}
+		return nil
+	}
+	root := filepath.Clean(d.cfg.ReviewEvidenceDir)
+	path := filepath.Clean(artifact.Path)
+	if artifact.Path != path || !filepath.IsAbs(root) {
+		return errors.New("checkpoint QG evidence path is not canonical")
+	}
+	relative, err := filepath.Rel(root, path)
+	if err != nil {
+		return fmt.Errorf("resolve checkpoint QG evidence path: %w", err)
+	}
+	parts := strings.Split(relative, string(filepath.Separator))
+	if len(parts) != 3 || parts[2] != readyEvidenceAttempt {
+		return errors.New("checkpoint QG evidence path has invalid layout")
+	}
+	assignmentID, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || assignmentID <= 0 || strconv.FormatInt(assignmentID, 10) != parts[1] {
+		return errors.New("checkpoint QG evidence assignment is invalid")
+	}
+	want, err := canonicalReadyEvidencePath(root, parts[0], assignmentID)
+	if err != nil || want != path {
+		return errors.New("checkpoint QG evidence path is outside canonical root")
+	}
+	if err := evidencefs.RemoveFile(root, parts[:2], parts[2]); err != nil {
+		return fmt.Errorf("remove checkpoint QG evidence: %w", err)
+	}
+	return nil
 }
 
 func (d *Dispatcher) pruneReviewEvidenceOrphans(ctx context.Context, olderThan time.Time) {

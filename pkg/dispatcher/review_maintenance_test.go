@@ -197,7 +197,7 @@ WHERE id = ?`, ReviewCheckpointStateIntegrated, evidencePath, oldTimestamp, oldT
 	if err != nil {
 		t.Fatalf("list prunable QG evidence: %v", err)
 	}
-	if len(artifacts) != 1 || artifacts[0].Path != evidencePath {
+	if len(artifacts) != 1 || artifacts[0].Path != evidencePath || !artifacts[0].QGEvidence {
 		t.Fatalf("prunable QG evidence = %v, want %q", artifacts, evidencePath)
 	}
 	if err := store.ClearPrunedArtifact(ctx, evidencePath); err != nil {
@@ -211,6 +211,108 @@ WHERE id = ?`, ReviewCheckpointStateIntegrated, evidencePath, oldTimestamp, oldT
 	}
 	if retained != "" || retainedHash != "" {
 		t.Fatalf("QG evidence reference retained after clear: path=%q hash=%q", retained, retainedHash)
+	}
+}
+
+func TestCheckpointReviewEvidencePruneDoesNotFollowReplacedParents(t *testing.T) {
+	for _, replacedParent := range []string{"bead", "assignment"} {
+		t.Run(replacedParent, func(t *testing.T) {
+			ctx := context.Background()
+			d, _, _, _, _, _ := newTestDispatcher(t)
+			migrateReviewMaintenanceSchema(t, d)
+			root := filepath.Join(t.TempDir(), "review-evidence")
+			d.cfg.ReviewEvidenceDir = root
+			d.reviewArtifactRetention = time.Hour
+			now := time.Date(2026, time.August, 3, 12, 0, 0, 0, time.UTC)
+			d.nowFunc = func() time.Time { return now }
+			const (
+				beadID       = "oro-checkpoint-symlink"
+				assignmentID = int64(41)
+			)
+			path := writeMaintenanceEvidence(t, root, beadID, assignmentID, now.Add(-2*time.Hour))
+			checkpointID := seedCheckpointQGEvidence(ctx, t, d, path, now.Add(-2*time.Hour))
+
+			externalParent := t.TempDir()
+			externalAssignment := externalParent
+			if replacedParent == "bead" {
+				externalAssignment = filepath.Join(externalParent, "41")
+				if err := os.Mkdir(externalAssignment, 0o700); err != nil {
+					t.Fatalf("create external assignment: %v", err)
+				}
+			}
+			externalPath := filepath.Join(externalAssignment, readyEvidenceAttempt)
+			if err := os.WriteFile(externalPath, []byte("external"), 0o600); err != nil {
+				t.Fatalf("write external evidence: %v", err)
+			}
+			beadDir := filepath.Join(root, beadID)
+			assignmentDir := filepath.Join(beadDir, "41")
+			replacedPath, heldPath, target := beadDir, filepath.Join(root, "held-bead"), externalParent
+			if replacedParent == "assignment" {
+				replacedPath = assignmentDir
+				heldPath = filepath.Join(beadDir, "held-assignment")
+				target = externalAssignment
+			}
+			if err := os.Rename(replacedPath, heldPath); err != nil {
+				t.Fatalf("hold canonical %s parent: %v", replacedParent, err)
+			}
+			if err := os.Symlink(target, replacedPath); err != nil {
+				t.Fatalf("replace %s parent with symlink: %v", replacedParent, err)
+			}
+
+			d.pruneReviewArtifacts(ctx)
+			data, err := os.ReadFile(externalPath)
+			if err != nil || string(data) != "external" {
+				t.Fatalf("external target changed: data=%q err=%v", data, err)
+			}
+			assertCheckpointQGEvidenceReference(t, d, checkpointID, path)
+		})
+	}
+}
+
+func TestCheckpointReviewEvidencePruneRemovesCanonicalFile(t *testing.T) {
+	ctx := context.Background()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	migrateReviewMaintenanceSchema(t, d)
+	root := filepath.Join(t.TempDir(), "review-evidence")
+	d.cfg.ReviewEvidenceDir = root
+	d.reviewArtifactRetention = time.Hour
+	now := time.Date(2026, time.August, 3, 12, 0, 0, 0, time.UTC)
+	d.nowFunc = func() time.Time { return now }
+	path := writeMaintenanceEvidence(t, root, "oro-checkpoint-canonical", 51, now.Add(-2*time.Hour))
+	checkpointID := seedCheckpointQGEvidence(ctx, t, d, path, now.Add(-2*time.Hour))
+
+	d.pruneReviewArtifacts(ctx)
+	assertMaintenanceFileMissing(t, path)
+	assertCheckpointQGEvidenceReference(t, d, checkpointID, "")
+}
+
+func seedCheckpointQGEvidence(
+	ctx context.Context,
+	t *testing.T,
+	d *Dispatcher,
+	path string,
+	terminalAt time.Time,
+) int64 {
+	t.Helper()
+	checkpoint := createMaintenanceCheckpoint(ctx, t, NewReviewCheckpointStore(d.db), int(terminalAt.UnixNano()), ReviewCheckpointStateIntegrated)
+	timestamp := terminalAt.UTC().Format(time.RFC3339Nano)
+	if _, err := d.db.ExecContext(ctx, `
+UPDATE review_checkpoints
+SET state=?, qg_evidence_path=?, qg_evidence_sha256='evidence-hash', created_at=?, updated_at=?, completed_at=?
+WHERE id=?`, ReviewCheckpointStateIntegrated, path, timestamp, timestamp, timestamp, checkpoint.ID); err != nil {
+		t.Fatalf("seed checkpoint QG evidence: %v", err)
+	}
+	return checkpoint.ID
+}
+
+func assertCheckpointQGEvidenceReference(t *testing.T, d *Dispatcher, checkpointID int64, want string) {
+	t.Helper()
+	var path string
+	if err := d.db.QueryRow(`SELECT COALESCE(qg_evidence_path, '') FROM review_checkpoints WHERE id=?`, checkpointID).Scan(&path); err != nil {
+		t.Fatalf("load checkpoint QG evidence reference: %v", err)
+	}
+	if path != want {
+		t.Fatalf("checkpoint QG evidence reference = %q, want %q", path, want)
 	}
 }
 
