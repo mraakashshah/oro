@@ -280,6 +280,12 @@ TestStrictIncrementalMutation() {
 		fail 'incremental-mutation job must upload its JSON evidence artifact'
 	grep -q 'if-no-files-found: error' "$tmp/incremental-mutation.yml" ||
 		fail 'incremental-mutation artifact loss must fail the job'
+	grep -q 'timeout-minutes: 35' "$tmp/incremental-mutation.yml" ||
+		fail 'incremental-mutation job must have a bounded outer deadline'
+	grep -q 'MUTATION_MAX_WORKERS: 4' "$tmp/incremental-mutation.yml" ||
+		fail 'incremental-mutation job must declare bounded shard concurrency'
+	grep -q 'MUTATION_FILE_TIMEOUT_SECONDS: 240' "$tmp/incremental-mutation.yml" ||
+		fail 'incremental-mutation job must declare a per-file deadline'
 }
 
 main() {
