@@ -169,6 +169,7 @@ aggregate | aggregate-below | aggregate-zero | shard-timeout)
 targeted | targeted-fallback | targeted-list-miss | targeted-timeout)
 	printf '%s\n' "$*" >"${MUTATION_ARGS_TRACE:?}"
 	if [[ "$MUTATION_FIXTURE" = targeted-timeout ]]; then
+		printf 'ORO_MUTATION_EXEC_TIMEOUT\n'
 		printf 'UNKOWN exit code for targeted mutation test timeout\n'
 	fi
 	printf 'The mutation score is 1.000000 (1 passed, 0 failed, 0 duplicated, 0 skipped, total is 1)\n'
