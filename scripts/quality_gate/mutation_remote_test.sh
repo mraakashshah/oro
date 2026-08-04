@@ -28,6 +28,25 @@ new_fixture() {
 	printf '%s\n%s\n' "$base" "$head"
 }
 
+new_multi_fixture() {
+	local fixture="$1"
+	mkdir -p "$fixture/bin" "$fixture/pkg/example" "$fixture/pkg/other"
+	git -C "$fixture" init -q
+	git -C "$fixture" config user.email mutation@example.test
+	git -C "$fixture" config user.name mutation-test
+	printf 'package example\n\nfunc Value() int { return 1 }\n' >"$fixture/pkg/example/value.go"
+	printf 'package other\n\nfunc Other() int { return 1 }\n' >"$fixture/pkg/other/other.go"
+	git -C "$fixture" add pkg/example/value.go pkg/other/other.go
+	git -C "$fixture" commit -qm base
+	base=$(git -C "$fixture" rev-parse HEAD)
+	printf 'package example\n\nfunc Value() int { return 2 }\n' >"$fixture/pkg/example/value.go"
+	printf 'package other\n\nfunc Other() int { return 2 }\n' >"$fixture/pkg/other/other.go"
+	git -C "$fixture" add pkg/example/value.go pkg/other/other.go
+	git -C "$fixture" commit -qm head
+	head=$(git -C "$fixture" rev-parse HEAD)
+	printf '%s\n%s\n' "$base" "$head"
+}
+
 write_fake_go() {
 	local path="$1"
 	cat >"$path" <<'EOF'
@@ -76,6 +95,34 @@ malformed)
 malformed-annotated)
 	printf 'The mutation score is 1.000000 (38 passed, total is nope)\n'
 	;;
+aggregate | aggregate-below | shard-timeout)
+	target=${*: -1}
+	printf '%s\t%s\t%s\n' "$target" "$PWD" "${GOCACHE:-}" >>"${MUTATION_TRACE:?}"
+	case "$target" in
+	*pkg/example/value.go)
+		sleep 0.2
+		if [[ "$MUTATION_FIXTURE" = aggregate-below ]]; then
+			printf 'The mutation score is 0.500000 (5 passed, 5 failed, 1 duplicated, 0 skipped, total is 10)\n'
+		else
+			printf 'The mutation score is 0.900000 (9 passed, 1 failed, 1 duplicated, 0 skipped, total is 10)\n'
+		fi
+		;;
+	*pkg/other/other.go)
+		if [[ "$MUTATION_FIXTURE" = shard-timeout ]]; then
+			printf 'mutation timed out\n' >&2
+			exit 124
+		elif [[ "$MUTATION_FIXTURE" = aggregate-below ]]; then
+			printf 'The mutation score is 0.900000 (9 passed, 1 failed, 2 duplicated, 0 skipped, total is 10)\n'
+		else
+			printf 'The mutation score is 0.600000 (6 passed, 4 failed, 2 duplicated, 0 skipped, total is 10)\n'
+		fi
+		;;
+	*)
+		echo "unexpected mutation target: $target" >&2
+		exit 65
+		;;
+	esac
+	;;
 *)
 	echo "unknown mutation fixture: $MUTATION_FIXTURE" >&2
 	exit 64
@@ -83,6 +130,71 @@ malformed-annotated)
 esac
 EOF
 	chmod +x "$path"
+}
+
+run_multi_fixture() {
+	local fixture="$1"
+	local outcome="$2"
+	local expected_status="$3"
+	local expected_exit="$4"
+	local base head evidence status trace
+	mapfile -t refs < <(new_multi_fixture "$fixture")
+	base=${refs[0]}
+	head=${refs[1]}
+	evidence="$fixture/mutation-evidence.json"
+	trace="$fixture/mutation-trace.tsv"
+	write_fake_go "$fixture/bin/go"
+
+	set +e
+	(
+		cd "$fixture"
+		PATH="$fixture/bin:$PATH" MUTATION_FIXTURE="$outcome" MUTATION_TRACE="$trace" \
+			MUTATION_MAX_WORKERS=2 MUTATION_FILE_TIMEOUT_SECONDS=5 \
+			bash "$runner" --base "$base" --head "$head" --evidence "$evidence" \
+			>"$fixture/runner.log" 2>&1
+	)
+	status=$?
+	set -e
+	[[ "$status" = "$expected_exit" ]] || fail "$outcome exit = $status, want $expected_exit"
+	[[ -s "$evidence" ]] || fail "$outcome did not write evidence"
+	jq -e \
+		--arg base "$base" \
+		--arg head "$head" \
+		--arg status "$expected_status" \
+		'.base == $base and .head == $head and .conclusion == $status and
+		 .changed_files == ["pkg/example/value.go", "pkg/other/other.go"] and
+		 [.shards[].file] == .changed_files' \
+		"$evidence" >/dev/null || fail "$outcome evidence is missing deterministic shard identity"
+	printf '%s\n' "$evidence"
+}
+
+TestStrictIncrementalMutationShards() {
+	local evidence trace fixture
+
+	fixture="$tmp/aggregate"
+	evidence=$(run_multi_fixture "$fixture" aggregate pass 0)
+	jq -e \
+		'.mutation_exit_code == 0 and .score == 0.75 and .total == 20 and
+		 [.shards[] | {conclusion, exit_code, passed, failed, duplicated, skipped, total}] ==
+		 [{conclusion:"completed", exit_code:0, passed:9, failed:1, duplicated:1, skipped:0, total:10},
+		  {conclusion:"completed", exit_code:0, passed:6, failed:4, duplicated:2, skipped:0, total:10}]' \
+		"$evidence" >/dev/null || fail 'weighted shard aggregation did not preserve strict mutation counts'
+	trace="$fixture/mutation-trace.tsv"
+	[[ "$(wc -l <"$trace" | tr -d ' ')" = 2 ]] || fail 'each changed file must run exactly once'
+	[[ "$(cut -f2 "$trace" | sort -u | wc -l | tr -d ' ')" = 2 ]] || fail 'mutation shards must use isolated worktrees'
+	[[ "$(cut -f3 "$trace" | sort -u | wc -l | tr -d ' ')" = 2 ]] || fail 'mutation shards must use isolated Go build caches'
+	! grep -q $'\t\t' "$trace" || fail 'mutation shard GOCACHE must be non-empty'
+
+	evidence=$(run_multi_fixture "$tmp/below" aggregate-below deterministic_failure 1)
+	jq -e '.mutation_exit_code == 0 and .score == 0.7 and .total == 20' "$evidence" >/dev/null ||
+		fail 'below-threshold aggregate was not kept distinct from infrastructure failure'
+
+	evidence=$(run_multi_fixture "$tmp/timeout" shard-timeout infrastructure_failure 2)
+	jq -e \
+		'.mutation_exit_code == 124 and .score == null and .total == 0 and
+		 [.shards[].conclusion] == ["completed", "infrastructure_failure"] and
+		 .shards[1].exit_code == 124' \
+		"$evidence" >/dev/null || fail 'per-file timeout did not preserve completed and infrastructure shard evidence'
 }
 
 run_fixture() {
@@ -155,6 +267,7 @@ TestStrictIncrementalMutation() {
 	jq -e '.score == 1 and .total == 38' "$tmp/annotated/mutation-evidence.json" >/dev/null ||
 		fail 'annotated output did not preserve its score and total'
 	run_missing_base_fixture "$tmp/missing-base"
+	TestStrictIncrementalMutationShards
 
 	awk '
 		/^  incremental-mutation:$/ { in_job = 1; next }
