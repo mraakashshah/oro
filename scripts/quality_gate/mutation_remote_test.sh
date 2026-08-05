@@ -1067,7 +1067,7 @@ run_parallel_marker_fixture() {
 	local mode="$2"
 	local expected_marker="$3"
 	local output="$fixture/parallel.log"
-	local elapsed_seconds peer_sleep=4 status
+	local elapsed_seconds peer_pid peer_sleep=4 status
 	[[ "$mode" != ordinary ]] || peer_sleep=1
 	mkdir -p "$fixture/bin" "$fixture/pkg/example" "$fixture/cache" "$fixture/tmp" "$fixture/state"
 	printf 'module example.test/markers\n\ngo 1.26\n' >"$fixture/go.mod"
@@ -1088,21 +1088,36 @@ EOF
 	cat >"$fixture/bin/mutation-exec" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+
+wait_for_peer() {
+	for ((attempt = 0; attempt < 100; attempt++)); do
+		[[ -s "$MUTATION_FAKE_STATE/peer.pid" ]] && return
+		sleep 0.01
+	done
+	exit 65
+}
+
 case "$MUTATION_FAKE_MODE:${MUTATE_CHANGED##*.}" in
 timeout:0)
+	wait_for_peer
 	printf 'ORO_MUTATION_EXEC_TIMEOUT\n'
 	exit 124
 	;;
 unknown:0)
+	wait_for_peer
 	printf 'UNKOWN exit code for synthetic mutation executor\n'
 	exit 2
 	;;
 infra:0)
+	wait_for_peer
 	printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
 	exit 2
 	;;
 *:1)
-	sleep "${MUTATION_FAKE_PEER_SLEEP:?}"
+	sleep "${MUTATION_FAKE_PEER_SLEEP:?}" &
+	peer_pid=$!
+	printf '%d\n' "$peer_pid" >"$MUTATION_FAKE_STATE/peer.pid"
+	wait "$peer_pid"
 	exit 1
 	;;
 *)
@@ -1138,6 +1153,11 @@ EOF
 	[[ "$status" != 0 ]] || fail "$mode marker was accepted as a completed mutation campaign"
 	grep -Fxq "$expected_marker" "$output" || fail "$mode marker was not surfaced"
 	((elapsed_seconds < 3)) || fail "$mode marker waited ${elapsed_seconds}s for a sleeping peer"
+	peer_pid=$(<"$fixture/state/peer.pid")
+	if kill -0 "$peer_pid" 2>/dev/null; then
+		kill "$peer_pid" 2>/dev/null || true
+		fail "$mode marker orphaned peer descendant $peer_pid"
+	fi
 }
 
 test_parallel_marker_fail_fast() {
@@ -1191,6 +1211,7 @@ EOF
 }
 
 TestMutationCapacity() {
+	local tmp
 	tmp=$(mktemp -d)
 	trap 'rm -rf "$tmp"' RETURN
 	run_parallel_capacity_fixture "$tmp/small" 3 240
@@ -1221,6 +1242,7 @@ TestStrictIncrementalMutation() {
 	test_mutation_exec_unexpected_exit "$tmp/exec-unexpected"
 	test_mutation_exec_focused_file "$tmp/exec-focused"
 	test_parallel_mutant_executor "$tmp/parallel-mutants"
+	TestMutationCapacity
 	run_fixture "$tmp/unknown-exit" unknown-exit infrastructure_failure 2
 	jq -e \
 		'.score == null and .total == 0 and .mutation_exit_code == 2 and

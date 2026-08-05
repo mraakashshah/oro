@@ -32,13 +32,40 @@ if [[ -z "$module_path" ]]; then
 	exit 2
 fi
 
+terminate_process_tree() {
+	local pid="$1"
+	local child
+	local -a children=()
+	mapfile -t children < <(pgrep -P "$pid" 2>/dev/null || true)
+	for child in "${children[@]}"; do
+		terminate_process_tree "$child"
+	done
+	terminated_pids+=("$pid")
+	kill "$pid" 2>/dev/null || true
+}
+
 stop_mutant_workers() {
-	local pid
+	local attempt pid processes_running
+	local -a terminated_pids=()
 	for pid in "${worker_pids[@]:-}"; do
-		kill "$pid" 2>/dev/null || true
+		terminate_process_tree "$pid"
 	done
 	for pid in "${worker_pids[@]:-}"; do
 		wait "$pid" 2>/dev/null || true
+	done
+	for ((attempt = 0; attempt < 100; attempt++)); do
+		processes_running=0
+		for pid in "${terminated_pids[@]}"; do
+			if kill -0 "$pid" 2>/dev/null; then
+				processes_running=1
+				break
+			fi
+		done
+		((processes_running != 0)) || break
+		sleep 0.01
+	done
+	for pid in "${terminated_pids[@]}"; do
+		kill -KILL "$pid" 2>/dev/null || true
 	done
 	worker_pids=()
 }
