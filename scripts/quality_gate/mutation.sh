@@ -469,6 +469,108 @@ escalation_mutation_test_file() {
 	esac
 }
 
+authoritative_mutation_test_pattern() {
+	local file="$1"
+	local match="$2"
+	case "$file:$match" in
+	'pkg/dispatcher/assignment.go:^(assignmentInsertFailureAllowsReopen)$' | \
+		'pkg/dispatcher/assignment.go:^(checkpointAssignmentAdmissionAllowed)$')
+		printf '^TestAssignmentAuthoritativeSurvivorMutation'
+		;;
+	'pkg/dispatcher/ops_runs.go:^(reviewContextForOpsRun)$')
+		printf '^(TestOpsAuthoritativeSurvivorMutation|TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex$)'
+		;;
+	'pkg/dispatcher/ops_runs.go:^(CompleteOpsRun)$' | \
+		'pkg/dispatcher/ops_runs.go:^(CreateOpsRun)$' | \
+		'pkg/dispatcher/ops_runs.go:^(applyOpsResolve)$' | \
+		'pkg/dispatcher/ops_runs.go:^(completeOpsRunFromStatus)$' | \
+		'pkg/dispatcher/ops_runs.go:^(createOpsRun)$' | \
+		'pkg/dispatcher/ops_runs.go:^(findBlockingOpsRun)$' | \
+		'pkg/dispatcher/ops_runs.go:^(isSQLiteUniqueConstraint)$' | \
+		'pkg/dispatcher/ops_runs.go:^(loadOpsRunByID)$' | \
+		'pkg/dispatcher/ops_runs.go:^(replaceOpsRun)$' | \
+		'pkg/dispatcher/ops_runs.go:^(reviewContextFromAnyWorkerLocked)$' | \
+		'pkg/dispatcher/ops_runs.go:^(reviewContextFromWorkerLocked)$' | \
+		'pkg/dispatcher/ops_runs.go:^(routeOpsRun)$' | \
+		'pkg/dispatcher/ops_runs.go:^(routeReviewOpsRun)$' | \
+		'pkg/dispatcher/ops_runs.go:^(supersedeAndRerouteOpsRun)$' | \
+		'pkg/dispatcher/ops_runs.go:^(supersedeOpsRunForRetry)$' | \
+		'pkg/dispatcher/ops_runs.go:^(terminalOpsRunResult)$' | \
+		'pkg/dispatcher/ops_runs.go:^(watchReroutedOpsRunResult)$')
+		printf '^TestOpsAuthoritativeSurvivorMutation'
+		;;
+	'pkg/dispatcher/health.go:^(applyHealth)$')
+		printf '^(TestHealthAuthoritativeSurvivorMutation|TestApplyHealthReturnsAndReleasesDispatcherMutex$)'
+		;;
+	'pkg/dispatcher/health.go:^(evaluateFactoryHealth)$' | \
+		'pkg/dispatcher/health.go:^(recordAssignmentObservation)$')
+		printf '^TestHealthAuthoritativeSurvivorMutation'
+		;;
+	'pkg/dispatcher/review_checkpoint_store.go:^(BlockIntegration)$')
+		printf '^(TestReviewCheckpointAuthoritativeSurvivorMutation|TestReviewCheckpointMutationIntegrationDurability$)'
+		;;
+	'pkg/dispatcher/review_checkpoint_store.go:^(legacyUnlinkedCheckpointIDs)$')
+		printf '^(TestReviewCheckpointAuthoritativeSurvivorMutation|TestReviewCheckpointMutationLegacyBinding$)'
+		;;
+	'pkg/dispatcher/review_checkpoint_store.go:^(AdvanceIntegrationStep)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(CompleteIntegration)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(CreateOrReuse)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(ObserveIntegration)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(PromoteManualIntegration)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(createOrReuseReviewCheckpoint)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(createOrReuseReviewCheckpointAttempt)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(requireOneCheckpointRow)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(validateOpsRunCheckpointIdentity)$')
+		printf '^TestReviewCheckpointAuthoritativeSurvivorMutation'
+		;;
+	esac
+}
+
+authoritative_mutation_test_file() {
+	local file="$1"
+	local match="$2"
+	case "$file:$match" in
+	'pkg/dispatcher/assignment.go:^(assignmentInsertFailureAllowsReopen)$' | \
+		'pkg/dispatcher/assignment.go:^(checkpointAssignmentAdmissionAllowed)$')
+		printf 'pkg/dispatcher/assignment_authoritative_survivor_mutation_test.go'
+		;;
+	'pkg/dispatcher/ops_runs.go:^(CompleteOpsRun)$' | \
+		'pkg/dispatcher/ops_runs.go:^(CreateOpsRun)$' | \
+		'pkg/dispatcher/ops_runs.go:^(applyOpsResolve)$' | \
+		'pkg/dispatcher/ops_runs.go:^(completeOpsRunFromStatus)$' | \
+		'pkg/dispatcher/ops_runs.go:^(createOpsRun)$' | \
+		'pkg/dispatcher/ops_runs.go:^(findBlockingOpsRun)$' | \
+		'pkg/dispatcher/ops_runs.go:^(isSQLiteUniqueConstraint)$' | \
+		'pkg/dispatcher/ops_runs.go:^(loadOpsRunByID)$' | \
+		'pkg/dispatcher/ops_runs.go:^(replaceOpsRun)$' | \
+		'pkg/dispatcher/ops_runs.go:^(reviewContextFromAnyWorkerLocked)$' | \
+		'pkg/dispatcher/ops_runs.go:^(reviewContextFromWorkerLocked)$' | \
+		'pkg/dispatcher/ops_runs.go:^(routeOpsRun)$' | \
+		'pkg/dispatcher/ops_runs.go:^(routeReviewOpsRun)$' | \
+		'pkg/dispatcher/ops_runs.go:^(supersedeAndRerouteOpsRun)$' | \
+		'pkg/dispatcher/ops_runs.go:^(supersedeOpsRunForRetry)$' | \
+		'pkg/dispatcher/ops_runs.go:^(terminalOpsRunResult)$' | \
+		'pkg/dispatcher/ops_runs.go:^(watchReroutedOpsRunResult)$')
+		printf 'pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go'
+		;;
+	'pkg/dispatcher/health.go:^(evaluateFactoryHealth)$' | \
+		'pkg/dispatcher/health.go:^(recordAssignmentObservation)$')
+		printf 'pkg/dispatcher/health_authoritative_survivor_mutation_test.go'
+		;;
+	'pkg/dispatcher/review_checkpoint_store.go:^(AdvanceIntegrationStep)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(CompleteIntegration)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(CreateOrReuse)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(ObserveIntegration)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(PromoteManualIntegration)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(createOrReuseReviewCheckpoint)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(createOrReuseReviewCheckpointAttempt)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(requireOneCheckpointRow)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(validateOpsRunCheckpointIdentity)$')
+		printf 'pkg/dispatcher/review_checkpoint_authoritative_survivor_mutation_test.go'
+		;;
+	esac
+}
+
 review_integration_recovery_mutation_test_pattern() {
 	local file="$1"
 	local match="$2"
@@ -676,7 +778,12 @@ targeted_test_pattern() {
 	local head="$2"
 	local file="$3"
 	local match="$4"
-	local assignment_admission_pattern assignment_bc_pattern escalation_survivor_pattern review_checkpoint_pattern review_integration_recovery_pattern
+	local assignment_admission_pattern assignment_bc_pattern authoritative_pattern escalation_survivor_pattern review_checkpoint_pattern review_integration_recovery_pattern
+	authoritative_pattern=$(authoritative_mutation_test_pattern "$file" "$match")
+	if [[ -n "$authoritative_pattern" ]]; then
+		printf '%s' "$authoritative_pattern"
+		return
+	fi
 	assignment_admission_pattern=$(assignment_admission_mutation_test_pattern "$file" "$match")
 	if [[ -n "$assignment_admission_pattern" ]]; then
 		printf '%s' "$assignment_admission_pattern"
@@ -754,7 +861,10 @@ run_mutation_shard() {
 	local result="$result_dir/$index.json"
 	local mutation_exit=0
 	local mutation_test_file=""
-	mutation_test_file=$(escalation_mutation_test_file "$file" "$match")
+	mutation_test_file=$(authoritative_mutation_test_file "$file" "$match")
+	if [[ -z "$mutation_test_file" ]]; then
+		mutation_test_file=$(escalation_mutation_test_file "$file" "$match")
+	fi
 	if [[ -z "$mutation_test_file" ]]; then
 		mutation_test_file=$(review_integration_recovery_mutation_test_file "$file")
 	fi
@@ -862,7 +972,8 @@ run_mutation_shard() {
 				MUTATION_FAILURE_EVIDENCE_DIR="$mutation_failure_evidence_root/$index" \
 				MUTATION_EXEC_SCRIPT="$mutation_script_dir/mutation_exec.sh" \
 				timeout "$max_shard_timeout" bash "$mutation_script_dir/mutation_parallel.sh"
-		elif [[ "$file" == pkg/dispatcher/review_integration_recovery.go ||
+		elif [[ "$test_pattern" == *AuthoritativeSurvivorMutation* ||
+			"$file" == pkg/dispatcher/review_integration_recovery.go ||
 			"$mutation_test_file" == pkg/dispatcher/assignment_reservation_worktree_survivor_mutation_test.go ||
 			"$mutation_test_file" == pkg/dispatcher/buffer_survivor_mutation_test.go ||
 			"$mutation_test_file" == pkg/dispatcher/escalation_survivor_mutation_test.go ]]; then
@@ -1017,6 +1128,7 @@ main() {
 		if [[ ("$file" == pkg/dispatcher/assignment.go &&
 			("${match_patterns[$index]}" == '^(assignBeadWithClaim)$' ||
 				"${test_patterns[$index]}" == *TestAssignmentBC*)) ||
+			"${test_patterns[$index]}" == *AuthoritativeSurvivorMutation* ||
 			"$file" == pkg/dispatcher/assignment_admission.go ||
 			"$file" == pkg/dispatcher/review_integration_recovery.go ||
 			("$file" == pkg/dispatcher/escalation.go &&

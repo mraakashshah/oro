@@ -161,6 +161,192 @@ escalation_mutation_test_file_for() {
 	bash -c "$function_source"$'\n''escalation_mutation_test_file "$1" "$2"' _ "$file" "$match" || true
 }
 
+authoritative_pattern_for() {
+	local file="$1"
+	local match="$2"
+	local function_source
+	function_source=$(awk '
+		/^authoritative_mutation_test_pattern\(\)/ { copying = 1 }
+		copying { print }
+		copying && /^}/ { exit }
+	' "$runner")
+	if [[ -z "$function_source" ]]; then
+		fail 'mutation runner omitted authoritative owner mapping'
+		return 1
+	fi
+	bash -c "$function_source"$'\n''authoritative_mutation_test_pattern "$1" "$2"' _ "$file" "$match" || true
+}
+
+authoritative_test_file_for() {
+	local file="$1"
+	local match="$2"
+	local function_source
+	function_source=$(awk '
+		/^authoritative_mutation_test_file\(\)/ { copying = 1 }
+		copying { print }
+		copying && /^}/ { exit }
+	' "$runner")
+	if [[ -z "$function_source" ]]; then
+		fail 'mutation runner omitted authoritative standalone file mapping'
+		return 1
+	fi
+	bash -c "$function_source"$'\n''authoritative_mutation_test_file "$1" "$2"' _ "$file" "$match" || true
+}
+
+TestAuthoritativeMutationMapping() {
+	local expected_file expected_pattern file function got
+	while IFS=$'\t' read -r file function expected_pattern expected_file; do
+		got=$(authoritative_pattern_for "$file" "^($function)$")
+		[[ "$got" == "$expected_pattern" ]] ||
+			fail "$file $function authoritative owner = $got, want $expected_pattern"
+		got=$(authoritative_test_file_for "$file" "^($function)$")
+		[[ "$got" == "$expected_file" ]] ||
+			fail "$file $function authoritative file = $got, want $expected_file"
+	done <<'EOF'
+pkg/dispatcher/assignment.go	assignmentInsertFailureAllowsReopen	^TestAssignmentAuthoritativeSurvivorMutation	pkg/dispatcher/assignment_authoritative_survivor_mutation_test.go
+pkg/dispatcher/assignment.go	checkpointAssignmentAdmissionAllowed	^TestAssignmentAuthoritativeSurvivorMutation	pkg/dispatcher/assignment_authoritative_survivor_mutation_test.go
+pkg/dispatcher/ops_runs.go	CompleteOpsRun	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
+pkg/dispatcher/ops_runs.go	CreateOpsRun	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
+pkg/dispatcher/ops_runs.go	applyOpsResolve	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
+pkg/dispatcher/ops_runs.go	completeOpsRunFromStatus	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
+pkg/dispatcher/ops_runs.go	createOpsRun	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
+pkg/dispatcher/ops_runs.go	findBlockingOpsRun	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
+pkg/dispatcher/ops_runs.go	isSQLiteUniqueConstraint	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
+pkg/dispatcher/ops_runs.go	loadOpsRunByID	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
+pkg/dispatcher/ops_runs.go	replaceOpsRun	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
+pkg/dispatcher/ops_runs.go	reviewContextForOpsRun	^(TestOpsAuthoritativeSurvivorMutation|TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex$)
+pkg/dispatcher/ops_runs.go	reviewContextFromAnyWorkerLocked	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
+pkg/dispatcher/ops_runs.go	reviewContextFromWorkerLocked	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
+pkg/dispatcher/ops_runs.go	routeOpsRun	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
+pkg/dispatcher/ops_runs.go	routeReviewOpsRun	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
+pkg/dispatcher/ops_runs.go	supersedeAndRerouteOpsRun	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
+pkg/dispatcher/ops_runs.go	supersedeOpsRunForRetry	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
+pkg/dispatcher/ops_runs.go	terminalOpsRunResult	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
+pkg/dispatcher/ops_runs.go	watchReroutedOpsRunResult	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
+pkg/dispatcher/health.go	applyHealth	^(TestHealthAuthoritativeSurvivorMutation|TestApplyHealthReturnsAndReleasesDispatcherMutex$)
+pkg/dispatcher/health.go	evaluateFactoryHealth	^TestHealthAuthoritativeSurvivorMutation	pkg/dispatcher/health_authoritative_survivor_mutation_test.go
+pkg/dispatcher/health.go	recordAssignmentObservation	^TestHealthAuthoritativeSurvivorMutation	pkg/dispatcher/health_authoritative_survivor_mutation_test.go
+pkg/dispatcher/review_checkpoint_store.go	AdvanceIntegrationStep	^TestReviewCheckpointAuthoritativeSurvivorMutation	pkg/dispatcher/review_checkpoint_authoritative_survivor_mutation_test.go
+pkg/dispatcher/review_checkpoint_store.go	BlockIntegration	^(TestReviewCheckpointAuthoritativeSurvivorMutation|TestReviewCheckpointMutationIntegrationDurability$)
+pkg/dispatcher/review_checkpoint_store.go	CompleteIntegration	^TestReviewCheckpointAuthoritativeSurvivorMutation	pkg/dispatcher/review_checkpoint_authoritative_survivor_mutation_test.go
+pkg/dispatcher/review_checkpoint_store.go	CreateOrReuse	^TestReviewCheckpointAuthoritativeSurvivorMutation	pkg/dispatcher/review_checkpoint_authoritative_survivor_mutation_test.go
+pkg/dispatcher/review_checkpoint_store.go	ObserveIntegration	^TestReviewCheckpointAuthoritativeSurvivorMutation	pkg/dispatcher/review_checkpoint_authoritative_survivor_mutation_test.go
+pkg/dispatcher/review_checkpoint_store.go	PromoteManualIntegration	^TestReviewCheckpointAuthoritativeSurvivorMutation	pkg/dispatcher/review_checkpoint_authoritative_survivor_mutation_test.go
+pkg/dispatcher/review_checkpoint_store.go	createOrReuseReviewCheckpoint	^TestReviewCheckpointAuthoritativeSurvivorMutation	pkg/dispatcher/review_checkpoint_authoritative_survivor_mutation_test.go
+pkg/dispatcher/review_checkpoint_store.go	createOrReuseReviewCheckpointAttempt	^TestReviewCheckpointAuthoritativeSurvivorMutation	pkg/dispatcher/review_checkpoint_authoritative_survivor_mutation_test.go
+pkg/dispatcher/review_checkpoint_store.go	legacyUnlinkedCheckpointIDs	^(TestReviewCheckpointAuthoritativeSurvivorMutation|TestReviewCheckpointMutationLegacyBinding$)
+pkg/dispatcher/review_checkpoint_store.go	requireOneCheckpointRow	^TestReviewCheckpointAuthoritativeSurvivorMutation	pkg/dispatcher/review_checkpoint_authoritative_survivor_mutation_test.go
+pkg/dispatcher/review_checkpoint_store.go	validateOpsRunCheckpointIdentity	^TestReviewCheckpointAuthoritativeSurvivorMutation	pkg/dispatcher/review_checkpoint_authoritative_survivor_mutation_test.go
+EOF
+
+	got=$(authoritative_pattern_for pkg/dispatcher/other.go '^(applyHealth)$')
+	[[ -z "$got" ]] || fail "wrong authoritative source unexpectedly selected $got"
+	got=$(authoritative_pattern_for pkg/dispatcher/health.go '^(assignmentObservationErrorsLocked)$')
+	[[ -z "$got" ]] || fail "zero-survivor health function unexpectedly selected $got"
+	got=$(authoritative_pattern_for pkg/dispatcher/assignment.go '^(assignBeadWithClaim)$')
+	[[ -z "$got" ]] || fail "unmapped assignment claim unexpectedly selected $got"
+	got=$(authoritative_pattern_for pkg/dispatcher/review_checkpoint_store.go '^(LoadOwningForBead)$')
+	[[ -z "$got" ]] || fail "non-survivor checkpoint function unexpectedly selected $got"
+}
+
+TestAuthoritativeMutationTargetedScope() {
+	local evidence fixture focused_line focused_lines function pattern source target test_file
+	while IFS=$'\t' read -r target source function pattern test_file; do
+		fixture="$tmp/targeted-$target"
+		evidence=$(run_targeted_fixture "$fixture" targeted pass 0 false "$target")
+		grep -Fq -- "-list $pattern ./pkg/dispatcher" "$fixture/mutation-list.txt" ||
+			fail "$function authoritative mutations omitted exact list preflight"
+		grep -F -- "-run $pattern ./pkg/dispatcher" "$fixture/mutation-list.txt" |
+			grep -q -- '-coverprofile=' ||
+			fail "$function authoritative baseline omitted production coverage"
+		jq -e --arg function "$function" --arg pattern "$pattern" \
+			'.shards[0].match == "^(" + $function + ")$" and .shards[0].test_pattern == $pattern' \
+			"$evidence" >/dev/null || fail "$function authoritative evidence lost exact scope"
+		for expected_limit in \
+			'PARALLEL_WORKERS=2' \
+			'EXEC_TIMEOUT=60' \
+			'TIMEOUT_MARGIN=5' \
+			'BASE_SHARD_TIMEOUT=240' \
+			'MAX_SHARD_TIMEOUT=240'; do
+			grep -Fxq "$expected_limit" "$fixture/mutation-args.txt" ||
+				fail "$function authoritative boundary omitted $expected_limit"
+		done
+		if [[ "$test_file" == - ]]; then
+			! grep -q '^MUTATION_TEST_FILE=' "$fixture/mutation-args.txt" ||
+				fail "$function additive owner conflict silently selected one focused file"
+			focused_lines=$(grep -F -- "-run $pattern ./pkg/dispatcher" "$fixture/mutation-list.txt")
+			[[ -n "$focused_lines" ]] ||
+				fail "$function additive owner conflict omitted full-package focused fallback"
+			continue
+		fi
+		grep -Fxq "MUTATION_TEST_FILE=$test_file" "$fixture/mutation-args.txt" ||
+			fail "$function authoritative mutation omitted standalone owner file"
+		focused_lines=$(grep -F "$test_file" "$fixture/mutation-list.txt")
+		[[ -n "$focused_lines" ]] || fail "$function emitted no focused authoritative argv"
+		while IFS= read -r focused_line; do
+			[[ "$(grep -oF "$source" <<<"$focused_line" | wc -l | tr -d ' ')" = 1 ]] ||
+				fail "$function focused argv must include source exactly once"
+			[[ "$(grep -oF "$test_file" <<<"$focused_line" | wc -l | tr -d ' ')" = 1 ]] ||
+				fail "$function focused argv must include owner exactly once"
+			grep -Fq -- '-timeout 55s' <<<"$focused_line" ||
+				fail "$function focused argv omitted internal Go deadline"
+			! grep -Fq authoritative_unselected_test.go <<<"$focused_line" ||
+				fail "$function focused argv included an unselected test file"
+		done <<<"$focused_lines"
+	done <<'EOF'
+authoritative-assignment	pkg/dispatcher/assignment.go	assignmentInsertFailureAllowsReopen	^TestAssignmentAuthoritativeSurvivorMutation	pkg/dispatcher/assignment_authoritative_survivor_mutation_test.go
+authoritative-ops	pkg/dispatcher/ops_runs.go	applyOpsResolve	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
+authoritative-ops-conflict	pkg/dispatcher/ops_runs.go	reviewContextForOpsRun	^(TestOpsAuthoritativeSurvivorMutation|TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex$)	-
+authoritative-health	pkg/dispatcher/health.go	evaluateFactoryHealth	^TestHealthAuthoritativeSurvivorMutation	pkg/dispatcher/health_authoritative_survivor_mutation_test.go
+authoritative-health-conflict	pkg/dispatcher/health.go	applyHealth	^(TestHealthAuthoritativeSurvivorMutation|TestApplyHealthReturnsAndReleasesDispatcherMutex$)	-
+authoritative-review	pkg/dispatcher/review_checkpoint_store.go	AdvanceIntegrationStep	^TestReviewCheckpointAuthoritativeSurvivorMutation	pkg/dispatcher/review_checkpoint_authoritative_survivor_mutation_test.go
+authoritative-review-block	pkg/dispatcher/review_checkpoint_store.go	BlockIntegration	^(TestReviewCheckpointAuthoritativeSurvivorMutation|TestReviewCheckpointMutationIntegrationDurability$)	-
+authoritative-review-legacy	pkg/dispatcher/review_checkpoint_store.go	legacyUnlinkedCheckpointIDs	^(TestReviewCheckpointAuthoritativeSurvivorMutation|TestReviewCheckpointMutationLegacyBinding$)	-
+EOF
+}
+
+TestAuthoritativeMutationCoverage() {
+	local coverage coverage_root function functions group listed pattern report
+	coverage_root=$(mktemp -d)
+	while IFS=$'\t' read -r group pattern; do
+		coverage="$coverage_root/$group.out"
+		listed=$(go test -list "$pattern" ./pkg/dispatcher)
+		grep -Eq "$pattern" <<<"$listed" || fail "$group authoritative owner matched no real tests"
+		timeout 60 go test -vet=off -count=1 -timeout 55s -coverprofile="$coverage" \
+			-run "$pattern" ./pkg/dispatcher >/dev/null
+		report=$(go tool cover -func="$coverage")
+		case "$group" in
+		assignment)
+			functions=$'assignmentInsertFailureAllowsReopen\ncheckpointAssignmentAdmissionAllowed'
+			;;
+		ops)
+			functions=$'CompleteOpsRun\nCreateOpsRun\napplyOpsResolve\ncompleteOpsRunFromStatus\ncreateOpsRun\nfindBlockingOpsRun\nisSQLiteUniqueConstraint\nloadOpsRunByID\nreplaceOpsRun\nreviewContextForOpsRun\nreviewContextFromAnyWorkerLocked\nreviewContextFromWorkerLocked\nrouteOpsRun\nrouteReviewOpsRun\nsupersedeAndRerouteOpsRun\nsupersedeOpsRunForRetry\nterminalOpsRunResult\nwatchReroutedOpsRunResult'
+			;;
+		health)
+			functions=$'applyHealth\nevaluateFactoryHealth\nrecordAssignmentObservation'
+			;;
+		review)
+			functions=$'AdvanceIntegrationStep\nBlockIntegration\nCompleteIntegration\nCreateOrReuse\nObserveIntegration\nPromoteManualIntegration\ncreateOrReuseReviewCheckpoint\ncreateOrReuseReviewCheckpointAttempt\nlegacyUnlinkedCheckpointIDs\nrequireOneCheckpointRow\nvalidateOpsRunCheckpointIdentity'
+			;;
+		esac
+		while IFS= read -r function; do
+			awk -v target="$function" '
+				$2 == target || $2 ~ ("[.]" target "$") {
+					value = $3
+					gsub(/%/, "", value)
+					if (value + 0 > 0) covered = 1
+				}
+				END { exit !covered }
+			' <<<"$report" || fail "$group authoritative owner has zero $function production coverage"
+		done <<<"$functions"
+	done <<'EOF'
+assignment	^TestAssignmentAuthoritativeSurvivorMutation
+ops	^(TestOpsAuthoritativeSurvivorMutation|TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex$)
+health	^(TestHealthAuthoritativeSurvivorMutation|TestApplyHealthReturnsAndReleasesDispatcherMutex$)
+review	^(TestReviewCheckpointAuthoritativeSurvivorMutation|TestReviewCheckpointMutationIntegrationDurability$|TestReviewCheckpointMutationLegacyBinding$)
+EOF
+}
+
 touched_function_pattern_for() {
 	local base="$1"
 	local head="$2"
@@ -290,6 +476,22 @@ EOF
 
 TestMutationOwnerMappingsCoexist() {
 	local got
+	got=$(authoritative_pattern_for \
+		pkg/dispatcher/assignment.go '^(assignmentInsertFailureAllowsReopen)$')
+	[[ "$got" == '^TestAssignmentAuthoritativeSurvivorMutation' ]] ||
+		fail "coexisting authoritative assignment resolver selected $got"
+	got=$(authoritative_pattern_for pkg/dispatcher/ops_runs.go '^(reviewContextForOpsRun)$')
+	[[ "$got" == '^(TestOpsAuthoritativeSurvivorMutation|TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex$)' ]] ||
+		fail "coexisting authoritative ops/bounded resolver selected $got"
+	got=$(authoritative_pattern_for pkg/dispatcher/health.go '^(applyHealth)$')
+	[[ "$got" == '^(TestHealthAuthoritativeSurvivorMutation|TestApplyHealthReturnsAndReleasesDispatcherMutex$)' ]] ||
+		fail "coexisting authoritative health/bounded resolver selected $got"
+	got=$(authoritative_pattern_for pkg/dispatcher/review_checkpoint_store.go '^(BlockIntegration)$')
+	[[ "$got" == '^(TestReviewCheckpointAuthoritativeSurvivorMutation|TestReviewCheckpointMutationIntegrationDurability$)' ]] ||
+		fail "coexisting authoritative checkpoint/integration resolver selected $got"
+	got=$(authoritative_pattern_for pkg/dispatcher/review_checkpoint_store.go '^(legacyUnlinkedCheckpointIDs)$')
+	[[ "$got" == '^(TestReviewCheckpointAuthoritativeSurvivorMutation|TestReviewCheckpointMutationLegacyBinding$)' ]] ||
+		fail "coexisting authoritative checkpoint/legacy resolver selected $got"
 	got=$(assignment_admission_pattern_for \
 		pkg/dispatcher/assignment_admission.go '^(beginAssignmentAdmission)$')
 	[[ "$got" == '^TestBufferAssignmentAdmissionBeginOutcomes$' ]] ||
@@ -305,6 +507,14 @@ TestMutationOwnerMappingsCoexist() {
 		pkg/dispatcher/review_checkpoint_store.go '^(LoadOwningForBead)$')
 	[[ "$got" == '^TestReviewCheckpointMutationOwnershipLoads$' ]] ||
 		fail "coexisting review checkpoint resolver selected $got"
+	got=$(review_checkpoint_pattern_for \
+		pkg/dispatcher/review_checkpoint_store.go '^(BlockIntegration)$')
+	[[ "$got" == '^TestReviewCheckpointMutationIntegrationDurability$' ]] ||
+		fail "coexisting checkpoint durability resolver selected $got"
+	got=$(review_checkpoint_pattern_for \
+		pkg/dispatcher/review_checkpoint_store.go '^(legacyUnlinkedCheckpointIDs)$')
+	[[ "$got" == '^TestReviewCheckpointMutationLegacyBinding$' ]] ||
+		fail "coexisting checkpoint legacy resolver selected $got"
 	got=$(escalation_survivor_pattern_for \
 		pkg/dispatcher/escalation.go '^(escalateWithOneShot)$')
 	[[ "$got" == '^TestEscalationSurvivorMutation' ]] ||
@@ -727,6 +937,62 @@ new_targeted_fixture() {
 		function_name=commit
 		test_names=(TestBufferAssignmentAdmissionCommitOutcomes)
 		;;
+	authoritative-assignment)
+		package_name=dispatcher
+		source_file=pkg/dispatcher/assignment.go
+		test_file=pkg/dispatcher/assignment_authoritative_survivor_mutation_test.go
+		function_name=assignmentInsertFailureAllowsReopen
+		test_names=(TestAssignmentAuthoritativeSurvivorMutationInsertFailureDecision)
+		;;
+	authoritative-ops)
+		package_name=dispatcher
+		source_file=pkg/dispatcher/ops_runs.go
+		test_file=pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
+		function_name=applyOpsResolve
+		test_names=(TestOpsAuthoritativeSurvivorMutationResolveContracts)
+		;;
+	authoritative-ops-conflict)
+		package_name=dispatcher
+		source_file=pkg/dispatcher/ops_runs.go
+		test_file=pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
+		function_name=reviewContextForOpsRun
+		test_names=(TestOpsAuthoritativeSurvivorMutationReviewContexts)
+		;;
+	authoritative-health)
+		package_name=dispatcher
+		source_file=pkg/dispatcher/health.go
+		test_file=pkg/dispatcher/health_authoritative_survivor_mutation_test.go
+		function_name=evaluateFactoryHealth
+		test_names=(TestHealthAuthoritativeSurvivorMutationApplyContracts)
+		;;
+	authoritative-health-conflict)
+		package_name=dispatcher
+		source_file=pkg/dispatcher/health.go
+		test_file=pkg/dispatcher/health_authoritative_survivor_mutation_test.go
+		function_name=applyHealth
+		test_names=(TestHealthAuthoritativeSurvivorMutationApplyContracts)
+		;;
+	authoritative-review)
+		package_name=dispatcher
+		source_file=pkg/dispatcher/review_checkpoint_store.go
+		test_file=pkg/dispatcher/review_checkpoint_authoritative_survivor_mutation_test.go
+		function_name=AdvanceIntegrationStep
+		test_names=(TestReviewCheckpointAuthoritativeSurvivorMutationTransitionFailureContracts)
+		;;
+	authoritative-review-block)
+		package_name=dispatcher
+		source_file=pkg/dispatcher/review_checkpoint_store.go
+		test_file=pkg/dispatcher/review_checkpoint_authoritative_survivor_mutation_test.go
+		function_name=BlockIntegration
+		test_names=(TestReviewCheckpointAuthoritativeSurvivorMutationTransitionFailureContracts)
+		;;
+	authoritative-review-legacy)
+		package_name=dispatcher
+		source_file=pkg/dispatcher/review_checkpoint_store.go
+		test_file=pkg/dispatcher/review_checkpoint_authoritative_survivor_mutation_test.go
+		function_name=legacyUnlinkedCheckpointIDs
+		test_names=(TestReviewCheckpointAuthoritativeSurvivorMutationIdentityValidation)
+		;;
 	review-integration-recovery)
 		package_name=dispatcher
 		source_file=pkg/dispatcher/review_integration_recovery.go
@@ -804,6 +1070,28 @@ new_targeted_fixture() {
 		printf 'package dispatcher\n\nfunc TestEscalationUnselected() {}\n' \
 			>"$fixture/pkg/dispatcher/escalation_unselected_test.go"
 		;;
+	authoritative-*)
+		printf 'package dispatcher\n\nfunc TestAuthoritativeUnselected() {}\n' \
+			>"$fixture/pkg/dispatcher/authoritative_unselected_test.go"
+		case "$target" in
+		authoritative-ops-conflict)
+			printf 'package dispatcher\n\nfunc TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex() {}\n' \
+				>"$fixture/pkg/dispatcher/bounded_mutation_test.go"
+			;;
+		authoritative-health-conflict)
+			printf 'package dispatcher\n\nfunc TestApplyHealthReturnsAndReleasesDispatcherMutex() {}\n' \
+				>"$fixture/pkg/dispatcher/bounded_mutation_test.go"
+			;;
+		authoritative-review-block)
+			printf 'package dispatcher\n\nfunc TestReviewCheckpointMutationIntegrationDurability() {}\n' \
+				>"$fixture/pkg/dispatcher/review_checkpoint_store_mutation_test.go"
+			;;
+		authoritative-review-legacy)
+			printf 'package dispatcher\n\nfunc TestReviewCheckpointMutationLegacyBinding() {}\n' \
+				>"$fixture/pkg/dispatcher/review_checkpoint_store_mutation_test.go"
+			;;
+		esac
+		;;
 	esac
 	git -C "$fixture" add go.mod "$source_file" "$test_file"
 	case "$target" in
@@ -818,6 +1106,17 @@ new_targeted_fixture() {
 		;;
 	escalation-survivor)
 		git -C "$fixture" add pkg/dispatcher/escalation_unselected_test.go
+		;;
+	authoritative-*)
+		git -C "$fixture" add pkg/dispatcher/authoritative_unselected_test.go
+		case "$target" in
+		authoritative-ops-conflict | authoritative-health-conflict)
+			git -C "$fixture" add pkg/dispatcher/bounded_mutation_test.go
+			;;
+		authoritative-review-block | authoritative-review-legacy)
+			git -C "$fixture" add pkg/dispatcher/review_checkpoint_store_mutation_test.go
+			;;
+		esac
 		;;
 	esac
 	git -C "$fixture" commit -qm base
@@ -914,6 +1213,75 @@ new_escalation_touched_fixture() {
 	printf '%s\n%s\n' "$base" "$head"
 }
 
+write_authoritative_touched_file() {
+	local path="$1"
+	local receiver="$2"
+	local value="$3"
+	shift 3
+	{
+		printf 'package dispatcher\n\ntype %s struct{}\n' "$receiver"
+		local function
+		for function in "$@"; do
+			printf 'func (r *%s) %s() bool { return %s }\n' "$receiver" "$function" "$value"
+		done
+	} >"$path"
+}
+
+new_authoritative_touched_fixture() {
+	local fixture="$1"
+	local base head
+	local -a assignment_functions=(assignmentInsertFailureAllowsReopen checkpointAssignmentAdmissionAllowed)
+	local -a ops_functions=(
+		CompleteOpsRun CreateOpsRun applyOpsResolve completeOpsRunFromStatus createOpsRun
+		findBlockingOpsRun isSQLiteUniqueConstraint loadOpsRunByID replaceOpsRun reviewContextForOpsRun
+		reviewContextFromAnyWorkerLocked reviewContextFromWorkerLocked routeOpsRun routeReviewOpsRun
+		supersedeAndRerouteOpsRun supersedeOpsRunForRetry terminalOpsRunResult watchReroutedOpsRunResult
+	)
+	local -a health_functions=(applyHealth evaluateFactoryHealth recordAssignmentObservation)
+	local -a review_functions=(
+		AdvanceIntegrationStep BlockIntegration CompleteIntegration CreateOrReuse ObserveIntegration
+		PromoteManualIntegration createOrReuseReviewCheckpoint createOrReuseReviewCheckpointAttempt
+		legacyUnlinkedCheckpointIDs requireOneCheckpointRow validateOpsRunCheckpointIdentity
+	)
+	mkdir -p "$fixture/pkg/dispatcher"
+	git -C "$fixture" init -q
+	git -C "$fixture" config user.email mutation@example.test
+	git -C "$fixture" config user.name mutation-test
+	write_authoritative_touched_file "$fixture/pkg/dispatcher/assignment.go" AssignmentFixture false "${assignment_functions[@]}"
+	write_authoritative_touched_file "$fixture/pkg/dispatcher/ops_runs.go" OpsFixture false "${ops_functions[@]}"
+	write_authoritative_touched_file "$fixture/pkg/dispatcher/health.go" HealthFixture false "${health_functions[@]}"
+	write_authoritative_touched_file "$fixture/pkg/dispatcher/review_checkpoint_store.go" ReviewFixture false "${review_functions[@]}"
+	git -C "$fixture" add pkg/dispatcher
+	git -C "$fixture" commit -qm base
+	base=$(git -C "$fixture" rev-parse HEAD)
+	write_authoritative_touched_file "$fixture/pkg/dispatcher/assignment.go" AssignmentFixture true "${assignment_functions[@]}"
+	write_authoritative_touched_file "$fixture/pkg/dispatcher/ops_runs.go" OpsFixture true "${ops_functions[@]}"
+	write_authoritative_touched_file "$fixture/pkg/dispatcher/health.go" HealthFixture true "${health_functions[@]}"
+	write_authoritative_touched_file "$fixture/pkg/dispatcher/review_checkpoint_store.go" ReviewFixture true "${review_functions[@]}"
+	git -C "$fixture" add pkg/dispatcher
+	git -C "$fixture" commit -qm head
+	head=$(git -C "$fixture" rev-parse HEAD)
+	printf '%s\n%s\n' "$base" "$head"
+}
+
+TestAuthoritativeTouchedFunctionRouting() {
+	local actual base expected file head
+	local -a refs
+	mapfile -t refs < <(new_authoritative_touched_fixture "$1")
+	base=${refs[0]}
+	head=${refs[1]}
+	while IFS=$'\t' read -r file expected; do
+		actual=$(cd "$1" && touched_function_pattern_for "$base" "$head" "$file")
+		[[ "$actual" == "$expected" ]] ||
+			fail "$file authoritative touched functions = $actual, want $expected"
+	done <<'EOF'
+pkg/dispatcher/assignment.go	^(assignmentInsertFailureAllowsReopen|checkpointAssignmentAdmissionAllowed)$
+pkg/dispatcher/ops_runs.go	^(CompleteOpsRun|CreateOpsRun|applyOpsResolve|completeOpsRunFromStatus|createOpsRun|findBlockingOpsRun|isSQLiteUniqueConstraint|loadOpsRunByID|replaceOpsRun|reviewContextForOpsRun|reviewContextFromAnyWorkerLocked|reviewContextFromWorkerLocked|routeOpsRun|routeReviewOpsRun|supersedeAndRerouteOpsRun|supersedeOpsRunForRetry|terminalOpsRunResult|watchReroutedOpsRunResult)$
+pkg/dispatcher/health.go	^(applyHealth|evaluateFactoryHealth|recordAssignmentObservation)$
+pkg/dispatcher/review_checkpoint_store.go	^(AdvanceIntegrationStep|BlockIntegration|CompleteIntegration|CreateOrReuse|ObserveIntegration|PromoteManualIntegration|createOrReuseReviewCheckpoint|createOrReuseReviewCheckpointAttempt|legacyUnlinkedCheckpointIDs|requireOneCheckpointRow|validateOpsRunCheckpointIdentity)$
+EOF
+}
+
 new_function_history_fixture() {
 	local fixture="$1"
 	mkdir -p "$fixture/bin" "$fixture/pkg/dispatcher"
@@ -996,6 +1364,10 @@ if [[ "$1" = test ]]; then
 		*TestBufferAssignmentAdmissionCommitOutcomes*) printf 'TestBufferAssignmentAdmissionCommitOutcomes\n' ;;
 		*TestReviewIntegrationRecoveryMutationFinalize*) printf 'TestReviewIntegrationRecoveryMutationFinalize\n' ;;
 		*TestEscalationSurvivorMutation*) printf 'TestEscalationSurvivorMutationRouting\n' ;;
+		*TestAssignmentAuthoritativeSurvivorMutation*) printf 'TestAssignmentAuthoritativeSurvivorMutationInsertFailureDecision\n' ;;
+		*TestOpsAuthoritativeSurvivorMutation*) printf 'TestOpsAuthoritativeSurvivorMutationResolveContracts\nTestOpsAuthoritativeSurvivorMutationReviewContexts\nTestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex\n' ;;
+		*TestHealthAuthoritativeSurvivorMutation*) printf 'TestHealthAuthoritativeSurvivorMutationApplyContracts\nTestApplyHealthReturnsAndReleasesDispatcherMutex\n' ;;
+		*TestReviewCheckpointAuthoritativeSurvivorMutation*) printf 'TestReviewCheckpointAuthoritativeSurvivorMutationTransitionFailureContracts\nTestReviewCheckpointAuthoritativeSurvivorMutationIdentityValidation\nTestReviewCheckpointMutationIntegrationDurability\nTestReviewCheckpointMutationLegacyBinding\n' ;;
 		*TestSpawnEscalationOneShotReturnsAfterReadingWorktree*) printf 'TestSpawnEscalationOneShotReturnsAfterReadingWorktree\n' ;;
 		*TestApplyHealthReturnsAndReleasesDispatcherMutex*) printf 'TestApplyHealthReturnsAndReleasesDispatcherMutex\n' ;;
 		*TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex*) printf 'TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex\n' ;;
@@ -1022,6 +1394,8 @@ if [[ "$1" = tool && "$2" = cover ]]; then
 	printf 'pkg/dispatcher/epic_branch_admission.go:1: withEpicBranchAdmission 100.0%%\n'
 	printf 'pkg/dispatcher/assignment.go:1: assignBeadWithClaim 100.0%%\n'
 	printf 'pkg/dispatcher/assignment.go:2: releaseAssignmentReservation 100.0%%\n'
+	printf 'pkg/dispatcher/assignment.go:7: assignmentInsertFailureAllowsReopen 100.0%%\n'
+	printf 'pkg/dispatcher/assignment.go:8: checkpointAssignmentAdmissionAllowed 100.0%%\n'
 	printf 'pkg/dispatcher/assignment.go:3: prepareAssignmentWorktree 100.0%%\n'
 	printf 'pkg/dispatcher/assignment.go:4: validateExistingWorktreeForReuse 100.0%%\n'
 	printf 'pkg/dispatcher/assignment.go:5: releaseAssignmentReservationLocked 100.0%%\n'
@@ -1042,8 +1416,14 @@ if [[ "$1" = tool && "$2" = cover ]]; then
 	printf 'pkg/dispatcher/escalation.go:10: routeNewRoutableEscalation 100.0%%\n'
 	printf 'pkg/dispatcher/escalation.go:1: spawnEscalationOneShot 100.0%%\n'
 	printf 'pkg/dispatcher/health.go:1: applyHealth 100.0%%\n'
+	printf 'pkg/dispatcher/health.go:2: evaluateFactoryHealth 100.0%%\n'
+	printf 'pkg/dispatcher/health.go:3: recordAssignmentObservation 100.0%%\n'
 	printf 'pkg/dispatcher/ops_runs.go:1: reviewContextForOpsRun 100.0%%\n'
+	printf 'pkg/dispatcher/ops_runs.go:2: applyOpsResolve 100.0%%\n'
 	printf 'pkg/dispatcher/review_checkpoint_store.go:1: LoadOwningForBead 100.0%%\n'
+	printf 'pkg/dispatcher/review_checkpoint_store.go:2: AdvanceIntegrationStep 100.0%%\n'
+	printf 'pkg/dispatcher/review_checkpoint_store.go:3: BlockIntegration 100.0%%\n'
+	printf 'pkg/dispatcher/review_checkpoint_store.go:4: legacyUnlinkedCheckpointIDs 100.0%%\n'
 	printf 'pkg/dispatcher/function_history.go:1: First 100.0%%\n'
 	printf 'pkg/dispatcher/function_history.go:2: Second 100.0%%\n'
 	printf 'pkg/example/value.go:1: Value 100.0%%\n'
@@ -1598,21 +1978,21 @@ EOF
 		"$tmp/targeted-escalation-one-shot/mutation-args.txt" ||
 		fail 'spawnEscalationOneShot mutations must preserve their bounded standalone file'
 
-	apply_health_pattern='^TestApplyHealthReturnsAndReleasesDispatcherMutex$'
+	apply_health_pattern='^(TestHealthAuthoritativeSurvivorMutation|TestApplyHealthReturnsAndReleasesDispatcherMutex$)'
 	evidence=$(run_targeted_fixture "$tmp/targeted-health-apply" targeted pass 0 false health-apply)
 	grep -Fq -- "-list $apply_health_pattern ./pkg/dispatcher" "$tmp/targeted-health-apply/mutation-list.txt" ||
-		fail 'applyHealth mutations must preflight the bounded mutex-release contract'
+		fail 'applyHealth mutations must preflight authoritative and bounded mutex-release contracts'
 	jq -e --arg pattern "$apply_health_pattern" \
 		'.shards[0].match == "^(applyHealth)$" and .shards[0].test_pattern == $pattern' \
-		"$evidence" >/dev/null || fail 'applyHealth mutations must select only the bounded mutex-release contract'
+		"$evidence" >/dev/null || fail 'applyHealth mutations must preserve authoritative and bounded mutex-release contracts'
 
-	review_context_pattern='^TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex$'
+	review_context_pattern='^(TestOpsAuthoritativeSurvivorMutation|TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex$)'
 	evidence=$(run_targeted_fixture "$tmp/targeted-ops-review-context" targeted pass 0 false ops-review-context)
 	grep -Fq -- "-list $review_context_pattern ./pkg/dispatcher" "$tmp/targeted-ops-review-context/mutation-list.txt" ||
-		fail 'reviewContextForOpsRun mutations must preflight the bounded mutex-release contract'
+		fail 'reviewContextForOpsRun mutations must preflight authoritative and bounded mutex-release contracts'
 	jq -e --arg pattern "$review_context_pattern" \
 		'.shards[0].match == "^(reviewContextForOpsRun)$" and .shards[0].test_pattern == $pattern' \
-		"$evidence" >/dev/null || fail 'reviewContextForOpsRun mutations must select only the bounded mutex-release contract'
+		"$evidence" >/dev/null || fail 'reviewContextForOpsRun mutations must preserve authoritative and bounded mutex-release contracts'
 
 	evidence=$(run_targeted_fixture "$tmp/targeted-history-uncovered" targeted-uncovered infrastructure_failure 2 false history)
 	jq -e '.shards[0].reason == "targeted mutation tests do not cover every touched function"' \
@@ -2526,6 +2906,10 @@ TestStrictIncrementalMutation() {
 	TestAssignmentAdmissionMutationMapping
 	TestAssignmentAdmissionTouchedFunctionRouting "$tmp/assignment-admission-touched"
 	TestEscalationSurvivorMutationMapping
+	TestAuthoritativeMutationMapping
+	TestAuthoritativeMutationTargetedScope
+	TestAuthoritativeMutationCoverage
+	TestAuthoritativeTouchedFunctionRouting "$tmp/authoritative-touched"
 	TestEscalationTouchedFunctionRouting "$tmp/escalation-touched"
 	TestMutationOwnerMappingsCoexist
 
@@ -2583,6 +2967,22 @@ main() {
 		;;
 	TestEscalationSurvivorMutationMapping)
 		TestEscalationSurvivorMutationMapping
+		;;
+	TestAuthoritativeMutationMapping)
+		TestAuthoritativeMutationMapping
+		;;
+	TestAuthoritativeMutationTargetedScope)
+		tmp=$(mktemp -d)
+		trap 'rm -rf "$tmp"' RETURN
+		TestAuthoritativeMutationTargetedScope
+		;;
+	TestAuthoritativeMutationCoverage)
+		TestAuthoritativeMutationCoverage
+		;;
+	TestAuthoritativeTouchedFunctionRouting)
+		tmp=$(mktemp -d)
+		trap 'rm -rf "$tmp"' RETURN
+		TestAuthoritativeTouchedFunctionRouting "$tmp/authoritative-touched"
 		;;
 	TestEscalationSurvivorMutationCoverage)
 		TestEscalationSurvivorMutationCoverage
