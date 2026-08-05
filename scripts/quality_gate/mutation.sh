@@ -2,6 +2,8 @@
 set -euo pipefail
 
 readonly policy_score=0.75
+mutation_script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+readonly mutation_script_dir
 mutation_shard_root=""
 
 cleanup_mutation_shards() {
@@ -115,6 +117,22 @@ write_shard_no_mutants() {
 		>"$result"
 }
 
+write_shard_no_mutation_sites() {
+	local result="$1"
+	local index="$2"
+	local file="$3"
+	local match="$4"
+	local test_pattern="$5"
+
+	jq -n \
+		--argjson index "$index" \
+		--arg file "$file" \
+		--arg match "$match" \
+		--arg test_pattern "$test_pattern" \
+		'{index: $index, file: $file, match: $match, test_pattern: $test_pattern, conclusion: "no_mutation_sites", exit_code: 0, reason: "validated function target has no mutation sites", score: null, passed: 0, failed: 0, duplicated: 0, skipped: 0, total: 0}' \
+		>"$result"
+}
+
 write_shard_result() {
 	local result="$1"
 	local index="$2"
@@ -136,6 +154,11 @@ write_shard_result() {
 	fi
 	if grep -q '^ORO_MUTATION_EXEC_TIMEOUT$' <<<"$output"; then
 		write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" 124 'targeted mutation test deadline exceeded'
+		return
+	fi
+	if grep -Eq '^(ORO_MUTATION_EXEC_FAILURE:[0-9]+|UNKOWN exit code for )' <<<"$output"; then
+		write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" 2 \
+			'mutation test execution returned an unexpected status'
 		return
 	fi
 
@@ -174,7 +197,7 @@ write_shard_result() {
 		return
 	fi
 	if ((total == 0)); then
-		write_shard_no_mutants "$result" "$index" "$file" "$match" "$test_pattern"
+		write_shard_no_mutation_sites "$result" "$index" "$file" "$match" "$test_pattern"
 		return
 	fi
 
@@ -442,6 +465,20 @@ targeted_test_pattern() {
 		printf '^(TestHookPathsWouldLeak|TestHookPathsWouldLeak_NonTmpdirSandboxRoot|TestHookPathsWouldLeak_NonstandardGoTempRoot|TestInstallCodexHookConfigRefusesLeakyHooks)$'
 	elif [[ "$file" == pkg/dispatcher/scheduling.go && "$match" == '^(advanceAssignedGeneralIdle)$' ]]; then
 		printf '^TestAdvanceAssignedGeneralIdleConsumesReportedClaimAfterAsyncRelease$'
+	elif [[ "$file" == pkg/dispatcher/scheduling.go && "$match" == '^(launchAssignmentWithResult)$' ]]; then
+		printf '^TestLaunchAssignmentWithResultReportsDeclinedClaimWithinBound$'
+	elif [[ "$file" == pkg/dispatcher/sqlite_busy_retry.go && "$match" == '^(retrySQLiteBusyOperation)$' ]]; then
+		printf '^TestRetrySQLiteBusyOperation$'
+	elif [[ "$file" == pkg/dispatcher/assignment.go && "$match" == '^(assignBeadWithClaim)$' ]]; then
+		printf '^TestAssignBeadWithClaimReportsUnclaimedValidationFailure$'
+	elif [[ "$file" == pkg/dispatcher/assignment.go && "$match" == '^(releaseAssignmentReservation)$' ]]; then
+		printf '^TestReleaseAssignmentReservationResetsStateAndUnlocks$'
+	elif [[ "$file" == pkg/dispatcher/escalation.go && "$match" == '^(spawnEscalationOneShot)$' ]]; then
+		printf '^TestSpawnEscalationOneShotReturnsAfterReadingWorktree$'
+	elif [[ "$file" == pkg/dispatcher/health.go && "$match" == '^(applyHealth)$' ]]; then
+		printf '^TestApplyHealthReturnsAndReleasesDispatcherMutex$'
+	elif [[ "$file" == pkg/dispatcher/ops_runs.go && "$match" == '^(reviewContextForOpsRun)$' ]]; then
+		printf '^TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex$'
 	elif [[ "$file" == pkg/dispatcher/*.go ]]; then
 		local function pattern supplements
 		function=${match#^(}
@@ -467,6 +504,18 @@ run_mutation_shard() {
 	local output_file="$shard_root/logs/$index.log"
 	local result="$result_dir/$index.json"
 	local mutation_exit=0
+	local mutation_test_file=""
+	case "$test_pattern" in
+	'^TestAssignBeadWithClaimReportsUnclaimedValidationFailure$' | '^TestReleaseAssignmentReservationResetsStateAndUnlocks$')
+		mutation_test_file=pkg/dispatcher/assignment_mutation_test.go
+		;;
+	'^TestLaunchAssignmentWithResultReportsDeclinedClaimWithinBound$')
+		mutation_test_file=pkg/dispatcher/scheduling_mutation_test.go
+		;;
+	'^TestRetrySQLiteBusyOperation$')
+		mutation_test_file=pkg/dispatcher/sqlite_busy_retry_test.go
+		;;
+	esac
 
 	if [[ -z "$match" ]]; then
 		write_shard_no_mutants "$result" "$index" "$file" "$match" "$test_pattern"
@@ -526,10 +575,24 @@ run_mutation_shard() {
 	fi
 	(
 		cd "$checkout"
-		GOCACHE="$shard_root/caches/$cache_slot" \
-			GOTMPDIR="$shard_root/tmp/$index" \
-			MUTATION_TEST_PATTERN="$test_pattern" \
-			timeout "$file_timeout" go tool go-mutesting --exec-timeout="$exec_timeout" "${mutation_exec[@]}" "--match=$match" "$file"
+		if [[ "$file" == pkg/dispatcher/assignment.go && "$match" == '^(assignBeadWithClaim)$' ]]; then
+			GOCACHE="$shard_root/caches/$cache_slot" \
+				GOTMPDIR="$shard_root/tmp/$index" \
+				MUTATION_SOURCE_FILE="$file" \
+				MUTATION_FUNCTION_MATCH="$match" \
+				MUTATION_TEST_PATTERN="$test_pattern" \
+				MUTATION_TEST_FILE="$mutation_test_file" \
+				MUTATION_EXEC_TIMEOUT="$exec_timeout" \
+				MUTATION_PARALLEL_WORKERS="${MUTATION_PARALLEL_WORKERS:-2}" \
+				MUTATION_EXEC_SCRIPT="$mutation_script_dir/mutation_exec.sh" \
+				timeout "$file_timeout" bash "$mutation_script_dir/mutation_parallel.sh"
+		else
+			GOCACHE="$shard_root/caches/$cache_slot" \
+				GOTMPDIR="$shard_root/tmp/$index" \
+				MUTATION_TEST_PATTERN="$test_pattern" \
+				MUTATION_TEST_FILE="$mutation_test_file" \
+				timeout "$file_timeout" go tool go-mutesting --exec-timeout="$exec_timeout" "${mutation_exec[@]}" "--match=$match" "$file"
+		fi
 	) >"$output_file" 2>&1 || mutation_exit=$?
 	write_shard_result "$result" "$index" "$file" "$match" "$test_pattern" "$mutation_exit" "$output_file"
 }
@@ -653,6 +716,15 @@ main() {
 		file=${shard_files[$index]}
 		printf -v key '%06d' "$index"
 		cache_slot=$((index % worker_count))
+		if [[ "$file" == pkg/dispatcher/assignment.go && "${match_patterns[$index]}" == '^(assignBeadWithClaim)$' ]]; then
+			for pid in "${pids[@]}"; do
+				wait "$pid" || true
+			done
+			pids=()
+			MUTATION_PARALLEL_WORKERS=2 \
+				run_mutation_shard "$key" "$file" "${match_patterns[$index]}" "${test_patterns[$index]}" "$cache_slot" "$head" "$shard_root" "$result_dir" "$file_timeout" "$exec_timeout"
+			continue
+		fi
 		run_mutation_shard "$key" "$file" "${match_patterns[$index]}" "${test_patterns[$index]}" "$cache_slot" "$head" "$shard_root" "$result_dir" "$file_timeout" "$exec_timeout" &
 		pids+=("$!")
 		if ((${#pids[@]} == worker_count)); then
@@ -681,10 +753,13 @@ main() {
 	local shards
 	shards=$(jq -s 'sort_by(.index) | map(del(.index))' "$result_dir"/*.json)
 	local infrastructure_count
-	infrastructure_count=$(jq '[.[] | select(.conclusion != "completed")] | length' <<<"$shards")
+	infrastructure_count=$(jq \
+		'[.[] | select(.conclusion != "completed" and .conclusion != "no_mutation_sites")] | length' \
+		<<<"$shards")
 	if ((infrastructure_count > 0)); then
 		local infrastructure_exit
-		infrastructure_exit=$(jq '[.[] | select(.conclusion != "completed") | .exit_code] |
+		infrastructure_exit=$(jq \
+			'[.[] | select(.conclusion != "completed" and .conclusion != "no_mutation_sites") | .exit_code] |
 			if index(124) != null then 124 elif length > 0 then .[0] else 2 end' <<<"$shards")
 		write_sharded_evidence "$evidence" "$base" "$head" infrastructure_failure "$infrastructure_exit" null 0 "$shards" "${changed_files[@]}"
 		printf 'infrastructure failure: %d of %d mutation shards did not complete\n' \
@@ -699,9 +774,9 @@ main() {
 	skipped=$(jq '[.[].skipped] | add // 0' <<<"$shards")
 	total=$((passed + failed + skipped))
 	if ((total == 0)); then
-		write_sharded_evidence "$evidence" "$base" "$head" infrastructure_failure 0 null 0 "$shards" "${changed_files[@]}"
-		printf 'infrastructure failure: mutation shards generated zero aggregate mutants\n' >&2
-		return 2
+		write_sharded_evidence "$evidence" "$base" "$head" pass 0 null 0 "$shards" "${changed_files[@]}"
+		printf 'pass: validated changed functions contain no mutation sites\n'
+		return
 	fi
 	score=$(awk "BEGIN { printf \"%.6f\", $passed / $total }")
 	printf 'aggregate mutation score is %s (%d passed, %d failed, %d duplicated, %d skipped, total is %d)\n' \

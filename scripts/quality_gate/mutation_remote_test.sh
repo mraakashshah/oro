@@ -55,6 +55,7 @@ new_targeted_fixture() {
 	git -C "$fixture" init -q
 	git -C "$fixture" config user.email mutation@example.test
 	git -C "$fixture" config user.name mutation-test
+	printf 'module mutation.test/targeted\n\ngo 1.26\n' >"$fixture/go.mod"
 	local base_parameters head_parameters head_test_name package_name source_file source_prefix test_file function_name test_name
 	local -a test_names
 	base_parameters=""
@@ -98,6 +99,22 @@ new_targeted_fixture() {
 		source_prefix='func nextGeneralIdleIndex() int { return 0 }\n\n'
 		test_names=(TestAdvanceAssignedGeneralIdleConsumesReportedClaimAfterAsyncRelease)
 		;;
+	scheduling-launch)
+		package_name=dispatcher
+		source_file=pkg/dispatcher/scheduling.go
+		test_file=pkg/dispatcher/scheduling_mutation_test.go
+		function_name=launchAssignmentWithResult
+		test_names=(TestLaunchAssignmentWithResultReportsDeclinedClaimWithinBound)
+		head_test_name=TestTimedOutSetupCannotClobberReplacement
+		;;
+	sqlite-retry)
+		package_name=dispatcher
+		source_file=pkg/dispatcher/sqlite_busy_retry.go
+		test_file=pkg/dispatcher/sqlite_busy_retry_test.go
+		function_name=retrySQLiteBusyOperation
+		test_names=(TestRetrySQLiteBusyOperation)
+		head_test_name=TestTryAssign_ConcentratesWorkersOnTopEpic
+		;;
 	history)
 		package_name=dispatcher
 		source_file=pkg/dispatcher/startup_recovery.go
@@ -105,6 +122,46 @@ new_targeted_fixture() {
 		function_name=startupRecovery
 		test_names=(TestExistingDispatcherBehavior)
 		head_test_name=TestReviewCheckpointStartupOrdering
+		;;
+	assignment-claim)
+		package_name=dispatcher
+		source_file=pkg/dispatcher/assignment.go
+		test_file=pkg/dispatcher/assignment_mutation_test.go
+		function_name=assignBeadWithClaim
+		test_names=(TestAssignBeadWithClaimReportsUnclaimedValidationFailure)
+		head_test_name=TestEpicSchedulerDoesNotRefillAfterClaimedSetupCleansUp
+		;;
+	assignment-release)
+		package_name=dispatcher
+		source_file=pkg/dispatcher/assignment.go
+		test_file=pkg/dispatcher/assignment_mutation_test.go
+		function_name=releaseAssignmentReservation
+		test_names=(TestReleaseAssignmentReservationResetsStateAndUnlocks)
+		head_test_name=TestEpicSchedulerDoesNotRefillAfterClaimedSetupCleansUp
+		;;
+	escalation-one-shot)
+		package_name=dispatcher
+		source_file=pkg/dispatcher/escalation.go
+		test_file=pkg/dispatcher/bounded_mutation_test.go
+		function_name=spawnEscalationOneShot
+		test_names=(TestSpawnEscalationOneShotReturnsAfterReadingWorktree)
+		head_test_name=TestOneShotFailureCreatesOpsRunFailureWithoutManagerFallback
+		;;
+	health-apply)
+		package_name=dispatcher
+		source_file=pkg/dispatcher/health.go
+		test_file=pkg/dispatcher/bounded_mutation_test.go
+		function_name=applyHealth
+		test_names=(TestApplyHealthReturnsAndReleasesDispatcherMutex)
+		head_test_name=TestReadyObservationFailureBlocksAssignmentAndDegradesHealthAndStatus
+		;;
+	ops-review-context)
+		package_name=dispatcher
+		source_file=pkg/dispatcher/ops_runs.go
+		test_file=pkg/dispatcher/bounded_mutation_test.go
+		function_name=reviewContextForOpsRun
+		test_names=(TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex)
+		head_test_name=TestRouteOpsRunRestoresCheckpointLinkedToExactOpsRun
 		;;
 	*) fail "unknown targeted fixture: $target" ;;
 	esac
@@ -120,7 +177,7 @@ new_targeted_fixture() {
 	for test_name in "${test_names[@]}"; do
 		printf '\nfunc %s() {}\n' "$test_name" >>"$fixture/$test_file"
 	done
-	git -C "$fixture" add "$source_file" "$test_file"
+	git -C "$fixture" add go.mod "$source_file" "$test_file"
 	git -C "$fixture" commit -qm base
 	base=$(git -C "$fixture" rev-parse HEAD)
 	printf 'package %s\n\n%bfunc %s(%s) bool { return true }\n' \
@@ -171,6 +228,23 @@ write_fake_go() {
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "$1" = tool && "$2" = go-mutesting && " $* " == *" --no-exec "* ]]; then
+	source_file=${*: -1}
+	generation=$(mktemp -d "${TMPDIR:-/tmp}/fake-mutants.XXXXXX")
+	mkdir -p "$generation/$(dirname "$source_file")"
+	cp "$source_file" "$generation/$source_file.original"
+	sed '0,/return true/s//return false/' "$source_file" >"$generation/$source_file.0"
+	sed '0,/return true/s//return !false/' "$source_file" >"$generation/$source_file.1"
+	printf 'Save mutations into "%s"\n' "$generation"
+	printf 'Save mutation into "%s" with checksum 0\n' "$generation/$source_file.0"
+	printf 'Save mutation into "%s" with checksum 1\n' "$generation/$source_file.1"
+	printf 'PARALLEL_WORKERS=%s\n' "${MUTATION_PARALLEL_WORKERS:-}" >>"${MUTATION_ARGS_TRACE:?}"
+	if [[ -n "${MUTATION_TEST_FILE:-}" ]]; then
+		printf 'MUTATION_TEST_FILE=%s\n' "$MUTATION_TEST_FILE" >>"${MUTATION_ARGS_TRACE:?}"
+	fi
+	exit 0
+fi
+
 if [[ "$1" = test ]]; then
 	printf '%s\n' "$*" >>"${MUTATION_LIST_TRACE:?}"
 	for arg in "$@"; do
@@ -183,12 +257,22 @@ if [[ "$1" = test ]]; then
 		*TestInstallAgentBranchGuard*) printf 'TestInstallAgentBranchGuard\n' ;;
 		*TestHookPathsWouldLeak*) printf 'TestHookPathsWouldLeak\nTestHookPathsWouldLeak_NonTmpdirSandboxRoot\nTestHookPathsWouldLeak_NonstandardGoTempRoot\nTestInstallCodexHookConfigRefusesLeakyHooks\n' ;;
 		*TestAdvanceAssignedGeneralIdleConsumesReportedClaimAfterAsyncRelease*) printf 'TestAdvanceAssignedGeneralIdleConsumesReportedClaimAfterAsyncRelease\n' ;;
+		*TestLaunchAssignmentWithResultReportsDeclinedClaimWithinBound*) printf 'TestLaunchAssignmentWithResultReportsDeclinedClaimWithinBound\n' ;;
+		*TestRetrySQLiteBusyOperation*) printf 'TestRetrySQLiteBusyOperation\n' ;;
 		*TestReviewCheckpointStartupOrdering*) printf 'TestReviewCheckpointStartupOrdering\n' ;;
+		*TestAssignBeadWithClaimReportsUnclaimedValidationFailure*) printf 'TestAssignBeadWithClaimReportsUnclaimedValidationFailure\n' ;;
+		*TestReleaseAssignmentReservationResetsStateAndUnlocks*) printf 'TestReleaseAssignmentReservationResetsStateAndUnlocks\n' ;;
+		*TestSpawnEscalationOneShotReturnsAfterReadingWorktree*) printf 'TestSpawnEscalationOneShotReturnsAfterReadingWorktree\n' ;;
+		*TestApplyHealthReturnsAndReleasesDispatcherMutex*) printf 'TestApplyHealthReturnsAndReleasesDispatcherMutex\n' ;;
+		*TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex*) printf 'TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex\n' ;;
 		*TestFirstOwner*) printf 'TestFirstOwner\n' ;;
 		*TestFirstNewestOwner*) printf 'TestFirstNewestOwner\n' ;;
 		*TestSecondOwner*) printf 'TestSecondOwner\n' ;;
 		*) printf 'TestIsOroDistributedHookRecognizesFastPrePush\n' ;;
 		esac
+	fi
+	if [[ -n "${MUTATE_ORIGINAL:-}" ]]; then
+		exit 1
 	fi
 	exit 0
 fi
@@ -198,6 +282,13 @@ if [[ "$1" = tool && "$2" = cover ]]; then
 		printf 'pkg/dispatcher/startup_recovery.go:1: startupRecovery 100.0%%\n'
 	fi
 	printf 'pkg/dispatcher/scheduling.go:1: advanceAssignedGeneralIdle 100.0%%\n'
+	printf 'pkg/dispatcher/scheduling.go:2: launchAssignmentWithResult 100.0%%\n'
+	printf 'pkg/dispatcher/sqlite_busy_retry.go:1: retrySQLiteBusyOperation 100.0%%\n'
+	printf 'pkg/dispatcher/assignment.go:1: assignBeadWithClaim 100.0%%\n'
+	printf 'pkg/dispatcher/assignment.go:2: releaseAssignmentReservation 100.0%%\n'
+	printf 'pkg/dispatcher/escalation.go:1: spawnEscalationOneShot 100.0%%\n'
+	printf 'pkg/dispatcher/health.go:1: applyHealth 100.0%%\n'
+	printf 'pkg/dispatcher/ops_runs.go:1: reviewContextForOpsRun 100.0%%\n'
 	printf 'pkg/dispatcher/function_history.go:1: First 100.0%%\n'
 	printf 'pkg/dispatcher/function_history.go:2: Second 100.0%%\n'
 	printf 'pkg/example/value.go:1: Value 100.0%%\n'
@@ -239,6 +330,10 @@ zero-clean)
 timeout)
 	printf 'mutation timed out\n' >&2
 	exit 124
+	;;
+unknown-exit)
+	printf 'UNKOWN exit code for mutation test infrastructure failure\n'
+	printf 'The mutation score is 1.000000 (1 passed, 0 failed, 0 duplicated, 0 skipped, total is 1)\n'
 	;;
 malformed)
 	printf 'not a mutation report\n'
@@ -288,6 +383,9 @@ aggregate | aggregate-below | aggregate-zero | shard-timeout)
 	;;
 targeted | targeted-fallback | targeted-list-miss | targeted-timeout | targeted-uncovered)
 	printf '%s\n' "$*" >>"${MUTATION_ARGS_TRACE:?}"
+	if [[ -n "${MUTATION_TEST_FILE:-}" ]]; then
+		printf 'MUTATION_TEST_FILE=%s\n' "$MUTATION_TEST_FILE" >>"${MUTATION_ARGS_TRACE:?}"
+	fi
 	if [[ "$MUTATION_FIXTURE" = targeted-timeout ]]; then
 		printf 'ORO_MUTATION_EXEC_TIMEOUT\n'
 		printf 'UNKOWN exit code for targeted mutation test timeout\n'
@@ -327,7 +425,10 @@ run_function_history_fixture() {
 	)
 	status=$?
 	set -e
-	[[ "$status" = "$expected_exit" ]] || fail "$outcome exit = $status, want $expected_exit"
+	if [[ "$status" != "$expected_exit" ]]; then
+		cat "$fixture/runner.log" >&2
+		fail "$outcome exit = $status, want $expected_exit"
+	fi
 	jq -e --arg status "$expected_status" '.conclusion == $status' "$evidence" >/dev/null ||
 		fail "$outcome did not preserve its expected conclusion"
 	printf '%s\n' "$evidence"
@@ -359,7 +460,10 @@ run_targeted_fixture() {
 	)
 	status=$?
 	set -e
-	[[ "$status" = "$expected_exit" ]] || fail "$outcome exit = $status, want $expected_exit"
+	if [[ "$status" != "$expected_exit" ]]; then
+		cat "$fixture/runner.log" >&2
+		fail "$outcome exit = $status, want $expected_exit"
+	fi
 	jq -e --arg status "$expected_status" '.conclusion == $status' "$evidence" >/dev/null ||
 		fail "$outcome did not preserve its expected conclusion"
 	printf '%s\n' "$evidence"
@@ -438,14 +542,15 @@ TestStrictIncrementalMutationShards() {
 	evidence=$(run_multi_fixture "$tmp/zero-shard" aggregate-zero pass 0)
 	jq -e \
 		'.mutation_exit_code == 0 and .score == 0.9 and .total == 10 and
-		 .shards[0].conclusion == "completed" and .shards[0].reason == "no mutants generated" and
+		 .shards[0].conclusion == "no_mutation_sites" and
+		 .shards[0].reason == "validated function target has no mutation sites" and
 		 .shards[0].score == null and .shards[0].total == 0 and
 		 .shards[1].conclusion == "completed" and .shards[1].total == 10' \
-		"$evidence" >/dev/null || fail 'one legitimate zero-mutant shard must not erase completed strict score evidence'
+		"$evidence" >/dev/null || fail 'a validated zero-site function must remain visible without altering the scored denominator'
 }
 
 TestTargetedMutationScope() {
-	local evidence fixture args_trace history_pattern list_trace scheduling_pattern start_pattern
+	local apply_health_pattern claim_pattern escalation_pattern evidence fixture args_trace history_pattern list_trace release_pattern review_context_pattern scheduling_pattern start_pattern
 	fixture="$tmp/targeted"
 	evidence=$(run_targeted_fixture "$fixture" targeted pass 0)
 	args_trace="$fixture/mutation-args.txt"
@@ -479,6 +584,28 @@ TestTargetedMutationScope() {
 		'.shards[0].match == "^(advanceAssignedGeneralIdle)$" and .shards[0].test_pattern == $pattern' \
 		"$evidence" >/dev/null || fail 'dispatcher scheduling mutation evidence must preserve function and exact regression test scope'
 
+	launch_pattern='^TestLaunchAssignmentWithResultReportsDeclinedClaimWithinBound$'
+	evidence=$(run_targeted_fixture "$tmp/targeted-scheduling-launch" targeted pass 0 false scheduling-launch)
+	grep -Fq -- "-list $launch_pattern ./pkg/dispatcher" "$tmp/targeted-scheduling-launch/mutation-list.txt" ||
+		fail 'launchAssignmentWithResult mutations must preflight the bounded claim-report contract'
+	jq -e --arg pattern "$launch_pattern" \
+		'.shards[0].match == "^(launchAssignmentWithResult)$" and .shards[0].test_pattern == $pattern' \
+		"$evidence" >/dev/null || fail 'launchAssignmentWithResult mutations must select only the bounded claim-report contract'
+	grep -Fxq 'MUTATION_TEST_FILE=pkg/dispatcher/scheduling_mutation_test.go' \
+		"$tmp/targeted-scheduling-launch/mutation-args.txt" ||
+		fail 'launchAssignmentWithResult mutations must compile only their standalone focused test file'
+
+	sqlite_retry_pattern='^TestRetrySQLiteBusyOperation$'
+	evidence=$(run_targeted_fixture "$tmp/targeted-sqlite-retry" targeted pass 0 false sqlite-retry)
+	grep -Fq -- "-list $sqlite_retry_pattern ./pkg/dispatcher" "$tmp/targeted-sqlite-retry/mutation-list.txt" ||
+		fail 'retrySQLiteBusyOperation mutations must preflight the direct retry contract'
+	jq -e --arg pattern "$sqlite_retry_pattern" \
+		'.shards[0].match == "^(retrySQLiteBusyOperation)$" and .shards[0].test_pattern == $pattern' \
+		"$evidence" >/dev/null || fail 'retrySQLiteBusyOperation mutations must select only the direct retry contract'
+	grep -Fxq 'MUTATION_TEST_FILE=pkg/dispatcher/sqlite_busy_retry_test.go' \
+		"$tmp/targeted-sqlite-retry/mutation-args.txt" ||
+		fail 'retrySQLiteBusyOperation mutations must compile only their standalone focused test file'
+
 	history_pattern='^(TestReviewCheckpointStartupOrdering)$'
 	evidence=$(run_targeted_fixture "$tmp/targeted-history" targeted pass 0 false history)
 	grep -Fq -- "-list $history_pattern ./pkg/dispatcher" "$tmp/targeted-history/mutation-list.txt" ||
@@ -486,6 +613,54 @@ TestTargetedMutationScope() {
 	jq -e --arg pattern "$history_pattern" \
 		'.shards[0].match == "^(startupRecovery)$" and .shards[0].test_pattern == $pattern' \
 		"$evidence" >/dev/null || fail 'dispatcher mutation evidence must preserve its deterministic co-changed test scope'
+
+	claim_pattern='^TestAssignBeadWithClaimReportsUnclaimedValidationFailure$'
+	evidence=$(run_targeted_fixture "$tmp/targeted-assignment-claim" targeted pass 0 false assignment-claim)
+	grep -Fq -- "-list $claim_pattern ./pkg/dispatcher" "$tmp/targeted-assignment-claim/mutation-list.txt" ||
+		fail 'assignBeadWithClaim mutations must preflight the bounded callback contract'
+	jq -e --arg pattern "$claim_pattern" \
+		'.shards[0].match == "^(assignBeadWithClaim)$" and .shards[0].test_pattern == $pattern' \
+		"$evidence" >/dev/null || fail 'assignBeadWithClaim mutations must select only the bounded callback contract'
+	grep -Fxq 'MUTATION_TEST_FILE=pkg/dispatcher/assignment_mutation_test.go' \
+		"$tmp/targeted-assignment-claim/mutation-args.txt" ||
+		fail 'assignBeadWithClaim mutations must compile only their standalone focused test file'
+	grep -Fxq 'PARALLEL_WORKERS=2' "$tmp/targeted-assignment-claim/mutation-args.txt" ||
+		fail 'assignBeadWithClaim mutations must reserve exactly two mutant workers'
+
+	release_pattern='^TestReleaseAssignmentReservationResetsStateAndUnlocks$'
+	evidence=$(run_targeted_fixture "$tmp/targeted-assignment-release" targeted pass 0 false assignment-release)
+	grep -Fq -- "-list $release_pattern ./pkg/dispatcher" "$tmp/targeted-assignment-release/mutation-list.txt" ||
+		fail 'releaseAssignmentReservation mutations must preflight the bounded unlock contract'
+	jq -e --arg pattern "$release_pattern" \
+		'.shards[0].match == "^(releaseAssignmentReservation)$" and .shards[0].test_pattern == $pattern' \
+		"$evidence" >/dev/null || fail 'releaseAssignmentReservation mutations must select only the bounded unlock contract'
+	grep -Fxq 'MUTATION_TEST_FILE=pkg/dispatcher/assignment_mutation_test.go' \
+		"$tmp/targeted-assignment-release/mutation-args.txt" ||
+		fail 'releaseAssignmentReservation mutations must compile only their standalone focused test file'
+
+	escalation_pattern='^TestSpawnEscalationOneShotReturnsAfterReadingWorktree$'
+	evidence=$(run_targeted_fixture "$tmp/targeted-escalation-one-shot" targeted pass 0 false escalation-one-shot)
+	grep -Fq -- "-list $escalation_pattern ./pkg/dispatcher" "$tmp/targeted-escalation-one-shot/mutation-list.txt" ||
+		fail 'spawnEscalationOneShot mutations must preflight the bounded worktree-lock contract'
+	jq -e --arg pattern "$escalation_pattern" \
+		'.shards[0].match == "^(spawnEscalationOneShot)$" and .shards[0].test_pattern == $pattern' \
+		"$evidence" >/dev/null || fail 'spawnEscalationOneShot mutations must select only the bounded worktree-lock contract'
+
+	apply_health_pattern='^TestApplyHealthReturnsAndReleasesDispatcherMutex$'
+	evidence=$(run_targeted_fixture "$tmp/targeted-health-apply" targeted pass 0 false health-apply)
+	grep -Fq -- "-list $apply_health_pattern ./pkg/dispatcher" "$tmp/targeted-health-apply/mutation-list.txt" ||
+		fail 'applyHealth mutations must preflight the bounded mutex-release contract'
+	jq -e --arg pattern "$apply_health_pattern" \
+		'.shards[0].match == "^(applyHealth)$" and .shards[0].test_pattern == $pattern' \
+		"$evidence" >/dev/null || fail 'applyHealth mutations must select only the bounded mutex-release contract'
+
+	review_context_pattern='^TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex$'
+	evidence=$(run_targeted_fixture "$tmp/targeted-ops-review-context" targeted pass 0 false ops-review-context)
+	grep -Fq -- "-list $review_context_pattern ./pkg/dispatcher" "$tmp/targeted-ops-review-context/mutation-list.txt" ||
+		fail 'reviewContextForOpsRun mutations must preflight the bounded mutex-release contract'
+	jq -e --arg pattern "$review_context_pattern" \
+		'.shards[0].match == "^(reviewContextForOpsRun)$" and .shards[0].test_pattern == $pattern' \
+		"$evidence" >/dev/null || fail 'reviewContextForOpsRun mutations must select only the bounded mutex-release contract'
 
 	evidence=$(run_targeted_fixture "$tmp/targeted-history-uncovered" targeted-uncovered infrastructure_failure 2 false history)
 	jq -e '.shards[0].reason == "targeted mutation tests do not cover every touched function"' \
@@ -579,6 +754,155 @@ run_missing_base_fixture() {
 		"$evidence" >/dev/null || fail 'missing base did not emit infrastructure evidence'
 }
 
+test_mutation_exec_unexpected_exit() {
+	local fixture="$1"
+	local original="$fixture/original.go"
+	local changed="$fixture/changed.go"
+	local output="$fixture/exec.log"
+	local status
+	mkdir -p "$fixture/bin"
+	cat >"$fixture/bin/go" <<'EOF'
+#!/usr/bin/env bash
+printf 'synthetic go test infrastructure failure\n' >&2
+exit 2
+EOF
+	chmod +x "$fixture/bin/go"
+	printf 'package example\n\nfunc Value() int { return 1 }\n' >"$original"
+	printf 'package example\n\nfunc Value() int { return 2 }\n' >"$changed"
+
+	set +e
+	PATH="$fixture/bin:$PATH" \
+		MUTATE_CHANGED="$changed" MUTATE_ORIGINAL="$original" MUTATE_PACKAGE=./pkg/example \
+		MUTATE_TIMEOUT=5 MUTATION_TEST_PATTERN=TestValue \
+		bash "$repo_root/scripts/quality_gate/mutation_exec.sh" >"$output" 2>&1
+	status=$?
+	set -e
+	[[ "$status" = 2 ]] || fail "unexpected mutation test exit = $status, want 2"
+	grep -q '^ORO_MUTATION_EXEC_FAILURE:2$' "$output" ||
+		fail 'unexpected mutation test exit did not emit a durable infrastructure marker'
+	grep -q '^synthetic go test infrastructure failure$' "$output" ||
+		fail 'unexpected mutation test exit lost its diagnostic output'
+	grep -q 'Value() int { return 1 }' "$original" ||
+		fail 'mutation exec did not restore the original source after unexpected test exit'
+}
+
+test_mutation_exec_focused_file() {
+	local fixture="$1"
+	local original="$fixture/pkg/example/value.go"
+	local changed="$fixture/changed.go"
+	local output="$fixture/exec.log"
+	local status
+	mkdir -p "$fixture/bin" "$fixture/pkg/example"
+	cat >"$fixture/bin/go" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >"${MUTATION_FOCUSED_TRACE:?}"
+exit 0
+EOF
+	chmod +x "$fixture/bin/go"
+	printf 'package example\n\nfunc Value() int { return 1 }\n' >"$original"
+	printf 'package example\n\nfunc Value() int { return 2 }\n' >"$changed"
+	printf 'package example\n\nfunc TestFocused() {}\n' >"$fixture/pkg/example/focused_test.go"
+	printf 'package example\n\nfunc TestUnselected() {}\n' >"$fixture/pkg/example/unselected_test.go"
+
+	set +e
+	(
+		cd "$fixture"
+		PATH="$fixture/bin:$PATH" MUTATION_FOCUSED_TRACE="$fixture/focused-args.txt" \
+			MUTATE_CHANGED="$changed" MUTATE_ORIGINAL="$original" MUTATE_PACKAGE=./pkg/example \
+			MUTATE_TIMEOUT=5 MUTATION_TEST_PATTERN=TestFocused \
+			MUTATION_TEST_FILE=pkg/example/focused_test.go \
+			bash "$repo_root/scripts/quality_gate/mutation_exec.sh" >"$output" 2>&1
+	)
+	status=$?
+	set -e
+	[[ "$status" = 1 ]] || fail "focused surviving mutant exit = $status, want 1"
+	grep -q 'pkg/example/value.go' "$fixture/focused-args.txt" ||
+		fail 'focused mutation compile omitted production source files'
+	grep -q 'pkg/example/focused_test.go' "$fixture/focused-args.txt" ||
+		fail 'focused mutation compile omitted its selected behavior test'
+	! grep -q 'pkg/example/unselected_test.go' "$fixture/focused-args.txt" ||
+		fail 'focused mutation compile included an unselected test file'
+}
+
+test_parallel_mutant_executor() {
+	local fixture="$1"
+	local output="$fixture/parallel.log"
+	local status
+	mkdir -p "$fixture/bin" "$fixture/pkg/example" "$fixture/scripts/quality_gate" \
+		"$fixture/cache" "$fixture/tmp" "$fixture/state"
+	cp "$repo_root/scripts/quality_gate/mutation_exec.sh" "$fixture/scripts/quality_gate/mutation_exec.sh"
+	printf 'module example.test/parallel\n\ngo 1.26\n' >"$fixture/go.mod"
+	printf 'package example\n\nfunc Value() int { return 1 }\n' >"$fixture/pkg/example/value.go"
+	printf 'package example\n\nfunc TestValue() {}\n' >"$fixture/pkg/example/value_test.go"
+	cat >"$fixture/bin/go" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" = tool && "$2" = go-mutesting ]]; then
+	source_file=${*: -1}
+	generation="$MUTATION_FAKE_STATE/generated"
+	mkdir -p "$generation/$(dirname "$source_file")"
+	cp "$source_file" "$generation/$source_file.original"
+	for value in 2 3 4; do
+		sed "s/return 1/return $value/" "$source_file" >"$generation/$source_file.$((value - 2))"
+	done
+	printf 'Save mutations into %q\n' "$generation"
+	printf 'Save mutation into %q with checksum aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' "$generation/$source_file.0"
+	printf 'Save mutation into %q with checksum bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n' "$generation/$source_file.1"
+	printf '%q is a duplicate, we ignore it\n' "$generation/$source_file.duplicate"
+	printf 'Save mutation into %q with checksum cccccccccccccccccccccccccccccccc\n' "$generation/$source_file.2"
+	exit 0
+fi
+if [[ "$1" != test ]]; then
+	printf 'unexpected fake go invocation: %s\n' "$*" >&2
+	exit 64
+fi
+slot=""
+while [[ -z "$slot" ]]; do
+	for candidate in 1 2; do
+		if mkdir "$MUTATION_FAKE_STATE/slot-$candidate" 2>/dev/null; then
+			slot=$candidate
+			break
+		fi
+	done
+done
+trap 'rmdir "$MUTATION_FAKE_STATE/slot-$slot"' EXIT
+if [[ -d "$MUTATION_FAKE_STATE/slot-1" && -d "$MUTATION_FAKE_STATE/slot-2" ]]; then
+	: >"$MUTATION_FAKE_STATE/reached-two-workers"
+fi
+printf '%s\t%s\n' "$MUTATE_ORIGINAL" "$slot" >>"$MUTATION_FAKE_STATE/executions.tsv"
+sleep 0.1
+if grep -q 'return 3' "$MUTATE_ORIGINAL"; then
+	exit 1
+fi
+exit 0
+EOF
+	chmod +x "$fixture/bin/go"
+
+	set +e
+	(
+		cd "$fixture"
+		PATH="$fixture/bin:$PATH" MUTATION_FAKE_STATE="$fixture/state" \
+			GOCACHE="$fixture/cache" GOTMPDIR="$fixture/tmp" \
+			MUTATION_SOURCE_FILE=pkg/example/value.go MUTATION_FUNCTION_MATCH='^(Value)$' \
+			MUTATION_TEST_PATTERN='^TestValue$' MUTATION_TEST_FILE=pkg/example/value_test.go \
+			MUTATION_EXEC_TIMEOUT=5 MUTATION_PARALLEL_WORKERS=2 \
+			bash "$repo_root/scripts/quality_gate/mutation_parallel.sh" >"$output" 2>&1
+	)
+	status=$?
+	set -e
+	[[ "$status" = 0 ]] || fail "parallel mutant executor exit = $status, want 0"
+	grep -q '^The mutation score is 0.333333 (1 passed, 2 failed, 1 duplicated, 0 skipped, total is 3)$' "$output" ||
+		fail 'parallel mutant aggregation diverged from its sequential-equivalent counts'
+	[[ "$(wc -l <"$fixture/state/executions.tsv" | tr -d ' ')" = 3 ]] ||
+		fail 'parallel mutant executor omitted or duplicated a frozen unique mutant'
+	[[ "$(cut -f1 "$fixture/state/executions.tsv" | sort -u | wc -l | tr -d ' ')" = 2 ]] ||
+		fail 'parallel mutant executor did not isolate source mutation across two checkouts'
+	[[ -f "$fixture/state/reached-two-workers" ]] ||
+		fail 'parallel mutant executor did not use both reserved workers'
+	grep -q 'return 1' "$fixture/pkg/example/value.go" ||
+		fail 'parallel mutant executor leaked a mutation into the source checkout'
+}
+
 TestStrictIncrementalMutation() {
 	local file_timeout_seconds incident_file_count job_timeout_minutes minimum_timeout_minutes mutation_batches workers
 	tmp=$(mktemp -d)
@@ -590,8 +914,22 @@ TestStrictIncrementalMutation() {
 	run_fixture "$tmp/below" below deterministic_failure 1
 	run_fixture "$tmp/crash" crash infrastructure_failure 2
 	run_fixture "$tmp/zero" zero infrastructure_failure 2
-	run_fixture "$tmp/zero-clean" zero-clean infrastructure_failure 2
+	run_fixture "$tmp/zero-clean" zero-clean pass 0
+	jq -e \
+		'.score == null and .total == 0 and .shards[0].conclusion == "no_mutation_sites" and
+		 .shards[0].reason == "validated function target has no mutation sites"' \
+		"$tmp/zero-clean/mutation-evidence.json" >/dev/null ||
+		fail 'a validated all-zero-site campaign did not preserve explicit null-score evidence'
 	run_fixture "$tmp/timeout" timeout infrastructure_failure 2
+	test_mutation_exec_unexpected_exit "$tmp/exec-unexpected"
+	test_mutation_exec_focused_file "$tmp/exec-focused"
+	test_parallel_mutant_executor "$tmp/parallel-mutants"
+	run_fixture "$tmp/unknown-exit" unknown-exit infrastructure_failure 2
+	jq -e \
+		'.score == null and .total == 0 and .mutation_exit_code == 2 and
+		 .shards[0].reason == "mutation test execution returned an unexpected status"' \
+		"$tmp/unknown-exit/mutation-evidence.json" >/dev/null ||
+		fail 'unexpected mutation test exit did not invalidate the entire shard denominator'
 	run_fixture "$tmp/malformed" malformed infrastructure_failure 2
 	run_fixture "$tmp/malformed-annotated" malformed-annotated infrastructure_failure 2
 	jq -e '.score == null and .total == 0' "$tmp/malformed-annotated/mutation-evidence.json" >/dev/null ||
