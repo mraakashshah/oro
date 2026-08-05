@@ -383,6 +383,26 @@ review_checkpoint_mutation_test_pattern() {
 	esac
 }
 
+assignment_bc_mutation_test_pattern() {
+	local file="$1"
+	local match="$2"
+	[[ "$file" == pkg/dispatcher/assignment.go ]] || return 0
+	case "$match" in
+	'^(prepareAssignmentWorktree)$')
+		printf '^TestAssignmentBCPrepareWorktreeOutcomes$'
+		;;
+	'^(validateExistingWorktreeForReuse)$')
+		printf '^(TestAssignmentBCValidateDivergedRecoveryOutcomes|TestAssignmentBCValidateCurrentBranchError)$'
+		;;
+	'^(releaseAssignmentReservationLocked)$')
+		printf '^TestAssignmentBCReservationReleaseExactState$'
+		;;
+	'^(attachAssignmentToReservation)$')
+		printf '^TestAssignmentBCAttachExactStateAndOwnership$'
+		;;
+	esac
+}
+
 review_integration_recovery_mutation_test_pattern() {
 	local file="$1"
 	local match="$2"
@@ -590,7 +610,12 @@ targeted_test_pattern() {
 	local head="$2"
 	local file="$3"
 	local match="$4"
-	local review_checkpoint_pattern review_integration_recovery_pattern
+	local assignment_bc_pattern review_checkpoint_pattern review_integration_recovery_pattern
+	assignment_bc_pattern=$(assignment_bc_mutation_test_pattern "$file" "$match")
+	if [[ -n "$assignment_bc_pattern" ]]; then
+		printf '%s' "$assignment_bc_pattern"
+		return
+	fi
 	review_integration_recovery_pattern=$(review_integration_recovery_mutation_test_pattern "$file" "$match")
 	if [[ -n "$review_integration_recovery_pattern" ]]; then
 		printf '%s' "$review_integration_recovery_pattern"
@@ -658,6 +683,12 @@ run_mutation_shard() {
 		;;
 	'^(TestAssignmentBehaviorMutation|TestStandaloneAssignmentBehaviorHarnessCaseIsolation)$')
 		mutation_test_file=pkg/dispatcher/assignment_behavior_mutation_test.go
+		;;
+	'^TestAssignmentBCPrepareWorktreeOutcomes$' | \
+		'^(TestAssignmentBCValidateDivergedRecoveryOutcomes|TestAssignmentBCValidateCurrentBranchError)$' | \
+		'^TestAssignmentBCReservationReleaseExactState$' | \
+		'^TestAssignmentBCAttachExactStateAndOwnership$')
+		mutation_test_file=pkg/dispatcher/assignment_reservation_worktree_survivor_mutation_test.go
 		;;
 	'^TestLaunchAssignmentWithResultReportsDeclinedClaimWithinBound$')
 		mutation_test_file=pkg/dispatcher/scheduling_mutation_test.go
@@ -742,7 +773,8 @@ run_mutation_shard() {
 				MUTATION_FAILURE_EVIDENCE_DIR="$mutation_failure_evidence_root/$index" \
 				MUTATION_EXEC_SCRIPT="$mutation_script_dir/mutation_exec.sh" \
 				timeout "$max_shard_timeout" bash "$mutation_script_dir/mutation_parallel.sh"
-		elif [[ "$file" == pkg/dispatcher/review_integration_recovery.go ]]; then
+		elif [[ "$file" == pkg/dispatcher/review_integration_recovery.go ||
+			"$mutation_test_file" == pkg/dispatcher/assignment_reservation_worktree_survivor_mutation_test.go ]]; then
 			GOCACHE="$shard_root/caches/$cache_slot" \
 				GOTMPDIR="$shard_root/tmp/$index" \
 				MUTATION_SOURCE_FILE="$file" \
@@ -750,6 +782,7 @@ run_mutation_shard() {
 				MUTATION_TEST_PATTERN="$test_pattern" \
 				MUTATION_TEST_FILE="$mutation_test_file" \
 				MUTATION_EXEC_TIMEOUT="$exec_timeout" \
+				MUTATION_TEST_TIMEOUT_MARGIN_SECONDS=5 \
 				MUTATION_PARALLEL_WORKERS=2 \
 				MUTATION_BASE_SHARD_TIMEOUT_SECONDS="$file_timeout" \
 				MUTATION_MAX_SHARD_TIMEOUT_SECONDS="$file_timeout" \
@@ -890,7 +923,10 @@ main() {
 		file=${shard_files[$index]}
 		printf -v key '%06d' "$index"
 		cache_slot=$((index % worker_count))
-		if [[ "$file" == pkg/dispatcher/assignment.go && "${match_patterns[$index]}" == '^(assignBeadWithClaim)$' ]]; then
+		if [[ ("$file" == pkg/dispatcher/assignment.go &&
+			("${match_patterns[$index]}" == '^(assignBeadWithClaim)$' ||
+				"${test_patterns[$index]}" == *TestAssignmentBC*)) ||
+			"$file" == pkg/dispatcher/review_integration_recovery.go ]]; then
 			for pid in "${pids[@]}"; do
 				wait "$pid" || true
 			done

@@ -82,6 +82,61 @@ review_integration_recovery_test_file_for() {
 	bash -c "$function_source"$'\n''review_integration_recovery_mutation_test_file "$1"' _ "$file" || true
 }
 
+assignment_bc_pattern_for() {
+	local file="$1"
+	local match="$2"
+	local function_source
+	function_source=$(awk '
+		/^assignment_bc_mutation_test_pattern\(\)/ { copying = 1 }
+		copying { print }
+		copying && /^}/ { exit }
+	' "$runner")
+	if [[ -z "$function_source" ]]; then
+		fail 'mutation runner omitted assignment B+C owner mapping'
+		return 1
+	fi
+	bash -c "$function_source"$'\n''assignment_bc_mutation_test_pattern "$1" "$2"' _ "$file" "$match" || true
+}
+
+TestAssignmentBCMutationMapping() {
+	local function expected got
+	while IFS=: read -r function expected; do
+		got=$(assignment_bc_pattern_for pkg/dispatcher/assignment.go "^($function)$")
+		[[ "$got" == "$expected" ]] ||
+			fail "$function mutation owner = $got, want $expected"
+	done <<'EOF'
+prepareAssignmentWorktree:^TestAssignmentBCPrepareWorktreeOutcomes$
+validateExistingWorktreeForReuse:^(TestAssignmentBCValidateDivergedRecoveryOutcomes|TestAssignmentBCValidateCurrentBranchError)$
+releaseAssignmentReservationLocked:^TestAssignmentBCReservationReleaseExactState$
+attachAssignmentToReservation:^TestAssignmentBCAttachExactStateAndOwnership$
+EOF
+	got=$(assignment_bc_pattern_for pkg/dispatcher/other.go '^(prepareAssignmentWorktree)$')
+	[[ -z "$got" ]] || fail "wrong assignment file unexpectedly selected $got"
+	got=$(assignment_bc_pattern_for pkg/dispatcher/assignment.go '^(unmappedAssignmentFunction)$')
+	[[ -z "$got" ]] || fail "unmapped assignment function unexpectedly selected $got"
+}
+
+TestMutationOwnerMappingsCoexist() {
+	local got
+	got=$(assignment_bc_pattern_for pkg/dispatcher/assignment.go '^(prepareAssignmentWorktree)$')
+	[[ "$got" == '^TestAssignmentBCPrepareWorktreeOutcomes$' ]] ||
+		fail "coexisting assignment resolver selected $got"
+	got=$(review_integration_recovery_pattern_for \
+		pkg/dispatcher/review_integration_recovery.go '^(finalizeReviewIntegration)$')
+	[[ "$got" == '^TestReviewIntegrationRecoveryMutationFinalize$' ]] ||
+		fail "coexisting integration-recovery resolver selected $got"
+
+	got=$(assignment_bc_pattern_for pkg/dispatcher/review_integration_recovery.go '^(prepareAssignmentWorktree)$')
+	[[ -z "$got" ]] || fail "assignment resolver accepted wrong source: $got"
+	got=$(assignment_bc_pattern_for pkg/dispatcher/assignment.go '^(unmappedAssignmentFunction)$')
+	[[ -z "$got" ]] || fail "assignment resolver accepted unmapped function: $got"
+	got=$(review_integration_recovery_pattern_for pkg/dispatcher/assignment.go '^(finalizeReviewIntegration)$')
+	[[ -z "$got" ]] || fail "integration-recovery resolver accepted wrong source: $got"
+	got=$(review_integration_recovery_pattern_for \
+		pkg/dispatcher/review_integration_recovery.go '^(unmappedIntegrationRecoveryFunction)$')
+	[[ -z "$got" ]] || fail "integration-recovery resolver accepted unmapped function: $got"
+}
+
 TestReviewCheckpointMutationMapping() {
 	local function expected got
 	while IFS=: read -r function expected; do
@@ -393,6 +448,41 @@ new_targeted_fixture() {
 		test_names=(TestReleaseAssignmentReservationResetsStateAndUnlocks)
 		head_test_name=TestEpicSchedulerDoesNotRefillAfterClaimedSetupCleansUp
 		;;
+	assignment-bc-prepare)
+		package_name=dispatcher
+		source_file=pkg/dispatcher/assignment.go
+		test_file=pkg/dispatcher/assignment_reservation_worktree_survivor_mutation_test.go
+		function_name=prepareAssignmentWorktree
+		test_names=(TestAssignmentBCPrepareWorktreeOutcomes)
+		;;
+	assignment-bc-validate)
+		package_name=dispatcher
+		source_file=pkg/dispatcher/assignment.go
+		test_file=pkg/dispatcher/assignment_reservation_worktree_survivor_mutation_test.go
+		function_name=validateExistingWorktreeForReuse
+		test_names=(TestAssignmentBCValidateDivergedRecoveryOutcomes TestAssignmentBCValidateCurrentBranchError)
+		;;
+	assignment-bc-release)
+		package_name=dispatcher
+		source_file=pkg/dispatcher/assignment.go
+		test_file=pkg/dispatcher/assignment_reservation_worktree_survivor_mutation_test.go
+		function_name=releaseAssignmentReservationLocked
+		test_names=(TestAssignmentBCReservationReleaseExactState)
+		;;
+	assignment-bc-attach)
+		package_name=dispatcher
+		source_file=pkg/dispatcher/assignment.go
+		test_file=pkg/dispatcher/assignment_reservation_worktree_survivor_mutation_test.go
+		function_name=attachAssignmentToReservation
+		test_names=(TestAssignmentBCAttachExactStateAndOwnership)
+		;;
+	review-integration-recovery)
+		package_name=dispatcher
+		source_file=pkg/dispatcher/review_integration_recovery.go
+		test_file=pkg/dispatcher/review_integration_recovery_mutation_test.go
+		function_name=finalizeReviewIntegration
+		test_names=(TestReviewIntegrationRecoveryMutationFinalize)
+		;;
 	escalation-one-shot)
 		package_name=dispatcher
 		source_file=pkg/dispatcher/escalation.go
@@ -439,7 +529,25 @@ new_targeted_fixture() {
 	for test_name in "${test_names[@]}"; do
 		printf '\nfunc %s() {}\n' "$test_name" >>"$fixture/$test_file"
 	done
+	case "$target" in
+	assignment-bc-*)
+		printf 'package dispatcher\n\nfunc TestAssignmentBCUnselected() {}\n' \
+			>"$fixture/pkg/dispatcher/assignment_bc_unselected_test.go"
+		;;
+	review-integration-recovery)
+		printf 'package dispatcher\n\nfunc TestReviewIntegrationRecoveryUnselected() {}\n' \
+			>"$fixture/pkg/dispatcher/review_integration_recovery_unselected_test.go"
+		;;
+	esac
 	git -C "$fixture" add go.mod "$source_file" "$test_file"
+	case "$target" in
+	assignment-bc-*)
+		git -C "$fixture" add pkg/dispatcher/assignment_bc_unselected_test.go
+		;;
+	review-integration-recovery)
+		git -C "$fixture" add pkg/dispatcher/review_integration_recovery_unselected_test.go
+		;;
+	esac
 	git -C "$fixture" commit -qm base
 	base=$(git -C "$fixture" rev-parse HEAD)
 	printf 'package %s\n\n%bfunc %s(%s) bool { return true }\n' \
@@ -501,6 +609,10 @@ if [[ "$1" = tool && "$2" = go-mutesting && " $* " == *" --no-exec "* ]]; then
 	printf 'Save mutation into "%s" with checksum 0\n' "$generation/$source_file.0"
 	printf 'Save mutation into "%s" with checksum 1\n' "$generation/$source_file.1"
 	printf 'PARALLEL_WORKERS=%s\n' "${MUTATION_PARALLEL_WORKERS:-}" >>"${MUTATION_ARGS_TRACE:?}"
+	printf 'EXEC_TIMEOUT=%s\n' "${MUTATION_EXEC_TIMEOUT:-}" >>"${MUTATION_ARGS_TRACE:?}"
+	printf 'TIMEOUT_MARGIN=%s\n' "${MUTATION_TEST_TIMEOUT_MARGIN_SECONDS:-}" >>"${MUTATION_ARGS_TRACE:?}"
+	printf 'BASE_SHARD_TIMEOUT=%s\n' "${MUTATION_BASE_SHARD_TIMEOUT_SECONDS:-}" >>"${MUTATION_ARGS_TRACE:?}"
+	printf 'MAX_SHARD_TIMEOUT=%s\n' "${MUTATION_MAX_SHARD_TIMEOUT_SECONDS:-}" >>"${MUTATION_ARGS_TRACE:?}"
 	if [[ -n "${MUTATION_TEST_FILE:-}" ]]; then
 		printf 'MUTATION_TEST_FILE=%s\n' "$MUTATION_TEST_FILE" >>"${MUTATION_ARGS_TRACE:?}"
 	fi
@@ -525,6 +637,11 @@ if [[ "$1" = test ]]; then
 		*TestAssignmentBehaviorMutation*) printf 'TestAssignmentBehaviorMutation\nTestStandaloneAssignmentBehaviorHarnessCaseIsolation\n' ;;
 		*TestAssignBeadWithClaimReportsUnclaimedValidationFailure*) printf 'TestAssignBeadWithClaimReportsUnclaimedValidationFailure\n' ;;
 		*TestReleaseAssignmentReservationResetsStateAndUnlocks*) printf 'TestReleaseAssignmentReservationResetsStateAndUnlocks\n' ;;
+		*TestAssignmentBCPrepareWorktreeOutcomes*) printf 'TestAssignmentBCPrepareWorktreeOutcomes\n' ;;
+		*TestAssignmentBCValidateDivergedRecoveryOutcomes*) printf 'TestAssignmentBCValidateDivergedRecoveryOutcomes\nTestAssignmentBCValidateCurrentBranchError\n' ;;
+		*TestAssignmentBCReservationReleaseExactState*) printf 'TestAssignmentBCReservationReleaseExactState\n' ;;
+		*TestAssignmentBCAttachExactStateAndOwnership*) printf 'TestAssignmentBCAttachExactStateAndOwnership\n' ;;
+		*TestReviewIntegrationRecoveryMutationFinalize*) printf 'TestReviewIntegrationRecoveryMutationFinalize\n' ;;
 		*TestSpawnEscalationOneShotReturnsAfterReadingWorktree*) printf 'TestSpawnEscalationOneShotReturnsAfterReadingWorktree\n' ;;
 		*TestApplyHealthReturnsAndReleasesDispatcherMutex*) printf 'TestApplyHealthReturnsAndReleasesDispatcherMutex\n' ;;
 		*TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex*) printf 'TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex\n' ;;
@@ -550,6 +667,11 @@ if [[ "$1" = tool && "$2" = cover ]]; then
 	printf 'pkg/dispatcher/sqlite_busy_retry.go:1: retrySQLiteBusyOperation 100.0%%\n'
 	printf 'pkg/dispatcher/assignment.go:1: assignBeadWithClaim 100.0%%\n'
 	printf 'pkg/dispatcher/assignment.go:2: releaseAssignmentReservation 100.0%%\n'
+	printf 'pkg/dispatcher/assignment.go:3: prepareAssignmentWorktree 100.0%%\n'
+	printf 'pkg/dispatcher/assignment.go:4: validateExistingWorktreeForReuse 100.0%%\n'
+	printf 'pkg/dispatcher/assignment.go:5: releaseAssignmentReservationLocked 100.0%%\n'
+	printf 'pkg/dispatcher/assignment.go:6: attachAssignmentToReservation 100.0%%\n'
+	printf 'pkg/dispatcher/review_integration_recovery.go:1: finalizeReviewIntegration 100.0%%\n'
 	printf 'pkg/dispatcher/escalation.go:1: spawnEscalationOneShot 100.0%%\n'
 	printf 'pkg/dispatcher/health.go:1: applyHealth 100.0%%\n'
 	printf 'pkg/dispatcher/ops_runs.go:1: reviewContextForOpsRun 100.0%%\n'
@@ -920,6 +1042,87 @@ TestTargetedMutationScope() {
 	grep -Fxq 'MUTATION_TEST_FILE=pkg/dispatcher/assignment_mutation_test.go' \
 		"$tmp/targeted-assignment-release/mutation-args.txt" ||
 		fail 'releaseAssignmentReservation mutations must compile only their standalone focused test file'
+
+	local assignment_bc_function assignment_bc_target assignment_bc_test_file focused_line focused_lines
+	assignment_bc_test_file=pkg/dispatcher/assignment_reservation_worktree_survivor_mutation_test.go
+	while IFS=$'\t' read -r assignment_bc_target assignment_bc_function assignment_bc_pattern; do
+		fixture="$tmp/targeted-$assignment_bc_target"
+		evidence=$(run_targeted_fixture "$fixture" targeted pass 0 false "$assignment_bc_target")
+		list_trace="$fixture/mutation-list.txt"
+		grep -Fq -- "-list $assignment_bc_pattern ./pkg/dispatcher" "$list_trace" ||
+			fail "$assignment_bc_function mutations must preflight the exact reviewed test pattern"
+		grep -F -- "-run $assignment_bc_pattern ./pkg/dispatcher" "$list_trace" |
+			grep -q -- '-coverprofile=' ||
+			fail "$assignment_bc_function baseline must retain full-package production coverage"
+		jq -e --arg function "$assignment_bc_function" --arg pattern "$assignment_bc_pattern" \
+			'.shards[0].match == "^(" + $function + ")$" and .shards[0].test_pattern == $pattern' \
+			"$evidence" >/dev/null ||
+			fail "$assignment_bc_function mutation evidence lost its exact function/test mapping"
+		grep -Fxq "MUTATION_TEST_FILE=$assignment_bc_test_file" "$fixture/mutation-args.txt" ||
+			fail "$assignment_bc_function mutations must compile only the reviewed B+C test file"
+		for expected_limit in \
+			'PARALLEL_WORKERS=2' \
+			'EXEC_TIMEOUT=60' \
+			'TIMEOUT_MARGIN=5' \
+			'BASE_SHARD_TIMEOUT=240' \
+			'MAX_SHARD_TIMEOUT=240'; do
+			grep -Fxq "$expected_limit" "$fixture/mutation-args.txt" ||
+				fail "$assignment_bc_function mutation boundary omitted $expected_limit"
+		done
+		focused_lines=$(grep -F "$assignment_bc_test_file" "$list_trace")
+		[[ -n "$focused_lines" ]] || fail "$assignment_bc_function emitted no focused mutation argv"
+		while IFS= read -r focused_line; do
+			[[ "$(grep -oF 'pkg/dispatcher/assignment.go' <<<"$focused_line" | wc -l | tr -d ' ')" = 1 ]] ||
+				fail "$assignment_bc_function focused argv must include the mutated source exactly once"
+			[[ "$(grep -oF "$assignment_bc_test_file" <<<"$focused_line" | wc -l | tr -d ' ')" = 1 ]] ||
+				fail "$assignment_bc_function focused argv must include the reviewed test file exactly once"
+			grep -Fq -- '-timeout 55s' <<<"$focused_line" ||
+				fail "$assignment_bc_function focused argv must enforce the 55s internal Go deadline"
+			! grep -Fq 'assignment_bc_unselected_test.go' <<<"$focused_line" ||
+				fail "$assignment_bc_function focused argv included an unselected test file"
+		done <<<"$focused_lines"
+	done <<'EOF'
+assignment-bc-prepare	prepareAssignmentWorktree	^TestAssignmentBCPrepareWorktreeOutcomes$
+assignment-bc-validate	validateExistingWorktreeForReuse	^(TestAssignmentBCValidateDivergedRecoveryOutcomes|TestAssignmentBCValidateCurrentBranchError)$
+assignment-bc-release	releaseAssignmentReservationLocked	^TestAssignmentBCReservationReleaseExactState$
+assignment-bc-attach	attachAssignmentToReservation	^TestAssignmentBCAttachExactStateAndOwnership$
+EOF
+
+	local integration_file integration_pattern integration_test_file
+	integration_file=pkg/dispatcher/review_integration_recovery.go
+	integration_pattern='^TestReviewIntegrationRecoveryMutationFinalize$'
+	integration_test_file=pkg/dispatcher/review_integration_recovery_mutation_test.go
+	fixture="$tmp/targeted-review-integration-recovery"
+	evidence=$(run_targeted_fixture "$fixture" targeted pass 0 false review-integration-recovery)
+	list_trace="$fixture/mutation-list.txt"
+	grep -Fq -- "-list $integration_pattern ./pkg/dispatcher" "$list_trace" ||
+		fail 'integration-recovery mutations must preflight their reviewed owner'
+	jq -e --arg pattern "$integration_pattern" \
+		'.shards[0].match == "^(finalizeReviewIntegration)$" and .shards[0].test_pattern == $pattern' \
+		"$evidence" >/dev/null || fail 'integration-recovery evidence lost exact owner mapping'
+	grep -Fxq "MUTATION_TEST_FILE=$integration_test_file" "$fixture/mutation-args.txt" ||
+		fail 'integration-recovery mutations must compile only the reviewed standalone file'
+	for expected_limit in \
+		'PARALLEL_WORKERS=2' \
+		'EXEC_TIMEOUT=60' \
+		'TIMEOUT_MARGIN=5' \
+		'BASE_SHARD_TIMEOUT=240' \
+		'MAX_SHARD_TIMEOUT=240'; do
+		grep -Fxq "$expected_limit" "$fixture/mutation-args.txt" ||
+			fail "integration-recovery mutation boundary omitted $expected_limit"
+	done
+	focused_lines=$(grep -F "$integration_test_file" "$list_trace")
+	[[ -n "$focused_lines" ]] || fail 'integration-recovery emitted no focused mutation argv'
+	while IFS= read -r focused_line; do
+		[[ "$(grep -oF "$integration_file" <<<"$focused_line" | wc -l | tr -d ' ')" = 1 ]] ||
+			fail 'integration-recovery focused argv must include source exactly once'
+		[[ "$(grep -oF "$integration_test_file" <<<"$focused_line" | wc -l | tr -d ' ')" = 1 ]] ||
+			fail 'integration-recovery focused argv must include owner exactly once'
+		grep -Fq -- '-timeout 55s' <<<"$focused_line" ||
+			fail 'integration-recovery focused argv must enforce the 55s Go deadline'
+		! grep -Fq 'review_integration_recovery_unselected_test.go' <<<"$focused_line" ||
+			fail 'integration-recovery focused argv included an unselected test file'
+	done <<<"$focused_lines"
 
 	escalation_pattern='^TestSpawnEscalationOneShotReturnsAfterReadingWorktree$'
 	evidence=$(run_targeted_fixture "$tmp/targeted-escalation-one-shot" targeted pass 0 false escalation-one-shot)
@@ -1852,6 +2055,8 @@ TestStrictIncrementalMutation() {
 	TestReviewCheckpointMutationMapping
 	TestReviewIntegrationRecoveryMutationMapping
 	TestReviewIntegrationRecoveryMutationCoverage
+	TestAssignmentBCMutationMapping
+	TestMutationOwnerMappingsCoexist
 
 	TestIncrementalMutationArtifactRetention "$tmp/workflow-artifact"
 	cp "$tmp/workflow-artifact/incremental-mutation.yml" "$tmp/incremental-mutation.yml"
@@ -1888,6 +2093,12 @@ main() {
 		;;
 	TestReviewIntegrationRecoveryMutationMapping)
 		TestReviewIntegrationRecoveryMutationMapping
+		;;
+	TestAssignmentBCMutationMapping)
+		TestAssignmentBCMutationMapping
+		;;
+	TestMutationOwnerMappingsCoexist)
+		TestMutationOwnerMappingsCoexist
 		;;
 	TestReviewIntegrationRecoveryMutationCoverage)
 		TestReviewIntegrationRecoveryMutationCoverage
