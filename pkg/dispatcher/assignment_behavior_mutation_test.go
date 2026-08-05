@@ -293,6 +293,29 @@ func (h *assignmentBehaviorHarness) prepareCase(t *testing.T, beadID string) {
 	}
 }
 
+func assignmentBehaviorAssignBounded(
+	t *testing.T,
+	d *Dispatcher,
+	worker *trackedWorker,
+	bead protocol.Bead,
+	focusVersionOpt []uint64,
+	onClaim func(bool),
+	onOutcome func(assignmentSetupOutcome),
+) error {
+	t.Helper()
+	result := make(chan error, 1)
+	go func() {
+		result <- d.assignBeadWithClaim(context.Background(), worker, bead, focusVersionOpt, onClaim, onOutcome)
+	}()
+	select {
+	case err := <-result:
+		return err
+	case <-time.After(5 * time.Second):
+		t.Fatal("assignBeadWithClaim did not return; dispatcher mutex may be retained")
+		return nil
+	}
+}
+
 func assignmentBehaviorRejectsEmptyBeadID(t *testing.T, h *assignmentBehaviorHarness) {
 	worker := &trackedWorker{id: "mutation-empty-id-worker"}
 	var claims []bool
@@ -572,7 +595,7 @@ func assignmentBehaviorSuccessfulDeliveryPersistsProgress(t *testing.T, h *assig
 	var claims []bool
 	var outcomes []assignmentSetupOutcome
 
-	if err := d.assignBeadWithClaim(context.Background(), worker, bead, nil,
+	if err := assignmentBehaviorAssignBounded(t, d, worker, bead, nil,
 		func(claimed bool) { claims = append(claims, claimed) },
 		func(outcome assignmentSetupOutcome) { outcomes = append(outcomes, outcome) }); err != nil {
 		t.Fatalf("assign deliverable bead: %v", err)
@@ -666,7 +689,7 @@ func assignmentBehaviorFocusChangeAbortsPreparedWork(t *testing.T, h *assignment
 	})
 	var outcomes []assignmentSetupOutcome
 
-	if err := d.assignBeadWithClaim(context.Background(), worker, bead, []uint64{0}, nil,
+	if err := assignmentBehaviorAssignBounded(t, d, worker, bead, []uint64{0}, nil,
 		func(outcome assignmentSetupOutcome) { outcomes = append(outcomes, outcome) }); err != nil {
 		t.Fatalf("assign across focus change: %v", err)
 	}
@@ -768,9 +791,11 @@ func TestAssignmentBehaviorMutation(t *testing.T) {
 		{name: "atomic observation failure is audited", run: assignmentBehaviorAtomicObservationFailureIsAudited},
 	}
 	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
+		if !t.Run(test.name, func(t *testing.T) {
 			test.run(t, harness)
-		})
+		}) {
+			return
+		}
 	}
 }
 
