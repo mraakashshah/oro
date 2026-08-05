@@ -24,6 +24,11 @@ fi
 executor_root=$(mktemp -d "$GOTMPDIR/parallel-mutants.XXXXXX")
 generation_log="$executor_root/generation.log"
 generation_root=""
+failure_evidence_root=${MUTATION_FAILURE_EVIDENCE_DIR:-$GOTMPDIR/mutation-failure-evidence}
+mkdir -p "$failure_evidence_root"
+failure_evidence_root=$(cd "$failure_evidence_root" && pwd -P)
+failure_evidence_run=$(mktemp -d "$failure_evidence_root/run.XXXXXX")
+failure_evidence_announced=0
 worker_pids=()
 worker_group_ids=()
 worker_stop_file="$executor_root/stop-workers"
@@ -54,6 +59,54 @@ refresh_active_worker_groups() {
 	done
 }
 
+announce_failure_evidence() {
+	if ((failure_evidence_announced == 0)); then
+		printf 'ORO_MUTATION_FAILURE_EVIDENCE:%s\n' "$failure_evidence_run"
+		failure_evidence_announced=1
+	fi
+}
+
+write_mutant_evidence() {
+	local worker="$1"
+	local position="$2"
+	local mutant="$3"
+	local source_path="$4"
+	local exit_class="$5"
+	local exit_status="$6"
+	local content_hash mutant_path record record_tmp
+	content_hash=$(git hash-object -- "$mutant")
+	mutant_path=$(cd "$(dirname "$mutant")" && pwd -P)/$(basename "$mutant")
+	record="$failure_evidence_run/mutant-$position.json"
+	record_tmp="$record.$BASHPID.tmp"
+	jq -n \
+		--argjson worker "$worker" \
+		--arg source_file "$MUTATION_SOURCE_FILE" \
+		--arg source_path "$source_path" \
+		--arg function_match "$MUTATION_FUNCTION_MATCH" \
+		--argjson mutant_index "$position" \
+		--arg mutant_path "$mutant_path" \
+		--arg content_hash "$content_hash" \
+		--arg exit_class "$exit_class" \
+		--argjson exit_status "$exit_status" \
+		'{worker: $worker, source_file: $source_file, source_path: $source_path,
+			function_match: $function_match, mutant_index: $mutant_index,
+			mutant_path: $mutant_path, content_hash_algorithm: "git-blob", content_hash: $content_hash,
+			exit_class: $exit_class, exit_status: $exit_status}' >"$record_tmp"
+	mv -- "$record_tmp" "$record"
+}
+
+abort_running_mutant_evidence() {
+	local record record_tmp
+	for record in "$failure_evidence_run"/mutant-*.json; do
+		[[ -f "$record" ]] || continue
+		if jq -e '.exit_class == "running"' "$record" >/dev/null; then
+			record_tmp="$record.$BASHPID.tmp"
+			jq '.exit_class = "aborted" | .exit_status = null' "$record" >"$record_tmp"
+			mv -- "$record_tmp" "$record"
+		fi
+	done
+}
+
 stop_mutant_workers() {
 	local attempt group groups_running pid
 	: >"$worker_stop_file"
@@ -74,6 +127,7 @@ stop_mutant_workers() {
 	for pid in "${worker_pids[@]}"; do
 		wait "$pid" 2>/dev/null || true
 	done
+	abort_running_mutant_evidence
 	refresh_active_worker_groups
 	if ((${#active_worker_groups[@]} != 0)); then
 		printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
@@ -188,6 +242,7 @@ run_mutant_worker() {
 		result="$executor_root/results/$position.tsv"
 		result_tmp="$result.$worker.tmp"
 		status=0
+		write_mutant_evidence "$worker" "$position" "$mutant" "$worker_source" running null
 		(
 			cd "$worker_repo"
 			GOCACHE="$GOCACHE/parallel-$worker" \
@@ -200,6 +255,13 @@ run_mutant_worker() {
 				MUTATION_TEST_FILE="$worker_test_file" \
 				timeout --foreground "$MUTATION_EXEC_TIMEOUT" bash "$MUTATION_EXEC_SCRIPT"
 		) >"$output" 2>&1 || status=$?
+		case "$status" in
+		0) exit_class=killed ;;
+		1) exit_class=survived ;;
+		124) exit_class=timeout ;;
+		*) exit_class=infrastructure ;;
+		esac
+		write_mutant_evidence "$worker" "$position" "$mutant" "$worker_source" "$exit_class" "$status"
 		printf '%d\t%d\t%s\n' "$position" "$status" "$mutant" >"$result_tmp"
 		mv -- "$result_tmp" "$result"
 	done
@@ -265,6 +327,7 @@ while :; do
 		0 | 1) ;;
 		*)
 			cat "$output"
+			announce_failure_evidence
 			if grep -q '^ORO_MUTATION_EXEC_TIMEOUT$' "$output"; then
 				stop_mutant_workers
 				exit 124

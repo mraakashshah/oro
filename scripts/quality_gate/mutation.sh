@@ -5,6 +5,7 @@ readonly policy_score=0.75
 mutation_script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 readonly mutation_script_dir
 mutation_shard_root=""
+mutation_failure_evidence_root=""
 
 cleanup_mutation_shards() {
 	if [[ -n "$mutation_shard_root" ]]; then
@@ -661,6 +662,7 @@ run_mutation_shard() {
 				MUTATION_PARALLEL_WORKERS="${MUTATION_PARALLEL_WORKERS:-2}" \
 				MUTATION_BASE_SHARD_TIMEOUT_SECONDS="$file_timeout" \
 				MUTATION_MAX_SHARD_TIMEOUT_SECONDS="$max_shard_timeout" \
+				MUTATION_FAILURE_EVIDENCE_DIR="$mutation_failure_evidence_root/$index" \
 				MUTATION_EXEC_SCRIPT="$mutation_script_dir/mutation_exec.sh" \
 				timeout "$max_shard_timeout" bash "$mutation_script_dir/mutation_parallel.sh"
 		else
@@ -781,6 +783,7 @@ main() {
 		done | jq -s '.'
 	)
 	write_sharded_evidence "$evidence" "$base" "$head" infrastructure_failure 2 null 0 "$pending_shards" "${changed_files[@]}"
+	mutation_failure_evidence_root=$(cd "$(dirname "$evidence")" && pwd -P)/mutation-failures
 
 	local worker_count=$max_workers
 	if ((worker_count > ${#shard_files[@]})); then

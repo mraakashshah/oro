@@ -1139,7 +1139,7 @@ run_parallel_marker_fixture() {
 	local mode="$2"
 	local expected_marker="$3"
 	local output="$fixture/parallel.log"
-	local descendant_alive=0 elapsed_seconds group_alive=0 group_id peer_pid peer_sleep=30 sentinel_alive=0 sentinel_pid status
+	local descendant_alive=0 elapsed_seconds evidence_path expected_exit_class expected_exit_status group_alive=0 group_id peer_pid peer_sleep=30 sentinel_alive=0 sentinel_pid status
 	[[ "$mode" != ordinary ]] || peer_sleep=1
 	mkdir -p "$fixture/bin" "$fixture/pkg/example" "$fixture/cache" "$fixture/tmp" "$fixture/state"
 	printf 'module example.test/markers\n\ngo 1.26\n' >"$fixture/go.mod"
@@ -1183,6 +1183,10 @@ timeout:0)
 	printf 'ORO_MUTATION_EXEC_TIMEOUT\n'
 	exit 124
 	;;
+raw124:0)
+	wait_for_peer
+	exit 124
+	;;
 unknown:0)
 	wait_for_peer
 	printf 'UNKOWN exit code for synthetic mutation executor\n'
@@ -1218,6 +1222,7 @@ EOF
 		PATH="$fixture/bin:$PATH" MUTATION_FAKE_STATE="$fixture/state" \
 			MUTATION_FAKE_MODE="$mode" MUTATION_FAKE_PEER_SLEEP="$peer_sleep" \
 			MUTATION_KILL_TRACE="$fixture/state/kills.log" \
+			MUTATION_FAILURE_EVIDENCE_DIR="$fixture/evidence" \
 			GOCACHE="$fixture/cache" GOTMPDIR="$fixture/tmp" \
 			MUTATION_SOURCE_FILE=pkg/example/value.go MUTATION_FUNCTION_MATCH='^(Value)$' \
 			MUTATION_TEST_PATTERN='^TestValue$' MUTATION_TEST_FILE=pkg/example/value_test.go \
@@ -1281,6 +1286,28 @@ EOF
 	wait "$sentinel_pid" 2>/dev/null || true
 	[[ "$status" != 0 ]] || fail "$mode marker was accepted as a completed mutation campaign"
 	grep -Fxq "$expected_marker" "$output" || fail "$mode marker was not surfaced"
+	evidence_path=$(sed -n 's/^ORO_MUTATION_FAILURE_EVIDENCE://p' "$output" | tail -1)
+	[[ -n "$evidence_path" && -d "$evidence_path" ]] || fail "$mode marker did not retain its failure evidence directory"
+	case "$mode" in
+	timeout | raw124)
+		expected_exit_class=timeout
+		expected_exit_status=124
+		;;
+	unknown | infra)
+		expected_exit_class=infrastructure
+		expected_exit_status=2
+		;;
+	esac
+	jq -e --arg source_file pkg/example/value.go --arg function_match '^(Value)$' \
+		--arg exit_class "$expected_exit_class" --argjson exit_status "$expected_exit_status" \
+		'.source_file == $source_file and .function_match == $function_match and
+			.mutant_index == 0 and (.mutant_path | startswith("/")) and
+			.content_hash_algorithm == "git-blob" and (.content_hash | test("^[0-9a-f]{40,64}$")) and
+			.exit_class == $exit_class and
+			.exit_status == $exit_status' "$evidence_path/mutant-0.json" >/dev/null ||
+		fail "$mode marker did not retain exact mutant identity and exit evidence"
+	jq -e '.exit_class == "aborted" and .exit_status == null' "$evidence_path/mutant-1.json" >/dev/null ||
+		fail "$mode marker did not retain its aborted peer identity"
 	grep -q '^TERM ' "$fixture/state/kills.log" || fail "$mode marker did not attempt bounded group termination"
 	grep -q '^KILL ' "$fixture/state/kills.log" || fail "$mode marker did not escalate the TERM-resistant group"
 	((descendant_alive == 0)) || fail "$mode marker orphaned TERM-resistant descendant $peer_pid"
@@ -1292,6 +1319,7 @@ EOF
 test_parallel_marker_fail_fast() {
 	local fixture="$1"
 	run_parallel_marker_fixture "$fixture/timeout" timeout ORO_MUTATION_EXEC_TIMEOUT
+	run_parallel_marker_fixture "$fixture/raw124" raw124 ORO_MUTATION_EXEC_FAILURE:124
 	run_parallel_marker_fixture "$fixture/unknown" unknown 'UNKOWN exit code for synthetic mutation executor'
 	run_parallel_marker_fixture "$fixture/infra" infra ORO_MUTATION_EXEC_FAILURE:2
 	run_parallel_marker_fixture "$fixture/ordinary" ordinary ''
