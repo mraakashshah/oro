@@ -497,7 +497,8 @@ func TestEscalationSurvivorMutationEscalateWithOneShotContracts(t *testing.T) {
 		const beadID = "actionable-one-shot"
 		d.escalateWithOneShot(t.Context(), "[ORO-DISPATCH] MISSING_AC: actionable-one-shot", beadID, "worker", true)
 		waitEscalationMutationSpawn(t, spawner.spawned)
-		waitEscalationMutationEvent(t, db, "oneshot_escalation_failed", beadID)
+		d.wg.Wait()
+		assertEscalationMutationEvent(t, db, "oneshot_escalation_failed", beadID)
 		if len(escalator.messages) != 1 {
 			t.Fatalf("manager deliveries = %v, want one", escalator.messages)
 		}
@@ -571,7 +572,8 @@ func TestEscalationSurvivorMutationEscalateWithOneShotContracts(t *testing.T) {
 		const beadID = ""
 		d.escalateWithOneShot(t.Context(), "[ORO-DISPATCH] OVERSIZED_BEAD: no-bead", beadID, "worker", true)
 		waitEscalationMutationSpawn(t, spawner.spawned)
-		waitEscalationMutationEvent(t, db, "oneshot_escalation_failed", beadID)
+		d.wg.Wait()
+		assertEscalationMutationEvent(t, db, "oneshot_escalation_failed", beadID)
 		assertEscalationMutationStatusByBead(t, db, beadID, "acked")
 		if len(escalator.messages) != 0 {
 			t.Fatalf("oversized fallback manager deliveries = %v, want none", escalator.messages)
