@@ -197,9 +197,9 @@ touched_function_match() {
 	local base="$1"
 	local head="$2"
 	local file="$3"
-	local touched_functions
+	local candidates head_functions touched_functions
 
-	touched_functions=$(git diff --unified=0 "$base" "$head" -- "$file" 2>/dev/null |
+	candidates=$(git diff --unified=0 "$base" "$head" -- "$file" 2>/dev/null |
 		awk '
 			function emit_function(line, name) {
 				sub(/^.*func[[:space:]]+/, "", line)
@@ -238,16 +238,162 @@ touched_function_match() {
 				flush_hunk()
 			}
 		' |
-		sort -u |
-		paste -sd'|' -)
+		sort -u)
+	head_functions=$(git show "$head:$file" 2>/dev/null |
+		awk '
+			/^[[:space:]]*func[[:space:]]/ {
+				line = $0
+				sub(/^.*func[[:space:]]+/, "", line)
+				if (line ~ /^\(/) {
+					sub(/^\([^)]*\)[[:space:]]+/, "", line)
+				}
+				sub(/[^A-Za-z0-9_].*$/, "", line)
+				if (line != "") print line
+			}
+		' |
+		sort -u)
+	touched_functions=$(
+		while IFS= read -r candidate; do
+			[[ -n "$candidate" ]] || continue
+			if grep -Fxq "$candidate" <<<"$head_functions"; then
+				printf '%s\n' "$candidate"
+			fi
+		done <<<"$candidates" |
+			paste -sd'|' -
+	)
 	if [[ -n "$touched_functions" ]]; then
 		printf '^(%s)$' "$touched_functions"
 	fi
 }
 
-targeted_test_pattern() {
+cochanged_dispatcher_test_match() {
+	local base="$1"
+	local head="$2"
+	local file="$3"
+	local package_dir
+	package_dir=$(dirname "$file")
+
+	local test_names
+	test_names=$(
+		while read -r commit; do
+			git diff --unified=0 "${commit}^" "$commit" -- "$package_dir/*_test.go"
+		done < <(git log --no-merges --format=%H "$base..$head" -- "$file") |
+			awk '
+				function emit_test(line, name) {
+					sub(/^.*func[[:space:]]+/, "", line)
+					name = line
+					sub(/[^A-Za-z0-9_].*$/, "", name)
+					if (name ~ /^Test/) {
+						print name
+					}
+				}
+				function flush_hunk(i) {
+					if (declaration_count > 0) {
+						for (i = 1; i <= declaration_count; i++) {
+							emit_test(declarations[i])
+						}
+					} else if (hunk_label != "") {
+						emit_test(hunk_label)
+					}
+					for (i in declarations) {
+						delete declarations[i]
+					}
+					declaration_count = 0
+					hunk_label = ""
+				}
+				/^@@/ {
+					flush_hunk()
+					hunk_label = $0
+					next
+				}
+				/^\+func[[:space:]]+Test/ {
+					declarations[++declaration_count] = $0
+				}
+				END {
+					flush_hunk()
+				}
+			' |
+			sort -u |
+			paste -sd'|' -
+	)
+	if [[ -n "$test_names" ]]; then
+		printf '^(%s)$' "$test_names"
+	fi
+}
+
+dispatcher_test_supplement() {
 	local file="$1"
 	local match="$2"
+	local -a tests=()
+	[[ "$file" == pkg/dispatcher/assignment_reconcile.go && "$match" == *tryRecoverExternalCloseWork* ]] &&
+		tests+=(TestExternalCloseCleansUpAssignmentAndTracking)
+	[[ "$file" == pkg/dispatcher/epic_branch_admission.go && "$match" == *blockEpicBranchAdmission* ]] &&
+		tests+=(TestEpicBranchAdmissionBlocksUnsafeFreshInspection)
+	[[ "$file" == pkg/dispatcher/escalation.go && "$match" == *routeNewRoutableEscalation* ]] &&
+		tests+=(TestEscalateOversizedRoutesToDecomposeProductionPath TestEscalateNoOpWhenBlockingOpsRunExists)
+	[[ "$file" == pkg/dispatcher/escalation.go && "$match" == *handleDecomposeValidationError* ]] &&
+		tests+=(TestOversizedDecomposeResultAcksOnlyAfterValidation)
+	[[ "$file" == pkg/dispatcher/ops_runs.go && "$match" == *applyOpsResolve* ]] &&
+		tests+=(TestOpsRunDirectives)
+	[[ "$file" == pkg/dispatcher/scheduling.go && "$match" == *launchAssignment* ]] &&
+		tests+=(TestTimedOutSetupCannotClobberReplacement)
+	if [[ "$file" == pkg/dispatcher/review_checkpoint_store.go ]]; then
+		tests+=(
+			TestReanchorTransactionalReadyCheckpointPreservesOpsRunIdentity
+			TestRouteOpsRunRoutesReviewOpsRun
+			TestDispatcherStartupReturnsUnroutableReplacementFailureWriteError
+		)
+	fi
+	printf '%s\n' "${tests[@]}"
+}
+
+merge_test_patterns() {
+	local pattern="$1"
+	local supplements="$2"
+	local names=""
+	if [[ -n "$pattern" ]]; then
+		names=${pattern#^(}
+		names=${names%)$}
+	fi
+	names=$(
+		{
+			tr '|' '\n' <<<"$names"
+			printf '%s\n' "$supplements"
+		} |
+			sed '/^$/d' |
+			sort -u |
+			paste -sd'|' -
+	)
+	if [[ -n "$names" ]]; then
+		printf '^(%s)$' "$names"
+	fi
+}
+
+touched_functions_covered() {
+	local match="$1"
+	local coverage="$2"
+	local functions=${match#^(}
+	functions=${functions%)$}
+	local report
+	report=$(go tool cover -func="$coverage") || return 1
+	local function
+	while IFS= read -r function; do
+		awk -v target="$function" '
+			$2 == target || $2 ~ ("[.]" target "$") {
+				coverage = $3
+				gsub(/%/, "", coverage)
+				if (coverage + 0 > 0) found = 1
+			}
+			END { exit !found }
+		' <<<"$report" || return 1
+	done < <(tr '|' '\n' <<<"$functions")
+}
+
+targeted_test_pattern() {
+	local base="$1"
+	local head="$2"
+	local file="$3"
+	local match="$4"
 
 	if [[ "$file" == cmd/oro/hooks.go && "$match" == '^(isOroDistributedHook)$' ]]; then
 		printf '^TestIsOroDistributedHook'
@@ -257,6 +403,11 @@ targeted_test_pattern() {
 		printf '^(TestHookPathsWouldLeak|TestHookPathsWouldLeak_NonTmpdirSandboxRoot|TestHookPathsWouldLeak_NonstandardGoTempRoot|TestInstallCodexHookConfigRefusesLeakyHooks)$'
 	elif [[ "$file" == pkg/dispatcher/scheduling.go && "$match" == '^(advanceAssignedGeneralIdle)$' ]]; then
 		printf '^TestAdvanceAssignedGeneralIdleConsumesReportedClaimAfterAsyncRelease$'
+	elif [[ "$file" == pkg/dispatcher/*.go ]]; then
+		local pattern supplements
+		pattern=$(cochanged_dispatcher_test_match "$base" "$head" "$file")
+		supplements=$(dispatcher_test_supplement "$file" "$match")
+		merge_test_patterns "$pattern" "$supplements"
 	fi
 }
 
@@ -291,7 +442,11 @@ run_mutation_shard() {
 			return
 		fi
 	fi
-	local -a targeted_exec=()
+	local -a mutation_exec=("--exec=bash scripts/quality_gate/mutation_exec.sh")
+	if [[ "$file" == pkg/dispatcher/*.go && -z "$test_pattern" ]]; then
+		write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" 2 'dispatcher mutation target has no deterministic test owner'
+		return
+	fi
 	if [[ -n "$test_pattern" ]]; then
 		local package
 		package="./$(dirname "$file")"
@@ -308,14 +463,32 @@ run_mutation_shard() {
 			write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" 2 'targeted mutation test pattern matched no tests'
 			return
 		fi
-		targeted_exec=("--exec=bash scripts/quality_gate/mutation_exec.sh")
+		local coverage_file="$shard_root/coverage/$index.out"
+		mkdir -p "$shard_root/coverage"
+		local baseline_exit=0
+		(
+			cd "$checkout"
+			GOCACHE="$shard_root/caches/$cache_slot" GOTMPDIR="$shard_root/tmp/$index" \
+				timeout "$exec_timeout" go test -vet=off -count=1 -timeout "$((exec_timeout + 5))s" \
+				-coverprofile="$coverage_file" -run "$test_pattern" "$package"
+		) >>"$output_file" 2>&1 || baseline_exit=$?
+		if ((baseline_exit != 0)); then
+			local reason='targeted mutation baseline failed'
+			((baseline_exit == 124)) && reason='targeted mutation baseline deadline exceeded'
+			write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" "$baseline_exit" "$reason"
+			return
+		fi
+		if [[ "$file" == pkg/dispatcher/*.go ]] && ! touched_functions_covered "$match" "$coverage_file"; then
+			write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" 2 'targeted mutation tests do not cover every touched function'
+			return
+		fi
 	fi
 	(
 		cd "$checkout"
 		GOCACHE="$shard_root/caches/$cache_slot" \
 			GOTMPDIR="$shard_root/tmp/$index" \
 			MUTATION_TEST_PATTERN="$test_pattern" \
-			timeout "$file_timeout" go tool go-mutesting --exec-timeout="$exec_timeout" "${targeted_exec[@]}" "--match=$match" "$file"
+			timeout "$file_timeout" go tool go-mutesting --exec-timeout="$exec_timeout" "${mutation_exec[@]}" "--match=$match" "$file"
 	) >"$output_file" 2>&1 || mutation_exit=$?
 	write_shard_result "$result" "$index" "$file" "$match" "$test_pattern" "$mutation_exit" "$output_file"
 }
@@ -399,7 +572,7 @@ main() {
 		local match
 		match=$(touched_function_match "$base" "$head" "$file")
 		match_patterns+=("$match")
-		test_patterns+=("$(targeted_test_pattern "$file" "$match")")
+		test_patterns+=("$(targeted_test_pattern "$base" "$head" "$file" "$match")")
 	done
 	local pending_shards
 	pending_shards=$(

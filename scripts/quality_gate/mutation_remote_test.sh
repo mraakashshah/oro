@@ -55,10 +55,11 @@ new_targeted_fixture() {
 	git -C "$fixture" init -q
 	git -C "$fixture" config user.email mutation@example.test
 	git -C "$fixture" config user.name mutation-test
-	local base_parameters head_parameters package_name source_file source_prefix test_file function_name test_name
+	local base_parameters head_parameters head_test_name package_name source_file source_prefix test_file function_name test_name
 	local -a test_names
 	base_parameters=""
 	head_parameters=""
+	head_test_name=""
 	source_prefix=""
 	case "$target" in
 	hooks)
@@ -97,10 +98,21 @@ new_targeted_fixture() {
 		source_prefix='func nextGeneralIdleIndex() int { return 0 }\n\n'
 		test_names=(TestAdvanceAssignedGeneralIdleConsumesReportedClaimAfterAsyncRelease)
 		;;
+	history)
+		package_name=dispatcher
+		source_file=pkg/dispatcher/startup_recovery.go
+		test_file=pkg/dispatcher/review_lifecycle_test.go
+		function_name=startupRecovery
+		test_names=(TestExistingDispatcherBehavior)
+		head_test_name=TestReviewCheckpointStartupOrdering
+		;;
 	*) fail "unknown targeted fixture: $target" ;;
 	esac
 	printf 'package %s\n\n%bfunc %s(%s) bool { return false }\n' \
 		"$package_name" "$source_prefix" "$function_name" "$base_parameters" >"$fixture/$source_file"
+	if [[ "$target" = history ]]; then
+		printf '\nfunc removedStartupPath() bool { return false }\n' >>"$fixture/$source_file"
+	fi
 	if [[ "$expanded" = true ]]; then
 		printf '\nfunc anotherHookDecision() bool { return false }\n' >>"$fixture/$source_file"
 	fi
@@ -117,6 +129,10 @@ new_targeted_fixture() {
 		printf '\nfunc anotherHookDecision() bool { return true }\n' >>"$fixture/$source_file"
 	fi
 	git -C "$fixture" add "$source_file"
+	if [[ -n "$head_test_name" ]]; then
+		printf '\nfunc %s() {}\n' "$head_test_name" >>"$fixture/$test_file"
+		git -C "$fixture" add "$test_file"
+	fi
 	git -C "$fixture" commit -qm head
 	head=$(git -C "$fixture" rev-parse HEAD)
 	printf '%s\n%s\n' "$base" "$head"
@@ -130,14 +146,29 @@ set -euo pipefail
 
 if [[ "$1" = test ]]; then
 	printf '%s\n' "$*" >>"${MUTATION_LIST_TRACE:?}"
+	for arg in "$@"; do
+		case "$arg" in
+		-coverprofile=*) printf 'mode: set\n' >"${arg#-coverprofile=}" ;;
+		esac
+	done
 	if [[ "$MUTATION_FIXTURE" != targeted-list-miss ]]; then
 		case "$*" in
 		*TestInstallAgentBranchGuard*) printf 'TestInstallAgentBranchGuard\n' ;;
 		*TestHookPathsWouldLeak*) printf 'TestHookPathsWouldLeak\nTestHookPathsWouldLeak_NonTmpdirSandboxRoot\nTestHookPathsWouldLeak_NonstandardGoTempRoot\nTestInstallCodexHookConfigRefusesLeakyHooks\n' ;;
 		*TestAdvanceAssignedGeneralIdleConsumesReportedClaimAfterAsyncRelease*) printf 'TestAdvanceAssignedGeneralIdleConsumesReportedClaimAfterAsyncRelease\n' ;;
+		*TestReviewCheckpointStartupOrdering*) printf 'TestReviewCheckpointStartupOrdering\n' ;;
 		*) printf 'TestIsOroDistributedHookRecognizesFastPrePush\n' ;;
 		esac
 	fi
+	exit 0
+fi
+
+if [[ "$1" = tool && "$2" = cover ]]; then
+	if [[ "$MUTATION_FIXTURE" != targeted-uncovered ]]; then
+		printf 'pkg/dispatcher/startup_recovery.go:1: startupRecovery 100.0%%\n'
+	fi
+	printf 'pkg/dispatcher/scheduling.go:1: advanceAssignedGeneralIdle 100.0%%\n'
+	printf 'pkg/example/value.go:1: Value 100.0%%\n'
 	exit 0
 fi
 
@@ -185,13 +216,15 @@ malformed-annotated)
 	;;
 aggregate | aggregate-below | aggregate-zero | shard-timeout)
 	target=${*: -1}
+	exec_arg=""
 	match=""
 	for arg in "$@"; do
 		case "$arg" in
+		--exec=*) exec_arg=${arg#--exec=} ;;
 		--match=*) match=${arg#--match=} ;;
 		esac
 	done
-	printf '%s\t%s\t%s\t%s\n' "$target" "$PWD" "${GOCACHE:-}" "$match" >>"${MUTATION_TRACE:?}"
+	printf '%s\t%s\t%s\t%s\t%s\n' "$target" "$PWD" "${GOCACHE:-}" "$match" "$exec_arg" >>"${MUTATION_TRACE:?}"
 	case "$target" in
 	*pkg/example/value.go)
 		sleep 0.2
@@ -221,7 +254,7 @@ aggregate | aggregate-below | aggregate-zero | shard-timeout)
 		;;
 	esac
 	;;
-targeted | targeted-fallback | targeted-list-miss | targeted-timeout)
+targeted | targeted-fallback | targeted-list-miss | targeted-timeout | targeted-uncovered)
 	printf '%s\n' "$*" >"${MUTATION_ARGS_TRACE:?}"
 	if [[ "$MUTATION_FIXTURE" = targeted-timeout ]]; then
 		printf 'ORO_MUTATION_EXEC_TIMEOUT\n'
@@ -324,6 +357,8 @@ TestStrictIncrementalMutationShards() {
 	! grep -q $'\t\t' "$trace" || fail 'mutation shard GOCACHE must be non-empty'
 	[[ "$(cut -f4 "$trace" | sort | tr '\n' ' ')" = "^(Other)$ ^(Value)$ " ]] ||
 		fail 'mutation shards must target only functions touched in each changed file'
+	[[ "$(cut -f5 "$trace" | sort -u)" = "bash scripts/quality_gate/mutation_exec.sh" ]] ||
+		fail 'every mutation shard must use the timeout-aware exec boundary'
 	jq -e '[.shards[].match] == ["^(Value)$", "^(Other)$"]' "$evidence" >/dev/null ||
 		fail 'mutation evidence must preserve each deterministic touched-function match'
 
@@ -348,7 +383,7 @@ TestStrictIncrementalMutationShards() {
 }
 
 TestTargetedMutationScope() {
-	local evidence fixture args_trace list_trace scheduling_pattern start_pattern
+	local evidence fixture args_trace history_pattern list_trace scheduling_pattern start_pattern
 	fixture="$tmp/targeted"
 	evidence=$(run_targeted_fixture "$fixture" targeted pass 0)
 	args_trace="$fixture/mutation-args.txt"
@@ -382,9 +417,21 @@ TestTargetedMutationScope() {
 		'.shards[0].match == "^(advanceAssignedGeneralIdle)$" and .shards[0].test_pattern == $pattern' \
 		"$evidence" >/dev/null || fail 'dispatcher scheduling mutation evidence must preserve function and exact regression test scope'
 
+	history_pattern='^(TestReviewCheckpointStartupOrdering)$'
+	evidence=$(run_targeted_fixture "$tmp/targeted-history" targeted pass 0 false history)
+	grep -Fq -- "-list $history_pattern ./pkg/dispatcher" "$tmp/targeted-history/mutation-list.txt" ||
+		fail 'dispatcher mutations must preflight tests co-changed with their production file'
+	jq -e --arg pattern "$history_pattern" \
+		'.shards[0].match == "^(startupRecovery)$" and .shards[0].test_pattern == $pattern' \
+		"$evidence" >/dev/null || fail 'dispatcher mutation evidence must preserve its deterministic co-changed test scope'
+
+	evidence=$(run_targeted_fixture "$tmp/targeted-history-uncovered" targeted-uncovered infrastructure_failure 2 false history)
+	jq -e '.shards[0].reason == "targeted mutation tests do not cover every touched function"' \
+		"$evidence" >/dev/null || fail 'an uncovered dispatcher mutation target must fail as infrastructure'
+
 	evidence=$(run_targeted_fixture "$tmp/targeted-expanded" targeted-fallback pass 0 true)
-	! grep -q -- '--exec=' "$tmp/targeted-expanded/mutation-args.txt" ||
-		fail 'an expanded mutation surface must fall back to the full package instead of silently narrowing tests'
+	grep -q -- '--exec=bash scripts/quality_gate/mutation_exec.sh' "$tmp/targeted-expanded/mutation-args.txt" ||
+		fail 'a full-package fallback must keep the timeout-aware exec boundary'
 	jq -e '.shards[0].match == "^(anotherHookDecision|isOroDistributedHook)$" and .shards[0].test_pattern == ""' \
 		"$evidence" >/dev/null || fail 'full-package fallback evidence must preserve the expanded function surface'
 
