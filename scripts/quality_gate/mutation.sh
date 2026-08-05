@@ -426,6 +426,49 @@ assignment_admission_mutation_test_file() {
 	printf 'pkg/dispatcher/buffer_survivor_mutation_test.go'
 }
 
+escalation_survivor_mutation_test_pattern() {
+	local file="$1"
+	local match="$2"
+	[[ "$file" == pkg/dispatcher/escalation.go ]] || return 0
+	case "$match" in
+	'^(completeOneShotOpsRunFailureBestEffort)$' | \
+		'^(completeOpsRunBestEffort)$' | \
+		'^(escalateWithOneShot)$' | \
+		'^(handleDecomposeResult)$' | \
+		'^(handleDecomposeValidationError)$' | \
+		'^(handleEscalationResult)$' | \
+		'^(handleFailedEscalationResult)$' | \
+		'^(logCompletedEscalationResult)$' | \
+		'^(routeExistingRoutableEscalation)$' | \
+		'^(routeNewRoutableEscalation)$')
+		printf '^TestEscalationSurvivorMutation'
+		;;
+	esac
+}
+
+escalation_mutation_test_file() {
+	local file="$1"
+	local match="$2"
+	[[ "$file" == pkg/dispatcher/escalation.go ]] || return 0
+	case "$match" in
+	'^(completeOneShotOpsRunFailureBestEffort)$' | \
+		'^(completeOpsRunBestEffort)$' | \
+		'^(escalateWithOneShot)$' | \
+		'^(handleDecomposeResult)$' | \
+		'^(handleDecomposeValidationError)$' | \
+		'^(handleEscalationResult)$' | \
+		'^(handleFailedEscalationResult)$' | \
+		'^(logCompletedEscalationResult)$' | \
+		'^(routeExistingRoutableEscalation)$' | \
+		'^(routeNewRoutableEscalation)$')
+		printf 'pkg/dispatcher/escalation_survivor_mutation_test.go'
+		;;
+	'^(spawnEscalationOneShot)$')
+		printf 'pkg/dispatcher/bounded_mutation_test.go'
+		;;
+	esac
+}
+
 review_integration_recovery_mutation_test_pattern() {
 	local file="$1"
 	local match="$2"
@@ -633,7 +676,7 @@ targeted_test_pattern() {
 	local head="$2"
 	local file="$3"
 	local match="$4"
-	local assignment_admission_pattern assignment_bc_pattern review_checkpoint_pattern review_integration_recovery_pattern
+	local assignment_admission_pattern assignment_bc_pattern escalation_survivor_pattern review_checkpoint_pattern review_integration_recovery_pattern
 	assignment_admission_pattern=$(assignment_admission_mutation_test_pattern "$file" "$match")
 	if [[ -n "$assignment_admission_pattern" ]]; then
 		printf '%s' "$assignment_admission_pattern"
@@ -642,6 +685,11 @@ targeted_test_pattern() {
 	assignment_bc_pattern=$(assignment_bc_mutation_test_pattern "$file" "$match")
 	if [[ -n "$assignment_bc_pattern" ]]; then
 		printf '%s' "$assignment_bc_pattern"
+		return
+	fi
+	escalation_survivor_pattern=$(escalation_survivor_mutation_test_pattern "$file" "$match")
+	if [[ -n "$escalation_survivor_pattern" ]]; then
+		printf '%s' "$escalation_survivor_pattern"
 		return
 	fi
 	review_integration_recovery_pattern=$(review_integration_recovery_mutation_test_pattern "$file" "$match")
@@ -704,7 +752,10 @@ run_mutation_shard() {
 	local result="$result_dir/$index.json"
 	local mutation_exit=0
 	local mutation_test_file=""
-	mutation_test_file=$(review_integration_recovery_mutation_test_file "$file")
+	mutation_test_file=$(escalation_mutation_test_file "$file" "$match")
+	if [[ -z "$mutation_test_file" ]]; then
+		mutation_test_file=$(review_integration_recovery_mutation_test_file "$file")
+	fi
 	if [[ -z "$mutation_test_file" ]]; then
 		mutation_test_file=$(assignment_admission_mutation_test_file "$file")
 	fi
@@ -811,7 +862,8 @@ run_mutation_shard() {
 				timeout "$max_shard_timeout" bash "$mutation_script_dir/mutation_parallel.sh"
 		elif [[ "$file" == pkg/dispatcher/review_integration_recovery.go ||
 			"$mutation_test_file" == pkg/dispatcher/assignment_reservation_worktree_survivor_mutation_test.go ||
-			"$mutation_test_file" == pkg/dispatcher/buffer_survivor_mutation_test.go ]]; then
+			"$mutation_test_file" == pkg/dispatcher/buffer_survivor_mutation_test.go ||
+			"$mutation_test_file" == pkg/dispatcher/escalation_survivor_mutation_test.go ]]; then
 			GOCACHE="$shard_root/caches/$cache_slot" \
 				GOTMPDIR="$shard_root/tmp/$index" \
 				MUTATION_SOURCE_FILE="$file" \
@@ -964,7 +1016,9 @@ main() {
 			("${match_patterns[$index]}" == '^(assignBeadWithClaim)$' ||
 				"${test_patterns[$index]}" == *TestAssignmentBC*)) ||
 			"$file" == pkg/dispatcher/assignment_admission.go ||
-			"$file" == pkg/dispatcher/review_integration_recovery.go ]]; then
+			"$file" == pkg/dispatcher/review_integration_recovery.go ||
+			("$file" == pkg/dispatcher/escalation.go &&
+				"${test_patterns[$index]}" == '^TestEscalationSurvivorMutation') ]]; then
 			for pid in "${pids[@]}"; do
 				wait "$pid" || true
 			done

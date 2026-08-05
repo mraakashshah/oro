@@ -129,6 +129,38 @@ assignment_admission_test_file_for() {
 	bash -c "$function_source"$'\n''assignment_admission_mutation_test_file "$1"' _ "$file" || true
 }
 
+escalation_survivor_pattern_for() {
+	local file="$1"
+	local match="$2"
+	local function_source
+	function_source=$(awk '
+		/^escalation_survivor_mutation_test_pattern\(\)/ { copying = 1 }
+		copying { print }
+		copying && /^}/ { exit }
+	' "$runner")
+	if [[ -z "$function_source" ]]; then
+		fail 'mutation runner omitted escalation survivor owner mapping'
+		return 1
+	fi
+	bash -c "$function_source"$'\n''escalation_survivor_mutation_test_pattern "$1" "$2"' _ "$file" "$match" || true
+}
+
+escalation_mutation_test_file_for() {
+	local file="$1"
+	local match="$2"
+	local function_source
+	function_source=$(awk '
+		/^escalation_mutation_test_file\(\)/ { copying = 1 }
+		copying { print }
+		copying && /^}/ { exit }
+	' "$runner")
+	if [[ -z "$function_source" ]]; then
+		fail 'mutation runner omitted escalation standalone file mapping'
+		return 1
+	fi
+	bash -c "$function_source"$'\n''escalation_mutation_test_file "$1" "$2"' _ "$file" "$match" || true
+}
+
 touched_function_pattern_for() {
 	local base="$1"
 	local head="$2"
@@ -172,6 +204,22 @@ commit:^TestBufferAssignmentAdmissionCommitOutcomes$
 EOF
 }
 
+TestEscalationTouchedFunctionRouting() {
+	local fixture="$1"
+	local actual base expected head
+	local -a refs
+	mapfile -t refs < <(new_escalation_touched_fixture "$fixture")
+	base=${refs[0]}
+	head=${refs[1]}
+	actual=$(
+		cd "$fixture"
+		touched_function_pattern_for "$base" "$head" pkg/dispatcher/escalation.go
+	)
+	expected='^(completeOneShotOpsRunFailureBestEffort|completeOpsRunBestEffort|escalateWithOneShot|handleDecomposeResult|handleDecomposeValidationError|handleEscalationResult|handleFailedEscalationResult|logCompletedEscalationResult|routeExistingRoutableEscalation|routeNewRoutableEscalation|spawnEscalationOneShot)$'
+	[[ "$actual" == "$expected" ]] ||
+		fail "canonical escalation touched functions = $actual, want $expected"
+}
+
 TestAssignmentAdmissionMutationMapping() {
 	local function expected got
 	while IFS=: read -r function expected; do
@@ -207,6 +255,39 @@ EOF
 	[[ -z "$got" ]] || fail "unmapped assignment function unexpectedly selected $got"
 }
 
+TestEscalationSurvivorMutationMapping() {
+	local function got
+	while IFS= read -r function; do
+		got=$(escalation_survivor_pattern_for pkg/dispatcher/escalation.go "^($function)$")
+		[[ "$got" == '^TestEscalationSurvivorMutation' ]] ||
+			fail "$function escalation mutation owner = $got, want survivor owner"
+		got=$(escalation_mutation_test_file_for pkg/dispatcher/escalation.go "^($function)$")
+		[[ "$got" == pkg/dispatcher/escalation_survivor_mutation_test.go ]] ||
+			fail "$function escalation mutation file = $got, want survivor file"
+	done <<'EOF'
+completeOneShotOpsRunFailureBestEffort
+completeOpsRunBestEffort
+escalateWithOneShot
+handleDecomposeResult
+handleDecomposeValidationError
+handleEscalationResult
+handleFailedEscalationResult
+logCompletedEscalationResult
+routeExistingRoutableEscalation
+routeNewRoutableEscalation
+EOF
+
+	got=$(escalation_survivor_pattern_for pkg/dispatcher/escalation.go '^(spawnEscalationOneShot)$')
+	[[ -z "$got" ]] || fail "spawn escalation unexpectedly selected survivor owner $got"
+	got=$(escalation_mutation_test_file_for pkg/dispatcher/escalation.go '^(spawnEscalationOneShot)$')
+	[[ "$got" == pkg/dispatcher/bounded_mutation_test.go ]] ||
+		fail "spawn escalation mutation file = $got, want bounded file"
+	got=$(escalation_survivor_pattern_for pkg/dispatcher/other.go '^(escalateWithOneShot)$')
+	[[ -z "$got" ]] || fail "wrong escalation source unexpectedly selected $got"
+	got=$(escalation_survivor_pattern_for pkg/dispatcher/escalation.go '^(unmappedEscalationFunction)$')
+	[[ -z "$got" ]] || fail "unmapped escalation function unexpectedly selected $got"
+}
+
 TestMutationOwnerMappingsCoexist() {
 	local got
 	got=$(assignment_admission_pattern_for \
@@ -224,6 +305,10 @@ TestMutationOwnerMappingsCoexist() {
 		pkg/dispatcher/review_checkpoint_store.go '^(LoadOwningForBead)$')
 	[[ "$got" == '^TestReviewCheckpointMutationOwnershipLoads$' ]] ||
 		fail "coexisting review checkpoint resolver selected $got"
+	got=$(escalation_survivor_pattern_for \
+		pkg/dispatcher/escalation.go '^(escalateWithOneShot)$')
+	[[ "$got" == '^TestEscalationSurvivorMutation' ]] ||
+		fail "coexisting escalation resolver selected $got"
 
 	got=$(assignment_admission_pattern_for pkg/dispatcher/assignment.go '^(beginAssignmentAdmission)$')
 	[[ -z "$got" ]] || fail "assignment admission resolver accepted wrong source: $got"
@@ -239,6 +324,39 @@ TestMutationOwnerMappingsCoexist() {
 	got=$(review_integration_recovery_pattern_for \
 		pkg/dispatcher/review_integration_recovery.go '^(unmappedIntegrationRecoveryFunction)$')
 	[[ -z "$got" ]] || fail "integration-recovery resolver accepted unmapped function: $got"
+}
+
+TestEscalationSurvivorMutationCoverage() {
+	local coverage coverage_root function listed report
+	coverage_root=$(mktemp -d)
+	coverage="$coverage_root/escalation.out"
+	listed=$(go test -list '^TestEscalationSurvivorMutation' ./pkg/dispatcher)
+	grep -q '^TestEscalationSurvivorMutation' <<<"$listed" ||
+		fail 'escalation survivor owner pattern matched no real tests'
+	timeout 60 go test -vet=off -count=1 -timeout 55s -coverprofile="$coverage" \
+		-run '^TestEscalationSurvivorMutation' ./pkg/dispatcher >/dev/null
+	report=$(go tool cover -func="$coverage")
+	while IFS= read -r function; do
+		awk -v target="$function" '
+			$2 == target || $2 ~ ("[.]" target "$") {
+				value = $3
+				gsub(/%/, "", value)
+				if (value + 0 > 0) covered = 1
+			}
+			END { exit !covered }
+		' <<<"$report" || fail "$function escalation survivor owner has zero production coverage"
+	done <<'EOF'
+completeOneShotOpsRunFailureBestEffort
+completeOpsRunBestEffort
+escalateWithOneShot
+handleDecomposeResult
+handleDecomposeValidationError
+handleEscalationResult
+handleFailedEscalationResult
+logCompletedEscalationResult
+routeExistingRoutableEscalation
+routeNewRoutableEscalation
+EOF
 }
 
 TestReviewCheckpointMutationMapping() {
@@ -608,6 +726,13 @@ new_targeted_fixture() {
 		function_name=finalizeReviewIntegration
 		test_names=(TestReviewIntegrationRecoveryMutationFinalize)
 		;;
+	escalation-survivor)
+		package_name=dispatcher
+		source_file=pkg/dispatcher/escalation.go
+		test_file=pkg/dispatcher/escalation_survivor_mutation_test.go
+		function_name=escalateWithOneShot
+		test_names=(TestEscalationSurvivorMutationRouting)
+		;;
 	escalation-one-shot)
 		package_name=dispatcher
 		source_file=pkg/dispatcher/escalation.go
@@ -667,6 +792,10 @@ new_targeted_fixture() {
 		printf 'package dispatcher\n\nfunc TestReviewIntegrationRecoveryUnselected() {}\n' \
 			>"$fixture/pkg/dispatcher/review_integration_recovery_unselected_test.go"
 		;;
+	escalation-survivor)
+		printf 'package dispatcher\n\nfunc TestEscalationUnselected() {}\n' \
+			>"$fixture/pkg/dispatcher/escalation_unselected_test.go"
+		;;
 	esac
 	git -C "$fixture" add go.mod "$source_file" "$test_file"
 	case "$target" in
@@ -678,6 +807,9 @@ new_targeted_fixture() {
 		;;
 	review-integration-recovery)
 		git -C "$fixture" add pkg/dispatcher/review_integration_recovery_unselected_test.go
+		;;
+	escalation-survivor)
+		git -C "$fixture" add pkg/dispatcher/escalation_unselected_test.go
 		;;
 	esac
 	git -C "$fixture" commit -qm base
@@ -728,6 +860,47 @@ new_assignment_admission_touched_fixture() {
 		'func (a *assignmentAdmission) commit() bool { return true }' \
 		>"$fixture/pkg/dispatcher/assignment_admission.go"
 	git -C "$fixture" add pkg/dispatcher/assignment_admission.go
+	git -C "$fixture" commit -qm head
+	head=$(git -C "$fixture" rev-parse HEAD)
+	printf '%s\n%s\n' "$base" "$head"
+}
+
+new_escalation_touched_fixture() {
+	local fixture="$1"
+	local base head function
+	local -a functions=(
+		completeOneShotOpsRunFailureBestEffort
+		completeOpsRunBestEffort
+		escalateWithOneShot
+		handleDecomposeResult
+		handleDecomposeValidationError
+		handleEscalationResult
+		handleFailedEscalationResult
+		logCompletedEscalationResult
+		routeExistingRoutableEscalation
+		routeNewRoutableEscalation
+		spawnEscalationOneShot
+	)
+	mkdir -p "$fixture/pkg/dispatcher"
+	git -C "$fixture" init -q
+	git -C "$fixture" config user.email mutation@example.test
+	git -C "$fixture" config user.name mutation-test
+	{
+		printf 'package dispatcher\n\ntype Dispatcher struct{}\n'
+		for function in "${functions[@]}"; do
+			printf 'func (d *Dispatcher) %s() bool { return false }\n' "$function"
+		done
+	} >"$fixture/pkg/dispatcher/escalation.go"
+	git -C "$fixture" add pkg/dispatcher/escalation.go
+	git -C "$fixture" commit -qm base
+	base=$(git -C "$fixture" rev-parse HEAD)
+	{
+		printf 'package dispatcher\n\ntype Dispatcher struct{}\n'
+		for function in "${functions[@]}"; do
+			printf 'func (d *Dispatcher) %s() bool { return true }\n' "$function"
+		done
+	} >"$fixture/pkg/dispatcher/escalation.go"
+	git -C "$fixture" add pkg/dispatcher/escalation.go
 	git -C "$fixture" commit -qm head
 	head=$(git -C "$fixture" rev-parse HEAD)
 	printf '%s\n%s\n' "$base" "$head"
@@ -813,6 +986,7 @@ if [[ "$1" = test ]]; then
 		*TestBufferAssignmentAdmissionCloseOutcomes*) printf 'TestBufferAssignmentAdmissionCloseOutcomes\n' ;;
 		*TestBufferAssignmentAdmissionCommitOutcomes*) printf 'TestBufferAssignmentAdmissionCommitOutcomes\n' ;;
 		*TestReviewIntegrationRecoveryMutationFinalize*) printf 'TestReviewIntegrationRecoveryMutationFinalize\n' ;;
+		*TestEscalationSurvivorMutation*) printf 'TestEscalationSurvivorMutationRouting\n' ;;
 		*TestSpawnEscalationOneShotReturnsAfterReadingWorktree*) printf 'TestSpawnEscalationOneShotReturnsAfterReadingWorktree\n' ;;
 		*TestApplyHealthReturnsAndReleasesDispatcherMutex*) printf 'TestApplyHealthReturnsAndReleasesDispatcherMutex\n' ;;
 		*TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex*) printf 'TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex\n' ;;
@@ -846,6 +1020,16 @@ if [[ "$1" = tool && "$2" = cover ]]; then
 	printf 'pkg/dispatcher/assignment_admission.go:2: close 100.0%%\n'
 	printf 'pkg/dispatcher/assignment_admission.go:3: commit 100.0%%\n'
 	printf 'pkg/dispatcher/review_integration_recovery.go:1: finalizeReviewIntegration 100.0%%\n'
+	printf 'pkg/dispatcher/escalation.go:1: completeOneShotOpsRunFailureBestEffort 100.0%%\n'
+	printf 'pkg/dispatcher/escalation.go:2: completeOpsRunBestEffort 100.0%%\n'
+	printf 'pkg/dispatcher/escalation.go:3: escalateWithOneShot 100.0%%\n'
+	printf 'pkg/dispatcher/escalation.go:4: handleDecomposeResult 100.0%%\n'
+	printf 'pkg/dispatcher/escalation.go:5: handleDecomposeValidationError 100.0%%\n'
+	printf 'pkg/dispatcher/escalation.go:6: handleEscalationResult 100.0%%\n'
+	printf 'pkg/dispatcher/escalation.go:7: handleFailedEscalationResult 100.0%%\n'
+	printf 'pkg/dispatcher/escalation.go:8: logCompletedEscalationResult 100.0%%\n'
+	printf 'pkg/dispatcher/escalation.go:9: routeExistingRoutableEscalation 100.0%%\n'
+	printf 'pkg/dispatcher/escalation.go:10: routeNewRoutableEscalation 100.0%%\n'
 	printf 'pkg/dispatcher/escalation.go:1: spawnEscalationOneShot 100.0%%\n'
 	printf 'pkg/dispatcher/health.go:1: applyHealth 100.0%%\n'
 	printf 'pkg/dispatcher/ops_runs.go:1: reviewContextForOpsRun 100.0%%\n'
@@ -1342,6 +1526,44 @@ EOF
 			fail 'integration-recovery focused argv included an unselected test file'
 	done <<<"$focused_lines"
 
+	local escalation_survivor_pattern escalation_survivor_test_file
+	escalation_survivor_pattern='^TestEscalationSurvivorMutation'
+	escalation_survivor_test_file=pkg/dispatcher/escalation_survivor_mutation_test.go
+	fixture="$tmp/targeted-escalation-survivor"
+	evidence=$(run_targeted_fixture "$fixture" targeted pass 0 false escalation-survivor)
+	list_trace="$fixture/mutation-list.txt"
+	grep -Fq -- "-list $escalation_survivor_pattern ./pkg/dispatcher" "$list_trace" ||
+		fail 'escalation survivor mutations must preflight their reviewed owner'
+	grep -F -- "-run $escalation_survivor_pattern ./pkg/dispatcher" "$list_trace" |
+		grep -q -- '-coverprofile=' ||
+		fail 'escalation survivor baseline must retain full-package production coverage'
+	jq -e --arg pattern "$escalation_survivor_pattern" \
+		'.shards[0].match == "^(escalateWithOneShot)$" and .shards[0].test_pattern == $pattern' \
+		"$evidence" >/dev/null || fail 'escalation survivor evidence lost exact owner mapping'
+	grep -Fxq "MUTATION_TEST_FILE=$escalation_survivor_test_file" "$fixture/mutation-args.txt" ||
+		fail 'escalation survivor mutations must compile only the reviewed standalone file'
+	for expected_limit in \
+		'PARALLEL_WORKERS=2' \
+		'EXEC_TIMEOUT=60' \
+		'TIMEOUT_MARGIN=5' \
+		'BASE_SHARD_TIMEOUT=240' \
+		'MAX_SHARD_TIMEOUT=240'; do
+		grep -Fxq "$expected_limit" "$fixture/mutation-args.txt" ||
+			fail "escalation survivor mutation boundary omitted $expected_limit"
+	done
+	focused_lines=$(grep -F "$escalation_survivor_test_file" "$list_trace")
+	[[ -n "$focused_lines" ]] || fail 'escalation survivor emitted no focused mutation argv'
+	while IFS= read -r focused_line; do
+		[[ "$(grep -oF 'pkg/dispatcher/escalation.go' <<<"$focused_line" | wc -l | tr -d ' ')" = 1 ]] ||
+			fail 'escalation survivor focused argv must include source exactly once'
+		[[ "$(grep -oF "$escalation_survivor_test_file" <<<"$focused_line" | wc -l | tr -d ' ')" = 1 ]] ||
+			fail 'escalation survivor focused argv must include owner exactly once'
+		grep -Fq -- '-timeout 55s' <<<"$focused_line" ||
+			fail 'escalation survivor focused argv must enforce the 55s Go deadline'
+		! grep -Fq 'escalation_unselected_test.go' <<<"$focused_line" ||
+			fail 'escalation survivor focused argv included an unselected test file'
+	done <<<"$focused_lines"
+
 	escalation_pattern='^TestSpawnEscalationOneShotReturnsAfterReadingWorktree$'
 	evidence=$(run_targeted_fixture "$tmp/targeted-escalation-one-shot" targeted pass 0 false escalation-one-shot)
 	grep -Fq -- "-list $escalation_pattern ./pkg/dispatcher" "$tmp/targeted-escalation-one-shot/mutation-list.txt" ||
@@ -1349,6 +1571,9 @@ EOF
 	jq -e --arg pattern "$escalation_pattern" \
 		'.shards[0].match == "^(spawnEscalationOneShot)$" and .shards[0].test_pattern == $pattern' \
 		"$evidence" >/dev/null || fail 'spawnEscalationOneShot mutations must select only the bounded worktree-lock contract'
+	grep -Fxq 'MUTATION_TEST_FILE=pkg/dispatcher/bounded_mutation_test.go' \
+		"$tmp/targeted-escalation-one-shot/mutation-args.txt" ||
+		fail 'spawnEscalationOneShot mutations must preserve their bounded standalone file'
 
 	apply_health_pattern='^TestApplyHealthReturnsAndReleasesDispatcherMutex$'
 	evidence=$(run_targeted_fixture "$tmp/targeted-health-apply" targeted pass 0 false health-apply)
@@ -2273,9 +2498,12 @@ TestStrictIncrementalMutation() {
 	TestReviewCheckpointMutationMapping
 	TestReviewIntegrationRecoveryMutationMapping
 	TestReviewIntegrationRecoveryMutationCoverage
+	TestEscalationSurvivorMutationCoverage
 	TestAssignmentBCMutationMapping
 	TestAssignmentAdmissionMutationMapping
 	TestAssignmentAdmissionTouchedFunctionRouting "$tmp/assignment-admission-touched"
+	TestEscalationSurvivorMutationMapping
+	TestEscalationTouchedFunctionRouting "$tmp/escalation-touched"
 	TestMutationOwnerMappingsCoexist
 
 	TestIncrementalMutationArtifactRetention "$tmp/workflow-artifact"
@@ -2324,6 +2552,17 @@ main() {
 		tmp=$(mktemp -d)
 		trap 'rm -rf "$tmp"' RETURN
 		TestAssignmentAdmissionTouchedFunctionRouting "$tmp/assignment-admission-touched"
+		;;
+	TestEscalationTouchedFunctionRouting)
+		tmp=$(mktemp -d)
+		trap 'rm -rf "$tmp"' RETURN
+		TestEscalationTouchedFunctionRouting "$tmp/escalation-touched"
+		;;
+	TestEscalationSurvivorMutationMapping)
+		TestEscalationSurvivorMutationMapping
+		;;
+	TestEscalationSurvivorMutationCoverage)
+		TestEscalationSurvivorMutationCoverage
 		;;
 	TestMutationOwnerMappingsCoexist)
 		TestMutationOwnerMappingsCoexist
