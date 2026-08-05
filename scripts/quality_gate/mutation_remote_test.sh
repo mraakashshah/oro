@@ -83,6 +83,29 @@ TestDispatcherMutationContractSupplements() {
 		TestCreateAssignmentWithEvidencePersistsTrimmedProof \
 		TestCreateAssignmentWithEvidenceFailsClosedWhenCheckpointObservationFails \
 		TestCreateAssignmentWithEvidenceRollsBackCommitFailure
+	assert_dispatcher_supplements pkg/dispatcher/epic_branch_admission.go '^(renewEpicBranchAdmission)$' \
+		TestEpicBranchAdmissionMutationRenewalOutcomes
+	assert_dispatcher_supplements pkg/dispatcher/epic_branch_admission.go '^(isOwnedBlockedEpicBranchAdmission)$' \
+		TestEpicBranchAdmissionMutationRenewalOutcomes
+	assert_dispatcher_supplements pkg/dispatcher/epic_branch_admission.go '^(blockEpicBranchAdmission)$' \
+		TestEpicBranchAdmissionMutationBlockOutcomes
+	assert_dispatcher_supplements pkg/dispatcher/epic_branch_admission.go '^(withEpicBranchAdmission)$' \
+		TestEpicBranchAdmissionMutationBypassAndClaimPreservation
+	assert_dispatcher_supplements pkg/dispatcher/ops_runs.go '^(createOpsRun)$' \
+		TestOpsRunMutationLowLevelFailures
+	assert_dispatcher_supplements pkg/dispatcher/ops_runs.go '^(completeOpsRunFromStatus)$' \
+		TestOpsRunMutationLowLevelFailures \
+		TestOpsRunMutationExactReplayRequiresEveryField
+	assert_dispatcher_supplements pkg/dispatcher/ops_runs.go '^(terminalOpsRunResult)$' \
+		TestOpsRunMutationTerminalResultMapping
+	assert_dispatcher_supplements pkg/dispatcher/ops_runs.go '^(supersedeOpsRunForRetry)$' \
+		TestOpsRunMutationRetryNormalizesReplacement
+	assert_dispatcher_supplements pkg/dispatcher/ops_runs.go '^(reviewContextFromWorkerLocked)$' \
+		TestOpsRunMutationReviewContextIdentity
+	assert_dispatcher_supplements pkg/dispatcher/ops_runs.go '^(reviewContextFromAnyWorkerLocked)$' \
+		TestOpsRunMutationReviewContextIdentity
+	assert_dispatcher_supplements pkg/dispatcher/ops_runs.go '^(watchReroutedOpsRunResult)$' \
+		TestOpsRunMutationWatcherRejectsZeroIdentity
 }
 
 new_fixture() {
@@ -1049,6 +1072,9 @@ main() {
 	case "${1:-}" in
 	'' | TestStrictIncrementalMutation)
 		TestStrictIncrementalMutation
+		;;
+	TestDispatcherMutationContractSupplements)
+		TestDispatcherMutationContractSupplements
 		;;
 	*)
 		fail "unknown test $1"

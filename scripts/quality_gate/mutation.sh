@@ -435,8 +435,14 @@ dispatcher_test_supplement() {
 			TestCreateAssignmentWithEvidenceRollsBackCommitFailure
 			TestReanchorAssignmentWithEvidencePreservesAdmissionAndCheckpointGate
 		)
-	[[ "$file" == pkg/dispatcher/epic_branch_admission.go && "$match" == *blockEpicBranchAdmission* ]] &&
-		tests+=(TestEpicBranchAdmissionBlocksUnsafeFreshInspection)
+	[[ "$file" == pkg/dispatcher/epic_branch_admission.go && "$match" == '^(withEpicBranchAdmission)$' ]] &&
+		tests+=(TestEpicBranchAdmissionMutationBypassAndClaimPreservation)
+	[[ "$file" == pkg/dispatcher/epic_branch_admission.go && "$match" == '^(renewEpicBranchAdmission)$' ]] &&
+		tests+=(TestEpicBranchAdmissionMutationRenewalOutcomes)
+	[[ "$file" == pkg/dispatcher/epic_branch_admission.go && "$match" == '^(isOwnedBlockedEpicBranchAdmission)$' ]] &&
+		tests+=(TestEpicBranchAdmissionMutationRenewalOutcomes)
+	[[ "$file" == pkg/dispatcher/epic_branch_admission.go && "$match" == '^(blockEpicBranchAdmission)$' ]] &&
+		tests+=(TestEpicBranchAdmissionBlocksUnsafeFreshInspection TestEpicBranchAdmissionMutationBlockOutcomes)
 	[[ "$file" == pkg/dispatcher/escalation.go && "$match" == *routeNewRoutableEscalation* ]] &&
 		tests+=(TestEscalateOversizedRoutesToDecomposeProductionPath TestEscalateNoOpWhenBlockingOpsRunExists)
 	[[ "$file" == pkg/dispatcher/escalation.go && "$match" == *handleDecomposeValidationError* ]] &&
@@ -447,16 +453,20 @@ dispatcher_test_supplement() {
 		tests+=(TestOpsRunDirectives)
 	[[ "$file" == pkg/dispatcher/ops_runs.go && "$match" == *findBlockingOpsRun* ]] &&
 		tests+=(TestFindBlockingOpsRun)
-	[[ "$file" == pkg/dispatcher/ops_runs.go && "$match" == *terminalOpsRunResult* ]] &&
-		tests+=(TestWatchReroutedOpsRunResultRunsSideEffectsOnlyForAcquiredCompletion)
-	[[ "$file" == pkg/dispatcher/ops_runs.go && "$match" == *watchReroutedOpsRunResult* ]] &&
-		tests+=(TestWatchReroutedOpsRunResultRunsSideEffectsOnlyForAcquiredCompletion)
-	[[ "$file" == pkg/dispatcher/ops_runs.go && "$match" == *supersedeOpsRunForRetry* ]] &&
-		tests+=(TestSupersedeOpsReviewRetryPreservesContext)
-	[[ "$file" == pkg/dispatcher/ops_runs.go && "$match" == *reviewContextFromWorkerLocked* ]] &&
-		tests+=(TestRouteOpsRunRoutesReviewOpsRun)
-	[[ "$file" == pkg/dispatcher/ops_runs.go && "$match" == *reviewContextFromAnyWorkerLocked* ]] &&
-		tests+=(TestRouteOpsRunRoutesReviewOpsRun)
+	[[ "$file" == pkg/dispatcher/ops_runs.go && "$match" == '^(createOpsRun)$' ]] &&
+		tests+=(TestOpsRunMutationLowLevelFailures)
+	[[ "$file" == pkg/dispatcher/ops_runs.go && "$match" == '^(completeOpsRunFromStatus)$' ]] &&
+		tests+=(TestOpsRunMutationLowLevelFailures TestOpsRunMutationExactReplayRequiresEveryField)
+	[[ "$file" == pkg/dispatcher/ops_runs.go && "$match" == '^(terminalOpsRunResult)$' ]] &&
+		tests+=(TestOpsRunMutationTerminalResultMapping)
+	[[ "$file" == pkg/dispatcher/ops_runs.go && "$match" == '^(watchReroutedOpsRunResult)$' ]] &&
+		tests+=(TestOpsRunMutationWatcherRejectsZeroIdentity TestWatchReroutedOpsRunResultRunsSideEffectsOnlyForAcquiredCompletion)
+	[[ "$file" == pkg/dispatcher/ops_runs.go && "$match" == '^(supersedeOpsRunForRetry)$' ]] &&
+		tests+=(TestOpsRunMutationRetryNormalizesReplacement TestSupersedeOpsReviewRetryPreservesContext)
+	[[ "$file" == pkg/dispatcher/ops_runs.go && "$match" == '^(reviewContextFromWorkerLocked)$' ]] &&
+		tests+=(TestOpsRunMutationReviewContextIdentity)
+	[[ "$file" == pkg/dispatcher/ops_runs.go && "$match" == '^(reviewContextFromAnyWorkerLocked)$' ]] &&
+		tests+=(TestOpsRunMutationReviewContextIdentity)
 	[[ "$file" == pkg/dispatcher/scheduling.go && "$match" == *launchAssignment* ]] &&
 		tests+=(TestTimedOutSetupCannotClobberReplacement)
 	if [[ "$file" == pkg/dispatcher/review_checkpoint_store.go ]]; then
