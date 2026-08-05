@@ -832,6 +832,19 @@ CREATE TRIGGER IF NOT EXISTS bead_notes_touch_parent_ad AFTER DELETE ON bead_not
 END;
 `
 
+// InitializeBeadSchema installs the current native bead schema in a newly
+// created dispatcher database. Existing databases must use MigrateBeadSchema
+// so legacy data and schema variants are upgraded safely.
+func InitializeBeadSchema(ctx context.Context, db *sql.DB) error {
+	if _, err := db.ExecContext(ctx, reviewCheckpointSchemaDDL); err != nil {
+		return fmt.Errorf("initialize review checkpoint schema: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, beadSchemaDDL); err != nil {
+		return fmt.Errorf("initialize bead schema: %w", err)
+	}
+	return nil
+}
+
 // MigrateBeadSchema adds the native bead store schema to the dispatcher state DB.
 func MigrateBeadSchema(ctx context.Context, db *sql.DB) error {
 	_, err := db.ExecContext(ctx, beadSchemaDDL)

@@ -23,6 +23,66 @@ func TestSchemaExecsCleanly(t *testing.T) {
 	}
 }
 
+func TestInitializeBeadSchemaCreatesCanonicalFreshSchema(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	db, err := dbutil.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("open in-memory db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(protocol.SchemaDDL); err != nil {
+		t.Fatalf("init runtime schema: %v", err)
+	}
+
+	if err := protocol.InitializeBeadSchema(ctx, db); err != nil {
+		t.Fatalf("initialize bead schema: %v", err)
+	}
+
+	for _, object := range []struct {
+		kind string
+		name string
+	}{
+		{kind: "table", name: "beads"},
+		{kind: "table", name: "review_checkpoints"},
+		{kind: "index", name: "idx_review_checkpoints_active_key"},
+		{kind: "view", name: "review_checkpoints_blocking_assignment"},
+		{kind: "view", name: "beads_ready"},
+	} {
+		var count int
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM sqlite_schema WHERE type = ? AND name = ?`, object.kind, object.name,
+		).Scan(&count); err != nil {
+			t.Fatalf("inspect %s %s: %v", object.kind, object.name, err)
+		}
+		if count != 1 {
+			t.Fatalf("%s %s count = %d, want 1", object.kind, object.name, count)
+		}
+	}
+
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO review_checkpoints (
+    checkpoint_key, bead_id, origin_assignment_id, worktree, branch,
+    target_branch, head_sha, target_sha, acceptance_hash, qg_script_hash,
+    qg_mode, review_policy_hash, triage_revision, ready_attempt, state
+) VALUES (
+    'fresh-schema-checkpoint', 'oro-fresh-schema', 1, '/tmp/fresh-schema',
+    'agent/oro-fresh-schema', 'main', 'head', 'target', 'acceptance',
+    'script', 'full', 'policy', 'triage', 'attempt', 'review_pending'
+)`); err != nil {
+		t.Fatalf("insert canonical review checkpoint: %v", err)
+	}
+	var blocked int
+	if err := db.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM review_checkpoints_blocking_assignment WHERE bead_id = 'oro-fresh-schema'`,
+	).Scan(&blocked); err != nil {
+		t.Fatalf("query checkpoint admission view: %v", err)
+	}
+	if blocked != 1 {
+		t.Fatalf("blocking checkpoint count = %d, want 1", blocked)
+	}
+}
+
 func TestMigrateBeadSchemaAddsAssignmentEvidenceIdentity(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

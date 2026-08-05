@@ -1553,7 +1553,7 @@ func newTestDB(t *testing.T) *sql.DB {
 	if _, err := db.Exec(protocol.SchemaDDL); err != nil {
 		t.Fatalf("init schema: %v", err)
 	}
-	if err := protocol.MigrateBeadSchema(context.Background(), db); err != nil {
+	if err := protocol.InitializeBeadSchema(context.Background(), db); err != nil {
 		t.Fatalf("init bead schema: %v", err)
 	}
 	if _, err := db.Exec(protocol.MigrateSemanticMemorySearchEvents); err != nil {
