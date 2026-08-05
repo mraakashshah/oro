@@ -473,6 +473,9 @@ authoritative_mutation_test_pattern() {
 	local file="$1"
 	local match="$2"
 	case "$file:$match" in
+	'pkg/dispatcher/assignment.go:^(assignBeadWithClaim)$')
+		printf '^(TestAssignmentClaimAuthoritativeSurvivorMutation|TestAssignmentBehaviorMutation|TestStandaloneAssignmentBehaviorHarnessCaseIsolation)$'
+		;;
 	'pkg/dispatcher/assignment.go:^(assignmentInsertFailureAllowsReopen)$' | \
 		'pkg/dispatcher/assignment.go:^(checkpointAssignmentAdmissionAllowed)$')
 		printf '^TestAssignmentAuthoritativeSurvivorMutation'
@@ -966,7 +969,8 @@ run_mutation_shard() {
 				MUTATION_TEST_PATTERN="$test_pattern" \
 				MUTATION_TEST_FILE="$mutation_test_file" \
 				MUTATION_EXEC_TIMEOUT="$exec_timeout" \
-				MUTATION_PARALLEL_WORKERS="${MUTATION_PARALLEL_WORKERS:-2}" \
+				MUTATION_TEST_TIMEOUT_MARGIN_SECONDS=5 \
+				MUTATION_PARALLEL_WORKERS=2 \
 				MUTATION_BASE_SHARD_TIMEOUT_SECONDS="$file_timeout" \
 				MUTATION_MAX_SHARD_TIMEOUT_SECONDS="$max_shard_timeout" \
 				MUTATION_FAILURE_EVIDENCE_DIR="$mutation_failure_evidence_root/$index" \

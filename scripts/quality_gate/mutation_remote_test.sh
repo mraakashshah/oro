@@ -205,6 +205,7 @@ TestAuthoritativeMutationMapping() {
 	done <<'EOF'
 pkg/dispatcher/assignment.go	assignmentInsertFailureAllowsReopen	^TestAssignmentAuthoritativeSurvivorMutation	pkg/dispatcher/assignment_authoritative_survivor_mutation_test.go
 pkg/dispatcher/assignment.go	checkpointAssignmentAdmissionAllowed	^TestAssignmentAuthoritativeSurvivorMutation	pkg/dispatcher/assignment_authoritative_survivor_mutation_test.go
+pkg/dispatcher/assignment.go	assignBeadWithClaim	^(TestAssignmentClaimAuthoritativeSurvivorMutation|TestAssignmentBehaviorMutation|TestStandaloneAssignmentBehaviorHarnessCaseIsolation)$
 pkg/dispatcher/ops_runs.go	CompleteOpsRun	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
 pkg/dispatcher/ops_runs.go	CreateOpsRun	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
 pkg/dispatcher/ops_runs.go	applyOpsResolve	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
@@ -243,8 +244,8 @@ EOF
 	[[ -z "$got" ]] || fail "wrong authoritative source unexpectedly selected $got"
 	got=$(authoritative_pattern_for pkg/dispatcher/health.go '^(assignmentObservationErrorsLocked)$')
 	[[ -z "$got" ]] || fail "zero-survivor health function unexpectedly selected $got"
-	got=$(authoritative_pattern_for pkg/dispatcher/assignment.go '^(assignBeadWithClaim)$')
-	[[ -z "$got" ]] || fail "unmapped assignment claim unexpectedly selected $got"
+	got=$(authoritative_pattern_for pkg/dispatcher/assignment.go '^(assignBead)$')
+	[[ -z "$got" ]] || fail "unmapped assignment function unexpectedly selected $got"
 	got=$(authoritative_pattern_for pkg/dispatcher/review_checkpoint_store.go '^(LoadOwningForBead)$')
 	[[ -z "$got" ]] || fail "non-survivor checkpoint function unexpectedly selected $got"
 }
@@ -319,6 +320,9 @@ TestAuthoritativeMutationCoverage() {
 		assignment)
 			functions=$'assignmentInsertFailureAllowsReopen\ncheckpointAssignmentAdmissionAllowed'
 			;;
+		claim)
+			functions=assignBeadWithClaim
+			;;
 		ops)
 			functions=$'CompleteOpsRun\nCreateOpsRun\napplyOpsResolve\ncompleteOpsRunFromStatus\ncreateOpsRun\nfindBlockingOpsRun\nisSQLiteUniqueConstraint\nloadOpsRunByID\nreplaceOpsRun\nreviewContextForOpsRun\nreviewContextFromAnyWorkerLocked\nreviewContextFromWorkerLocked\nrouteOpsRun\nrouteReviewOpsRun\nsupersedeAndRerouteOpsRun\nsupersedeOpsRunForRetry\nterminalOpsRunResult\nwatchReroutedOpsRunResult'
 			;;
@@ -341,6 +345,7 @@ TestAuthoritativeMutationCoverage() {
 		done <<<"$functions"
 	done <<'EOF'
 assignment	^TestAssignmentAuthoritativeSurvivorMutation
+claim	^(TestAssignmentClaimAuthoritativeSurvivorMutation|TestAssignmentBehaviorMutation|TestStandaloneAssignmentBehaviorHarnessCaseIsolation)$
 ops	^(TestOpsAuthoritativeSurvivorMutation|TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex$)
 health	^(TestHealthAuthoritativeSurvivorMutation|TestApplyHealthReturnsAndReleasesDispatcherMutex$)
 review	^(TestReviewCheckpointAuthoritativeSurvivorMutation|TestReviewCheckpointMutationIntegrationDurability$|TestReviewCheckpointMutationLegacyBinding$)
@@ -480,6 +485,9 @@ TestMutationOwnerMappingsCoexist() {
 		pkg/dispatcher/assignment.go '^(assignmentInsertFailureAllowsReopen)$')
 	[[ "$got" == '^TestAssignmentAuthoritativeSurvivorMutation' ]] ||
 		fail "coexisting authoritative assignment resolver selected $got"
+	got=$(authoritative_pattern_for pkg/dispatcher/assignment.go '^(assignBeadWithClaim)$')
+	[[ "$got" == '^(TestAssignmentClaimAuthoritativeSurvivorMutation|TestAssignmentBehaviorMutation|TestStandaloneAssignmentBehaviorHarnessCaseIsolation)$' ]] ||
+		fail "coexisting authoritative assignment claim resolver selected $got"
 	got=$(authoritative_pattern_for pkg/dispatcher/ops_runs.go '^(reviewContextForOpsRun)$')
 	[[ "$got" == '^(TestOpsAuthoritativeSurvivorMutation|TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex$)' ]] ||
 		fail "coexisting authoritative ops/bounded resolver selected $got"
@@ -1054,6 +1062,12 @@ new_targeted_fixture() {
 		printf '\nfunc %s() {}\n' "$test_name" >>"$fixture/$test_file"
 	done
 	case "$target" in
+	assignment-claim)
+		printf 'package dispatcher\n\nfunc TestAssignmentClaimAuthoritativeSurvivorMutation() {}\n' \
+			>"$fixture/pkg/dispatcher/assignment_claim_authoritative_survivor_mutation_test.go"
+		printf 'package dispatcher\n\nfunc TestAssignmentClaimUnselected() {}\n' \
+			>"$fixture/pkg/dispatcher/assignment_claim_unselected_test.go"
+		;;
 	assignment-bc-*)
 		printf 'package dispatcher\n\nfunc TestAssignmentBCUnselected() {}\n' \
 			>"$fixture/pkg/dispatcher/assignment_bc_unselected_test.go"
@@ -1095,6 +1109,11 @@ new_targeted_fixture() {
 	esac
 	git -C "$fixture" add go.mod "$source_file" "$test_file"
 	case "$target" in
+	assignment-claim)
+		git -C "$fixture" add \
+			pkg/dispatcher/assignment_claim_authoritative_survivor_mutation_test.go \
+			pkg/dispatcher/assignment_claim_unselected_test.go
+		;;
 	assignment-bc-*)
 		git -C "$fixture" add pkg/dispatcher/assignment_bc_unselected_test.go
 		;;
@@ -1230,7 +1249,7 @@ write_authoritative_touched_file() {
 new_authoritative_touched_fixture() {
 	local fixture="$1"
 	local base head
-	local -a assignment_functions=(assignmentInsertFailureAllowsReopen checkpointAssignmentAdmissionAllowed)
+	local -a assignment_functions=(assignBeadWithClaim assignmentInsertFailureAllowsReopen checkpointAssignmentAdmissionAllowed)
 	local -a ops_functions=(
 		CompleteOpsRun CreateOpsRun applyOpsResolve completeOpsRunFromStatus createOpsRun
 		findBlockingOpsRun isSQLiteUniqueConstraint loadOpsRunByID replaceOpsRun reviewContextForOpsRun
@@ -1275,7 +1294,7 @@ TestAuthoritativeTouchedFunctionRouting() {
 		[[ "$actual" == "$expected" ]] ||
 			fail "$file authoritative touched functions = $actual, want $expected"
 	done <<'EOF'
-pkg/dispatcher/assignment.go	^(assignmentInsertFailureAllowsReopen|checkpointAssignmentAdmissionAllowed)$
+pkg/dispatcher/assignment.go	^(assignBeadWithClaim|assignmentInsertFailureAllowsReopen|checkpointAssignmentAdmissionAllowed)$
 pkg/dispatcher/ops_runs.go	^(CompleteOpsRun|CreateOpsRun|applyOpsResolve|completeOpsRunFromStatus|createOpsRun|findBlockingOpsRun|isSQLiteUniqueConstraint|loadOpsRunByID|replaceOpsRun|reviewContextForOpsRun|reviewContextFromAnyWorkerLocked|reviewContextFromWorkerLocked|routeOpsRun|routeReviewOpsRun|supersedeAndRerouteOpsRun|supersedeOpsRunForRetry|terminalOpsRunResult|watchReroutedOpsRunResult)$
 pkg/dispatcher/health.go	^(applyHealth|evaluateFactoryHealth|recordAssignmentObservation)$
 pkg/dispatcher/review_checkpoint_store.go	^(AdvanceIntegrationStep|BlockIntegration|CompleteIntegration|CreateOrReuse|ObserveIntegration|PromoteManualIntegration|createOrReuseReviewCheckpoint|createOrReuseReviewCheckpointAttempt|legacyUnlinkedCheckpointIDs|requireOneCheckpointRow|validateOpsRunCheckpointIdentity)$
@@ -1352,6 +1371,7 @@ if [[ "$1" = test ]]; then
 		*TestRetrySQLiteBusyOperation*) printf 'TestRetrySQLiteBusyOperation\n' ;;
 		*TestEpicBranchAdmissionMutationBypassAndClaimPreservation*) printf 'TestEpicBranchAdmissionMutationBypassAndClaimPreservation\n' ;;
 		*TestReviewCheckpointStartupOrdering*) printf 'TestReviewCheckpointStartupOrdering\n' ;;
+		*TestAssignmentClaimAuthoritativeSurvivorMutation*) printf 'TestAssignmentClaimAuthoritativeSurvivorMutation\nTestAssignmentBehaviorMutation\nTestStandaloneAssignmentBehaviorHarnessCaseIsolation\n' ;;
 		*TestAssignmentBehaviorMutation*) printf 'TestAssignmentBehaviorMutation\nTestStandaloneAssignmentBehaviorHarnessCaseIsolation\n' ;;
 		*TestAssignBeadWithClaimReportsUnclaimedValidationFailure*) printf 'TestAssignBeadWithClaimReportsUnclaimedValidationFailure\n' ;;
 		*TestReleaseAssignmentReservationResetsStateAndUnlocks*) printf 'TestReleaseAssignmentReservationResetsStateAndUnlocks\n' ;;
@@ -1685,7 +1705,7 @@ TestStrictIncrementalMutationShards() {
 }
 
 TestTargetedMutationScope() {
-	local apply_health_pattern checkpoint_pattern claim_pattern escalation_pattern evidence fixture args_trace history_pattern list_trace release_pattern review_context_pattern scheduling_pattern start_pattern
+	local apply_health_pattern checkpoint_pattern claim_focused_line claim_focused_lines claim_pattern escalation_pattern evidence fixture args_trace history_pattern list_trace release_pattern review_context_pattern scheduling_pattern start_pattern
 	fixture="$tmp/targeted"
 	evidence=$(run_targeted_fixture "$fixture" targeted pass 0)
 	args_trace="$fixture/mutation-args.txt"
@@ -1777,21 +1797,37 @@ TestTargetedMutationScope() {
 	! grep -Fq 'review_checkpoint_store_mutation_test.go' "$tmp/targeted-review-checkpoint/mutation-list.txt" ||
 		fail 'review checkpoint focused file leaked into list or coverage baseline'
 
-	claim_pattern='^(TestAssignmentBehaviorMutation|TestStandaloneAssignmentBehaviorHarnessCaseIsolation)$'
+	claim_pattern='^(TestAssignmentClaimAuthoritativeSurvivorMutation|TestAssignmentBehaviorMutation|TestStandaloneAssignmentBehaviorHarnessCaseIsolation)$'
 	evidence=$(run_targeted_fixture "$tmp/targeted-assignment-claim" targeted pass 0 false assignment-claim)
 	grep -Fq -- "-list $claim_pattern ./pkg/dispatcher" "$tmp/targeted-assignment-claim/mutation-list.txt" ||
-		fail 'assignBeadWithClaim mutations must preflight the bounded callback contract'
+		fail 'assignBeadWithClaim mutations must preflight authoritative and bounded callback contracts'
+	grep -F -- "-run $claim_pattern ./pkg/dispatcher" "$tmp/targeted-assignment-claim/mutation-list.txt" |
+		grep -q -- '-coverprofile=' ||
+		fail 'assignBeadWithClaim baseline must retain full-package production coverage'
 	jq -e --arg pattern "$claim_pattern" \
 		'.shards[0].match == "^(assignBeadWithClaim)$" and .shards[0].test_pattern == $pattern' \
-		"$evidence" >/dev/null || fail 'assignBeadWithClaim mutations must select only the bounded callback contract'
-	grep -Fxq 'MUTATION_TEST_FILE=pkg/dispatcher/assignment_behavior_mutation_test.go' \
-		"$tmp/targeted-assignment-claim/mutation-args.txt" ||
-		fail 'assignBeadWithClaim mutations must compile only their standalone behavior harness'
-	grep -Fxq 'PARALLEL_WORKERS=2' "$tmp/targeted-assignment-claim/mutation-args.txt" ||
-		fail 'assignBeadWithClaim mutations must reserve exactly two mutant workers'
-	grep 'assignment_behavior_mutation_test.go' "$tmp/targeted-assignment-claim/mutation-list.txt" |
-		grep -q 'pkg/dispatcher/assignment.go' ||
-		fail 'assignBeadWithClaim focused command omitted the real mutated production source'
+		"$evidence" >/dev/null || fail 'assignBeadWithClaim mutations lost their additive owner scope'
+	! grep -q '^MUTATION_TEST_FILE=' "$tmp/targeted-assignment-claim/mutation-args.txt" ||
+		fail 'assignBeadWithClaim additive owners silently selected only one focused file'
+	for expected_limit in \
+		'PARALLEL_WORKERS=2' \
+		'EXEC_TIMEOUT=60' \
+		'TIMEOUT_MARGIN=5' \
+		'BASE_SHARD_TIMEOUT=240' \
+		'MAX_SHARD_TIMEOUT=900'; do
+		grep -Fxq "$expected_limit" "$tmp/targeted-assignment-claim/mutation-args.txt" ||
+			fail "assignBeadWithClaim mutation boundary omitted $expected_limit"
+	done
+	claim_focused_lines=$(grep -F -- "-timeout 55s -run $claim_pattern " \
+		"$tmp/targeted-assignment-claim/mutation-list.txt" || true)
+	[[ -n "$claim_focused_lines" ]] ||
+		fail 'assignBeadWithClaim emitted no full-package focused mutation argv'
+	while IFS= read -r claim_focused_line; do
+		grep -Fq -- "-run $claim_pattern mutation.test/targeted/pkg/dispatcher" <<<"$claim_focused_line" ||
+			fail 'assignBeadWithClaim focused argv omitted its full package import path'
+		! grep -Eq 'assignment_(behavior|claim_authoritative|claim_unselected)_.*_test[.]go' <<<"$claim_focused_line" ||
+			fail 'assignBeadWithClaim full-package fallback silently selected a single owner or unselected file'
+	done <<<"$claim_focused_lines"
 
 	release_pattern='^TestReleaseAssignmentReservationResetsStateAndUnlocks$'
 	evidence=$(run_targeted_fixture "$tmp/targeted-assignment-release" targeted pass 0 false assignment-release)
