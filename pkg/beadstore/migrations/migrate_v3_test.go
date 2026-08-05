@@ -94,6 +94,31 @@ func TestMigrateToV3Idempotent(t *testing.T) {
 	}
 }
 
+func TestMigrateToV3TreatsVersionFourAsAlreadyMigrated(t *testing.T) {
+	ctx := context.Background()
+	db, err := dbutil.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("open in-memory db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.ExecContext(ctx, `PRAGMA user_version = 4`); err != nil {
+		t.Fatalf("set user_version: %v", err)
+	}
+
+	if err := migrations.MigrateToV3(ctx, db); err != nil {
+		t.Fatalf("MigrateToV3 at newer schema version: %v", err)
+	}
+	var beadsTables int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name='beads'`,
+	).Scan(&beadsTables); err != nil {
+		t.Fatalf("inspect schema after no-op migration: %v", err)
+	}
+	if beadsTables != 0 {
+		t.Fatalf("beads table count = %d, want no schema mutation at version 4", beadsTables)
+	}
+}
+
 // TestMigrateToV3CheckConstraints verifies that the three spec-mandated CHECK
 // constraints are actually enforced by SQLite — not just that the columns are
 // present. The previous review (oro-vye0 attempt #0) caught this gap because

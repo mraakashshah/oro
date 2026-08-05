@@ -143,6 +143,58 @@ INSERT INTO beads (id, title, status) VALUES ('oro-legacy', 'legacy bead', 'open
 	}
 }
 
+func TestInitializeBeadSchemaReportsTransactionStartFailure(t *testing.T) {
+	t.Parallel()
+	db, err := dbutil.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("open in-memory db: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	err = protocol.InitializeBeadSchema(context.Background(), db)
+	if err == nil || !strings.Contains(err.Error(), "begin transaction") {
+		t.Fatalf("InitializeBeadSchema error = %v, want transaction start failure", err)
+	}
+}
+
+func TestInitializeBeadSchemaReportsReviewSchemaFailure(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db, err := dbutil.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("open in-memory db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.ExecContext(ctx, `CREATE TABLE review_checkpoints (id INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatalf("create incompatible review table: %v", err)
+	}
+
+	err = protocol.InitializeBeadSchema(ctx, db)
+	if err == nil || !strings.Contains(err.Error(), "initialize review checkpoint schema") {
+		t.Fatalf("InitializeBeadSchema error = %v, want review schema failure", err)
+	}
+}
+
+func TestInitializeBeadSchemaReportsBeadSchemaFailure(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	db, err := dbutil.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("open in-memory db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.ExecContext(ctx, `CREATE TABLE bead_deps (unexpected TEXT)`); err != nil {
+		t.Fatalf("create incompatible dependency table: %v", err)
+	}
+
+	err = protocol.InitializeBeadSchema(ctx, db)
+	if err == nil || !strings.Contains(err.Error(), "initialize bead schema") {
+		t.Fatalf("InitializeBeadSchema error = %v, want bead schema failure", err)
+	}
+}
+
 func TestMigrateBeadSchemaAddsAssignmentEvidenceIdentity(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

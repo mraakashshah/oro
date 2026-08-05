@@ -112,6 +112,31 @@ func TestMigrateToV4RejectsActiveAssignments(t *testing.T) {
 	assertBeadsColumn(t, db, "gate_state")
 }
 
+func TestMigrateToV4RollsBackWhenAMigrationStepFails(t *testing.T) {
+	ctx := context.Background()
+	db := openV20DB(t)
+	if err := migrations.MigrateToV3(ctx, db); err != nil {
+		t.Fatalf("MigrateToV3: %v", err)
+	}
+	insertLegacyPremortemState(ctx, t, db)
+	if _, err := db.ExecContext(ctx, `
+CREATE TRIGGER reject_migration_journey
+BEFORE INSERT ON bead_journey
+WHEN NEW.actor = 'migration'
+BEGIN
+  SELECT RAISE(ABORT, 'injected migration journey failure');
+END`); err != nil {
+		t.Fatalf("install migration failure trigger: %v", err)
+	}
+
+	err := migrations.MigrateToV4(ctx, db)
+	if err == nil || !strings.Contains(err.Error(), "injected migration journey failure") {
+		t.Fatalf("MigrateToV4 error = %v, want injected step failure", err)
+	}
+	assertBeadsColumn(t, db, "gate_state")
+	assertCount(t, db, `SELECT COUNT(*) FROM beads WHERE id='pm-1' AND type='premortem' AND deleted=0`, 1)
+}
+
 func TestMigrateToV4PreservesReviewCheckpointReadyExclusion(t *testing.T) {
 	ctx := context.Background()
 	db := openV20DB(t)

@@ -148,6 +148,144 @@ func TestPromoteLearning(t *testing.T) {
 	})
 }
 
+func TestPromoteLearningReportsMissingLearning(t *testing.T) {
+	store, _ := newTestStoreWithBeads(t)
+
+	_, err := store.PromoteLearning(context.Background(), 404)
+	if !errors.Is(err, cards.ErrNotFound) {
+		t.Fatalf("PromoteLearning err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestPromoteLearningChecksTerminalStateBeforeCreatingCard(t *testing.T) {
+	ctx := context.Background()
+	for _, terminal := range []string{"promoted", "rejected"} {
+		t.Run(terminal, func(t *testing.T) {
+			store, db := newTestStoreWithBeads(t)
+			if _, err := db.ExecContext(ctx, `INSERT INTO beads (id) VALUES ('bead-1')`); err != nil {
+				t.Fatalf("insert bead: %v", err)
+			}
+			learningID, err := store.AppendLearningPending(ctx, "bead-1", mutationLearningCandidate())
+			if err != nil {
+				t.Fatalf("AppendLearningPending: %v", err)
+			}
+			if terminal == "promoted" {
+				if _, err := db.ExecContext(ctx, `
+					INSERT INTO cards (id, type, title, body_summary, body_full, tags, decay_anchor, created_at, updated_at)
+					VALUES ('existing-card', 'pattern', 'existing', 'summary', 'body', '[]',
+						'2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+					UPDATE bead_learnings_pending SET promoted_to = 'existing-card' WHERE id = ?`, learningID); err != nil {
+					t.Fatalf("mark promoted: %v", err)
+				}
+			} else if _, err := db.ExecContext(ctx,
+				`UPDATE bead_learnings_pending SET rejected_at = '2026-01-01T00:00:00Z' WHERE id = ?`, learningID,
+			); err != nil {
+				t.Fatalf("mark rejected: %v", err)
+			}
+			if _, err := db.ExecContext(ctx, `
+				CREATE TRIGGER reject_unexpected_card_insert
+				BEFORE INSERT ON cards BEGIN
+					SELECT RAISE(ABORT, 'card creation reached');
+				END`); err != nil {
+				t.Fatalf("create card insert trigger: %v", err)
+			}
+
+			_, err = store.PromoteLearning(ctx, learningID)
+			if !errors.Is(err, cards.ErrAlreadyResolved) {
+				t.Fatalf("PromoteLearning err = %v, want ErrAlreadyResolved before card creation", err)
+			}
+		})
+	}
+}
+
+func TestPromoteLearningWithJourneyRollsBackOnJourneyFailures(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name       string
+		payload    func(string) (string, error)
+		breakStore bool
+	}{
+		{
+			name: "payload construction",
+			payload: func(string) (string, error) {
+				return "", errors.New("injected payload failure")
+			},
+		},
+		{
+			name:       "journey insertion",
+			payload:    func(string) (string, error) { return `{"source":"test"}`, nil },
+			breakStore: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, db := newTestStoreWithBeads(t)
+			if _, err := db.ExecContext(ctx, `
+				INSERT INTO beads (id) VALUES ('bead-1');
+				CREATE TABLE bead_journey (
+					id INTEGER PRIMARY KEY AUTOINCREMENT,
+					bead_id TEXT NOT NULL,
+					ts TEXT NOT NULL,
+					actor TEXT NOT NULL,
+					event TEXT NOT NULL,
+					payload TEXT
+				)`); err != nil {
+				t.Fatalf("create journey fixture: %v", err)
+			}
+			if tc.breakStore {
+				if _, err := db.ExecContext(ctx, `
+					CREATE TRIGGER reject_journey_insert
+					BEFORE INSERT ON bead_journey BEGIN
+						SELECT RAISE(ABORT, 'injected journey failure');
+					END`); err != nil {
+					t.Fatalf("create journey trigger: %v", err)
+				}
+			}
+			learningID, err := store.AppendLearningPending(ctx, "bead-1", mutationLearningCandidate())
+			if err != nil {
+				t.Fatalf("AppendLearningPending: %v", err)
+			}
+
+			_, err = store.PromoteLearningWithJourney(ctx, learningID, false, cards.LearningPromotionJourney{
+				BeadID:  "bead-1",
+				Ts:      "2026-01-01T00:00:00Z",
+				Actor:   "mutation-test",
+				Event:   "learning_promoted",
+				Payload: tc.payload,
+			})
+			if err == nil {
+				t.Fatal("PromoteLearningWithJourney err = nil, want journey failure")
+			}
+			var promotedTo sql.NullString
+			if err := db.QueryRowContext(ctx,
+				`SELECT promoted_to FROM bead_learnings_pending WHERE id = ?`, learningID,
+			).Scan(&promotedTo); err != nil {
+				t.Fatalf("query promoted_to: %v", err)
+			}
+			if promotedTo.Valid {
+				t.Fatalf("promoted_to = %q, want NULL after rollback", promotedTo.String)
+			}
+			var cardCount int
+			if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM cards`).Scan(&cardCount); err != nil {
+				t.Fatalf("query card count: %v", err)
+			}
+			if cardCount != 0 {
+				t.Fatalf("card count = %d, want 0 after rollback", cardCount)
+			}
+		})
+	}
+}
+
+func mutationLearningCandidate() cards.CardCandidate {
+	return cards.CardCandidate{
+		Type:        string(cards.CardTypePattern),
+		Title:       "Mutation boundary",
+		BodySummary: "Promotion remains atomic across every failure boundary.",
+		BodyFull:    "A failed journey write must roll back the card and learning mutation.",
+		Confidence:  0.8,
+		Evidence:    []string{"mutation survivor"},
+	}
+}
+
 func TestRejectAndReviewQueue(t *testing.T) {
 	ctx := context.Background()
 	store, db := newTestStoreWithBeads(t)
