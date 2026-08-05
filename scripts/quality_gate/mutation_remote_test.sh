@@ -1560,6 +1560,26 @@ TestMutationCapacity() {
 	test_parallel_emergency_ceiling "$tmp/ceiling"
 }
 
+TestIncrementalMutationArtifactRetention() {
+	local tmp="$1"
+	mkdir -p "$tmp"
+	awk '
+		/^  incremental-mutation:$/ { in_job = 1; next }
+		in_job && /^  [a-z0-9][a-z0-9-]*:$/ { exit }
+		in_job { print }
+	' "$repo_root/.github/workflows/ci.yml" >"$tmp/incremental-mutation.yml"
+	grep -q 'actions/upload-artifact' "$tmp/incremental-mutation.yml" ||
+		fail 'incremental-mutation job must upload its JSON evidence artifact'
+	grep -Fxq '          path: |' "$tmp/incremental-mutation.yml" ||
+		fail 'incremental-mutation artifact upload must accept multiple evidence paths'
+	grep -Fxq '            mutation-evidence.json' "$tmp/incremental-mutation.yml" ||
+		fail 'incremental-mutation job must retain its aggregate JSON evidence'
+	grep -Fxq '            mutation-failures/' "$tmp/incremental-mutation.yml" ||
+		fail 'incremental-mutation job must retain durable per-mutant failure evidence'
+	grep -q 'if-no-files-found: error' "$tmp/incremental-mutation.yml" ||
+		fail 'incremental-mutation artifact loss must fail the job'
+}
+
 TestStrictIncrementalMutation() {
 	local file_timeout_seconds incident_file_count job_timeout_minutes minimum_timeout_minutes mutation_batches workers
 	tmp=$(mktemp -d)
@@ -1601,17 +1621,10 @@ TestStrictIncrementalMutation() {
 	TestTargetedMutationScope
 	TestDispatcherMutationContractSupplements
 
-	awk '
-		/^  incremental-mutation:$/ { in_job = 1; next }
-		in_job && /^  [a-z0-9][a-z0-9-]*:$/ { exit }
-		in_job { print }
-	' "$repo_root/.github/workflows/ci.yml" >"$tmp/incremental-mutation.yml"
+	TestIncrementalMutationArtifactRetention "$tmp/workflow-artifact"
+	cp "$tmp/workflow-artifact/incremental-mutation.yml" "$tmp/incremental-mutation.yml"
 	grep -q 'scripts/quality_gate/mutation.sh' "$tmp/incremental-mutation.yml" ||
 		fail 'incremental-mutation job must run the strict mutation runner'
-	grep -q 'actions/upload-artifact' "$tmp/incremental-mutation.yml" ||
-		fail 'incremental-mutation job must upload its JSON evidence artifact'
-	grep -q 'if-no-files-found: error' "$tmp/incremental-mutation.yml" ||
-		fail 'incremental-mutation artifact loss must fail the job'
 	grep -q 'MUTATION_MAX_WORKERS: 2' "$tmp/incremental-mutation.yml" ||
 		fail 'incremental-mutation shard concurrency must match hosted runner capacity'
 	grep -q 'MUTATION_FILE_TIMEOUT_SECONDS: 240' "$tmp/incremental-mutation.yml" ||
@@ -1648,6 +1661,11 @@ main() {
 		;;
 	TestMutationExecInternalDeadline)
 		TestMutationExecInternalDeadline
+		;;
+	TestIncrementalMutationArtifactRetention)
+		tmp=$(mktemp -d)
+		trap 'rm -rf "$tmp"' EXIT
+		TestIncrementalMutationArtifactRetention "$tmp"
 		;;
 	*)
 		fail "unknown test $1"

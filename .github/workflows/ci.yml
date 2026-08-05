@@ -60,7 +60,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: incremental-mutation-evidence
-          path: mutation-evidence.json
+          path: |
+            mutation-evidence.json
+            mutation-failures/
           if-no-files-found: error
 
   go:
