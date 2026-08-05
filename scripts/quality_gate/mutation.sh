@@ -411,13 +411,19 @@ assignment_admission_mutation_test_pattern() {
 	'^(beginAssignmentAdmission)$')
 		printf '^TestBufferAssignmentAdmissionBeginOutcomes$'
 		;;
-	'^(closeAssignmentAdmission)$')
+	'^(close)$')
 		printf '^TestBufferAssignmentAdmissionCloseOutcomes$'
 		;;
-	'^(commitAssignmentAdmission)$')
+	'^(commit)$')
 		printf '^TestBufferAssignmentAdmissionCommitOutcomes$'
 		;;
 	esac
+}
+
+assignment_admission_mutation_test_file() {
+	local file="$1"
+	[[ "$file" == pkg/dispatcher/assignment_admission.go ]] || return 0
+	printf 'pkg/dispatcher/buffer_survivor_mutation_test.go'
 }
 
 review_integration_recovery_mutation_test_pattern() {
@@ -699,6 +705,9 @@ run_mutation_shard() {
 	local mutation_exit=0
 	local mutation_test_file=""
 	mutation_test_file=$(review_integration_recovery_mutation_test_file "$file")
+	if [[ -z "$mutation_test_file" ]]; then
+		mutation_test_file=$(assignment_admission_mutation_test_file "$file")
+	fi
 	case "$test_pattern" in
 	'^TestAssignBeadWithClaimReportsUnclaimedValidationFailure$' | '^TestReleaseAssignmentReservationResetsStateAndUnlocks$')
 		mutation_test_file=pkg/dispatcher/assignment_mutation_test.go

@@ -114,6 +114,56 @@ assignment_admission_pattern_for() {
 	bash -c "$function_source"$'\n''assignment_admission_mutation_test_pattern "$1" "$2"' _ "$file" "$match" || true
 }
 
+assignment_admission_test_file_for() {
+	local file="$1"
+	local function_source
+	function_source=$(awk '
+		/^assignment_admission_mutation_test_file\(\)/ { copying = 1 }
+		copying { print }
+		copying && /^}/ { exit }
+	' "$runner")
+	if [[ -z "$function_source" ]]; then
+		fail 'mutation runner omitted assignment admission standalone file mapping'
+		return 1
+	fi
+	bash -c "$function_source"$'\n''assignment_admission_mutation_test_file "$1"' _ "$file" || true
+}
+
+touched_function_pattern_for() {
+	local base="$1"
+	local head="$2"
+	local file="$3"
+	local function_source
+	function_source=$(awk '
+		/^touched_function_match\(\)/ { copying = 1 }
+		copying { print }
+		copying && /^}/ { exit }
+	' "$runner")
+	bash -c "$function_source"$'\n''touched_function_match "$1" "$2" "$3"' _ "$base" "$head" "$file"
+}
+
+TestAssignmentAdmissionTouchedFunctionRouting() {
+	local actual expected file function got test_file
+	file=pkg/dispatcher/assignment_admission.go
+	actual=$(touched_function_pattern_for main b9ec674a "$file")
+	expected='^(beginAssignmentAdmission|close|commit)$'
+	[[ "$actual" == "$expected" ]] ||
+		fail "canonical assignment admission touched functions = $actual, want $expected"
+
+	while IFS=: read -r function expected; do
+		got=$(assignment_admission_pattern_for "$file" "^($function)$")
+		[[ "$got" == "$expected" ]] ||
+			fail "canonical $function mutation owner = $got, want $expected"
+		test_file=$(assignment_admission_test_file_for "$file")
+		[[ "$test_file" == pkg/dispatcher/buffer_survivor_mutation_test.go ]] ||
+			fail "canonical $function mutation file = $test_file, want buffer survivor file"
+	done <<'EOF'
+beginAssignmentAdmission:^TestBufferAssignmentAdmissionBeginOutcomes$
+close:^TestBufferAssignmentAdmissionCloseOutcomes$
+commit:^TestBufferAssignmentAdmissionCommitOutcomes$
+EOF
+}
+
 TestAssignmentAdmissionMutationMapping() {
 	local function expected got
 	while IFS=: read -r function expected; do
@@ -122,8 +172,8 @@ TestAssignmentAdmissionMutationMapping() {
 			fail "$function mutation owner = $got, want $expected"
 	done <<'EOF'
 beginAssignmentAdmission:^TestBufferAssignmentAdmissionBeginOutcomes$
-closeAssignmentAdmission:^TestBufferAssignmentAdmissionCloseOutcomes$
-commitAssignmentAdmission:^TestBufferAssignmentAdmissionCommitOutcomes$
+close:^TestBufferAssignmentAdmissionCloseOutcomes$
+commit:^TestBufferAssignmentAdmissionCommitOutcomes$
 EOF
 	got=$(assignment_admission_pattern_for pkg/dispatcher/other.go '^(beginAssignmentAdmission)$')
 	[[ -z "$got" ]] || fail "wrong assignment admission file unexpectedly selected $got"
@@ -533,14 +583,14 @@ new_targeted_fixture() {
 		package_name=dispatcher
 		source_file=pkg/dispatcher/assignment_admission.go
 		test_file=pkg/dispatcher/buffer_survivor_mutation_test.go
-		function_name=closeAssignmentAdmission
+		function_name=close
 		test_names=(TestBufferAssignmentAdmissionCloseOutcomes)
 		;;
 	buffer-admission-commit)
 		package_name=dispatcher
 		source_file=pkg/dispatcher/assignment_admission.go
 		test_file=pkg/dispatcher/buffer_survivor_mutation_test.go
-		function_name=commitAssignmentAdmission
+		function_name=commit
 		test_names=(TestBufferAssignmentAdmissionCommitOutcomes)
 		;;
 	review-integration-recovery)
@@ -749,8 +799,8 @@ if [[ "$1" = tool && "$2" = cover ]]; then
 	printf 'pkg/dispatcher/assignment.go:5: releaseAssignmentReservationLocked 100.0%%\n'
 	printf 'pkg/dispatcher/assignment.go:6: attachAssignmentToReservation 100.0%%\n'
 	printf 'pkg/dispatcher/assignment_admission.go:1: beginAssignmentAdmission 100.0%%\n'
-	printf 'pkg/dispatcher/assignment_admission.go:2: closeAssignmentAdmission 100.0%%\n'
-	printf 'pkg/dispatcher/assignment_admission.go:3: commitAssignmentAdmission 100.0%%\n'
+	printf 'pkg/dispatcher/assignment_admission.go:2: close 100.0%%\n'
+	printf 'pkg/dispatcher/assignment_admission.go:3: commit 100.0%%\n'
 	printf 'pkg/dispatcher/review_integration_recovery.go:1: finalizeReviewIntegration 100.0%%\n'
 	printf 'pkg/dispatcher/escalation.go:1: spawnEscalationOneShot 100.0%%\n'
 	printf 'pkg/dispatcher/health.go:1: applyHealth 100.0%%\n'
@@ -1208,8 +1258,8 @@ EOF
 		done <<<"$focused_lines"
 	done <<'EOF'
 buffer-admission-begin	beginAssignmentAdmission	^TestBufferAssignmentAdmissionBeginOutcomes$
-buffer-admission-close	closeAssignmentAdmission	^TestBufferAssignmentAdmissionCloseOutcomes$
-buffer-admission-commit	commitAssignmentAdmission	^TestBufferAssignmentAdmissionCommitOutcomes$
+buffer-admission-close	close	^TestBufferAssignmentAdmissionCloseOutcomes$
+buffer-admission-commit	commit	^TestBufferAssignmentAdmissionCommitOutcomes$
 EOF
 
 	local integration_file integration_pattern integration_test_file
@@ -2181,6 +2231,7 @@ TestStrictIncrementalMutation() {
 	TestReviewIntegrationRecoveryMutationCoverage
 	TestAssignmentBCMutationMapping
 	TestAssignmentAdmissionMutationMapping
+	TestAssignmentAdmissionTouchedFunctionRouting
 	TestMutationOwnerMappingsCoexist
 
 	TestIncrementalMutationArtifactRetention "$tmp/workflow-artifact"
@@ -2224,6 +2275,9 @@ main() {
 		;;
 	TestAssignmentAdmissionMutationMapping)
 		TestAssignmentAdmissionMutationMapping
+		;;
+	TestAssignmentAdmissionTouchedFunctionRouting)
+		TestAssignmentAdmissionTouchedFunctionRouting
 		;;
 	TestMutationOwnerMappingsCoexist)
 		TestMutationOwnerMappingsCoexist
