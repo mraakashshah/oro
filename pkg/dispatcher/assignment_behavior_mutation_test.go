@@ -309,6 +309,7 @@ func assignmentBehaviorAssignBounded(
 	}()
 	select {
 	case err := <-result:
+		assertDispatcherMutexAvailableWithin(t, d, 250*time.Millisecond)
 		return err
 	case <-time.After(5 * time.Second):
 		t.Fatal("assignBeadWithClaim did not return; dispatcher mutex may be retained")

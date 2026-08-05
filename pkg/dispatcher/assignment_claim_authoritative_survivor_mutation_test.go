@@ -287,6 +287,7 @@ func assignmentClaimAuthoritativeAssign(t *testing.T, h *assignmentClaimAuthorit
 		if err != nil {
 			t.Fatalf("assign bead: %v", err)
 		}
+		assertDispatcherMutexAvailableWithin(t, h.d, 250*time.Millisecond)
 	case <-time.After(2 * time.Second):
 		t.Fatal("assign bead did not return; dispatcher lock was retained")
 	}
