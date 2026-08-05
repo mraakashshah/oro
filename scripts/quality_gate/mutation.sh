@@ -715,6 +715,8 @@ targeted_test_pattern() {
 		printf '^TestLaunchAssignmentWithResultReportsDeclinedClaimWithinBound$'
 	elif [[ "$file" == pkg/dispatcher/sqlite_busy_retry.go && "$match" == '^(retrySQLiteBusyOperation)$' ]]; then
 		printf '^TestRetrySQLiteBusyOperation$'
+	elif [[ "$file" == pkg/dispatcher/epic_branch_admission.go && "$match" == '^(withEpicBranchAdmission)$' ]]; then
+		printf '^TestEpicBranchAdmissionMutationBypassAndClaimPreservation$'
 	elif [[ "$file" == pkg/dispatcher/assignment.go && "$match" == '^(assignBeadWithClaim)$' ]]; then
 		printf '^(TestAssignmentBehaviorMutation|TestStandaloneAssignmentBehaviorHarnessCaseIsolation)$'
 	elif [[ "$file" == pkg/dispatcher/assignment.go && "$match" == '^(releaseAssignmentReservation)$' ]]; then

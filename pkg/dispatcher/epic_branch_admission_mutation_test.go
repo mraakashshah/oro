@@ -204,12 +204,31 @@ func TestEpicBranchAdmissionMutationBypassAndClaimPreservation(t *testing.T) {
 			inspectionStarted:   make(chan struct{}),
 			continueInspection:  continueInspection,
 		}
+		d.epicAdmissionRenewEvery = time.Millisecond
 		d.mu.Lock()
 		d.assigningBeads["oro-mutation-child"] = true
 		d.mu.Unlock()
-		if !d.withEpicBranchAdmission(context.Background(), protocol.Bead{ID: "oro-mutation-child", Epic: "oro-mutation-epic"},
-			"mutation-worker", "epic/mutation-success", "oro-mutation-epic", "main") {
-			t.Fatal("fresh admission did not succeed")
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		admitted := make(chan bool, 1)
+		go func() {
+			admitted <- d.withEpicBranchAdmission(ctx,
+				protocol.Bead{ID: "oro-mutation-child", Epic: "oro-mutation-epic"},
+				"mutation-worker", "epic/mutation-success", "oro-mutation-epic", "main")
+		}()
+		select {
+		case proceed := <-admitted:
+			if !proceed {
+				t.Fatal("fresh admission did not succeed")
+			}
+		case <-time.After(250 * time.Millisecond):
+			cancel()
+			select {
+			case <-admitted:
+			case <-time.After(250 * time.Millisecond):
+				t.Fatal("fresh admission did not stop after its bounded context was canceled")
+			}
+			t.Fatal("fresh admission did not return within its bounded coordination contract")
 		}
 		d.mu.Lock()
 		stillAssigning := d.assigningBeads["oro-mutation-child"]

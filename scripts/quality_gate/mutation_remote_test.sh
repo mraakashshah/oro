@@ -643,6 +643,14 @@ new_targeted_fixture() {
 		test_names=(TestRetrySQLiteBusyOperation)
 		head_test_name=TestTryAssign_ConcentratesWorkersOnTopEpic
 		;;
+	epic-branch-admission)
+		package_name=dispatcher
+		source_file=pkg/dispatcher/epic_branch_admission.go
+		test_file=pkg/dispatcher/epic_branch_admission_mutation_test.go
+		function_name=withEpicBranchAdmission
+		test_names=(TestEpicBranchAdmissionMutationBypassAndClaimPreservation)
+		head_test_name=TestTryAssign_ConcentratesWorkersOnTopEpic
+		;;
 	history)
 		package_name=dispatcher
 		source_file=pkg/dispatcher/startup_recovery.go
@@ -974,6 +982,7 @@ if [[ "$1" = test ]]; then
 		*TestAdvanceAssignedGeneralIdleConsumesReportedClaimAfterAsyncRelease*) printf 'TestAdvanceAssignedGeneralIdleConsumesReportedClaimAfterAsyncRelease\n' ;;
 		*TestLaunchAssignmentWithResultReportsDeclinedClaimWithinBound*) printf 'TestLaunchAssignmentWithResultReportsDeclinedClaimWithinBound\n' ;;
 		*TestRetrySQLiteBusyOperation*) printf 'TestRetrySQLiteBusyOperation\n' ;;
+		*TestEpicBranchAdmissionMutationBypassAndClaimPreservation*) printf 'TestEpicBranchAdmissionMutationBypassAndClaimPreservation\n' ;;
 		*TestReviewCheckpointStartupOrdering*) printf 'TestReviewCheckpointStartupOrdering\n' ;;
 		*TestAssignmentBehaviorMutation*) printf 'TestAssignmentBehaviorMutation\nTestStandaloneAssignmentBehaviorHarnessCaseIsolation\n' ;;
 		*TestAssignBeadWithClaimReportsUnclaimedValidationFailure*) printf 'TestAssignBeadWithClaimReportsUnclaimedValidationFailure\n' ;;
@@ -1010,6 +1019,7 @@ if [[ "$1" = tool && "$2" = cover ]]; then
 	printf 'pkg/dispatcher/scheduling.go:1: advanceAssignedGeneralIdle 100.0%%\n'
 	printf 'pkg/dispatcher/scheduling.go:2: launchAssignmentWithResult 100.0%%\n'
 	printf 'pkg/dispatcher/sqlite_busy_retry.go:1: retrySQLiteBusyOperation 100.0%%\n'
+	printf 'pkg/dispatcher/epic_branch_admission.go:1: withEpicBranchAdmission 100.0%%\n'
 	printf 'pkg/dispatcher/assignment.go:1: assignBeadWithClaim 100.0%%\n'
 	printf 'pkg/dispatcher/assignment.go:2: releaseAssignmentReservation 100.0%%\n'
 	printf 'pkg/dispatcher/assignment.go:3: prepareAssignmentWorktree 100.0%%\n'
@@ -1350,6 +1360,19 @@ TestTargetedMutationScope() {
 	grep -Fxq 'MUTATION_TEST_FILE=pkg/dispatcher/sqlite_busy_retry_test.go' \
 		"$tmp/targeted-sqlite-retry/mutation-args.txt" ||
 		fail 'retrySQLiteBusyOperation mutations must compile only their standalone focused test file'
+
+	epic_admission_pattern='^TestEpicBranchAdmissionMutationBypassAndClaimPreservation$'
+	evidence=$(run_targeted_fixture "$tmp/targeted-epic-branch-admission" targeted pass 0 false epic-branch-admission)
+	grep -Fq -- "-list $epic_admission_pattern ./pkg/dispatcher" \
+		"$tmp/targeted-epic-branch-admission/mutation-list.txt" ||
+		fail 'withEpicBranchAdmission mutations must preflight the bounded admission owner'
+	jq -e --arg pattern "$epic_admission_pattern" \
+		'.shards[0].match == "^(withEpicBranchAdmission)$" and .shards[0].test_pattern == $pattern' \
+		"$evidence" >/dev/null ||
+		fail 'withEpicBranchAdmission mutations must select only the bounded admission owner'
+	! grep -Fq 'TestTryAssign_ConcentratesWorkersOnTopEpic' \
+		"$tmp/targeted-epic-branch-admission/mutation-list.txt" ||
+		fail 'withEpicBranchAdmission focused argv included a co-changed scheduling test'
 
 	history_pattern='^(TestReviewCheckpointStartupOrdering)$'
 	evidence=$(run_targeted_fixture "$tmp/targeted-history" targeted pass 0 false history)
