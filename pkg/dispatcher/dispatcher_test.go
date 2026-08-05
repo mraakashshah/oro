@@ -5253,6 +5253,8 @@ func TestOpsRunDirectives(t *testing.T) {
 	t.Run("retry supersedes blocking row and clears cooldown", func(t *testing.T) {
 		d, _, _, _, _, spawner := newTestDispatcher(t)
 		ctx := context.Background()
+		processRelease := make(chan struct{})
+		spawner.wait = processRelease
 		const beadID = "oro-ops-retry"
 		runID := insertDispatcherTestOpsRun(t, d, ops.OpsDecompose, beadID, "w-ops-retry")
 		if err := CompleteOpsRun(ctx, d.db, runID, opsRunStatusFailed, "", "", "previous failure"); err != nil {
@@ -5294,6 +5296,11 @@ func TestOpsRunDirectives(t *testing.T) {
 		waitFor(t, func() bool { return spawner.SpawnCount() == 1 }, time.Second)
 		if got := spawner.SpawnCount(); got != 1 {
 			t.Fatalf("ops-retry spawn count = %d, want 1", got)
+		}
+		close(processRelease)
+		d.wg.Wait()
+		if status := dispatcherTestOpsRunStatusByID(t, d.db, got.NewOpsRunID); status != opsRunStatusFailed {
+			t.Fatalf("new ops_run terminal status = %q, want %q for invalid decompose output", status, opsRunStatusFailed)
 		}
 
 		resolvedID := insertDispatcherTestOpsRun(t, d, ops.OpsDecompose, "oro-ops-retry-resolved", "w-resolved")
