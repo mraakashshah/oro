@@ -971,7 +971,7 @@ run_mutation_shard() {
 				MUTATION_EXEC_TIMEOUT="$exec_timeout" \
 				MUTATION_TEST_TIMEOUT_MARGIN_SECONDS=5 \
 				MUTATION_PARALLEL_WORKERS=2 \
-				MUTATION_BASE_SHARD_TIMEOUT_SECONDS="$file_timeout" \
+				MUTATION_BASE_SHARD_TIMEOUT_SECONDS="$max_shard_timeout" \
 				MUTATION_MAX_SHARD_TIMEOUT_SECONDS="$max_shard_timeout" \
 				MUTATION_FAILURE_EVIDENCE_DIR="$mutation_failure_evidence_root/$index" \
 				MUTATION_EXEC_SCRIPT="$mutation_script_dir/mutation_exec.sh" \
