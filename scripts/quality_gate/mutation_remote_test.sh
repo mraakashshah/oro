@@ -2194,6 +2194,23 @@ EOF
 		fail 'focused mutation compile must include the reviewed checkpoint owner exactly once'
 	! grep -q 'pkg/dispatcher/unselected_test.go' "$fixture/focused-args.txt" ||
 		fail 'focused mutation compile included an unselected test file'
+
+	set +e
+	(
+		cd "$fixture"
+		PATH="$fixture/bin:$PATH" MUTATION_FOCUSED_TRACE="$fixture/unexpected-args.txt" \
+			MUTATE_CHANGED="$changed" MUTATE_ORIGINAL="$original" MUTATE_PACKAGE=./pkg/dispatcher \
+			MUTATE_TIMEOUT=5 MUTATION_TEST_PATTERN=TestReviewCheckpointMutationOwnershipLoads \
+			MUTATION_TEST_FILE=pkg/missing/review_checkpoint_store_mutation_test.go \
+			bash "$repo_root/scripts/quality_gate/mutation_exec.sh" >"$output" 2>&1
+	)
+	status=$?
+	set -e
+	[[ "$status" = 2 ]] || fail "missing focused test directory exit = $status, want 2"
+	grep -q '^ORO_MUTATION_EXEC_FAILURE:2$' "$output" ||
+		fail 'missing focused test directory did not emit a durable infrastructure marker'
+	[[ ! -e "$fixture/unexpected-args.txt" ]] ||
+		fail 'missing focused test directory invoked go test'
 }
 
 test_review_integration_recovery_mutation_exec_focused_file() {

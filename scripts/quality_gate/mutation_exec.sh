@@ -28,7 +28,7 @@ if [[ -n "$MUTATION_TEST_FILE" ]]; then
 	package_dir=$(dirname -- "$MUTATE_ORIGINAL")
 	package_dir_abs=$(cd "$package_dir" && pwd -P)
 	test_file_dir=$(dirname -- "$MUTATION_TEST_FILE")
-	test_file_dir_abs=$(cd "$test_file_dir" 2>/dev/null && pwd -P || true)
+	test_file_dir_abs=$(cd "$test_file_dir" 2>/dev/null && pwd -P) || true
 	if [[ -z "$test_file_dir_abs" || "$test_file_dir_abs" != "$package_dir_abs" ||
 		"$(basename -- "$MUTATION_TEST_FILE")" != *_test.go || ! -f "$MUTATION_TEST_FILE" ]]; then
 		printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
