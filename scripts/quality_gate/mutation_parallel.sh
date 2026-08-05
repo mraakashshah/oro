@@ -6,6 +6,7 @@ set -euo pipefail
 : "${MUTATION_TEST_PATTERN?}"
 : "${MUTATION_TEST_FILE:=}"
 : "${MUTATION_EXEC_TIMEOUT:?}"
+: "${MUTATION_TEST_TIMEOUT_MARGIN_SECONDS:=5}"
 : "${MUTATION_PARALLEL_WORKERS:?}"
 : "${MUTATION_EXEC_SCRIPT:=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mutation_exec.sh}"
 : "${MUTATION_BASE_SHARD_TIMEOUT_SECONDS:=240}"
@@ -14,12 +15,16 @@ set -euo pipefail
 : "${GOTMPDIR:?}"
 
 if [[ ! "$MUTATION_PARALLEL_WORKERS" =~ ^[1-9][0-9]*$ ||
+	! "$MUTATION_EXEC_TIMEOUT" =~ ^[1-9][0-9]*$ ||
+	! "$MUTATION_TEST_TIMEOUT_MARGIN_SECONDS" =~ ^[1-9][0-9]*$ ||
 	! "$MUTATION_BASE_SHARD_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ||
-	! "$MUTATION_MAX_SHARD_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ||
-	MUTATION_MAX_SHARD_TIMEOUT_SECONDS -lt MUTATION_BASE_SHARD_TIMEOUT_SECONDS ]]; then
+	! "$MUTATION_MAX_SHARD_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] ||
+	((MUTATION_TEST_TIMEOUT_MARGIN_SECONDS >= MUTATION_EXEC_TIMEOUT ||
+		MUTATION_MAX_SHARD_TIMEOUT_SECONDS < MUTATION_BASE_SHARD_TIMEOUT_SECONDS)); then
 	printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
 	exit 2
 fi
+mutation_test_timeout_seconds=$((MUTATION_EXEC_TIMEOUT - MUTATION_TEST_TIMEOUT_MARGIN_SECONDS))
 
 executor_root=$(mktemp -d "$GOTMPDIR/parallel-mutants.XXXXXX")
 generation_log="$executor_root/generation.log"
@@ -251,6 +256,7 @@ run_mutant_worker() {
 				MUTATE_ORIGINAL="$worker_source" \
 				MUTATE_PACKAGE="$module_path/$(dirname "$MUTATION_SOURCE_FILE")" \
 				MUTATE_TIMEOUT="$MUTATION_EXEC_TIMEOUT" \
+				MUTATION_TEST_TIMEOUT="$mutation_test_timeout_seconds" \
 				MUTATION_TEST_PATTERN="$MUTATION_TEST_PATTERN" \
 				MUTATION_TEST_FILE="$worker_test_file" \
 				timeout --foreground "$MUTATION_EXEC_TIMEOUT" bash "$MUTATION_EXEC_SCRIPT"

@@ -7,6 +7,7 @@ set -euo pipefail
 : "${MUTATE_TIMEOUT:?}"
 : "${MUTATION_TEST_PATTERN?}"
 : "${MUTATION_TEST_FILE:=}"
+: "${MUTATION_TEST_TIMEOUT:=$((MUTATE_TIMEOUT + 5))}"
 
 # shellcheck disable=SC2317,SC2329 # invoked by the EXIT trap
 cleanup_mutation() {
@@ -39,7 +40,7 @@ fi
 
 test_exit=0
 set +e
-test_output=$(timeout "$MUTATE_TIMEOUT" go test -vet=off -count=1 -timeout "$((MUTATE_TIMEOUT + 5))s" \
+test_output=$(timeout "$MUTATE_TIMEOUT" go test -vet=off -count=1 -timeout "${MUTATION_TEST_TIMEOUT}s" \
 	-run "$MUTATION_TEST_PATTERN" "${test_targets[@]}" 2>&1)
 test_exit=$?
 set -e

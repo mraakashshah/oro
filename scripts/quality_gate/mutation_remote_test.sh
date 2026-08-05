@@ -928,6 +928,58 @@ EOF
 		fail 'focused mutation compile included an unselected test file'
 }
 
+test_mutation_exec_internal_deadline_kills_hung_mutant() {
+	local fixture="$1"
+	local original="$fixture/pkg/example/value.go"
+	local changed="$fixture/changed.go"
+	local output="$fixture/exec.log"
+	local status
+	mkdir -p "$fixture/cache" "$fixture/pkg/example" "$fixture/tmp"
+	printf 'module example.test/hung\n\ngo 1.26\n' >"$fixture/go.mod"
+	printf 'package example\n\nfunc Value() int { return 1 }\n' >"$original"
+	printf 'package example\n\nfunc Value() int { return 2 }\n' >"$changed"
+	cat >"$fixture/pkg/example/value_test.go" <<'EOF'
+package example
+
+import (
+	"testing"
+	"time"
+)
+
+func TestHungMutant(*testing.T) { time.Sleep(time.Hour) }
+EOF
+
+	SECONDS=0
+	set +e
+	(
+		cd "$fixture"
+		GOCACHE="$fixture/cache" GOTMPDIR="$fixture/tmp" \
+			MUTATE_CHANGED="$changed" MUTATE_ORIGINAL="$original" MUTATE_PACKAGE=./pkg/example \
+			MUTATE_DEBUG=true MUTATE_TIMEOUT=5 MUTATION_TEST_TIMEOUT=1 MUTATION_TEST_PATTERN='^TestHungMutant$' \
+			MUTATION_TEST_FILE="$fixture/pkg/example/value_test.go" \
+			bash "$repo_root/scripts/quality_gate/mutation_exec.sh" >"$output" 2>&1
+	)
+	status=$?
+	set -e
+	[[ "$status" = 0 ]] || fail "hung mutant internal deadline exit = $status, want killed status 0"
+	((SECONDS < 5)) || fail 'hung mutant reached the outer mutation execution timeout'
+	grep -q '^panic: test timed out after 1s$' "$output" || {
+		cat "$output" >&2
+		fail 'hung mutant did not fail at its internal Go test deadline'
+	}
+	! grep -Eq '^ORO_MUTATION_EXEC_(TIMEOUT|FAILURE):?' "$output" ||
+		fail 'hung mutant was classified as mutation infrastructure'
+	grep -q 'Value() int { return 1 }' "$original" ||
+		fail 'hung mutant internal deadline did not restore the original source'
+}
+
+TestMutationExecInternalDeadline() {
+	local deadline_tmp
+	deadline_tmp=$(mktemp -d)
+	test_mutation_exec_internal_deadline_kills_hung_mutant "$deadline_tmp/exec-hung"
+	rm -rf -- "$deadline_tmp"
+}
+
 test_parallel_mutant_executor() {
 	local fixture="$1"
 	local output="$fixture/parallel.log"
@@ -989,7 +1041,7 @@ EOF
 			GOCACHE="$fixture/cache" GOTMPDIR="$fixture/tmp" \
 			MUTATION_SOURCE_FILE=pkg/example/value.go MUTATION_FUNCTION_MATCH='^(Value)$' \
 			MUTATION_TEST_PATTERN='^TestValue$' MUTATION_TEST_FILE=pkg/example/value_test.go \
-			MUTATION_EXEC_TIMEOUT=5 MUTATION_PARALLEL_WORKERS=2 \
+			MUTATION_EXEC_TIMEOUT=6 MUTATION_PARALLEL_WORKERS=2 \
 			bash "$repo_root/scripts/quality_gate/mutation_parallel.sh" >"$output" 2>&1
 	)
 	status=$?
@@ -1036,6 +1088,7 @@ printf 'Save mutations into %q\n' "$generation"
 EOF
 	cat >"$fixture/bin/mutation-exec" <<'EOF'
 #!/usr/bin/env bash
+printf '%s\n' "${MUTATION_TEST_TIMEOUT:-unset}" >"$MUTATION_FAKE_STATE/internal-test-timeout"
 exit 0
 EOF
 	chmod +x "$fixture/bin/go" "$fixture/bin/mutation-exec"
@@ -1060,6 +1113,8 @@ EOF
 		fail "$mutant_count-mutant shard did not report its deterministic effective deadline"
 	grep -Eq "^The mutation score is 1\.000000 \($mutant_count passed, 0 failed, 0 duplicated, 0 skipped, total is $mutant_count\)$" "$output" ||
 		fail "$mutant_count-mutant capacity fixture changed the mutation denominator"
+	grep -Fxq 55 "$fixture/state/internal-test-timeout" ||
+		fail "$mutant_count-mutant shard did not reserve a 5s margin below its 60s executor deadline"
 }
 
 run_parallel_completion_handshake_fixture() {
@@ -1132,6 +1187,26 @@ test_parallel_completion_handshakes() {
 	run_parallel_completion_handshake_fixture "$fixture/missing-done" missing_done
 	run_parallel_completion_handshake_fixture "$fixture/invalid-done" invalid_done
 	run_parallel_completion_handshake_fixture "$fixture/missing-result" missing_result
+}
+
+test_parallel_internal_timeout_margin_validation() {
+	local fixture="$1"
+	local margin output status
+	mkdir -p "$fixture/cache" "$fixture/tmp"
+	for margin in 0 5; do
+		output="$fixture/margin-$margin.log"
+		set +e
+		GOCACHE="$fixture/cache" GOTMPDIR="$fixture/tmp" \
+			MUTATION_SOURCE_FILE=pkg/example/value.go MUTATION_FUNCTION_MATCH='^(Value)$' \
+			MUTATION_TEST_PATTERN='^TestValue$' MUTATION_EXEC_TIMEOUT=5 \
+			MUTATION_TEST_TIMEOUT_MARGIN_SECONDS="$margin" MUTATION_PARALLEL_WORKERS=2 \
+			bash "$repo_root/scripts/quality_gate/mutation_parallel.sh" >"$output" 2>&1
+		status=$?
+		set -e
+		[[ "$status" = 2 ]] || fail "internal test timeout margin $margin exit = $status, want 2"
+		grep -Fxq 'ORO_MUTATION_EXEC_FAILURE:2' "$output" ||
+			fail "internal test timeout margin $margin did not emit an infrastructure marker"
+	done
 }
 
 run_parallel_marker_fixture() {
@@ -1377,6 +1452,7 @@ TestMutationCapacity() {
 	run_parallel_capacity_fixture "$tmp/capped" 302 900
 	test_parallel_marker_fail_fast "$tmp/markers"
 	test_parallel_completion_handshakes "$tmp/completion"
+	test_parallel_internal_timeout_margin_validation "$tmp/internal-timeout-margin"
 	test_parallel_emergency_ceiling "$tmp/ceiling"
 }
 
@@ -1400,6 +1476,7 @@ TestStrictIncrementalMutation() {
 	run_fixture "$tmp/timeout" timeout infrastructure_failure 2
 	test_mutation_exec_unexpected_exit "$tmp/exec-unexpected"
 	test_mutation_exec_focused_file "$tmp/exec-focused"
+	TestMutationExecInternalDeadline
 	test_parallel_mutant_executor "$tmp/parallel-mutants"
 	TestMutationCapacity
 	run_fixture "$tmp/unknown-exit" unknown-exit infrastructure_failure 2
@@ -1464,6 +1541,9 @@ main() {
 		;;
 	TestMutationCapacity)
 		TestMutationCapacity
+		;;
+	TestMutationExecInternalDeadline)
+		TestMutationExecInternalDeadline
 		;;
 	*)
 		fail "unknown test $1"
