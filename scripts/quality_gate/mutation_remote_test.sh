@@ -143,9 +143,17 @@ touched_function_pattern_for() {
 }
 
 TestAssignmentAdmissionTouchedFunctionRouting() {
-	local actual expected file function got test_file
+	local fixture="$1"
+	local actual base expected file function got head test_file
+	local -a refs
 	file=pkg/dispatcher/assignment_admission.go
-	actual=$(touched_function_pattern_for main b9ec674a "$file")
+	mapfile -t refs < <(new_assignment_admission_touched_fixture "$fixture")
+	base=${refs[0]}
+	head=${refs[1]}
+	actual=$(
+		cd "$fixture"
+		touched_function_pattern_for "$base" "$head" "$file"
+	)
 	expected='^(beginAssignmentAdmission|close|commit)$'
 	[[ "$actual" == "$expected" ]] ||
 		fail "canonical assignment admission touched functions = $actual, want $expected"
@@ -684,6 +692,42 @@ new_targeted_fixture() {
 		printf '\nfunc %s() {}\n' "$head_test_name" >>"$fixture/$test_file"
 		git -C "$fixture" add "$test_file"
 	fi
+	git -C "$fixture" commit -qm head
+	head=$(git -C "$fixture" rev-parse HEAD)
+	printf '%s\n%s\n' "$base" "$head"
+}
+
+new_assignment_admission_touched_fixture() {
+	local fixture="$1"
+	local base head
+	mkdir -p "$fixture/pkg/dispatcher"
+	git -C "$fixture" init -q
+	git -C "$fixture" config user.email mutation@example.test
+	git -C "$fixture" config user.name mutation-test
+	printf '%s\n' \
+		'package dispatcher' \
+		'' \
+		'type Dispatcher struct{}' \
+		'type assignmentAdmission struct{}' \
+		'' \
+		'func (d *Dispatcher) beginAssignmentAdmission() bool { return false }' \
+		'func (a *assignmentAdmission) close() bool { return false }' \
+		'func (a *assignmentAdmission) commit() bool { return false }' \
+		>"$fixture/pkg/dispatcher/assignment_admission.go"
+	git -C "$fixture" add pkg/dispatcher/assignment_admission.go
+	git -C "$fixture" commit -qm base
+	base=$(git -C "$fixture" rev-parse HEAD)
+	printf '%s\n' \
+		'package dispatcher' \
+		'' \
+		'type Dispatcher struct{}' \
+		'type assignmentAdmission struct{}' \
+		'' \
+		'func (d *Dispatcher) beginAssignmentAdmission() bool { return true }' \
+		'func (a *assignmentAdmission) close() bool { return true }' \
+		'func (a *assignmentAdmission) commit() bool { return true }' \
+		>"$fixture/pkg/dispatcher/assignment_admission.go"
+	git -C "$fixture" add pkg/dispatcher/assignment_admission.go
 	git -C "$fixture" commit -qm head
 	head=$(git -C "$fixture" rev-parse HEAD)
 	printf '%s\n%s\n' "$base" "$head"
@@ -2231,7 +2275,7 @@ TestStrictIncrementalMutation() {
 	TestReviewIntegrationRecoveryMutationCoverage
 	TestAssignmentBCMutationMapping
 	TestAssignmentAdmissionMutationMapping
-	TestAssignmentAdmissionTouchedFunctionRouting
+	TestAssignmentAdmissionTouchedFunctionRouting "$tmp/assignment-admission-touched"
 	TestMutationOwnerMappingsCoexist
 
 	TestIncrementalMutationArtifactRetention "$tmp/workflow-artifact"
@@ -2277,7 +2321,9 @@ main() {
 		TestAssignmentAdmissionMutationMapping
 		;;
 	TestAssignmentAdmissionTouchedFunctionRouting)
-		TestAssignmentAdmissionTouchedFunctionRouting
+		tmp=$(mktemp -d)
+		trap 'rm -rf "$tmp"' RETURN
+		TestAssignmentAdmissionTouchedFunctionRouting "$tmp/assignment-admission-touched"
 		;;
 	TestMutationOwnerMappingsCoexist)
 		TestMutationOwnerMappingsCoexist
