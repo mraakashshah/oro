@@ -383,6 +383,48 @@ review_checkpoint_mutation_test_pattern() {
 	esac
 }
 
+review_integration_recovery_mutation_test_pattern() {
+	local file="$1"
+	local match="$2"
+	[[ "$file" == pkg/dispatcher/review_integration_recovery.go ]] || return
+	case "$match" in
+	'^(completeCheckpointAssignment)$')
+		printf '^TestReviewIntegrationRecoveryMutationCompleteCheckpointAssignment$'
+		;;
+	'^(reviewIntegrationRefSHA)$' | '^(reviewIntegrationTargetSHA)$')
+		printf '^TestReviewIntegrationRecoveryMutationReferenceResolution$'
+		;;
+	'^(closeIntegratedBeadOnce)$')
+		printf '^TestReviewIntegrationRecoveryMutationCloseIntegratedBeadOnce$'
+		;;
+	'^(reviewIntegrationAncestor)$' | '^(reviewIntegrationProof)$')
+		printf '^TestReviewIntegrationRecoveryMutationAncestryAndProof$'
+		;;
+	'^(verifyApprovedIntegrationSource)$' | '^(retryReviewIntegrationMerge)$')
+		printf '^TestReviewIntegrationRecoveryMutationApprovedSourceAndRetry$'
+		;;
+	'^(prepareApprovedReviewIntegration)$' | '^(reconcileReviewIntegration)$')
+		printf '^TestReviewIntegrationRecoveryMutationPrepareAndReconcile$'
+		;;
+	'^(finalizeReviewIntegration)$')
+		printf '^TestReviewIntegrationRecoveryMutationFinalize$'
+		;;
+	'^(reconcileManualReviewIntegration)$' | '^(reconcileAutomaticReviewIntegration)$')
+		printf '^TestReviewIntegrationRecoveryMutationManualAndAutomatic$'
+		;;
+	'^(reconcileReviewIntegrationsOnStartup)$')
+		printf '^(TestReviewIntegrationRecoveryMutationStartupListFailure|TestReviewIntegrationRecoveryMutationStartupWrapsCheckpointFailure)$'
+		;;
+	esac
+}
+
+review_integration_recovery_mutation_test_file() {
+	local file="$1"
+	if [[ "$file" == pkg/dispatcher/review_integration_recovery.go ]]; then
+		printf 'pkg/dispatcher/review_integration_recovery_mutation_test.go'
+	fi
+}
+
 dispatcher_test_supplement() {
 	local file="$1"
 	local match="$2"
@@ -548,7 +590,12 @@ targeted_test_pattern() {
 	local head="$2"
 	local file="$3"
 	local match="$4"
-	local review_checkpoint_pattern
+	local review_checkpoint_pattern review_integration_recovery_pattern
+	review_integration_recovery_pattern=$(review_integration_recovery_mutation_test_pattern "$file" "$match")
+	if [[ -n "$review_integration_recovery_pattern" ]]; then
+		printf '%s' "$review_integration_recovery_pattern"
+		return
+	fi
 	review_checkpoint_pattern=$(review_checkpoint_mutation_test_pattern "$file" "$match")
 	if [[ -n "$review_checkpoint_pattern" ]]; then
 		printf '%s' "$review_checkpoint_pattern"
@@ -604,6 +651,7 @@ run_mutation_shard() {
 	local result="$result_dir/$index.json"
 	local mutation_exit=0
 	local mutation_test_file=""
+	mutation_test_file=$(review_integration_recovery_mutation_test_file "$file")
 	case "$test_pattern" in
 	'^TestAssignBeadWithClaimReportsUnclaimedValidationFailure$' | '^TestReleaseAssignmentReservationResetsStateAndUnlocks$')
 		mutation_test_file=pkg/dispatcher/assignment_mutation_test.go
@@ -694,6 +742,20 @@ run_mutation_shard() {
 				MUTATION_FAILURE_EVIDENCE_DIR="$mutation_failure_evidence_root/$index" \
 				MUTATION_EXEC_SCRIPT="$mutation_script_dir/mutation_exec.sh" \
 				timeout "$max_shard_timeout" bash "$mutation_script_dir/mutation_parallel.sh"
+		elif [[ "$file" == pkg/dispatcher/review_integration_recovery.go ]]; then
+			GOCACHE="$shard_root/caches/$cache_slot" \
+				GOTMPDIR="$shard_root/tmp/$index" \
+				MUTATION_SOURCE_FILE="$file" \
+				MUTATION_FUNCTION_MATCH="$match" \
+				MUTATION_TEST_PATTERN="$test_pattern" \
+				MUTATION_TEST_FILE="$mutation_test_file" \
+				MUTATION_EXEC_TIMEOUT="$exec_timeout" \
+				MUTATION_PARALLEL_WORKERS=2 \
+				MUTATION_BASE_SHARD_TIMEOUT_SECONDS="$file_timeout" \
+				MUTATION_MAX_SHARD_TIMEOUT_SECONDS="$file_timeout" \
+				MUTATION_FAILURE_EVIDENCE_DIR="$mutation_failure_evidence_root/$index" \
+				MUTATION_EXEC_SCRIPT="$mutation_script_dir/mutation_exec.sh" \
+				timeout "$file_timeout" bash "$mutation_script_dir/mutation_parallel.sh"
 		else
 			GOCACHE="$shard_root/caches/$cache_slot" \
 				GOTMPDIR="$shard_root/tmp/$index" \

@@ -51,6 +51,37 @@ review_checkpoint_pattern_for() {
 	bash -c "$function_source"$'\n''review_checkpoint_mutation_test_pattern "$1" "$2"' _ "$file" "$match"
 }
 
+review_integration_recovery_pattern_for() {
+	local file="$1"
+	local match="$2"
+	local function_source
+	function_source=$(awk '
+		/^review_integration_recovery_mutation_test_pattern\(\)/ { copying = 1 }
+		copying { print }
+		copying && /^}/ { exit }
+	' "$runner")
+	if [[ -z "$function_source" ]]; then
+		fail 'mutation runner omitted reviewed integration-recovery owner mapping'
+		return 1
+	fi
+	bash -c "$function_source"$'\n''review_integration_recovery_mutation_test_pattern "$1" "$2"' _ "$file" "$match" || true
+}
+
+review_integration_recovery_test_file_for() {
+	local file="$1"
+	local function_source
+	function_source=$(awk '
+		/^review_integration_recovery_mutation_test_file\(\)/ { copying = 1 }
+		copying { print }
+		copying && /^}/ { exit }
+	' "$runner")
+	if [[ -z "$function_source" ]]; then
+		fail 'mutation runner omitted reviewed integration-recovery standalone file mapping'
+		return 1
+	fi
+	bash -c "$function_source"$'\n''review_integration_recovery_mutation_test_file "$1"' _ "$file" || true
+}
+
 TestReviewCheckpointMutationMapping() {
 	local function expected got
 	while IFS=: read -r function expected; do
@@ -73,6 +104,89 @@ BlockIntegration:TestReviewCheckpointMutationIntegrationDurability
 EOF
 	got=$(review_checkpoint_pattern_for pkg/dispatcher/review_checkpoint_store.go '^(unmappedCheckpointFunction)$')
 	[[ -z "$got" ]] || fail "unmapped checkpoint function unexpectedly selected $got"
+}
+
+TestReviewIntegrationRecoveryMutationMapping() {
+	local expected file function got match pattern
+	file=pkg/dispatcher/review_integration_recovery.go
+	while IFS=: read -r function expected; do
+		match="^($function)$"
+		if [[ "$expected" == *'|'* ]]; then
+			pattern="^($expected)$"
+		else
+			pattern="^$expected$"
+		fi
+		got=$(review_integration_recovery_pattern_for "$file" "$match")
+		[[ "$got" == "$pattern" ]] ||
+			fail "$function integration-recovery mutation owner = $got, want $pattern"
+		got=$(review_integration_recovery_test_file_for "$file")
+		[[ "$got" == pkg/dispatcher/review_integration_recovery_mutation_test.go ]] ||
+			fail "$function integration-recovery mutation file = $got, want reviewed standalone file"
+	done <<'EOF'
+completeCheckpointAssignment:TestReviewIntegrationRecoveryMutationCompleteCheckpointAssignment
+reviewIntegrationRefSHA:TestReviewIntegrationRecoveryMutationReferenceResolution
+reviewIntegrationTargetSHA:TestReviewIntegrationRecoveryMutationReferenceResolution
+closeIntegratedBeadOnce:TestReviewIntegrationRecoveryMutationCloseIntegratedBeadOnce
+reviewIntegrationAncestor:TestReviewIntegrationRecoveryMutationAncestryAndProof
+reviewIntegrationProof:TestReviewIntegrationRecoveryMutationAncestryAndProof
+verifyApprovedIntegrationSource:TestReviewIntegrationRecoveryMutationApprovedSourceAndRetry
+retryReviewIntegrationMerge:TestReviewIntegrationRecoveryMutationApprovedSourceAndRetry
+prepareApprovedReviewIntegration:TestReviewIntegrationRecoveryMutationPrepareAndReconcile
+reconcileReviewIntegration:TestReviewIntegrationRecoveryMutationPrepareAndReconcile
+finalizeReviewIntegration:TestReviewIntegrationRecoveryMutationFinalize
+reconcileManualReviewIntegration:TestReviewIntegrationRecoveryMutationManualAndAutomatic
+reconcileAutomaticReviewIntegration:TestReviewIntegrationRecoveryMutationManualAndAutomatic
+reconcileReviewIntegrationsOnStartup:TestReviewIntegrationRecoveryMutationStartupListFailure|TestReviewIntegrationRecoveryMutationStartupWrapsCheckpointFailure
+EOF
+	got=$(review_integration_recovery_pattern_for "$file" '^(unmappedIntegrationRecoveryFunction)$')
+	[[ -z "$got" ]] || fail "unmapped integration-recovery function unexpectedly selected $got"
+	got=$(review_integration_recovery_pattern_for pkg/dispatcher/review_checkpoint_store.go '^(finalizeReviewIntegration)$')
+	[[ -z "$got" ]] || fail "wrong integration-recovery source unexpectedly selected $got"
+	got=$(review_integration_recovery_test_file_for pkg/dispatcher/review_checkpoint_store.go)
+	[[ -z "$got" ]] || fail "wrong integration-recovery source unexpectedly selected standalone file $got"
+}
+
+TestReviewIntegrationRecoveryMutationCoverage() {
+	local coverage coverage_root expected function listed match pattern report test_name
+	coverage_root=$(mktemp -d)
+	while IFS=: read -r function expected; do
+		match="^($function)$"
+		pattern=$(review_integration_recovery_pattern_for pkg/dispatcher/review_integration_recovery.go "$match")
+		listed=$(go test -list "$pattern" ./pkg/dispatcher)
+		while IFS= read -r test_name; do
+			grep -Fxq "$test_name" <<<"$listed" ||
+				fail "$function owner pattern omitted real test $test_name"
+		done < <(tr '|' '\n' <<<"$expected")
+		[[ "$(grep -Ec '^TestReviewIntegrationRecoveryMutation' <<<"$listed")" == "$(tr '|' '\n' <<<"$expected" | wc -l | tr -d ' ')" ]] ||
+			fail "$function owner pattern selected unreviewed integration-recovery tests"
+		coverage="$coverage_root/$function.out"
+		timeout 60 go test -vet=off -count=1 -timeout 55s -coverprofile="$coverage" \
+			-run "$pattern" ./pkg/dispatcher >/dev/null
+		report=$(go tool cover -func="$coverage")
+		awk -v target="$function" '
+			$2 == target || $2 ~ ("[.]" target "$") {
+				value = $3
+				gsub(/%/, "", value)
+				if (value + 0 > 0) covered = 1
+			}
+			END { exit !covered }
+		' <<<"$report" || fail "$function reviewed owner has zero production coverage"
+	done <<'EOF'
+completeCheckpointAssignment:TestReviewIntegrationRecoveryMutationCompleteCheckpointAssignment
+reviewIntegrationRefSHA:TestReviewIntegrationRecoveryMutationReferenceResolution
+reviewIntegrationTargetSHA:TestReviewIntegrationRecoveryMutationReferenceResolution
+closeIntegratedBeadOnce:TestReviewIntegrationRecoveryMutationCloseIntegratedBeadOnce
+reviewIntegrationAncestor:TestReviewIntegrationRecoveryMutationAncestryAndProof
+reviewIntegrationProof:TestReviewIntegrationRecoveryMutationAncestryAndProof
+verifyApprovedIntegrationSource:TestReviewIntegrationRecoveryMutationApprovedSourceAndRetry
+retryReviewIntegrationMerge:TestReviewIntegrationRecoveryMutationApprovedSourceAndRetry
+prepareApprovedReviewIntegration:TestReviewIntegrationRecoveryMutationPrepareAndReconcile
+reconcileReviewIntegration:TestReviewIntegrationRecoveryMutationPrepareAndReconcile
+finalizeReviewIntegration:TestReviewIntegrationRecoveryMutationFinalize
+reconcileManualReviewIntegration:TestReviewIntegrationRecoveryMutationManualAndAutomatic
+reconcileAutomaticReviewIntegration:TestReviewIntegrationRecoveryMutationManualAndAutomatic
+reconcileReviewIntegrationsOnStartup:TestReviewIntegrationRecoveryMutationStartupListFailure|TestReviewIntegrationRecoveryMutationStartupWrapsCheckpointFailure
+EOF
 }
 
 TestDispatcherMutationContractSupplements() {
@@ -994,6 +1108,54 @@ EOF
 		fail 'focused mutation compile included an unselected test file'
 }
 
+test_review_integration_recovery_mutation_exec_focused_file() {
+	local fixture="$1"
+	local original="$fixture/pkg/dispatcher/review_integration_recovery.go"
+	local changed="$fixture/changed.go"
+	local output="$fixture/exec.log"
+	local status
+	mkdir -p "$fixture/bin" "$fixture/pkg/dispatcher"
+	cat >"$fixture/bin/go" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >"${MUTATION_FOCUSED_TRACE:?}"
+exit 0
+EOF
+	chmod +x "$fixture/bin/go"
+	printf 'package dispatcher\n\nfunc finalizeReviewIntegration() int { return 1 }\n' >"$original"
+	printf 'package dispatcher\n\nfunc finalizeReviewIntegration() int { return 2 }\n' >"$changed"
+	printf 'package dispatcher\n\nfunc TestReviewIntegrationRecoveryMutationFinalize() {}\n' \
+		>"$fixture/pkg/dispatcher/review_integration_recovery_mutation_test.go"
+	printf 'package dispatcher\n\nfunc TestUnselectedReviewIntegrationRecovery() {}\n' \
+		>"$fixture/pkg/dispatcher/review_integration_recovery_unselected_test.go"
+
+	set +e
+	(
+		cd "$fixture"
+		PATH="$fixture/bin:$PATH" MUTATION_FOCUSED_TRACE="$fixture/focused-args.txt" \
+			MUTATE_CHANGED="$changed" MUTATE_ORIGINAL="$original" MUTATE_PACKAGE=./pkg/dispatcher \
+			MUTATE_TIMEOUT=60 MUTATION_TEST_TIMEOUT=55 \
+			MUTATION_TEST_PATTERN='^TestReviewIntegrationRecoveryMutationFinalize$' \
+			MUTATION_TEST_FILE=pkg/dispatcher/review_integration_recovery_mutation_test.go \
+			bash "$repo_root/scripts/quality_gate/mutation_exec.sh" >"$output" 2>&1
+	)
+	status=$?
+	set -e
+	[[ "$status" = 1 ]] || fail "integration-recovery focused surviving mutant exit = $status, want 1"
+	[[ "$(grep -oF 'pkg/dispatcher/review_integration_recovery.go' "$fixture/focused-args.txt" | wc -l | tr -d ' ')" = 1 ]] ||
+		fail 'focused mutation compile must include mutated integration-recovery source exactly once'
+	[[ "$(grep -oF 'pkg/dispatcher/review_integration_recovery_mutation_test.go' "$fixture/focused-args.txt" | wc -l | tr -d ' ')" = 1 ]] ||
+		fail 'focused mutation compile must include reviewed integration-recovery owner exactly once'
+	! grep -q 'review_integration_recovery_unselected_test.go' "$fixture/focused-args.txt" ||
+		fail 'focused mutation compile included an unselected integration-recovery test file'
+}
+
+TestReviewIntegrationRecoveryMutationFocusedExec() {
+	local focused_tmp
+	focused_tmp=$(mktemp -d)
+	test_review_integration_recovery_mutation_exec_focused_file "$focused_tmp/exec-review-integration-recovery-focused"
+	rm -rf -- "$focused_tmp"
+}
+
 test_mutation_exec_internal_deadline_kills_hung_mutant() {
 	local fixture="$1"
 	local original="$fixture/pkg/example/value.go"
@@ -1666,6 +1828,7 @@ TestStrictIncrementalMutation() {
 	run_fixture "$tmp/timeout" timeout infrastructure_failure 2
 	test_mutation_exec_unexpected_exit "$tmp/exec-unexpected"
 	test_mutation_exec_focused_file "$tmp/exec-focused"
+	test_review_integration_recovery_mutation_exec_focused_file "$tmp/exec-review-integration-recovery-focused"
 	TestMutationExecInternalDeadline
 	test_parallel_mutant_executor "$tmp/parallel-mutants"
 	TestMutationCapacity
@@ -1687,6 +1850,8 @@ TestStrictIncrementalMutation() {
 	TestTargetedMutationScope
 	TestDispatcherMutationContractSupplements
 	TestReviewCheckpointMutationMapping
+	TestReviewIntegrationRecoveryMutationMapping
+	TestReviewIntegrationRecoveryMutationCoverage
 
 	TestIncrementalMutationArtifactRetention "$tmp/workflow-artifact"
 	cp "$tmp/workflow-artifact/incremental-mutation.yml" "$tmp/incremental-mutation.yml"
@@ -1720,6 +1885,15 @@ main() {
 		;;
 	TestReviewCheckpointMutationMapping)
 		TestReviewCheckpointMutationMapping
+		;;
+	TestReviewIntegrationRecoveryMutationMapping)
+		TestReviewIntegrationRecoveryMutationMapping
+		;;
+	TestReviewIntegrationRecoveryMutationCoverage)
+		TestReviewIntegrationRecoveryMutationCoverage
+		;;
+	TestReviewIntegrationRecoveryMutationFocusedExec)
+		TestReviewIntegrationRecoveryMutationFocusedExec
 		;;
 	TestTargetedMutationScope)
 		tmp=$(mktemp -d)
