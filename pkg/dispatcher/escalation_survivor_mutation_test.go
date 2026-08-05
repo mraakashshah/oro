@@ -28,6 +28,16 @@ func (e *escalationMutationEscalator) Escalate(_ context.Context, msg string) er
 	return e.err
 }
 
+type escalationMutationBatchSpawner struct {
+	spawned chan struct{}
+	err     error
+}
+
+func (s *escalationMutationBatchSpawner) Spawn(context.Context, string, string, string) (ops.Process, error) {
+	s.spawned <- struct{}{}
+	return nil, s.err
+}
+
 func newEscalationMutationHarness(t *testing.T) (*Dispatcher, *sql.DB, *escalationMutationEscalator) {
 	t.Helper()
 	t.Setenv("ORO_BEADSOURCE_MODE", "sqlite")
@@ -476,5 +486,205 @@ func assertEscalationMutationEvent(t *testing.T, db *sql.DB, eventType, beadID s
 	var count int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM events WHERE type=? AND bead_id=?`, eventType, beadID).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("%s events for %s = %d, want 1: %v", eventType, beadID, count, err)
+	}
+}
+
+func TestEscalationSurvivorMutationEscalateWithOneShotContracts(t *testing.T) {
+	t.Run("actionable one-shot", func(t *testing.T) {
+		d, db, escalator := newEscalationMutationHarness(t)
+		spawner := &escalationMutationBatchSpawner{spawned: make(chan struct{}, 1), err: errors.New("spawn unavailable")}
+		d.ops = ops.NewSpawner(spawner)
+		const beadID = "actionable-one-shot"
+		d.escalateWithOneShot(t.Context(), "[ORO-DISPATCH] MISSING_AC: actionable-one-shot", beadID, "worker", true)
+		waitEscalationMutationSpawn(t, spawner.spawned)
+		waitEscalationMutationEvent(t, db, "oneshot_escalation_failed", beadID)
+		if len(escalator.messages) != 1 {
+			t.Fatalf("manager deliveries = %v, want one", escalator.messages)
+		}
+		var status string
+		if err := db.QueryRow(`SELECT status FROM escalations WHERE bead_id=?`, beadID).Scan(&status); err != nil || status != "acked" {
+			t.Fatalf("actionable escalation status = %q, %v", status, err)
+		}
+	})
+
+	t.Run("one-shot disabled", func(t *testing.T) {
+		d, db, escalator := newEscalationMutationHarness(t)
+		spawner := &escalationMutationBatchSpawner{spawned: make(chan struct{}, 1), err: errors.New("unexpected spawn")}
+		d.ops = ops.NewSpawner(spawner)
+		d.escalateWithOneShot(t.Context(), "[ORO-DISPATCH] MISSING_AC: disabled", "disabled", "worker", false)
+		if len(escalator.messages) != 1 {
+			t.Fatalf("disabled manager deliveries = %v, want one", escalator.messages)
+		}
+		assertEscalationMutationStatusByBead(t, db, "disabled", "pending")
+		select {
+		case <-spawner.spawned:
+			t.Fatal("disabled escalation spawned a one-shot")
+		case <-time.After(250 * time.Millisecond):
+		}
+	})
+
+	t.Run("nil ops spawner", func(t *testing.T) {
+		d, db, escalator := newEscalationMutationHarness(t)
+		d.escalateWithOneShot(t.Context(), "[ORO-DISPATCH] MISSING_AC: nil-ops", "nil-ops", "worker", true)
+		if len(escalator.messages) != 1 {
+			t.Fatalf("nil-ops manager deliveries = %v, want one", escalator.messages)
+		}
+		assertEscalationMutationStatusByBead(t, db, "nil-ops", "pending")
+	})
+
+	t.Run("manager delivery failures", func(t *testing.T) {
+		d, db, escalator := newEscalationMutationHarness(t)
+		escalator.err = errors.New("manager unavailable")
+		d.escalateWithOneShot(t.Context(), "[ORO-DISPATCH] MERGE_COMPLETE: informational", "informational", "worker", true)
+		assertEscalationMutationEvent(t, db, "notification_skipped", "informational")
+		assertEscalationMutationEventCount(t, db, "escalation_failed", "informational", 0)
+
+		d.escalateWithOneShot(t.Context(), "[ORO-DISPATCH] WORKER_CRASH: actionable", "delivery-failed", "worker", true)
+		assertEscalationMutationEvent(t, db, "escalation_failed", "delivery-failed")
+		assertEscalationMutationEventCount(t, db, "notification_skipped", "delivery-failed", 0)
+	})
+
+	t.Run("oversized route returns once", func(t *testing.T) {
+		d, db, escalator := newEscalationMutationHarness(t)
+		spawner := &escalationMutationBatchSpawner{spawned: make(chan struct{}, 2), err: errors.New("spawn unavailable")}
+		d.ops = ops.NewSpawner(spawner)
+		const beadID = "oversized-routed-once"
+		d.escalateWithOneShot(t.Context(), "[ORO-DISPATCH] OVERSIZED_BEAD: oversized-routed-once", beadID, "worker", true)
+		waitEscalationMutationSpawn(t, spawner.spawned)
+		waitEscalationMutationEvent(t, db, "oneshot_escalation_failed", beadID)
+		var escalations, runs int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM escalations WHERE bead_id=?`, beadID).Scan(&escalations); err != nil || escalations != 1 {
+			t.Fatalf("routed escalation rows = %d, want 1: %v", escalations, err)
+		}
+		if err := db.QueryRow(`SELECT COUNT(*) FROM ops_runs WHERE bead_id=?`, beadID).Scan(&runs); err != nil || runs != 1 {
+			t.Fatalf("routed ops-run rows = %d, want 1: %v", runs, err)
+		}
+		if len(escalator.messages) != 0 {
+			t.Fatalf("oversized manager deliveries = %v, want none", escalator.messages)
+		}
+	})
+
+	t.Run("oversized fallback spawns", func(t *testing.T) {
+		d, db, escalator := newEscalationMutationHarness(t)
+		spawner := &escalationMutationBatchSpawner{spawned: make(chan struct{}, 1), err: errors.New("spawn unavailable")}
+		d.ops = ops.NewSpawner(spawner)
+		const beadID = ""
+		d.escalateWithOneShot(t.Context(), "[ORO-DISPATCH] OVERSIZED_BEAD: no-bead", beadID, "worker", true)
+		waitEscalationMutationSpawn(t, spawner.spawned)
+		waitEscalationMutationEvent(t, db, "oneshot_escalation_failed", beadID)
+		assertEscalationMutationStatusByBead(t, db, beadID, "acked")
+		if len(escalator.messages) != 0 {
+			t.Fatalf("oversized fallback manager deliveries = %v, want none", escalator.messages)
+		}
+	})
+}
+
+func TestEscalationSurvivorMutationHandleEscalationResultContracts(t *testing.T) {
+	t.Run("failed result", func(t *testing.T) {
+		d, db, _ := newEscalationMutationHarness(t)
+		id := d.insertEscalation(t.Context(), string(protocol.EscMissingAC), "result-failed", "worker", "missing AC")
+		results := make(chan ops.Result, 1)
+		results <- ops.Result{Type: ops.OpsWriteAC, Err: errors.New("write failed")}
+		d.handleEscalationResult(t.Context(), 0, id, string(protocol.EscMissingAC), "result-failed", "worker", results)
+		assertEscalationMutationStatus(t, db, id, "acked")
+		assertEscalationMutationEvent(t, db, "oneshot_escalation_failed", "result-failed")
+	})
+
+	t.Run("oversized failed verdict", func(t *testing.T) {
+		d, db, _ := newEscalationMutationHarness(t)
+		id := d.insertEscalation(t.Context(), string(protocol.EscOversizedBead), "result-oversized", "worker", "split")
+		results := make(chan ops.Result, 1)
+		results <- ops.Result{Type: ops.OpsDecompose, Verdict: ops.VerdictFailed, Feedback: "cannot split"}
+		d.handleEscalationResult(t.Context(), 0, id, string(protocol.EscOversizedBead), "result-oversized", "worker", results)
+		assertEscalationMutationStatus(t, db, id, "acked")
+		if _, ok := d.worktreeFailures["result-oversized"]; !ok {
+			t.Fatal("failed oversized result did not record assignment failure")
+		}
+	})
+
+	t.Run("zero run unknown result", func(t *testing.T) {
+		d, db, _ := newEscalationMutationHarness(t)
+		id := d.insertEscalation(t.Context(), "FUTURE_TYPE", "result-zero", "worker", "future")
+		results := make(chan ops.Result, 1)
+		results <- ops.Result{Verdict: ops.VerdictApproved, Feedback: "handled"}
+		d.handleEscalationResult(t.Context(), 0, id, "FUTURE_TYPE", "result-zero", "worker", results)
+		assertEscalationMutationStatus(t, db, id, "acked")
+		assertEscalationMutationEvent(t, db, "oneshot_escalation_complete", "result-zero")
+	})
+
+	t.Run("positive run unknown result fails closed", func(t *testing.T) {
+		d, db, _ := newEscalationMutationHarness(t)
+		rec, created, err := CreateOpsRun(t.Context(), db, OpsRunRecord{Type: string(ops.OpsEscalation), BeadID: "result-unknown", WorkerID: "worker", Status: opsRunStatusRunning})
+		if err != nil || !created {
+			t.Fatalf("create unknown-result ops run = %+v, %t, %v", rec, created, err)
+		}
+		id := d.insertEscalation(t.Context(), "FUTURE_TYPE", "result-unknown", "worker", "future")
+		results := make(chan ops.Result, 1)
+		results <- ops.Result{Verdict: ops.VerdictApproved, Feedback: "unknown"}
+		d.handleEscalationResult(t.Context(), rec.ID, id, "FUTURE_TYPE", "result-unknown", "worker", results)
+		assertEscalationMutationStatus(t, db, id, "pending")
+		assertEscalationMutationEventCount(t, db, "oneshot_escalation_complete", "result-unknown", 0)
+		var status string
+		if err := db.QueryRow(`SELECT status FROM ops_runs WHERE id=?`, rec.ID).Scan(&status); err != nil || status != opsRunStatusRunning {
+			t.Fatalf("unknown-result ops run status = %q, %v", status, err)
+		}
+	})
+
+	t.Run("positive run completes exact row", func(t *testing.T) {
+		d, db, _ := newEscalationMutationHarness(t)
+		rec, created, err := CreateOpsRun(t.Context(), db, OpsRunRecord{Type: string(ops.OpsEscalation), BeadID: "result-complete", WorkerID: "worker", Status: opsRunStatusRunning})
+		if err != nil || !created {
+			t.Fatalf("create completed-result ops run = %+v, %t, %v", rec, created, err)
+		}
+		id := d.insertEscalation(t.Context(), string(protocol.EscStuckWorker), "result-complete", "worker", "fixed")
+		results := make(chan ops.Result, 1)
+		results <- ops.Result{Type: ops.OpsEscalation, Verdict: ops.VerdictApproved, Feedback: "fixed"}
+		d.handleEscalationResult(t.Context(), rec.ID, id, string(protocol.EscStuckWorker), "result-complete", "worker", results)
+		assertEscalationMutationStatus(t, db, id, "acked")
+		assertEscalationMutationEvent(t, db, "oneshot_escalation_complete", "result-complete")
+		var status string
+		if err := db.QueryRow(`SELECT status FROM ops_runs WHERE id=?`, rec.ID).Scan(&status); err != nil || status != opsRunStatusResolved {
+			t.Fatalf("completed-result ops run status = %q, %v", status, err)
+		}
+	})
+}
+
+func waitEscalationMutationSpawn(t *testing.T, spawned <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-spawned:
+	case <-time.After(time.Second):
+		t.Fatal("one-shot spawn was not observed")
+	}
+}
+
+func waitEscalationMutationEvent(t *testing.T, db *sql.DB, eventType, beadID string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM events WHERE type=? AND bead_id=?`, eventType, beadID).Scan(&count); err == nil && count > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("event %s for %s was not observed", eventType, beadID)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func assertEscalationMutationStatusByBead(t *testing.T, db *sql.DB, beadID, want string) {
+	t.Helper()
+	var got string
+	if err := db.QueryRow(`SELECT status FROM escalations WHERE bead_id=? ORDER BY id DESC LIMIT 1`, beadID).Scan(&got); err != nil || got != want {
+		t.Fatalf("escalation for %s status = %q, want %q: %v", beadID, got, want, err)
+	}
+}
+
+func assertEscalationMutationEventCount(t *testing.T, db *sql.DB, eventType, beadID string, want int) {
+	t.Helper()
+	var got int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM events WHERE type=? AND bead_id=?`, eventType, beadID).Scan(&got); err != nil || got != want {
+		t.Fatalf("%s events for %s = %d, want %d: %v", eventType, beadID, got, want, err)
 	}
 }
