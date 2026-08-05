@@ -83,6 +83,28 @@ stop_mutant_workers() {
 	worker_group_ids=()
 }
 
+finish_mutant_workers() {
+	local group pid
+	refresh_active_worker_groups
+	if ((${#active_worker_groups[@]} != ${#worker_group_ids[@]})); then
+		printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
+		return 2
+	fi
+	for group in "${active_worker_groups[@]}"; do
+		kill -KILL -- "-$group" 2>/dev/null || true
+	done
+	for pid in "${worker_pids[@]}"; do
+		wait "$pid" 2>/dev/null || true
+	done
+	refresh_active_worker_groups
+	if ((${#active_worker_groups[@]} != 0)); then
+		printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
+		return 2
+	fi
+	worker_pids=()
+	worker_group_ids=()
+}
+
 cleanup_parallel_mutation() {
 	stop_mutant_workers
 	if [[ -n "$generation_root" && -d "$generation_root" ]]; then
@@ -148,6 +170,7 @@ done
 run_mutant_worker() {
 	local worker="$1"
 	set +m
+	trap ':' TERM
 	local ready_file="$executor_root/workers/$worker.ready"
 	printf '%d\n' "$BASHPID" >"$ready_file.tmp"
 	mv -- "$ready_file.tmp" "$ready_file"
@@ -179,6 +202,12 @@ run_mutant_worker() {
 		) >"$output" 2>&1 || status=$?
 		printf '%d\t%d\t%s\n' "$position" "$status" "$mutant" >"$result_tmp"
 		mv -- "$result_tmp" "$result"
+	done
+	local done_file="$executor_root/workers/$worker.done"
+	printf '%d\n' "$BASHPID" >"$done_file.tmp"
+	mv -- "$done_file.tmp" "$done_file"
+	while :; do
+		sleep 1
 	done
 }
 
@@ -218,6 +247,7 @@ if ((worker_ready_failure != 0)); then
 fi
 
 declare -A observed_results=()
+result_complete_attempts=0
 while :; do
 	for ((position = 0; position < ${#mutants[@]}; position++)); do
 		[[ -z "${observed_results[$position]:-}" ]] || continue
@@ -248,15 +278,55 @@ while :; do
 		esac
 	done
 
-	workers_running=0
-	for pid in "${worker_pids[@]}"; do
-		if kill -0 "$pid" 2>/dev/null; then
-			workers_running=1
+	refresh_active_worker_groups
+	workers_done=0
+	worker_failure=0
+	for ((worker = 0; worker < MUTATION_PARALLEL_WORKERS; worker++)); do
+		done_file="$executor_root/workers/$worker.done"
+		done_pid=""
+		if [[ -s "$done_file" ]]; then
+			IFS= read -r done_pid <"$done_file" || true
+			if [[ "$done_pid" != "${worker_pids[$worker]}" ]]; then
+				worker_failure=1
+				break
+			fi
+			workers_done=$((workers_done + 1))
+			continue
+		fi
+		worker_active=0
+		for group in "${active_worker_groups[@]}"; do
+			if [[ "$group" == "${worker_group_ids[$worker]}" ]]; then
+				worker_active=1
+				break
+			fi
+		done
+		if ((worker_active == 0)); then
+			worker_failure=1
 			break
 		fi
 	done
-	if ((workers_running == 0)); then
+	if ((worker_failure != 0)); then
+		printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
+		stop_mutant_workers
+		exit 2
+	fi
+	if ((workers_done == MUTATION_PARALLEL_WORKERS)); then
+		if ((${#observed_results[@]} != ${#mutants[@]})); then
+			printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
+			stop_mutant_workers
+			exit 2
+		fi
 		break
+	fi
+	if ((${#observed_results[@]} == ${#mutants[@]})); then
+		result_complete_attempts=$((result_complete_attempts + 1))
+		if ((result_complete_attempts >= 20)); then
+			printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
+			stop_mutant_workers
+			exit 2
+		fi
+	else
+		result_complete_attempts=0
 	fi
 	if ((SECONDS >= shard_deadline)); then
 		printf 'ORO_MUTATION_EXEC_TIMEOUT\n'
@@ -266,21 +336,14 @@ while :; do
 	sleep 0.05
 done
 
-worker_failure=0
-for pid in "${worker_pids[@]}"; do
-	wait "$pid" || worker_failure=1
-done
-worker_pids=()
-worker_group_ids=()
+if ! finish_mutant_workers; then
+	exit 2
+fi
 
 passed=0
 failed=0
 skipped=0
 infrastructure_failure=0
-if ((worker_failure != 0)); then
-	printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
-	infrastructure_failure=1
-fi
 for ((position = 0; position < ${#mutants[@]}; position++)); do
 	result="$executor_root/results/$position.tsv"
 	output="$executor_root/logs/$position.log"

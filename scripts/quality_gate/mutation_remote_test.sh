@@ -1062,6 +1062,78 @@ EOF
 		fail "$mutant_count-mutant capacity fixture changed the mutation denominator"
 }
 
+run_parallel_completion_handshake_fixture() {
+	local fixture="$1"
+	local mode="$2"
+	local output="$fixture/parallel.log"
+	local real_mv status
+	real_mv=$(command -v mv)
+	mkdir -p "$fixture/bin" "$fixture/pkg/example" "$fixture/cache" "$fixture/tmp" "$fixture/state"
+	printf 'module example.test/completion\n\ngo 1.26\n' >"$fixture/go.mod"
+	printf 'package example\n\nfunc Value() int { return 1 }\n' >"$fixture/pkg/example/value.go"
+	printf 'package example\n\nfunc TestValue() {}\n' >"$fixture/pkg/example/value_test.go"
+	cat >"$fixture/bin/go" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source_file=${*: -1}
+generation="$MUTATION_FAKE_STATE/generated"
+mkdir -p "$generation/$(dirname "$source_file")"
+cp "$source_file" "$generation/$source_file.original"
+sed 's/return 1/return 2/' "$source_file" >"$generation/$source_file.0"
+printf 'Save mutations into %q\n' "$generation"
+EOF
+	cat >"$fixture/bin/mutation-exec" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+	cat >"$fixture/bin/mv" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+destination=${*: -1}
+case "$MUTATION_COMPLETION_MODE:$destination" in
+missing_done:*.done)
+	exit 0
+	;;
+invalid_done:*.done)
+	printf 'not-the-worker\n' >"$destination"
+	exit 0
+	;;
+missing_result:*/results/*.tsv)
+	exit 0
+	;;
+esac
+exec "$MUTATION_REAL_MV" "$@"
+EOF
+	chmod +x "$fixture/bin/go" "$fixture/bin/mutation-exec" "$fixture/bin/mv"
+
+	SECONDS=0
+	set +e
+	(
+		cd "$fixture"
+		PATH="$fixture/bin:$PATH" MUTATION_FAKE_STATE="$fixture/state" \
+			MUTATION_COMPLETION_MODE="$mode" MUTATION_REAL_MV="$real_mv" \
+			GOCACHE="$fixture/cache" GOTMPDIR="$fixture/tmp" \
+			MUTATION_SOURCE_FILE=pkg/example/value.go MUTATION_FUNCTION_MATCH='^(Value)$' \
+			MUTATION_TEST_PATTERN='^TestValue$' MUTATION_TEST_FILE=pkg/example/value_test.go \
+			MUTATION_EXEC_TIMEOUT=60 MUTATION_PARALLEL_WORKERS=2 \
+			MUTATION_EXEC_SCRIPT="$fixture/bin/mutation-exec" \
+			timeout -k 1 5 bash "$repo_root/scripts/quality_gate/mutation_parallel.sh" >"$output" 2>&1
+	)
+	status=$?
+	set -e
+	[[ "$status" = 2 ]] || fail "$mode completion handshake exit = $status, want 2"
+	grep -Fxq 'ORO_MUTATION_EXEC_FAILURE:2' "$output" ||
+		fail "$mode completion handshake did not emit an infrastructure marker"
+	((SECONDS < 5)) || fail "$mode completion handshake waited for the outer timeout"
+}
+
+test_parallel_completion_handshakes() {
+	local fixture="$1"
+	run_parallel_completion_handshake_fixture "$fixture/missing-done" missing_done
+	run_parallel_completion_handshake_fixture "$fixture/invalid-done" invalid_done
+	run_parallel_completion_handshake_fixture "$fixture/missing-result" missing_result
+}
+
 run_parallel_marker_fixture() {
 	local fixture="$1"
 	local mode="$2"
@@ -1100,6 +1172,12 @@ wait_for_peer() {
 }
 
 case "$MUTATION_FAKE_MODE:${MUTATE_CHANGED##*.}" in
+ordinary:0)
+	trap '' TERM
+	sleep 30 &
+	printf '%d\n' "$!" >"$MUTATION_FAKE_STATE/orphan.pid"
+	exit 0
+	;;
 timeout:0)
 	wait_for_peer
 	printf 'ORO_MUTATION_EXEC_TIMEOUT\n'
@@ -1130,11 +1208,8 @@ esac
 EOF
 	chmod +x "$fixture/bin/go" "$fixture/bin/mutation-exec"
 
-	sentinel_pid=""
-	if [[ "$mode" != ordinary ]]; then
-		sleep 30 &
-		sentinel_pid=$!
-	fi
+	sleep 30 &
+	sentinel_pid=$!
 	SECONDS=0
 	set +e
 	# shellcheck disable=SC2016 # nested shell expands the TERM-resistant kill shim
@@ -1172,10 +1247,25 @@ EOF
 	set -e
 	elapsed_seconds=$SECONDS
 	if [[ "$mode" = ordinary ]]; then
+		peer_pid=$(<"$fixture/state/orphan.pid")
+		kill -0 "$peer_pid" 2>/dev/null && descendant_alive=1
+		kill -0 "$sentinel_pid" 2>/dev/null && sentinel_alive=1
+		group_id=$(awk '$1 == "KILL" { group = $NF } END { sub(/^-/, "", group); print group }' \
+			"$fixture/state/kills.log" 2>/dev/null || true)
+		if [[ -n "$group_id" ]] && kill -0 -- "-$group_id" 2>/dev/null; then
+			group_alive=1
+		fi
+		kill -KILL "$peer_pid" 2>/dev/null || true
+		kill "$sentinel_pid" 2>/dev/null || true
+		wait "$sentinel_pid" 2>/dev/null || true
 		[[ "$status" = 0 ]] || fail 'ordinary killed/survived statuses triggered fail-fast termination'
 		grep -Eq '^The mutation score is 0\.750000 \(3 passed, 1 failed, 0 duplicated, 0 skipped, total is 4\)$' "$output" ||
 			fail 'ordinary killed/survived statuses did not preserve the complete denominator'
-		[[ ! -s "$fixture/state/kills.log" ]] || fail 'ordinary completion signaled a stale worker process group'
+		grep -q '^KILL ' "$fixture/state/kills.log" || fail 'ordinary completion did not tear down its owned worker groups'
+		((descendant_alive == 0)) || fail "ordinary completion orphaned descendant $peer_pid"
+		((group_alive == 0)) || fail "ordinary completion left owned process group $group_id alive"
+		((sentinel_alive == 1)) || fail "ordinary completion killed unrelated process $sentinel_pid"
+		((elapsed_seconds < 3)) || fail "ordinary completion waited ${elapsed_seconds}s for an orphaned descendant"
 		return
 	fi
 	peer_pid=$(<"$fixture/state/peer.pid")
@@ -1258,6 +1348,7 @@ TestMutationCapacity() {
 	run_parallel_capacity_fixture "$tmp/cold-190" 190 570
 	run_parallel_capacity_fixture "$tmp/capped" 302 900
 	test_parallel_marker_fail_fast "$tmp/markers"
+	test_parallel_completion_handshakes "$tmp/completion"
 	test_parallel_emergency_ceiling "$tmp/ceiling"
 }
 
