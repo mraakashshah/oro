@@ -35,6 +35,46 @@ assert_dispatcher_supplements() {
 	done
 }
 
+review_checkpoint_pattern_for() {
+	local file="$1"
+	local match="$2"
+	local function_source
+	function_source=$(awk '
+		/^review_checkpoint_mutation_test_pattern\(\)/ { copying = 1 }
+		copying { print }
+		copying && /^}/ { exit }
+	' "$runner")
+	if [[ -z "$function_source" ]]; then
+		fail 'mutation runner omitted reviewed checkpoint owner mapping'
+		return 1
+	fi
+	bash -c "$function_source"$'\n''review_checkpoint_mutation_test_pattern "$1" "$2"' _ "$file" "$match"
+}
+
+TestReviewCheckpointMutationMapping() {
+	local function expected got
+	while IFS=: read -r function expected; do
+		got=$(review_checkpoint_pattern_for pkg/dispatcher/review_checkpoint_store.go "^($function)$")
+		[[ "$got" == "^${expected}$" ]] ||
+			fail "$function mutation owner = $got, want ^${expected}$"
+	done <<'EOF'
+LoadOwningForBead:TestReviewCheckpointMutationOwnershipLoads
+LoadForOpsRun:TestReviewCheckpointMutationOwnershipLoads
+LoadForOpsRunOrBindLegacy:TestReviewCheckpointMutationLegacyBinding
+beginSerializedOwnershipBind:TestReviewCheckpointMutationLegacyBinding
+loadCheckpointForOpsRunTx:TestReviewCheckpointMutationLegacyBinding
+bindLegacyCheckpointOwnership:TestReviewCheckpointMutationLegacyBinding
+legacyUnlinkedCheckpointIDs:TestReviewCheckpointMutationLegacyBinding
+bindSingleLegacyCheckpoint:TestReviewCheckpointMutationLegacyBinding
+commitAbsentLegacyCheckpointOwnership:TestReviewCheckpointMutationLegacyBinding
+ListPendingIntegrations:TestReviewCheckpointMutationIntegrationDurability
+BeginIntegration:TestReviewCheckpointMutationIntegrationDurability
+BlockIntegration:TestReviewCheckpointMutationIntegrationDurability
+EOF
+	got=$(review_checkpoint_pattern_for pkg/dispatcher/review_checkpoint_store.go '^(unmappedCheckpointFunction)$')
+	[[ -z "$got" ]] || fail "unmapped checkpoint function unexpectedly selected $got"
+}
+
 TestDispatcherMutationContractSupplements() {
 	assert_dispatcher_supplements pkg/dispatcher/assignment_reconcile.go '^(executableAfterEpicSideEffects)$' \
 		TestExecutableAfterEpicSideEffectsClassifiesNonEpicAndChildlessEpic \
@@ -263,6 +303,14 @@ new_targeted_fixture() {
 		test_names=(TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex)
 		head_test_name=TestRouteOpsRunRestoresCheckpointLinkedToExactOpsRun
 		;;
+	review-checkpoint-owning)
+		package_name=dispatcher
+		source_file=pkg/dispatcher/review_checkpoint_store.go
+		test_file=pkg/dispatcher/review_checkpoint_store_mutation_test.go
+		function_name=LoadOwningForBead
+		test_names=(TestReviewCheckpointMutationOwnershipLoads)
+		head_test_name=TestUnrelatedReviewCheckpointHistory
+		;;
 	*) fail "unknown targeted fixture: $target" ;;
 	esac
 	printf 'package %s\n\n%bfunc %s(%s) bool { return false }\n' \
@@ -366,6 +414,7 @@ if [[ "$1" = test ]]; then
 		*TestSpawnEscalationOneShotReturnsAfterReadingWorktree*) printf 'TestSpawnEscalationOneShotReturnsAfterReadingWorktree\n' ;;
 		*TestApplyHealthReturnsAndReleasesDispatcherMutex*) printf 'TestApplyHealthReturnsAndReleasesDispatcherMutex\n' ;;
 		*TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex*) printf 'TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex\n' ;;
+		*TestReviewCheckpointMutationOwnershipLoads*) printf 'TestReviewCheckpointMutationOwnershipLoads\n' ;;
 		*TestFirstOwner*) printf 'TestFirstOwner\n' ;;
 		*TestFirstNewestOwner*) printf 'TestFirstNewestOwner\n' ;;
 		*TestSecondOwner*) printf 'TestSecondOwner\n' ;;
@@ -390,6 +439,7 @@ if [[ "$1" = tool && "$2" = cover ]]; then
 	printf 'pkg/dispatcher/escalation.go:1: spawnEscalationOneShot 100.0%%\n'
 	printf 'pkg/dispatcher/health.go:1: applyHealth 100.0%%\n'
 	printf 'pkg/dispatcher/ops_runs.go:1: reviewContextForOpsRun 100.0%%\n'
+	printf 'pkg/dispatcher/review_checkpoint_store.go:1: LoadOwningForBead 100.0%%\n'
 	printf 'pkg/dispatcher/function_history.go:1: First 100.0%%\n'
 	printf 'pkg/dispatcher/function_history.go:2: Second 100.0%%\n'
 	printf 'pkg/example/value.go:1: Value 100.0%%\n'
@@ -651,7 +701,7 @@ TestStrictIncrementalMutationShards() {
 }
 
 TestTargetedMutationScope() {
-	local apply_health_pattern claim_pattern escalation_pattern evidence fixture args_trace history_pattern list_trace release_pattern review_context_pattern scheduling_pattern start_pattern
+	local apply_health_pattern checkpoint_pattern claim_pattern escalation_pattern evidence fixture args_trace history_pattern list_trace release_pattern review_context_pattern scheduling_pattern start_pattern
 	fixture="$tmp/targeted"
 	evidence=$(run_targeted_fixture "$fixture" targeted pass 0)
 	args_trace="$fixture/mutation-args.txt"
@@ -714,6 +764,21 @@ TestTargetedMutationScope() {
 	jq -e --arg pattern "$history_pattern" \
 		'.shards[0].match == "^(startupRecovery)$" and .shards[0].test_pattern == $pattern' \
 		"$evidence" >/dev/null || fail 'dispatcher mutation evidence must preserve its deterministic co-changed test scope'
+
+	checkpoint_pattern='^TestReviewCheckpointMutationOwnershipLoads$'
+	evidence=$(run_targeted_fixture "$tmp/targeted-review-checkpoint" targeted pass 0 false review-checkpoint-owning)
+	grep -Fq -- "-list $checkpoint_pattern ./pkg/dispatcher" "$tmp/targeted-review-checkpoint/mutation-list.txt" ||
+		fail 'review checkpoint mutations must preflight the exact reviewed owner'
+	grep -F -- "-run $checkpoint_pattern ./pkg/dispatcher" "$tmp/targeted-review-checkpoint/mutation-list.txt" |
+		grep -q -- '-coverprofile=' || fail 'review checkpoint baseline must retain full-package coverage preflight'
+	jq -e --arg pattern "$checkpoint_pattern" \
+		'.shards[0].match == "^(LoadOwningForBead)$" and .shards[0].test_pattern == $pattern' \
+		"$evidence" >/dev/null || fail 'review checkpoint mutation evidence must preserve exact function and owner scope'
+	grep -Fxq 'MUTATION_TEST_FILE=pkg/dispatcher/review_checkpoint_store_mutation_test.go' \
+		"$tmp/targeted-review-checkpoint/mutation-args.txt" ||
+		fail 'review checkpoint mutations must compile only the reviewed focused test file'
+	! grep -Fq 'review_checkpoint_store_mutation_test.go' "$tmp/targeted-review-checkpoint/mutation-list.txt" ||
+		fail 'review checkpoint focused file leaked into list or coverage baseline'
 
 	claim_pattern='^(TestAssignmentBehaviorMutation|TestStandaloneAssignmentBehaviorHarnessCaseIsolation)$'
 	evidence=$(run_targeted_fixture "$tmp/targeted-assignment-claim" targeted pass 0 false assignment-claim)
@@ -892,39 +957,40 @@ EOF
 
 test_mutation_exec_focused_file() {
 	local fixture="$1"
-	local original="$fixture/pkg/example/value.go"
+	local original="$fixture/pkg/dispatcher/review_checkpoint_store.go"
 	local changed="$fixture/changed.go"
 	local output="$fixture/exec.log"
 	local status
-	mkdir -p "$fixture/bin" "$fixture/pkg/example"
+	mkdir -p "$fixture/bin" "$fixture/pkg/dispatcher"
 	cat >"$fixture/bin/go" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >"${MUTATION_FOCUSED_TRACE:?}"
 exit 0
 EOF
 	chmod +x "$fixture/bin/go"
-	printf 'package example\n\nfunc Value() int { return 1 }\n' >"$original"
-	printf 'package example\n\nfunc Value() int { return 2 }\n' >"$changed"
-	printf 'package example\n\nfunc TestFocused() {}\n' >"$fixture/pkg/example/focused_test.go"
-	printf 'package example\n\nfunc TestUnselected() {}\n' >"$fixture/pkg/example/unselected_test.go"
+	printf 'package dispatcher\n\nfunc LoadOwningForBead() int { return 1 }\n' >"$original"
+	printf 'package dispatcher\n\nfunc LoadOwningForBead() int { return 2 }\n' >"$changed"
+	printf 'package dispatcher\n\nfunc TestReviewCheckpointMutationOwnershipLoads() {}\n' \
+		>"$fixture/pkg/dispatcher/review_checkpoint_store_mutation_test.go"
+	printf 'package dispatcher\n\nfunc TestUnselected() {}\n' >"$fixture/pkg/dispatcher/unselected_test.go"
 
 	set +e
 	(
 		cd "$fixture"
 		PATH="$fixture/bin:$PATH" MUTATION_FOCUSED_TRACE="$fixture/focused-args.txt" \
-			MUTATE_CHANGED="$changed" MUTATE_ORIGINAL="$original" MUTATE_PACKAGE=./pkg/example \
-			MUTATE_TIMEOUT=5 MUTATION_TEST_PATTERN=TestFocused \
-			MUTATION_TEST_FILE=pkg/example/focused_test.go \
+			MUTATE_CHANGED="$changed" MUTATE_ORIGINAL="$original" MUTATE_PACKAGE=./pkg/dispatcher \
+			MUTATE_TIMEOUT=5 MUTATION_TEST_PATTERN=TestReviewCheckpointMutationOwnershipLoads \
+			MUTATION_TEST_FILE=pkg/dispatcher/review_checkpoint_store_mutation_test.go \
 			bash "$repo_root/scripts/quality_gate/mutation_exec.sh" >"$output" 2>&1
 	)
 	status=$?
 	set -e
 	[[ "$status" = 1 ]] || fail "focused surviving mutant exit = $status, want 1"
-	grep -q 'pkg/example/value.go' "$fixture/focused-args.txt" ||
-		fail 'focused mutation compile omitted production source files'
-	grep -q 'pkg/example/focused_test.go' "$fixture/focused-args.txt" ||
-		fail 'focused mutation compile omitted its selected behavior test'
-	! grep -q 'pkg/example/unselected_test.go' "$fixture/focused-args.txt" ||
+	[[ "$(grep -oF 'pkg/dispatcher/review_checkpoint_store.go' "$fixture/focused-args.txt" | wc -l | tr -d ' ')" = 1 ]] ||
+		fail 'focused mutation compile must include the real mutated checkpoint source exactly once'
+	[[ "$(grep -oF 'pkg/dispatcher/review_checkpoint_store_mutation_test.go' "$fixture/focused-args.txt" | wc -l | tr -d ' ')" = 1 ]] ||
+		fail 'focused mutation compile must include the reviewed checkpoint owner exactly once'
+	! grep -q 'pkg/dispatcher/unselected_test.go' "$fixture/focused-args.txt" ||
 		fail 'focused mutation compile included an unselected test file'
 }
 
@@ -1620,6 +1686,7 @@ TestStrictIncrementalMutation() {
 	TestStrictIncrementalMutationShards
 	TestTargetedMutationScope
 	TestDispatcherMutationContractSupplements
+	TestReviewCheckpointMutationMapping
 
 	TestIncrementalMutationArtifactRetention "$tmp/workflow-artifact"
 	cp "$tmp/workflow-artifact/incremental-mutation.yml" "$tmp/incremental-mutation.yml"
@@ -1650,6 +1717,9 @@ main() {
 		;;
 	TestDispatcherMutationContractSupplements)
 		TestDispatcherMutationContractSupplements
+		;;
+	TestReviewCheckpointMutationMapping)
+		TestReviewCheckpointMutationMapping
 		;;
 	TestTargetedMutationScope)
 		tmp=$(mktemp -d)

@@ -364,6 +364,25 @@ cochanged_dispatcher_test_match() {
 	fi
 }
 
+review_checkpoint_mutation_test_pattern() {
+	local file="$1"
+	local match="$2"
+	[[ "$file" == pkg/dispatcher/review_checkpoint_store.go ]] || return
+	case "$match" in
+	'^(LoadOwningForBead)$' | '^(LoadForOpsRun)$')
+		printf '^TestReviewCheckpointMutationOwnershipLoads$'
+		;;
+	'^(LoadForOpsRunOrBindLegacy)$' | '^(beginSerializedOwnershipBind)$' | '^(loadCheckpointForOpsRunTx)$' | \
+		'^(bindLegacyCheckpointOwnership)$' | '^(legacyUnlinkedCheckpointIDs)$' | \
+		'^(bindSingleLegacyCheckpoint)$' | '^(commitAbsentLegacyCheckpointOwnership)$')
+		printf '^TestReviewCheckpointMutationLegacyBinding$'
+		;;
+	'^(ListPendingIntegrations)$' | '^(BeginIntegration)$' | '^(BlockIntegration)$')
+		printf '^TestReviewCheckpointMutationIntegrationDurability$'
+		;;
+	esac
+}
+
 dispatcher_test_supplement() {
 	local file="$1"
 	local match="$2"
@@ -529,6 +548,12 @@ targeted_test_pattern() {
 	local head="$2"
 	local file="$3"
 	local match="$4"
+	local review_checkpoint_pattern
+	review_checkpoint_pattern=$(review_checkpoint_mutation_test_pattern "$file" "$match")
+	if [[ -n "$review_checkpoint_pattern" ]]; then
+		printf '%s' "$review_checkpoint_pattern"
+		return
+	fi
 
 	if [[ "$file" == cmd/oro/hooks.go && "$match" == '^(isOroDistributedHook)$' ]]; then
 		printf '^TestIsOroDistributedHook'
@@ -591,6 +616,10 @@ run_mutation_shard() {
 		;;
 	'^TestRetrySQLiteBusyOperation$')
 		mutation_test_file=pkg/dispatcher/sqlite_busy_retry_test.go
+		;;
+	'^TestReviewCheckpointMutationOwnershipLoads$' | '^TestReviewCheckpointMutationLegacyBinding$' | \
+		'^TestReviewCheckpointMutationIntegrationDurability$')
+		mutation_test_file=pkg/dispatcher/review_checkpoint_store_mutation_test.go
 		;;
 	esac
 	if [[ -z "$match" ]]; then
