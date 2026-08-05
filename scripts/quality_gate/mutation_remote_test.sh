@@ -1067,7 +1067,7 @@ run_parallel_marker_fixture() {
 	local mode="$2"
 	local expected_marker="$3"
 	local output="$fixture/parallel.log"
-	local elapsed_seconds peer_pid peer_sleep=4 status
+	local descendant_alive=0 elapsed_seconds group_alive=0 group_id peer_pid peer_sleep=30 sentinel_alive=0 sentinel_pid status
 	[[ "$mode" != ordinary ]] || peer_sleep=1
 	mkdir -p "$fixture/bin" "$fixture/pkg/example" "$fixture/cache" "$fixture/tmp" "$fixture/state"
 	printf 'module example.test/markers\n\ngo 1.26\n' >"$fixture/go.mod"
@@ -1076,6 +1076,8 @@ run_parallel_marker_fixture() {
 	cat >"$fixture/bin/go" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+
+trap '' TERM
 source_file=${*: -1}
 generation="$MUTATION_FAKE_STATE/generated"
 mkdir -p "$generation/$(dirname "$source_file")"
@@ -1114,11 +1116,12 @@ infra:0)
 	exit 2
 	;;
 *:1)
-	sleep "${MUTATION_FAKE_PEER_SLEEP:?}" &
-	peer_pid=$!
-	printf '%d\n' "$peer_pid" >"$MUTATION_FAKE_STATE/peer.pid"
-	wait "$peer_pid"
-	exit 1
+	printf '%d\n' "$$" >"$MUTATION_FAKE_STATE/peer.pid"
+	if [[ "$MUTATION_FAKE_MODE" = ordinary ]]; then
+		sleep "${MUTATION_FAKE_PEER_SLEEP:?}"
+		exit 1
+	fi
+	exec sleep "${MUTATION_FAKE_PEER_SLEEP:?}"
 	;;
 *)
 	exit 0
@@ -1127,19 +1130,43 @@ esac
 EOF
 	chmod +x "$fixture/bin/go" "$fixture/bin/mutation-exec"
 
+	sentinel_pid=""
+	if [[ "$mode" != ordinary ]]; then
+		sleep 30 &
+		sentinel_pid=$!
+	fi
 	SECONDS=0
 	set +e
+	# shellcheck disable=SC2016 # nested shell expands the TERM-resistant kill shim
 	(
 		cd "$fixture"
 		PATH="$fixture/bin:$PATH" MUTATION_FAKE_STATE="$fixture/state" \
 			MUTATION_FAKE_MODE="$mode" MUTATION_FAKE_PEER_SLEEP="$peer_sleep" \
+			MUTATION_KILL_TRACE="$fixture/state/kills.log" \
 			GOCACHE="$fixture/cache" GOTMPDIR="$fixture/tmp" \
 			MUTATION_SOURCE_FILE=pkg/example/value.go MUTATION_FUNCTION_MATCH='^(Value)$' \
 			MUTATION_TEST_PATTERN='^TestValue$' MUTATION_TEST_FILE=pkg/example/value_test.go \
 			MUTATION_EXEC_TIMEOUT=60 MUTATION_PARALLEL_WORKERS=2 \
 			MUTATION_BASE_SHARD_TIMEOUT_SECONDS=240 MUTATION_MAX_SHARD_TIMEOUT_SECONDS=900 \
 			MUTATION_EXEC_SCRIPT="$fixture/bin/mutation-exec" \
-			timeout 8 bash "$repo_root/scripts/quality_gate/mutation_parallel.sh" >"$output" 2>&1
+			timeout -k 1 3 bash -c '
+				kill() {
+					case "$1" in
+					-0) builtin kill "$@" ;;
+					-KILL)
+						printf "KILL %s\n" "$*" >>"$MUTATION_KILL_TRACE"
+						builtin kill "$@"
+						;;
+					*)
+						printf "TERM %s\n" "$*" >>"$MUTATION_KILL_TRACE"
+						return 0
+						;;
+					esac
+				}
+				export -f kill
+				exec bash "$1"
+			' _ \
+				"$repo_root/scripts/quality_gate/mutation_parallel.sh" >"$output" 2>&1
 	)
 	status=$?
 	set -e
@@ -1148,16 +1175,28 @@ EOF
 		[[ "$status" = 0 ]] || fail 'ordinary killed/survived statuses triggered fail-fast termination'
 		grep -Eq '^The mutation score is 0\.750000 \(3 passed, 1 failed, 0 duplicated, 0 skipped, total is 4\)$' "$output" ||
 			fail 'ordinary killed/survived statuses did not preserve the complete denominator'
+		[[ ! -s "$fixture/state/kills.log" ]] || fail 'ordinary completion signaled a stale worker process group'
 		return
 	fi
+	peer_pid=$(<"$fixture/state/peer.pid")
+	kill -0 "$peer_pid" 2>/dev/null && descendant_alive=1
+	kill -0 "$sentinel_pid" 2>/dev/null && sentinel_alive=1
+	group_id=$(awk '$1 == "KILL" { group = $NF } END { sub(/^-/, "", group); print group }' \
+		"$fixture/state/kills.log" 2>/dev/null || true)
+	if [[ -n "$group_id" ]] && kill -0 -- "-$group_id" 2>/dev/null; then
+		group_alive=1
+	fi
+	kill -KILL "$peer_pid" 2>/dev/null || true
+	kill "$sentinel_pid" 2>/dev/null || true
+	wait "$sentinel_pid" 2>/dev/null || true
 	[[ "$status" != 0 ]] || fail "$mode marker was accepted as a completed mutation campaign"
 	grep -Fxq "$expected_marker" "$output" || fail "$mode marker was not surfaced"
+	grep -q '^TERM ' "$fixture/state/kills.log" || fail "$mode marker did not attempt bounded group termination"
+	grep -q '^KILL ' "$fixture/state/kills.log" || fail "$mode marker did not escalate the TERM-resistant group"
+	((descendant_alive == 0)) || fail "$mode marker orphaned TERM-resistant descendant $peer_pid"
+	((group_alive == 0)) || fail "$mode marker left owned process group $group_id alive"
+	((sentinel_alive == 1)) || fail "$mode marker killed unrelated process $sentinel_pid"
 	((elapsed_seconds < 3)) || fail "$mode marker waited ${elapsed_seconds}s for a sleeping peer"
-	peer_pid=$(<"$fixture/state/peer.pid")
-	if kill -0 "$peer_pid" 2>/dev/null; then
-		kill "$peer_pid" 2>/dev/null || true
-		fail "$mode marker orphaned peer descendant $peer_pid"
-	fi
 }
 
 test_parallel_marker_fail_fast() {

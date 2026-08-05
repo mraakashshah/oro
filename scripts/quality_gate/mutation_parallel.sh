@@ -25,6 +25,8 @@ executor_root=$(mktemp -d "$GOTMPDIR/parallel-mutants.XXXXXX")
 generation_log="$executor_root/generation.log"
 generation_root=""
 worker_pids=()
+worker_group_ids=()
+worker_stop_file="$executor_root/stop-workers"
 shard_started_at=$SECONDS
 module_path=$(awk '$1 == "module" { print $2; exit }' go.mod)
 if [[ -z "$module_path" ]]; then
@@ -32,42 +34,39 @@ if [[ -z "$module_path" ]]; then
 	exit 2
 fi
 
-terminate_process_tree() {
-	local pid="$1"
-	local child
-	local -a children=()
-	mapfile -t children < <(pgrep -P "$pid" 2>/dev/null || true)
-	for child in "${children[@]}"; do
-		terminate_process_tree "$child"
-	done
-	terminated_pids+=("$pid")
-	kill "$pid" 2>/dev/null || true
-}
-
 stop_mutant_workers() {
-	local attempt pid processes_running
-	local -a terminated_pids=()
-	for pid in "${worker_pids[@]:-}"; do
-		terminate_process_tree "$pid"
+	local attempt group groups_running pid
+	: >"$worker_stop_file"
+	for group in "${worker_group_ids[@]}"; do
+		kill -TERM -- "-$group" 2>/dev/null || true
 	done
-	for pid in "${worker_pids[@]:-}"; do
-		wait "$pid" 2>/dev/null || true
-	done
-	for ((attempt = 0; attempt < 100; attempt++)); do
-		processes_running=0
-		for pid in "${terminated_pids[@]}"; do
-			if kill -0 "$pid" 2>/dev/null; then
-				processes_running=1
+	for ((attempt = 0; attempt < 25; attempt++)); do
+		groups_running=0
+		for group in "${worker_group_ids[@]}"; do
+			if kill -0 -- "-$group" 2>/dev/null; then
+				groups_running=1
 				break
 			fi
 		done
-		((processes_running != 0)) || break
+		((groups_running != 0)) || break
 		sleep 0.01
 	done
-	for pid in "${terminated_pids[@]}"; do
-		kill -KILL "$pid" 2>/dev/null || true
+	for group in "${worker_group_ids[@]}"; do
+		if kill -0 -- "-$group" 2>/dev/null; then
+			kill -KILL -- "-$group" 2>/dev/null || true
+		fi
+	done
+	for pid in "${worker_pids[@]}"; do
+		wait "$pid" 2>/dev/null || true
+	done
+	for group in "${worker_group_ids[@]}"; do
+		if kill -0 -- "-$group" 2>/dev/null; then
+			printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
+			return 2
+		fi
 	done
 	worker_pids=()
+	worker_group_ids=()
 }
 
 cleanup_parallel_mutation() {
@@ -134,6 +133,7 @@ done
 
 run_mutant_worker() {
 	local worker="$1"
+	set +m
 	local worker_repo="$executor_root/workers/$worker/repo"
 	local worker_source="$worker_repo/$MUTATION_SOURCE_FILE"
 	local worker_test_file=""
@@ -142,6 +142,7 @@ run_mutant_worker() {
 	fi
 	local position mutant output result result_tmp status
 	for ((position = worker; position < ${#mutants[@]}; position += MUTATION_PARALLEL_WORKERS)); do
+		[[ ! -e "$worker_stop_file" ]] || break
 		mutant=${mutants[$position]}
 		output="$executor_root/logs/$position.log"
 		result="$executor_root/results/$position.tsv"
@@ -157,17 +158,38 @@ run_mutant_worker() {
 				MUTATE_TIMEOUT="$MUTATION_EXEC_TIMEOUT" \
 				MUTATION_TEST_PATTERN="$MUTATION_TEST_PATTERN" \
 				MUTATION_TEST_FILE="$worker_test_file" \
-				timeout "$MUTATION_EXEC_TIMEOUT" bash "$MUTATION_EXEC_SCRIPT"
+				timeout --foreground "$MUTATION_EXEC_TIMEOUT" bash "$MUTATION_EXEC_SCRIPT"
 		) >"$output" 2>&1 || status=$?
 		printf '%d\t%d\t%s\n' "$position" "$status" "$mutant" >"$result_tmp"
 		mv -- "$result_tmp" "$result"
 	done
 }
 
+restore_monitor=0
+if [[ "$-" != *m* ]]; then
+	set -m
+	restore_monitor=1
+fi
+worker_group_failure=0
 for ((worker = 0; worker < MUTATION_PARALLEL_WORKERS; worker++)); do
 	run_mutant_worker "$worker" &
-	worker_pids+=("$!")
+	pid=$!
+	group=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
+	if [[ "$group" != "$pid" ]]; then
+		printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
+		kill -KILL "$pid" 2>/dev/null || true
+		wait "$pid" 2>/dev/null || true
+		worker_group_failure=1
+		break
+	fi
+	worker_pids+=("$pid")
+	worker_group_ids+=("$group")
 done
+((restore_monitor == 0)) || set +m
+if ((worker_group_failure != 0)); then
+	stop_mutant_workers
+	exit 2
+fi
 
 declare -A observed_results=()
 while :; do
@@ -223,6 +245,7 @@ for pid in "${worker_pids[@]}"; do
 	wait "$pid" || worker_failure=1
 done
 worker_pids=()
+worker_group_ids=()
 
 passed=0
 failed=0
