@@ -8,10 +8,15 @@ set -euo pipefail
 : "${MUTATION_EXEC_TIMEOUT:?}"
 : "${MUTATION_PARALLEL_WORKERS:?}"
 : "${MUTATION_EXEC_SCRIPT:=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mutation_exec.sh}"
+: "${MUTATION_BASE_SHARD_TIMEOUT_SECONDS:=240}"
+: "${MUTATION_MAX_SHARD_TIMEOUT_SECONDS:=900}"
 : "${GOCACHE:?}"
 : "${GOTMPDIR:?}"
 
-if [[ ! "$MUTATION_PARALLEL_WORKERS" =~ ^[1-9][0-9]*$ ]]; then
+if [[ ! "$MUTATION_PARALLEL_WORKERS" =~ ^[1-9][0-9]*$ ||
+	! "$MUTATION_BASE_SHARD_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ||
+	! "$MUTATION_MAX_SHARD_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ||
+	MUTATION_MAX_SHARD_TIMEOUT_SECONDS -lt MUTATION_BASE_SHARD_TIMEOUT_SECONDS ]]; then
 	printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
 	exit 2
 fi
@@ -20,13 +25,14 @@ executor_root=$(mktemp -d "$GOTMPDIR/parallel-mutants.XXXXXX")
 generation_log="$executor_root/generation.log"
 generation_root=""
 worker_pids=()
+shard_started_at=$SECONDS
 module_path=$(awk '$1 == "module" { print $2; exit }' go.mod)
 if [[ -z "$module_path" ]]; then
 	printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
 	exit 2
 fi
 
-cleanup_parallel_mutation() {
+stop_mutant_workers() {
 	local pid
 	for pid in "${worker_pids[@]:-}"; do
 		kill "$pid" 2>/dev/null || true
@@ -34,6 +40,11 @@ cleanup_parallel_mutation() {
 	for pid in "${worker_pids[@]:-}"; do
 		wait "$pid" 2>/dev/null || true
 	done
+	worker_pids=()
+}
+
+cleanup_parallel_mutation() {
+	stop_mutant_workers
 	if [[ -n "$generation_root" && -d "$generation_root" ]]; then
 		rm -rf -- "$generation_root"
 	fi
@@ -75,6 +86,18 @@ if ((${#mutants[@]} == 0)); then
 	exit 0
 fi
 
+worker_batches=$(((${#mutants[@]} + MUTATION_PARALLEL_WORKERS - 1) / MUTATION_PARALLEL_WORKERS))
+effective_timeout=$((worker_batches * 6))
+if ((effective_timeout < MUTATION_BASE_SHARD_TIMEOUT_SECONDS)); then
+	effective_timeout=$MUTATION_BASE_SHARD_TIMEOUT_SECONDS
+elif ((effective_timeout > MUTATION_MAX_SHARD_TIMEOUT_SECONDS)); then
+	effective_timeout=$MUTATION_MAX_SHARD_TIMEOUT_SECONDS
+fi
+printf 'mutation shard capacity: mutants=%d workers=%d effective_timeout=%ds emergency_cap=%ds\n' \
+	"${#mutants[@]}" "$MUTATION_PARALLEL_WORKERS" "$effective_timeout" \
+	"$MUTATION_MAX_SHARD_TIMEOUT_SECONDS"
+shard_deadline=$((shard_started_at + effective_timeout))
+
 mkdir -p "$executor_root/results" "$executor_root/logs" "$executor_root/workers"
 for ((worker = 0; worker < MUTATION_PARALLEL_WORKERS; worker++)); do
 	worker_parent="$executor_root/workers/$worker"
@@ -90,11 +113,12 @@ run_mutant_worker() {
 	if [[ -n "$MUTATION_TEST_FILE" ]]; then
 		worker_test_file="$worker_repo/$MUTATION_TEST_FILE"
 	fi
-	local position mutant output result status
+	local position mutant output result result_tmp status
 	for ((position = worker; position < ${#mutants[@]}; position += MUTATION_PARALLEL_WORKERS)); do
 		mutant=${mutants[$position]}
 		output="$executor_root/logs/$position.log"
 		result="$executor_root/results/$position.tsv"
+		result_tmp="$result.$worker.tmp"
 		status=0
 		(
 			cd "$worker_repo"
@@ -108,7 +132,8 @@ run_mutant_worker() {
 				MUTATION_TEST_FILE="$worker_test_file" \
 				timeout "$MUTATION_EXEC_TIMEOUT" bash "$MUTATION_EXEC_SCRIPT"
 		) >"$output" 2>&1 || status=$?
-		printf '%d\t%d\t%s\n' "$position" "$status" "$mutant" >"$result"
+		printf '%d\t%d\t%s\n' "$position" "$status" "$mutant" >"$result_tmp"
+		mv -- "$result_tmp" "$result"
 	done
 }
 
@@ -116,6 +141,56 @@ for ((worker = 0; worker < MUTATION_PARALLEL_WORKERS; worker++)); do
 	run_mutant_worker "$worker" &
 	worker_pids+=("$!")
 done
+
+declare -A observed_results=()
+while :; do
+	for ((position = 0; position < ${#mutants[@]}; position++)); do
+		[[ -z "${observed_results[$position]:-}" ]] || continue
+		result="$executor_root/results/$position.tsv"
+		[[ -s "$result" ]] || continue
+		output="$executor_root/logs/$position.log"
+		IFS=$'\t' read -r recorded_position status mutant <"$result"
+		if [[ "$recorded_position" != "$position" || "$mutant" != "${mutants[$position]}" ]]; then
+			printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
+			stop_mutant_workers
+			exit 2
+		fi
+		observed_results[$position]=1
+		case "$status" in
+		0 | 1) ;;
+		*)
+			cat "$output"
+			if grep -q '^ORO_MUTATION_EXEC_TIMEOUT$' "$output"; then
+				stop_mutant_workers
+				exit 124
+			fi
+			if ! grep -Eq '^(ORO_MUTATION_EXEC_FAILURE:[0-9]+|UNKOWN exit code for )' "$output"; then
+				printf 'ORO_MUTATION_EXEC_FAILURE:%d\n' "$status"
+			fi
+			stop_mutant_workers
+			exit 2
+			;;
+		esac
+	done
+
+	workers_running=0
+	for pid in "${worker_pids[@]}"; do
+		if kill -0 "$pid" 2>/dev/null; then
+			workers_running=1
+			break
+		fi
+	done
+	if ((workers_running == 0)); then
+		break
+	fi
+	if ((SECONDS >= shard_deadline)); then
+		printf 'ORO_MUTATION_EXEC_TIMEOUT\n'
+		stop_mutant_workers
+		exit 124
+	fi
+	sleep 0.05
+done
+
 worker_failure=0
 for pid in "${worker_pids[@]}"; do
 	wait "$pid" || worker_failure=1

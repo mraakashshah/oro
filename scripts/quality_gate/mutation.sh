@@ -572,6 +572,7 @@ run_mutation_shard() {
 	local result_dir="$8"
 	local file_timeout="$9"
 	local exec_timeout="${10}"
+	local max_shard_timeout="${11}"
 	local checkout="$shard_root/checkouts/$index"
 	local output_file="$shard_root/logs/$index.log"
 	local result="$result_dir/$index.json"
@@ -655,8 +656,10 @@ run_mutation_shard() {
 				MUTATION_TEST_FILE="$mutation_test_file" \
 				MUTATION_EXEC_TIMEOUT="$exec_timeout" \
 				MUTATION_PARALLEL_WORKERS="${MUTATION_PARALLEL_WORKERS:-2}" \
+				MUTATION_BASE_SHARD_TIMEOUT_SECONDS="$file_timeout" \
+				MUTATION_MAX_SHARD_TIMEOUT_SECONDS="$max_shard_timeout" \
 				MUTATION_EXEC_SCRIPT="$mutation_script_dir/mutation_exec.sh" \
-				timeout "$file_timeout" bash "$mutation_script_dir/mutation_parallel.sh"
+				timeout "$max_shard_timeout" bash "$mutation_script_dir/mutation_parallel.sh"
 		else
 			GOCACHE="$shard_root/caches/$cache_slot" \
 				GOTMPDIR="$shard_root/tmp/$index" \
@@ -724,8 +727,10 @@ main() {
 	local max_workers=${MUTATION_MAX_WORKERS:-4}
 	local file_timeout=${MUTATION_FILE_TIMEOUT_SECONDS:-240}
 	local exec_timeout=${MUTATION_EXEC_TIMEOUT_SECONDS:-60}
+	local max_shard_timeout=${MUTATION_MAX_SHARD_TIMEOUT_SECONDS:-900}
 	if [[ ! "$max_workers" =~ ^[1-9][0-9]*$ || ! "$file_timeout" =~ ^[1-9][0-9]*$ ||
-		! "$exec_timeout" =~ ^[1-9][0-9]*$ ]]; then
+		! "$exec_timeout" =~ ^[1-9][0-9]*$ || ! "$max_shard_timeout" =~ ^[1-9][0-9]*$ ||
+		max_shard_timeout -lt file_timeout ]]; then
 		infrastructure_failure "$evidence" "$base" "$head" 'mutation shard bounds must be positive integers' 2 "${changed_files[@]}"
 		return
 	fi
@@ -778,8 +783,9 @@ main() {
 	if ((worker_count > ${#shard_files[@]})); then
 		worker_count=${#shard_files[@]}
 	fi
-	printf 'mutation shards: shards=%d files=%d workers=%d file_timeout=%ss exec_timeout=%ss\n' \
-		"${#shard_files[@]}" "${#changed_files[@]}" "$worker_count" "$file_timeout" "$exec_timeout"
+	printf 'mutation shards: shards=%d files=%d workers=%d file_timeout=%ss exec_timeout=%ss emergency_cap=%ss\n' \
+		"${#shard_files[@]}" "${#changed_files[@]}" "$worker_count" "$file_timeout" "$exec_timeout" \
+		"$max_shard_timeout"
 
 	local -a pids=()
 	local index key cache_slot pid
@@ -793,10 +799,10 @@ main() {
 			done
 			pids=()
 			MUTATION_PARALLEL_WORKERS=2 \
-				run_mutation_shard "$key" "$file" "${match_patterns[$index]}" "${test_patterns[$index]}" "$cache_slot" "$head" "$shard_root" "$result_dir" "$file_timeout" "$exec_timeout"
+				run_mutation_shard "$key" "$file" "${match_patterns[$index]}" "${test_patterns[$index]}" "$cache_slot" "$head" "$shard_root" "$result_dir" "$file_timeout" "$exec_timeout" "$max_shard_timeout"
 			continue
 		fi
-		run_mutation_shard "$key" "$file" "${match_patterns[$index]}" "${test_patterns[$index]}" "$cache_slot" "$head" "$shard_root" "$result_dir" "$file_timeout" "$exec_timeout" &
+		run_mutation_shard "$key" "$file" "${match_patterns[$index]}" "${test_patterns[$index]}" "$cache_slot" "$head" "$shard_root" "$result_dir" "$file_timeout" "$exec_timeout" "$max_shard_timeout" &
 		pids+=("$!")
 		if ((${#pids[@]} == worker_count)); then
 			for pid in "${pids[@]}"; do

@@ -1000,6 +1000,199 @@ EOF
 		fail 'parallel mutant executor leaked a mutation into the source checkout'
 }
 
+run_parallel_capacity_fixture() {
+	local fixture="$1"
+	local mutant_count="$2"
+	local expected_timeout="$3"
+	local output="$fixture/parallel.log"
+	local status
+	mkdir -p "$fixture/bin" "$fixture/pkg/example" "$fixture/cache" "$fixture/tmp" "$fixture/state"
+	printf 'module example.test/capacity\n\ngo 1.26\n' >"$fixture/go.mod"
+	printf 'package example\n\nfunc Value() int { return 1 }\n' >"$fixture/pkg/example/value.go"
+	printf 'package example\n\nfunc TestValue() {}\n' >"$fixture/pkg/example/value_test.go"
+	cat >"$fixture/bin/go" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" != tool || "$2" != go-mutesting ]]; then
+	printf 'unexpected fake go invocation: %s\n' "$*" >&2
+	exit 64
+fi
+source_file=${*: -1}
+generation="$MUTATION_FAKE_STATE/generated"
+mkdir -p "$generation/$(dirname "$source_file")"
+cp "$source_file" "$generation/$source_file.original"
+for ((index = 0; index < MUTATION_FAKE_MUTANT_COUNT; index++)); do
+	sed "s/return 1/return $((index + 2))/" "$source_file" >"$generation/$source_file.$index"
+	printf 'Save mutation into %q with checksum %032d\n' "$generation/$source_file.$index" "$index"
+done
+printf 'Save mutations into %q\n' "$generation"
+EOF
+	cat >"$fixture/bin/mutation-exec" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+	chmod +x "$fixture/bin/go" "$fixture/bin/mutation-exec"
+
+	set +e
+	(
+		cd "$fixture"
+		PATH="$fixture/bin:$PATH" MUTATION_FAKE_STATE="$fixture/state" \
+			MUTATION_FAKE_MUTANT_COUNT="$mutant_count" \
+			GOCACHE="$fixture/cache" GOTMPDIR="$fixture/tmp" \
+			MUTATION_SOURCE_FILE=pkg/example/value.go MUTATION_FUNCTION_MATCH='^(Value)$' \
+			MUTATION_TEST_PATTERN='^TestValue$' MUTATION_TEST_FILE=pkg/example/value_test.go \
+			MUTATION_EXEC_TIMEOUT=60 MUTATION_PARALLEL_WORKERS=2 \
+			MUTATION_BASE_SHARD_TIMEOUT_SECONDS=240 MUTATION_MAX_SHARD_TIMEOUT_SECONDS=900 \
+			MUTATION_EXEC_SCRIPT="$fixture/bin/mutation-exec" \
+			bash "$repo_root/scripts/quality_gate/mutation_parallel.sh" >"$output" 2>&1
+	)
+	status=$?
+	set -e
+	[[ "$status" = 0 ]] || fail "parallel capacity fixture exit = $status, want 0"
+	grep -Fxq "mutation shard capacity: mutants=$mutant_count workers=2 effective_timeout=${expected_timeout}s emergency_cap=900s" "$output" ||
+		fail "$mutant_count-mutant shard did not report its deterministic effective deadline"
+	grep -Eq "^The mutation score is 1\.000000 \($mutant_count passed, 0 failed, 0 duplicated, 0 skipped, total is $mutant_count\)$" "$output" ||
+		fail "$mutant_count-mutant capacity fixture changed the mutation denominator"
+}
+
+run_parallel_marker_fixture() {
+	local fixture="$1"
+	local mode="$2"
+	local expected_marker="$3"
+	local output="$fixture/parallel.log"
+	local elapsed_seconds peer_sleep=4 status
+	[[ "$mode" != ordinary ]] || peer_sleep=1
+	mkdir -p "$fixture/bin" "$fixture/pkg/example" "$fixture/cache" "$fixture/tmp" "$fixture/state"
+	printf 'module example.test/markers\n\ngo 1.26\n' >"$fixture/go.mod"
+	printf 'package example\n\nfunc Value() int { return 1 }\n' >"$fixture/pkg/example/value.go"
+	printf 'package example\n\nfunc TestValue() {}\n' >"$fixture/pkg/example/value_test.go"
+	cat >"$fixture/bin/go" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source_file=${*: -1}
+generation="$MUTATION_FAKE_STATE/generated"
+mkdir -p "$generation/$(dirname "$source_file")"
+cp "$source_file" "$generation/$source_file.original"
+for ((index = 0; index < 4; index++)); do
+	sed "s/return 1/return $((index + 2))/" "$source_file" >"$generation/$source_file.$index"
+done
+printf 'Save mutations into %q\n' "$generation"
+EOF
+	cat >"$fixture/bin/mutation-exec" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$MUTATION_FAKE_MODE:${MUTATE_CHANGED##*.}" in
+timeout:0)
+	printf 'ORO_MUTATION_EXEC_TIMEOUT\n'
+	exit 124
+	;;
+unknown:0)
+	printf 'UNKOWN exit code for synthetic mutation executor\n'
+	exit 2
+	;;
+infra:0)
+	printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
+	exit 2
+	;;
+*:1)
+	sleep "${MUTATION_FAKE_PEER_SLEEP:?}"
+	exit 1
+	;;
+*)
+	exit 0
+	;;
+esac
+EOF
+	chmod +x "$fixture/bin/go" "$fixture/bin/mutation-exec"
+
+	SECONDS=0
+	set +e
+	(
+		cd "$fixture"
+		PATH="$fixture/bin:$PATH" MUTATION_FAKE_STATE="$fixture/state" \
+			MUTATION_FAKE_MODE="$mode" MUTATION_FAKE_PEER_SLEEP="$peer_sleep" \
+			GOCACHE="$fixture/cache" GOTMPDIR="$fixture/tmp" \
+			MUTATION_SOURCE_FILE=pkg/example/value.go MUTATION_FUNCTION_MATCH='^(Value)$' \
+			MUTATION_TEST_PATTERN='^TestValue$' MUTATION_TEST_FILE=pkg/example/value_test.go \
+			MUTATION_EXEC_TIMEOUT=60 MUTATION_PARALLEL_WORKERS=2 \
+			MUTATION_BASE_SHARD_TIMEOUT_SECONDS=240 MUTATION_MAX_SHARD_TIMEOUT_SECONDS=900 \
+			MUTATION_EXEC_SCRIPT="$fixture/bin/mutation-exec" \
+			timeout 8 bash "$repo_root/scripts/quality_gate/mutation_parallel.sh" >"$output" 2>&1
+	)
+	status=$?
+	set -e
+	elapsed_seconds=$SECONDS
+	if [[ "$mode" = ordinary ]]; then
+		[[ "$status" = 0 ]] || fail 'ordinary killed/survived statuses triggered fail-fast termination'
+		grep -Eq '^The mutation score is 0\.750000 \(3 passed, 1 failed, 0 duplicated, 0 skipped, total is 4\)$' "$output" ||
+			fail 'ordinary killed/survived statuses did not preserve the complete denominator'
+		return
+	fi
+	[[ "$status" != 0 ]] || fail "$mode marker was accepted as a completed mutation campaign"
+	grep -Fxq "$expected_marker" "$output" || fail "$mode marker was not surfaced"
+	((elapsed_seconds < 3)) || fail "$mode marker waited ${elapsed_seconds}s for a sleeping peer"
+}
+
+test_parallel_marker_fail_fast() {
+	local fixture="$1"
+	run_parallel_marker_fixture "$fixture/timeout" timeout ORO_MUTATION_EXEC_TIMEOUT
+	run_parallel_marker_fixture "$fixture/unknown" unknown 'UNKOWN exit code for synthetic mutation executor'
+	run_parallel_marker_fixture "$fixture/infra" infra ORO_MUTATION_EXEC_FAILURE:2
+	run_parallel_marker_fixture "$fixture/ordinary" ordinary ''
+}
+
+test_parallel_emergency_ceiling() {
+	local fixture="$1"
+	local base evidence head real_timeout status
+	mapfile -t refs < <(new_targeted_fixture "$fixture" false assignment-claim)
+	base=${refs[0]}
+	head=${refs[1]}
+	evidence="$fixture/mutation-evidence.json"
+	real_timeout=$(command -v timeout)
+	write_fake_go "$fixture/bin/go"
+	cat >"$fixture/bin/timeout" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$1" >>"${MUTATION_TIMEOUT_TRACE:?}"
+exec "${MUTATION_REAL_TIMEOUT:?}" "$@"
+EOF
+	chmod +x "$fixture/bin/timeout"
+
+	set +e
+	(
+		cd "$fixture"
+		PATH="$fixture/bin:$PATH" MUTATION_FIXTURE=targeted \
+			MUTATION_ARGS_TRACE="$fixture/mutation-args.txt" \
+			MUTATION_LIST_TRACE="$fixture/mutation-list.txt" \
+			MUTATION_TIMEOUT_TRACE="$fixture/mutation-timeouts.txt" \
+			MUTATION_REAL_TIMEOUT="$real_timeout" \
+			MUTATION_FILE_TIMEOUT_SECONDS=240 MUTATION_MAX_SHARD_TIMEOUT_SECONDS=900 \
+			bash "$runner" --base "$base" --head "$head" --evidence "$evidence" \
+			>"$fixture/runner.log" 2>&1
+	)
+	status=$?
+	set -e
+	if [[ "$status" != 0 ]]; then
+		cat "$fixture/runner.log" >&2
+		fail "capacity ceiling fixture exit = $status, want 0"
+	fi
+	grep -Fxq 900 "$fixture/mutation-timeouts.txt" ||
+		fail 'parallel shard outer boundary did not reserve its 900s emergency ceiling'
+	grep -Fxq 'mutation shard capacity: mutants=2 workers=2 effective_timeout=240s emergency_cap=900s' \
+		"$fixture/runner.log" ||
+		fail 'parallel shard reported its emergency ceiling as the effective small-shard deadline'
+}
+
+TestMutationCapacity() {
+	tmp=$(mktemp -d)
+	trap 'rm -rf "$tmp"' RETURN
+	run_parallel_capacity_fixture "$tmp/small" 3 240
+	run_parallel_capacity_fixture "$tmp/cold-190" 190 570
+	run_parallel_capacity_fixture "$tmp/capped" 302 900
+	test_parallel_marker_fail_fast "$tmp/markers"
+	test_parallel_emergency_ceiling "$tmp/ceiling"
+}
+
 TestStrictIncrementalMutation() {
 	local file_timeout_seconds incident_file_count job_timeout_minutes minimum_timeout_minutes mutation_batches workers
 	tmp=$(mktemp -d)
@@ -1075,6 +1268,9 @@ main() {
 		;;
 	TestDispatcherMutationContractSupplements)
 		TestDispatcherMutationContractSupplements
+		;;
+	TestMutationCapacity)
+		TestMutationCapacity
 		;;
 	*)
 		fail "unknown test $1"
