@@ -827,14 +827,14 @@ func (d *Dispatcher) nextGeneralIdleIndex(idle []idleWorker, idleIdx int) int {
 	return idleIdx
 }
 
-func (d *Dispatcher) advanceAssignedGeneralIdle(idle []idleWorker, idleIdx int, beadID string, pbSnapshot map[string]bool) (claimed bool, nextIdleIdx int) {
+func (d *Dispatcher) advanceAssignedGeneralIdle(_ []idleWorker, idleIdx int, beadID string, pbSnapshot map[string]bool) (claimed bool, nextIdleIdx int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	nextIdleIdx = idleIdx
-	claimed = idle[idleIdx].worker.state != protocol.WorkerIdle
-	if claimed {
-		nextIdleIdx++
-	}
+	// The caller invokes this helper only after launchAssignment reported a
+	// claim. Async setup may already have released the worker back to Idle, but
+	// that cannot retroactively free this scheduling pass's consumed slot.
+	claimed = true
+	nextIdleIdx = idleIdx + 1
 	if pbSnapshot[beadID] {
 		delete(d.priorityBeads, beadID)
 	}

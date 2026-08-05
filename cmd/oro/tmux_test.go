@@ -19,6 +19,8 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "mkdir manager runtime test root: %v\n", err)
 		os.Exit(1)
 	}
+	testMainRuntimeRoot = tempRoot
+	testMainInheritedGoCache = os.Getenv("GOCACHE")
 	originalHome := os.Getenv("HOME")
 	if os.Getenv("GOMODCACHE") == "" && originalHome != "" {
 		if err := os.Setenv("GOMODCACHE", filepath.Join(originalHome, "go", "pkg", "mod")); err != nil {
@@ -29,7 +31,10 @@ func TestMain(m *testing.M) {
 
 	home := filepath.Join(tempRoot, "home")
 	oroHome := filepath.Join(tempRoot, "oro-home")
-	for _, dir := range []string{home, oroHome} {
+	// Startup tests run the production Go cache cleaner. Keep that subprocess
+	// away from the parent `go test` compiler cache.
+	goCache := filepath.Join(tempRoot, "go-build")
+	for _, dir := range []string{home, oroHome, goCache} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			fmt.Fprintf(os.Stderr, "mkdir manager runtime test dir: %v\n", err)
 			os.Exit(1)
@@ -46,6 +51,10 @@ func TestMain(m *testing.M) {
 	}
 	if err := os.Setenv("ORO_HOME", oroHome); err != nil {
 		fmt.Fprintf(os.Stderr, "set ORO_HOME for manager runtime tests: %v\n", err)
+		os.Exit(1)
+	}
+	if err := os.Setenv("GOCACHE", goCache); err != nil {
+		fmt.Fprintf(os.Stderr, "set GOCACHE for manager runtime tests: %v\n", err)
 		os.Exit(1)
 	}
 	// Clear transient ORO_* runtime vars a factory worker exports (ORO_WORKER_ID,

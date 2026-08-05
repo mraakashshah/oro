@@ -511,6 +511,17 @@ func TestHookPathsWouldLeak_NonTmpdirSandboxRoot(t *testing.T) {
 	}
 }
 
+func TestHookPathsWouldLeak_NonstandardGoTempRoot(t *testing.T) {
+	goTempRoot := "/opt/hostedtoolcache/oro-go-tmp"
+	t.Setenv("GOTMPDIR", goTempRoot)
+
+	codexHome := "/home/runner/.codex"
+	hooksDir := filepath.Join(goTempRoot, "TestStart", "001", "oro-home", "hooks")
+	if !hookPathsWouldLeak(codexHome, hooksDir) {
+		t.Fatalf("hookPathsWouldLeak(%q, %q) = false, want true for GOTMPDIR hooks", codexHome, hooksDir)
+	}
+}
+
 func TestInstallCodexHookConfigRefusesLeakyHooks(t *testing.T) {
 	// Model a persistent Codex home with a disposable directory under the
 	// package worktree, outside every recognized temporary root.

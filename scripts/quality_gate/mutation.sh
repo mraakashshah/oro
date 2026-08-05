@@ -200,9 +200,44 @@ touched_function_match() {
 	local touched_functions
 
 	touched_functions=$(git diff --unified=0 "$base" "$head" -- "$file" 2>/dev/null |
-		sed -nE '/^(\+func[[:space:]]|@@.*func[[:space:]])/ {
-			s/.*func[[:space:]]+(\([^)]*\)[[:space:]]+)?([A-Za-z0-9_]+).*/\2/p
-		}' |
+		awk '
+			function emit_function(line, name) {
+				sub(/^.*func[[:space:]]+/, "", line)
+				if (line ~ /^\(/) {
+					sub(/^\([^)]*\)[[:space:]]+/, "", line)
+				}
+				name = line
+				sub(/[^A-Za-z0-9_].*$/, "", name)
+				if (name != "") {
+					print name
+				}
+			}
+			function flush_hunk(i) {
+				if (declaration_count > 0) {
+					for (i = 1; i <= declaration_count; i++) {
+						emit_function(declarations[i])
+					}
+				} else if (hunk_label != "") {
+					emit_function(hunk_label)
+				}
+				for (i in declarations) {
+					delete declarations[i]
+				}
+				declaration_count = 0
+				hunk_label = ""
+			}
+			/^@@/ {
+				flush_hunk()
+				hunk_label = $0
+				next
+			}
+			/^[+-]func[[:space:]]/ {
+				declarations[++declaration_count] = $0
+			}
+			END {
+				flush_hunk()
+			}
+		' |
 		sort -u |
 		paste -sd'|' -)
 	if [[ -n "$touched_functions" ]]; then
@@ -218,6 +253,10 @@ targeted_test_pattern() {
 		printf '^TestIsOroDistributedHook'
 	elif [[ "$file" == cmd/oro/cmd_init.go && "$match" == '^(installAgentBranchGuard)$' ]]; then
 		printf '^TestInstallAgentBranchGuard'
+	elif [[ "$file" == cmd/oro/cmd_start.go && "$match" == '^(hookPathsWouldLeak)$' ]]; then
+		printf '^(TestHookPathsWouldLeak|TestHookPathsWouldLeak_NonTmpdirSandboxRoot|TestHookPathsWouldLeak_NonstandardGoTempRoot|TestInstallCodexHookConfigRefusesLeakyHooks)$'
+	elif [[ "$file" == pkg/dispatcher/scheduling.go && "$match" == '^(advanceAssignedGeneralIdle)$' ]]; then
+		printf '^TestAdvanceAssignedGeneralIdleConsumesReportedClaimAfterAsyncRelease$'
 	fi
 }
 

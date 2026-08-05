@@ -25,6 +25,11 @@ var inheritedOroRuntimeVars = []string{
 	"ORO_CAPABILITY_FILE",
 }
 
+var (
+	testMainRuntimeRoot      string
+	testMainInheritedGoCache string
+)
+
 // sanitizeInheritedOroEnv unsets the transient ORO_* runtime vars so inherited
 // caller state cannot influence cmd/oro tests. It is called from TestMain.
 func sanitizeInheritedOroEnv() error {
@@ -91,5 +96,18 @@ func TestInheritedOroRuntimeEnvSanitized(t *testing.T) {
 	t.Setenv("ORO_PROJECT", "explicit-test-project")
 	if got := os.Getenv("ORO_PROJECT"); got != "explicit-test-project" {
 		t.Fatalf("explicit t.Setenv did not take effect: got %q", got)
+	}
+}
+
+func TestInheritedCompilerCacheIsSanitized(t *testing.T) {
+	goCache := os.Getenv("GOCACHE")
+	if goCache == "" {
+		t.Fatal("TestMain GOCACHE is empty, want package-private compiler cache")
+	}
+	if testMainInheritedGoCache != "" && goCache == testMainInheritedGoCache {
+		t.Fatalf("TestMain retained inherited GOCACHE %q", goCache)
+	}
+	if testMainRuntimeRoot == "" || !pathUnder(testMainRuntimeRoot, goCache) {
+		t.Fatalf("TestMain GOCACHE = %q, want path beneath runtime root %q", goCache, testMainRuntimeRoot)
 	}
 }
