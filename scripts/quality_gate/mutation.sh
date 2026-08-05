@@ -403,6 +403,23 @@ assignment_bc_mutation_test_pattern() {
 	esac
 }
 
+assignment_admission_mutation_test_pattern() {
+	local file="$1"
+	local match="$2"
+	[[ "$file" == pkg/dispatcher/assignment_admission.go ]] || return 0
+	case "$match" in
+	'^(beginAssignmentAdmission)$')
+		printf '^TestBufferAssignmentAdmissionBeginOutcomes$'
+		;;
+	'^(closeAssignmentAdmission)$')
+		printf '^TestBufferAssignmentAdmissionCloseOutcomes$'
+		;;
+	'^(commitAssignmentAdmission)$')
+		printf '^TestBufferAssignmentAdmissionCommitOutcomes$'
+		;;
+	esac
+}
+
 review_integration_recovery_mutation_test_pattern() {
 	local file="$1"
 	local match="$2"
@@ -610,7 +627,12 @@ targeted_test_pattern() {
 	local head="$2"
 	local file="$3"
 	local match="$4"
-	local assignment_bc_pattern review_checkpoint_pattern review_integration_recovery_pattern
+	local assignment_admission_pattern assignment_bc_pattern review_checkpoint_pattern review_integration_recovery_pattern
+	assignment_admission_pattern=$(assignment_admission_mutation_test_pattern "$file" "$match")
+	if [[ -n "$assignment_admission_pattern" ]]; then
+		printf '%s' "$assignment_admission_pattern"
+		return
+	fi
 	assignment_bc_pattern=$(assignment_bc_mutation_test_pattern "$file" "$match")
 	if [[ -n "$assignment_bc_pattern" ]]; then
 		printf '%s' "$assignment_bc_pattern"
@@ -689,6 +711,11 @@ run_mutation_shard() {
 		'^TestAssignmentBCReservationReleaseExactState$' | \
 		'^TestAssignmentBCAttachExactStateAndOwnership$')
 		mutation_test_file=pkg/dispatcher/assignment_reservation_worktree_survivor_mutation_test.go
+		;;
+	'^TestBufferAssignmentAdmissionBeginOutcomes$' | \
+		'^TestBufferAssignmentAdmissionCloseOutcomes$' | \
+		'^TestBufferAssignmentAdmissionCommitOutcomes$')
+		mutation_test_file=pkg/dispatcher/buffer_survivor_mutation_test.go
 		;;
 	'^TestLaunchAssignmentWithResultReportsDeclinedClaimWithinBound$')
 		mutation_test_file=pkg/dispatcher/scheduling_mutation_test.go
@@ -774,7 +801,8 @@ run_mutation_shard() {
 				MUTATION_EXEC_SCRIPT="$mutation_script_dir/mutation_exec.sh" \
 				timeout "$max_shard_timeout" bash "$mutation_script_dir/mutation_parallel.sh"
 		elif [[ "$file" == pkg/dispatcher/review_integration_recovery.go ||
-			"$mutation_test_file" == pkg/dispatcher/assignment_reservation_worktree_survivor_mutation_test.go ]]; then
+			"$mutation_test_file" == pkg/dispatcher/assignment_reservation_worktree_survivor_mutation_test.go ||
+			"$mutation_test_file" == pkg/dispatcher/buffer_survivor_mutation_test.go ]]; then
 			GOCACHE="$shard_root/caches/$cache_slot" \
 				GOTMPDIR="$shard_root/tmp/$index" \
 				MUTATION_SOURCE_FILE="$file" \
@@ -926,6 +954,7 @@ main() {
 		if [[ ("$file" == pkg/dispatcher/assignment.go &&
 			("${match_patterns[$index]}" == '^(assignBeadWithClaim)$' ||
 				"${test_patterns[$index]}" == *TestAssignmentBC*)) ||
+			"$file" == pkg/dispatcher/assignment_admission.go ||
 			"$file" == pkg/dispatcher/review_integration_recovery.go ]]; then
 			for pid in "${pids[@]}"; do
 				wait "$pid" || true

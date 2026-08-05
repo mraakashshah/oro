@@ -98,6 +98,39 @@ assignment_bc_pattern_for() {
 	bash -c "$function_source"$'\n''assignment_bc_mutation_test_pattern "$1" "$2"' _ "$file" "$match" || true
 }
 
+assignment_admission_pattern_for() {
+	local file="$1"
+	local match="$2"
+	local function_source
+	function_source=$(awk '
+		/^assignment_admission_mutation_test_pattern\(\)/ { copying = 1 }
+		copying { print }
+		copying && /^}/ { exit }
+	' "$runner")
+	if [[ -z "$function_source" ]]; then
+		fail 'mutation runner omitted assignment admission owner mapping'
+		return 1
+	fi
+	bash -c "$function_source"$'\n''assignment_admission_mutation_test_pattern "$1" "$2"' _ "$file" "$match" || true
+}
+
+TestAssignmentAdmissionMutationMapping() {
+	local function expected got
+	while IFS=: read -r function expected; do
+		got=$(assignment_admission_pattern_for pkg/dispatcher/assignment_admission.go "^($function)$")
+		[[ "$got" == "$expected" ]] ||
+			fail "$function mutation owner = $got, want $expected"
+	done <<'EOF'
+beginAssignmentAdmission:^TestBufferAssignmentAdmissionBeginOutcomes$
+closeAssignmentAdmission:^TestBufferAssignmentAdmissionCloseOutcomes$
+commitAssignmentAdmission:^TestBufferAssignmentAdmissionCommitOutcomes$
+EOF
+	got=$(assignment_admission_pattern_for pkg/dispatcher/other.go '^(beginAssignmentAdmission)$')
+	[[ -z "$got" ]] || fail "wrong assignment admission file unexpectedly selected $got"
+	got=$(assignment_admission_pattern_for pkg/dispatcher/assignment_admission.go '^(unmappedAssignmentAdmissionFunction)$')
+	[[ -z "$got" ]] || fail "unmapped assignment admission function unexpectedly selected $got"
+}
+
 TestAssignmentBCMutationMapping() {
 	local function expected got
 	while IFS=: read -r function expected; do
@@ -118,6 +151,10 @@ EOF
 
 TestMutationOwnerMappingsCoexist() {
 	local got
+	got=$(assignment_admission_pattern_for \
+		pkg/dispatcher/assignment_admission.go '^(beginAssignmentAdmission)$')
+	[[ "$got" == '^TestBufferAssignmentAdmissionBeginOutcomes$' ]] ||
+		fail "coexisting assignment admission resolver selected $got"
 	got=$(assignment_bc_pattern_for pkg/dispatcher/assignment.go '^(prepareAssignmentWorktree)$')
 	[[ "$got" == '^TestAssignmentBCPrepareWorktreeOutcomes$' ]] ||
 		fail "coexisting assignment resolver selected $got"
@@ -125,7 +162,16 @@ TestMutationOwnerMappingsCoexist() {
 		pkg/dispatcher/review_integration_recovery.go '^(finalizeReviewIntegration)$')
 	[[ "$got" == '^TestReviewIntegrationRecoveryMutationFinalize$' ]] ||
 		fail "coexisting integration-recovery resolver selected $got"
+	got=$(review_checkpoint_pattern_for \
+		pkg/dispatcher/review_checkpoint_store.go '^(LoadOwningForBead)$')
+	[[ "$got" == '^TestReviewCheckpointMutationOwnershipLoads$' ]] ||
+		fail "coexisting review checkpoint resolver selected $got"
 
+	got=$(assignment_admission_pattern_for pkg/dispatcher/assignment.go '^(beginAssignmentAdmission)$')
+	[[ -z "$got" ]] || fail "assignment admission resolver accepted wrong source: $got"
+	got=$(assignment_admission_pattern_for \
+		pkg/dispatcher/assignment_admission.go '^(unmappedAssignmentAdmissionFunction)$')
+	[[ -z "$got" ]] || fail "assignment admission resolver accepted unmapped function: $got"
 	got=$(assignment_bc_pattern_for pkg/dispatcher/review_integration_recovery.go '^(prepareAssignmentWorktree)$')
 	[[ -z "$got" ]] || fail "assignment resolver accepted wrong source: $got"
 	got=$(assignment_bc_pattern_for pkg/dispatcher/assignment.go '^(unmappedAssignmentFunction)$')
@@ -476,6 +522,27 @@ new_targeted_fixture() {
 		function_name=attachAssignmentToReservation
 		test_names=(TestAssignmentBCAttachExactStateAndOwnership)
 		;;
+	buffer-admission-begin)
+		package_name=dispatcher
+		source_file=pkg/dispatcher/assignment_admission.go
+		test_file=pkg/dispatcher/buffer_survivor_mutation_test.go
+		function_name=beginAssignmentAdmission
+		test_names=(TestBufferAssignmentAdmissionBeginOutcomes)
+		;;
+	buffer-admission-close)
+		package_name=dispatcher
+		source_file=pkg/dispatcher/assignment_admission.go
+		test_file=pkg/dispatcher/buffer_survivor_mutation_test.go
+		function_name=closeAssignmentAdmission
+		test_names=(TestBufferAssignmentAdmissionCloseOutcomes)
+		;;
+	buffer-admission-commit)
+		package_name=dispatcher
+		source_file=pkg/dispatcher/assignment_admission.go
+		test_file=pkg/dispatcher/buffer_survivor_mutation_test.go
+		function_name=commitAssignmentAdmission
+		test_names=(TestBufferAssignmentAdmissionCommitOutcomes)
+		;;
 	review-integration-recovery)
 		package_name=dispatcher
 		source_file=pkg/dispatcher/review_integration_recovery.go
@@ -534,6 +601,10 @@ new_targeted_fixture() {
 		printf 'package dispatcher\n\nfunc TestAssignmentBCUnselected() {}\n' \
 			>"$fixture/pkg/dispatcher/assignment_bc_unselected_test.go"
 		;;
+	buffer-admission-*)
+		printf 'package dispatcher\n\nfunc TestBufferAdmissionUnselected() {}\n' \
+			>"$fixture/pkg/dispatcher/buffer_unselected_test.go"
+		;;
 	review-integration-recovery)
 		printf 'package dispatcher\n\nfunc TestReviewIntegrationRecoveryUnselected() {}\n' \
 			>"$fixture/pkg/dispatcher/review_integration_recovery_unselected_test.go"
@@ -543,6 +614,9 @@ new_targeted_fixture() {
 	case "$target" in
 	assignment-bc-*)
 		git -C "$fixture" add pkg/dispatcher/assignment_bc_unselected_test.go
+		;;
+	buffer-admission-*)
+		git -C "$fixture" add pkg/dispatcher/buffer_unselected_test.go
 		;;
 	review-integration-recovery)
 		git -C "$fixture" add pkg/dispatcher/review_integration_recovery_unselected_test.go
@@ -641,6 +715,9 @@ if [[ "$1" = test ]]; then
 		*TestAssignmentBCValidateDivergedRecoveryOutcomes*) printf 'TestAssignmentBCValidateDivergedRecoveryOutcomes\nTestAssignmentBCValidateCurrentBranchError\n' ;;
 		*TestAssignmentBCReservationReleaseExactState*) printf 'TestAssignmentBCReservationReleaseExactState\n' ;;
 		*TestAssignmentBCAttachExactStateAndOwnership*) printf 'TestAssignmentBCAttachExactStateAndOwnership\n' ;;
+		*TestBufferAssignmentAdmissionBeginOutcomes*) printf 'TestBufferAssignmentAdmissionBeginOutcomes\n' ;;
+		*TestBufferAssignmentAdmissionCloseOutcomes*) printf 'TestBufferAssignmentAdmissionCloseOutcomes\n' ;;
+		*TestBufferAssignmentAdmissionCommitOutcomes*) printf 'TestBufferAssignmentAdmissionCommitOutcomes\n' ;;
 		*TestReviewIntegrationRecoveryMutationFinalize*) printf 'TestReviewIntegrationRecoveryMutationFinalize\n' ;;
 		*TestSpawnEscalationOneShotReturnsAfterReadingWorktree*) printf 'TestSpawnEscalationOneShotReturnsAfterReadingWorktree\n' ;;
 		*TestApplyHealthReturnsAndReleasesDispatcherMutex*) printf 'TestApplyHealthReturnsAndReleasesDispatcherMutex\n' ;;
@@ -671,6 +748,9 @@ if [[ "$1" = tool && "$2" = cover ]]; then
 	printf 'pkg/dispatcher/assignment.go:4: validateExistingWorktreeForReuse 100.0%%\n'
 	printf 'pkg/dispatcher/assignment.go:5: releaseAssignmentReservationLocked 100.0%%\n'
 	printf 'pkg/dispatcher/assignment.go:6: attachAssignmentToReservation 100.0%%\n'
+	printf 'pkg/dispatcher/assignment_admission.go:1: beginAssignmentAdmission 100.0%%\n'
+	printf 'pkg/dispatcher/assignment_admission.go:2: closeAssignmentAdmission 100.0%%\n'
+	printf 'pkg/dispatcher/assignment_admission.go:3: commitAssignmentAdmission 100.0%%\n'
 	printf 'pkg/dispatcher/review_integration_recovery.go:1: finalizeReviewIntegration 100.0%%\n'
 	printf 'pkg/dispatcher/escalation.go:1: spawnEscalationOneShot 100.0%%\n'
 	printf 'pkg/dispatcher/health.go:1: applyHealth 100.0%%\n'
@@ -1086,6 +1166,50 @@ assignment-bc-prepare	prepareAssignmentWorktree	^TestAssignmentBCPrepareWorktree
 assignment-bc-validate	validateExistingWorktreeForReuse	^(TestAssignmentBCValidateDivergedRecoveryOutcomes|TestAssignmentBCValidateCurrentBranchError)$
 assignment-bc-release	releaseAssignmentReservationLocked	^TestAssignmentBCReservationReleaseExactState$
 assignment-bc-attach	attachAssignmentToReservation	^TestAssignmentBCAttachExactStateAndOwnership$
+EOF
+
+	local admission_function admission_pattern admission_target admission_test_file
+	admission_test_file=pkg/dispatcher/buffer_survivor_mutation_test.go
+	while IFS=$'\t' read -r admission_target admission_function admission_pattern; do
+		fixture="$tmp/targeted-$admission_target"
+		evidence=$(run_targeted_fixture "$fixture" targeted pass 0 false "$admission_target")
+		list_trace="$fixture/mutation-list.txt"
+		grep -Fq -- "-list $admission_pattern ./pkg/dispatcher" "$list_trace" ||
+			fail "$admission_function mutations must preflight the exact buffer survivor test"
+		grep -F -- "-run $admission_pattern ./pkg/dispatcher" "$list_trace" |
+			grep -q -- '-coverprofile=' ||
+			fail "$admission_function baseline must retain full-package production coverage"
+		jq -e --arg function "$admission_function" --arg pattern "$admission_pattern" \
+			'.shards[0].match == "^(" + $function + ")$" and .shards[0].test_pattern == $pattern' \
+			"$evidence" >/dev/null ||
+			fail "$admission_function mutation evidence lost its exact function/test mapping"
+		grep -Fxq "MUTATION_TEST_FILE=$admission_test_file" "$fixture/mutation-args.txt" ||
+			fail "$admission_function mutations must compile only the buffer survivor test file"
+		for expected_limit in \
+			'PARALLEL_WORKERS=2' \
+			'EXEC_TIMEOUT=60' \
+			'TIMEOUT_MARGIN=5' \
+			'BASE_SHARD_TIMEOUT=240' \
+			'MAX_SHARD_TIMEOUT=240'; do
+			grep -Fxq "$expected_limit" "$fixture/mutation-args.txt" ||
+				fail "$admission_function mutation boundary omitted $expected_limit"
+		done
+		focused_lines=$(grep -F "$admission_test_file" "$list_trace")
+		[[ -n "$focused_lines" ]] || fail "$admission_function emitted no focused mutation argv"
+		while IFS= read -r focused_line; do
+			[[ "$(grep -oF 'pkg/dispatcher/assignment_admission.go' <<<"$focused_line" | wc -l | tr -d ' ')" = 1 ]] ||
+				fail "$admission_function focused argv must include the mutated source exactly once"
+			[[ "$(grep -oF "$admission_test_file" <<<"$focused_line" | wc -l | tr -d ' ')" = 1 ]] ||
+				fail "$admission_function focused argv must include the buffer test file exactly once"
+			grep -Fq -- '-timeout 55s' <<<"$focused_line" ||
+				fail "$admission_function focused argv must enforce the 55s internal Go deadline"
+			! grep -Fq 'buffer_unselected_test.go' <<<"$focused_line" ||
+				fail "$admission_function focused argv included an unselected test file"
+		done <<<"$focused_lines"
+	done <<'EOF'
+buffer-admission-begin	beginAssignmentAdmission	^TestBufferAssignmentAdmissionBeginOutcomes$
+buffer-admission-close	closeAssignmentAdmission	^TestBufferAssignmentAdmissionCloseOutcomes$
+buffer-admission-commit	commitAssignmentAdmission	^TestBufferAssignmentAdmissionCommitOutcomes$
 EOF
 
 	local integration_file integration_pattern integration_test_file
@@ -2056,6 +2180,7 @@ TestStrictIncrementalMutation() {
 	TestReviewIntegrationRecoveryMutationMapping
 	TestReviewIntegrationRecoveryMutationCoverage
 	TestAssignmentBCMutationMapping
+	TestAssignmentAdmissionMutationMapping
 	TestMutationOwnerMappingsCoexist
 
 	TestIncrementalMutationArtifactRetention "$tmp/workflow-artifact"
@@ -2096,6 +2221,9 @@ main() {
 		;;
 	TestAssignmentBCMutationMapping)
 		TestAssignmentBCMutationMapping
+		;;
+	TestAssignmentAdmissionMutationMapping)
+		TestAssignmentAdmissionMutationMapping
 		;;
 	TestMutationOwnerMappingsCoexist)
 		TestMutationOwnerMappingsCoexist
