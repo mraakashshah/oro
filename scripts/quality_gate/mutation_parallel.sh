@@ -39,11 +39,6 @@ worker_group_ids=()
 worker_stop_file="$executor_root/stop-workers"
 active_jobs_file="$executor_root/active-worker-jobs"
 shard_started_at=$SECONDS
-module_path=$(awk '$1 == "module" { print $2; exit }' go.mod)
-if [[ -z "$module_path" ]]; then
-	printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
-	exit 2
-fi
 
 refresh_active_worker_groups() {
 	local active group
@@ -135,6 +130,7 @@ stop_mutant_workers() {
 	abort_running_mutant_evidence
 	refresh_active_worker_groups
 	if ((${#active_worker_groups[@]} != 0)); then
+		announce_failure_evidence
 		printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
 		return 2
 	fi
@@ -146,6 +142,7 @@ finish_mutant_workers() {
 	local group pid
 	refresh_active_worker_groups
 	if ((${#active_worker_groups[@]} != ${#worker_group_ids[@]})); then
+		announce_failure_evidence
 		printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
 		return 2
 	fi
@@ -157,6 +154,7 @@ finish_mutant_workers() {
 	done
 	refresh_active_worker_groups
 	if ((${#active_worker_groups[@]} != 0)); then
+		announce_failure_evidence
 		printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
 		return 2
 	fi
@@ -165,6 +163,10 @@ finish_mutant_workers() {
 }
 
 cleanup_parallel_mutation() {
+	local exit_status=$?
+	if ((exit_status != 0)); then
+		announce_failure_evidence
+	fi
 	stop_mutant_workers
 	if [[ -n "$generation_root" && -d "$generation_root" ]]; then
 		rm -rf -- "$generation_root"
@@ -172,10 +174,18 @@ cleanup_parallel_mutation() {
 	rm -rf -- "$executor_root"
 }
 trap cleanup_parallel_mutation EXIT
-trap 'exit 124' HUP INT TERM
+trap 'announce_failure_evidence; exit 124' HUP INT TERM
+
+module_path=$(awk '$1 == "module" { print $2; exit }' go.mod)
+if [[ -z "$module_path" ]]; then
+	announce_failure_evidence
+	printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
+	exit 2
+fi
 
 if ! go tool go-mutesting --debug --no-exec --do-not-remove-tmp-folder \
 	"--match=$MUTATION_FUNCTION_MATCH" "$MUTATION_SOURCE_FILE" >"$generation_log" 2>&1; then
+	announce_failure_evidence
 	cat "$generation_log"
 	printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
 	exit 2
@@ -186,6 +196,7 @@ generation_root=${generation_line#Save mutations into }
 generation_root=${generation_root#\"}
 generation_root=${generation_root%\"}
 if [[ -z "$generation_root" || ! -d "$generation_root" ]]; then
+	announce_failure_evidence
 	cat "$generation_log"
 	printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
 	exit 2
@@ -194,6 +205,7 @@ fi
 mutation_prefix="$generation_root/$MUTATION_SOURCE_FILE"
 original_source="$mutation_prefix.original"
 if [[ ! -f "$original_source" ]]; then
+	announce_failure_evidence
 	printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
 	exit 2
 fi
@@ -304,6 +316,7 @@ for ((worker = 0; worker < MUTATION_PARALLEL_WORKERS; worker++)); do
 		sleep 0.01
 	done
 	if [[ "$ready_pid" != "${worker_pids[$worker]}" ]]; then
+		announce_failure_evidence
 		printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
 		worker_ready_failure=1
 		break
@@ -324,6 +337,7 @@ while :; do
 		output="$executor_root/logs/$position.log"
 		IFS=$'\t' read -r recorded_position status mutant <"$result"
 		if [[ "$recorded_position" != "$position" || "$mutant" != "${mutants[$position]}" ]]; then
+			announce_failure_evidence
 			printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
 			stop_mutant_workers
 			exit 2
@@ -332,8 +346,8 @@ while :; do
 		case "$status" in
 		0 | 1) ;;
 		*)
-			cat "$output"
 			announce_failure_evidence
+			cat "$output"
 			if grep -q '^ORO_MUTATION_EXEC_TIMEOUT$' "$output"; then
 				stop_mutant_workers
 				exit 124
@@ -375,12 +389,14 @@ while :; do
 		fi
 	done
 	if ((worker_failure != 0)); then
+		announce_failure_evidence
 		printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
 		stop_mutant_workers
 		exit 2
 	fi
 	if ((workers_done == MUTATION_PARALLEL_WORKERS)); then
 		if ((${#observed_results[@]} != ${#mutants[@]})); then
+			announce_failure_evidence
 			printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
 			stop_mutant_workers
 			exit 2
@@ -390,6 +406,7 @@ while :; do
 	if ((${#observed_results[@]} == ${#mutants[@]})); then
 		result_complete_attempts=$((result_complete_attempts + 1))
 		if ((result_complete_attempts >= 20)); then
+			announce_failure_evidence
 			printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
 			stop_mutant_workers
 			exit 2
@@ -398,6 +415,7 @@ while :; do
 		result_complete_attempts=0
 	fi
 	if ((SECONDS >= shard_deadline)); then
+		announce_failure_evidence
 		printf 'ORO_MUTATION_EXEC_TIMEOUT\n'
 		stop_mutant_workers
 		exit 124
@@ -406,6 +424,7 @@ while :; do
 done
 
 if ! finish_mutant_workers; then
+	announce_failure_evidence
 	exit 2
 fi
 
@@ -417,6 +436,7 @@ for ((position = 0; position < ${#mutants[@]}; position++)); do
 	result="$executor_root/results/$position.tsv"
 	output="$executor_root/logs/$position.log"
 	if [[ ! -s "$result" || ! -f "$output" ]]; then
+		announce_failure_evidence
 		printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
 		infrastructure_failure=1
 		skipped=$((skipped + 1))
@@ -424,6 +444,7 @@ for ((position = 0; position < ${#mutants[@]}; position++)); do
 	fi
 	IFS=$'\t' read -r recorded_position status mutant <"$result"
 	if [[ "$recorded_position" != "$position" || "$mutant" != "${mutants[$position]}" ]]; then
+		announce_failure_evidence
 		printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
 		infrastructure_failure=1
 		skipped=$((skipped + 1))
@@ -440,6 +461,7 @@ for ((position = 0; position < ${#mutants[@]}; position++)); do
 		failed=$((failed + 1))
 		;;
 	*)
+		announce_failure_evidence
 		if ! grep -Eq '^(ORO_MUTATION_EXEC_TIMEOUT|ORO_MUTATION_EXEC_FAILURE:)' "$output"; then
 			printf 'ORO_MUTATION_EXEC_FAILURE:%d\n' "$status"
 		fi
@@ -452,6 +474,7 @@ done
 
 for ((worker = 0; worker < MUTATION_PARALLEL_WORKERS; worker++)); do
 	if ! cmp -s "$original_source" "$executor_root/workers/$worker/repo/$MUTATION_SOURCE_FILE"; then
+		announce_failure_evidence
 		printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
 		infrastructure_failure=1
 	fi
@@ -462,5 +485,6 @@ score=$(awk "BEGIN { if ($total == 0) print \"0.000000\"; else printf \"%.6f\", 
 printf 'The mutation score is %s (%d passed, %d failed, %d duplicated, %d skipped, total is %d)\n' \
 	"$score" "$passed" "$failed" "$duplicate_count" "$skipped" "$total"
 if ((infrastructure_failure != 0)); then
+	announce_failure_evidence
 	exit 2
 fi

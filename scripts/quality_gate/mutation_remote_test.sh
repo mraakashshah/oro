@@ -1121,7 +1121,7 @@ run_parallel_completion_handshake_fixture() {
 	local fixture="$1"
 	local mode="$2"
 	local output="$fixture/parallel.log"
-	local real_mv status
+	local evidence_path real_mv status
 	real_mv=$(command -v mv)
 	mkdir -p "$fixture/bin" "$fixture/pkg/example" "$fixture/cache" "$fixture/tmp" "$fixture/state"
 	printf 'module example.test/completion\n\ngo 1.26\n' >"$fixture/go.mod"
@@ -1167,6 +1167,7 @@ EOF
 		cd "$fixture"
 		PATH="$fixture/bin:$PATH" MUTATION_FAKE_STATE="$fixture/state" \
 			MUTATION_COMPLETION_MODE="$mode" MUTATION_REAL_MV="$real_mv" \
+			MUTATION_FAILURE_EVIDENCE_DIR="$fixture/evidence" \
 			GOCACHE="$fixture/cache" GOTMPDIR="$fixture/tmp" \
 			MUTATION_SOURCE_FILE=pkg/example/value.go MUTATION_FUNCTION_MATCH='^(Value)$' \
 			MUTATION_TEST_PATTERN='^TestValue$' MUTATION_TEST_FILE=pkg/example/value_test.go \
@@ -1179,6 +1180,9 @@ EOF
 	[[ "$status" = 2 ]] || fail "$mode completion handshake exit = $status, want 2"
 	grep -Fxq 'ORO_MUTATION_EXEC_FAILURE:2' "$output" ||
 		fail "$mode completion handshake did not emit an infrastructure marker"
+	evidence_path=$(sed -n 's/^ORO_MUTATION_FAILURE_EVIDENCE://p' "$output")
+	[[ "$(wc -l <<<"$evidence_path" | tr -d ' ')" = 1 && -d "$evidence_path" ]] ||
+		fail "$mode completion handshake did not publish one absolute failure evidence path"
 	((SECONDS < 5)) || fail "$mode completion handshake waited for the outer timeout"
 }
 
@@ -1187,6 +1191,96 @@ test_parallel_completion_handshakes() {
 	run_parallel_completion_handshake_fixture "$fixture/missing-done" missing_done
 	run_parallel_completion_handshake_fixture "$fixture/invalid-done" invalid_done
 	run_parallel_completion_handshake_fixture "$fixture/missing-result" missing_result
+}
+
+run_parallel_abnormal_teardown_fixture() {
+	local fixture="$1"
+	local mode="$2"
+	local elapsed_seconds evidence_path output="$fixture/parallel.log" peer_group peer_pid status
+	mkdir -p "$fixture/bin" "$fixture/pkg/example" "$fixture/cache" "$fixture/tmp" "$fixture/state"
+	printf 'module example.test/teardown\n\ngo 1.26\n' >"$fixture/go.mod"
+	printf 'package example\n\nfunc Value() int { return 1 }\n' >"$fixture/pkg/example/value.go"
+	printf 'package example\n\nfunc TestValue() {}\n' >"$fixture/pkg/example/value_test.go"
+	cat >"$fixture/bin/go" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source_file=${*: -1}
+generation="$MUTATION_FAKE_STATE/generated"
+mkdir -p "$generation/$(dirname "$source_file")"
+cp "$source_file" "$generation/$source_file.original"
+sed 's/return 1/return 2/' "$source_file" >"$generation/$source_file.0"
+printf 'Save mutations into %q\n' "$generation"
+EOF
+	cat >"$fixture/bin/mutation-exec" <<'EOF'
+#!/usr/bin/env bash
+trap '' TERM
+printf '%d\n' "$$" >"$MUTATION_FAKE_STATE/peer.pid"
+sleep 30
+EOF
+	chmod +x "$fixture/bin/go" "$fixture/bin/mutation-exec"
+
+	SECONDS=0
+	set +e
+	(
+		cd "$fixture"
+		if [[ "$mode" = signal ]]; then
+			PATH="$fixture/bin:$PATH" MUTATION_FAKE_STATE="$fixture/state" \
+				MUTATION_FAILURE_EVIDENCE_DIR="$fixture/evidence" \
+				GOCACHE="$fixture/cache" GOTMPDIR="$fixture/tmp" \
+				MUTATION_SOURCE_FILE=pkg/example/value.go MUTATION_FUNCTION_MATCH='^(Value)$' \
+				MUTATION_TEST_PATTERN='^TestValue$' MUTATION_TEST_FILE=pkg/example/value_test.go \
+				MUTATION_EXEC_TIMEOUT=60 MUTATION_PARALLEL_WORKERS=2 \
+				MUTATION_BASE_SHARD_TIMEOUT_SECONDS=1 MUTATION_MAX_SHARD_TIMEOUT_SECONDS=6 \
+				MUTATION_EXEC_SCRIPT="$fixture/bin/mutation-exec" \
+				bash "$repo_root/scripts/quality_gate/mutation_parallel.sh" >"$output" 2>&1 &
+			parallel_pid=$!
+			for ((attempt = 0; attempt < 200; attempt++)); do
+				if compgen -G "$fixture/evidence/run.*/mutant-0.json" >/dev/null &&
+					[[ -s "$fixture/state/peer.pid" ]]; then
+					break
+				fi
+				sleep 0.01
+			done
+			peer_pid=$(<"$fixture/state/peer.pid")
+			peer_group=$(ps -o pgid= -p "$peer_pid" | tr -d ' ')
+			printf '%s\n' "$peer_group" >"$fixture/state/peer.pgid"
+			kill -TERM "$parallel_pid"
+			wait "$parallel_pid"
+		else
+			PATH="$fixture/bin:$PATH" MUTATION_FAKE_STATE="$fixture/state" \
+				MUTATION_FAILURE_EVIDENCE_DIR="$fixture/evidence" \
+				GOCACHE="$fixture/cache" GOTMPDIR="$fixture/tmp" \
+				MUTATION_SOURCE_FILE=pkg/example/value.go MUTATION_FUNCTION_MATCH='^(Value)$' \
+				MUTATION_TEST_PATTERN='^TestValue$' MUTATION_TEST_FILE=pkg/example/value_test.go \
+				MUTATION_EXEC_TIMEOUT=60 MUTATION_PARALLEL_WORKERS=2 \
+				MUTATION_BASE_SHARD_TIMEOUT_SECONDS=1 MUTATION_MAX_SHARD_TIMEOUT_SECONDS=6 \
+				MUTATION_EXEC_SCRIPT="$fixture/bin/mutation-exec" \
+				timeout -k 1 8 bash "$repo_root/scripts/quality_gate/mutation_parallel.sh" >"$output" 2>&1
+		fi
+	)
+	status=$?
+	set -e
+	elapsed_seconds=$SECONDS
+	[[ "$status" = 124 ]] || fail "$mode teardown exit = $status, want 124"
+	evidence_path=$(sed -n 's/^ORO_MUTATION_FAILURE_EVIDENCE://p' "$output")
+	[[ "$(wc -l <<<"$evidence_path" | tr -d ' ')" = 1 && -d "$evidence_path" ]] ||
+		fail "$mode teardown did not publish one absolute failure evidence path"
+	jq -e '.source_file == "pkg/example/value.go" and .function_match == "^(Value)$" and
+		.mutant_index == 0 and .exit_class == "aborted" and .exit_status == null' \
+		"$evidence_path/mutant-0.json" >/dev/null || fail "$mode teardown lost its aborted mutant identity"
+	peer_pid=$(<"$fixture/state/peer.pid")
+	! kill -0 "$peer_pid" 2>/dev/null || fail "$mode teardown orphaned mutant executor $peer_pid"
+	if [[ -s "$fixture/state/peer.pgid" ]]; then
+		peer_group=$(<"$fixture/state/peer.pgid")
+		! kill -0 -- "-$peer_group" 2>/dev/null || fail "$mode teardown orphaned mutant worker group $peer_group"
+	fi
+	((elapsed_seconds < 8)) || fail "$mode teardown reached its outer diagnostic timeout"
+}
+
+test_parallel_abnormal_teardown_evidence() {
+	local fixture="$1"
+	run_parallel_abnormal_teardown_fixture "$fixture/signal" signal
+	run_parallel_abnormal_teardown_fixture "$fixture/deadline" deadline
 }
 
 test_parallel_internal_timeout_margin_validation() {
@@ -1214,7 +1308,7 @@ run_parallel_marker_fixture() {
 	local mode="$2"
 	local expected_marker="$3"
 	local output="$fixture/parallel.log"
-	local descendant_alive=0 elapsed_seconds evidence_path expected_exit_class expected_exit_status group_alive=0 group_id peer_pid peer_sleep=30 sentinel_alive=0 sentinel_pid status
+	local descendant_alive=0 diagnostic_line elapsed_seconds evidence_line evidence_path expected_exit_class expected_exit_status group_alive=0 group_id peer_pid peer_sleep=30 sentinel_alive=0 sentinel_pid status
 	[[ "$mode" != ordinary ]] || peer_sleep=1
 	mkdir -p "$fixture/bin" "$fixture/pkg/example" "$fixture/cache" "$fixture/tmp" "$fixture/state"
 	printf 'module example.test/markers\n\ngo 1.26\n' >"$fixture/go.mod"
@@ -1260,6 +1354,9 @@ timeout:0)
 	;;
 raw124:0)
 	wait_for_peer
+	for ((diagnostic_line = 0; diagnostic_line < 300; diagnostic_line++)); do
+		printf 'raw124 diagnostic line %03d\n' "$diagnostic_line"
+	done
 	exit 124
 	;;
 unknown:0)
@@ -1361,8 +1458,14 @@ EOF
 	wait "$sentinel_pid" 2>/dev/null || true
 	[[ "$status" != 0 ]] || fail "$mode marker was accepted as a completed mutation campaign"
 	grep -Fxq "$expected_marker" "$output" || fail "$mode marker was not surfaced"
-	evidence_path=$(sed -n 's/^ORO_MUTATION_FAILURE_EVIDENCE://p' "$output" | tail -1)
-	[[ -n "$evidence_path" && -d "$evidence_path" ]] || fail "$mode marker did not retain its failure evidence directory"
+	evidence_path=$(sed -n 's/^ORO_MUTATION_FAILURE_EVIDENCE://p' "$output")
+	[[ "$(wc -l <<<"$evidence_path" | tr -d ' ')" = 1 && -d "$evidence_path" ]] ||
+		fail "$mode marker did not publish one failure evidence directory"
+	if [[ "$mode" = raw124 ]]; then
+		evidence_line=$(grep -n '^ORO_MUTATION_FAILURE_EVIDENCE:' "$output" | cut -d: -f1)
+		diagnostic_line=$(grep -n '^raw124 diagnostic line ' "$output" | head -1 | cut -d: -f1)
+		((evidence_line < diagnostic_line)) || fail 'raw124 failure evidence path was hidden behind arbitrary mutant output'
+	fi
 	case "$mode" in
 	timeout | raw124)
 		expected_exit_class=timeout
@@ -1452,6 +1555,7 @@ TestMutationCapacity() {
 	run_parallel_capacity_fixture "$tmp/capped" 302 900
 	test_parallel_marker_fail_fast "$tmp/markers"
 	test_parallel_completion_handshakes "$tmp/completion"
+	test_parallel_abnormal_teardown_evidence "$tmp/abnormal-teardown"
 	test_parallel_internal_timeout_margin_validation "$tmp/internal-timeout-margin"
 	test_parallel_emergency_ceiling "$tmp/ceiling"
 }
