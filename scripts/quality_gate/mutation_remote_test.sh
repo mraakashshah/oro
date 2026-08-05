@@ -223,9 +223,12 @@ new_targeted_fixture() {
 	assignment-claim)
 		package_name=dispatcher
 		source_file=pkg/dispatcher/assignment.go
-		test_file=pkg/dispatcher/assignment_mutation_test.go
+		test_file=pkg/dispatcher/assignment_behavior_mutation_test.go
 		function_name=assignBeadWithClaim
-		test_names=(TestAssignBeadWithClaimReportsUnclaimedValidationFailure)
+		test_names=(
+			TestAssignmentBehaviorMutation
+			TestStandaloneAssignmentBehaviorHarnessCaseIsolation
+		)
 		head_test_name=TestEpicSchedulerDoesNotRefillAfterClaimedSetupCleansUp
 		;;
 	assignment-release)
@@ -357,6 +360,7 @@ if [[ "$1" = test ]]; then
 		*TestLaunchAssignmentWithResultReportsDeclinedClaimWithinBound*) printf 'TestLaunchAssignmentWithResultReportsDeclinedClaimWithinBound\n' ;;
 		*TestRetrySQLiteBusyOperation*) printf 'TestRetrySQLiteBusyOperation\n' ;;
 		*TestReviewCheckpointStartupOrdering*) printf 'TestReviewCheckpointStartupOrdering\n' ;;
+		*TestAssignmentBehaviorMutation*) printf 'TestAssignmentBehaviorMutation\nTestStandaloneAssignmentBehaviorHarnessCaseIsolation\n' ;;
 		*TestAssignBeadWithClaimReportsUnclaimedValidationFailure*) printf 'TestAssignBeadWithClaimReportsUnclaimedValidationFailure\n' ;;
 		*TestReleaseAssignmentReservationResetsStateAndUnlocks*) printf 'TestReleaseAssignmentReservationResetsStateAndUnlocks\n' ;;
 		*TestSpawnEscalationOneShotReturnsAfterReadingWorktree*) printf 'TestSpawnEscalationOneShotReturnsAfterReadingWorktree\n' ;;
@@ -711,18 +715,21 @@ TestTargetedMutationScope() {
 		'.shards[0].match == "^(startupRecovery)$" and .shards[0].test_pattern == $pattern' \
 		"$evidence" >/dev/null || fail 'dispatcher mutation evidence must preserve its deterministic co-changed test scope'
 
-	claim_pattern='^TestAssignBeadWithClaimReportsUnclaimedValidationFailure$'
+	claim_pattern='^(TestAssignmentBehaviorMutation|TestStandaloneAssignmentBehaviorHarnessCaseIsolation)$'
 	evidence=$(run_targeted_fixture "$tmp/targeted-assignment-claim" targeted pass 0 false assignment-claim)
 	grep -Fq -- "-list $claim_pattern ./pkg/dispatcher" "$tmp/targeted-assignment-claim/mutation-list.txt" ||
 		fail 'assignBeadWithClaim mutations must preflight the bounded callback contract'
 	jq -e --arg pattern "$claim_pattern" \
 		'.shards[0].match == "^(assignBeadWithClaim)$" and .shards[0].test_pattern == $pattern' \
 		"$evidence" >/dev/null || fail 'assignBeadWithClaim mutations must select only the bounded callback contract'
-	grep -Fxq 'MUTATION_TEST_FILE=pkg/dispatcher/assignment_mutation_test.go' \
+	grep -Fxq 'MUTATION_TEST_FILE=pkg/dispatcher/assignment_behavior_mutation_test.go' \
 		"$tmp/targeted-assignment-claim/mutation-args.txt" ||
-		fail 'assignBeadWithClaim mutations must compile only their standalone focused test file'
+		fail 'assignBeadWithClaim mutations must compile only their standalone behavior harness'
 	grep -Fxq 'PARALLEL_WORKERS=2' "$tmp/targeted-assignment-claim/mutation-args.txt" ||
 		fail 'assignBeadWithClaim mutations must reserve exactly two mutant workers'
+	grep 'assignment_behavior_mutation_test.go' "$tmp/targeted-assignment-claim/mutation-list.txt" |
+		grep -q 'pkg/dispatcher/assignment.go' ||
+		fail 'assignBeadWithClaim focused command omitted the real mutated production source'
 
 	release_pattern='^TestReleaseAssignmentReservationResetsStateAndUnlocks$'
 	evidence=$(run_targeted_fixture "$tmp/targeted-assignment-release" targeted pass 0 false assignment-release)
@@ -1268,6 +1275,11 @@ main() {
 		;;
 	TestDispatcherMutationContractSupplements)
 		TestDispatcherMutationContractSupplements
+		;;
+	TestTargetedMutationScope)
+		tmp=$(mktemp -d)
+		trap 'rm -rf "$tmp"' RETURN
+		TestTargetedMutationScope
 		;;
 	TestMutationCapacity)
 		TestMutationCapacity

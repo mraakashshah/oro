@@ -542,7 +542,7 @@ targeted_test_pattern() {
 	elif [[ "$file" == pkg/dispatcher/sqlite_busy_retry.go && "$match" == '^(retrySQLiteBusyOperation)$' ]]; then
 		printf '^TestRetrySQLiteBusyOperation$'
 	elif [[ "$file" == pkg/dispatcher/assignment.go && "$match" == '^(assignBeadWithClaim)$' ]]; then
-		printf '^TestAssignBeadWithClaimReportsUnclaimedValidationFailure$'
+		printf '^(TestAssignmentBehaviorMutation|TestStandaloneAssignmentBehaviorHarnessCaseIsolation)$'
 	elif [[ "$file" == pkg/dispatcher/assignment.go && "$match" == '^(releaseAssignmentReservation)$' ]]; then
 		printf '^TestReleaseAssignmentReservationResetsStateAndUnlocks$'
 	elif [[ "$file" == pkg/dispatcher/escalation.go && "$match" == '^(spawnEscalationOneShot)$' ]]; then
@@ -581,6 +581,9 @@ run_mutation_shard() {
 	case "$test_pattern" in
 	'^TestAssignBeadWithClaimReportsUnclaimedValidationFailure$' | '^TestReleaseAssignmentReservationResetsStateAndUnlocks$')
 		mutation_test_file=pkg/dispatcher/assignment_mutation_test.go
+		;;
+	'^(TestAssignmentBehaviorMutation|TestStandaloneAssignmentBehaviorHarnessCaseIsolation)$')
+		mutation_test_file=pkg/dispatcher/assignment_behavior_mutation_test.go
 		;;
 	'^TestLaunchAssignmentWithResultReportsDeclinedClaimWithinBound$')
 		mutation_test_file=pkg/dispatcher/scheduling_mutation_test.go
