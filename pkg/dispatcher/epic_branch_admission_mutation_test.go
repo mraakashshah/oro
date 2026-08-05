@@ -21,12 +21,14 @@ func (s epicAdmissionMutationCreateFailureStore) Create(context.Context, beadsto
 
 func epicAdmissionMutationLease(t *testing.T, d *Dispatcher, branch string) epicBranchAdmission {
 	t.Helper()
+	fixedNow := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
+	d.nowFunc = func() time.Time { return fixedNow }
 	if err := protocol.MigrateBeadSchema(context.Background(), d.db); err != nil {
 		t.Fatalf("migrate admission schema: %v", err)
 	}
 	lease, acquired, err := newEpicBranchAdmissionStore(d.db).acquire(
 		context.Background(), branch, "oro-mutation-epic", "main", "mutation-token", "mutation-worker",
-		time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC),
+		d.nowFunc(),
 	)
 	if err != nil || !acquired {
 		t.Fatalf("acquire mutation lease: acquired=%v err=%v", acquired, err)
