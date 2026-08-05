@@ -11,6 +11,80 @@ fail() {
 	return 1
 }
 
+dispatcher_supplements_for() {
+	local file="$1"
+	local match="$2"
+	local function_source
+	function_source=$(awk '
+		/^dispatcher_test_supplement\(\)/ { copying = 1 }
+		copying { print }
+		copying && /^}/ { exit }
+	' "$runner")
+	bash -c "$function_source"$'\n''dispatcher_test_supplement "$1" "$2"' _ "$file" "$match"
+}
+
+assert_dispatcher_supplements() {
+	local file="$1"
+	local match="$2"
+	shift 2
+	local supplements expected
+	supplements=$(dispatcher_supplements_for "$file" "$match")
+	for expected in "$@"; do
+		grep -Fxq "$expected" <<<"$supplements" ||
+			fail "$file $match omitted mutation owner $expected"
+	done
+}
+
+TestDispatcherMutationContractSupplements() {
+	assert_dispatcher_supplements pkg/dispatcher/assignment_reconcile.go '^(executableAfterEpicSideEffects)$' \
+		TestExecutableAfterEpicSideEffectsClassifiesNonEpicAndChildlessEpic \
+		TestExecutableAfterEpicSideEffectsFailsClosedAndAuditsChildLookupError \
+		TestExecutableAfterEpicSideEffectsProcessesAndReleasesDecomposedEpic \
+		TestExecutableAfterEpicSideEffectsDoesNotProcessBlockedOrUnknownAdmission
+	assert_dispatcher_supplements pkg/dispatcher/assignment_reconcile.go '^(filterAssignable)$' \
+		TestFilterAssignableAppliesEveryDurableEligibilityStage
+	assert_dispatcher_supplements pkg/dispatcher/assignment_reconcile.go '^(filterExecutableBeads)$' \
+		TestFilterExecutableBeadsReturnsOnlyExecutableInputs
+	assert_dispatcher_supplements pkg/dispatcher/assignment_reconcile.go '^(filterReviewCheckpointBlockedBeads)$' \
+		TestFilterReviewCheckpointBlockedBeadsShortCircuitsEmptyAndNilDatabase \
+		TestFilterReviewCheckpointBlockedBeadsFiltersAndAuditsExactRows \
+		TestFilterReviewCheckpointBlockedBeadsFailsClosedAndRecordsObservation
+	assert_dispatcher_supplements pkg/dispatcher/assignment_reconcile.go '^(reviewCheckpointBlockedBeads)$' \
+		TestReviewCheckpointBlockedBeadsReturnsExactSetAndScanErrors
+	assert_dispatcher_supplements pkg/dispatcher/assignment_reconcile.go '^(reviewCheckpointBlocksAssignment)$' \
+		TestReviewCheckpointBlocksAssignmentHandlesNilDatabaseAndExactState \
+		TestReviewCheckpointBlocksAssignmentReportsObservationFailure
+	assert_dispatcher_supplements pkg/dispatcher/assignment_reconcile.go '^(tryRecoverExternalCloseWork)$' \
+		TestTryRecoverExternalCloseWorkAuditsSuccessProof \
+		TestTryRecoverExternalCloseWorkAuditsAndEscalatesFailureCause
+	assert_dispatcher_supplements pkg/dispatcher/assignment_side_effect_admission.go '^(acquireAssignmentSideEffectAdmission)$' \
+		TestAcquireAssignmentSideEffectAdmissionRejectsInvalidInputs \
+		TestAcquireAssignmentSideEffectAdmissionPersistsOwnedToken \
+		TestAcquireAssignmentSideEffectAdmissionBlocksAndAuditsReservedBead \
+		TestAcquireAssignmentSideEffectAdmissionReportsStorageFailureAndObservation
+	assert_dispatcher_supplements pkg/dispatcher/assignment_side_effect_admission.go '^(releaseAssignmentSideEffectAdmission)$' \
+		TestReleaseAssignmentSideEffectAdmissionHandlesNilInputs \
+		TestReleaseAssignmentSideEffectAdmissionDeletesOnlyOwnedToken \
+		TestReleaseAssignmentSideEffectAdmissionAuditsStorageFailure
+	assert_dispatcher_supplements pkg/dispatcher/assignment_side_effect_admission.go '^(clearStaleAssignmentSideEffectAdmissions)$' \
+		TestClearStaleAssignmentSideEffectAdmissionsHandlesNilInputs \
+		TestClearStaleAssignmentSideEffectAdmissionsRemovesAllRows \
+		TestClearStaleAssignmentSideEffectAdmissionsReportsStorageFailure
+	assert_dispatcher_supplements pkg/dispatcher/assignment_state.go '^(createAssignment)$' \
+		TestCreateAssignmentReportsAdmissionFailure \
+		TestCreateAssignmentPersistsExactIdentity \
+		TestCreateAssignmentRejectsDurableCheckpointWithoutRow \
+		TestCreateAssignmentFailsClosedWhenCheckpointObservationFails \
+		TestCreateAssignmentRollsBackCommitFailure
+	assert_dispatcher_supplements pkg/dispatcher/assignment_state.go '^(createAssignmentWithEvidence)$' \
+		TestCreateAssignmentWithEvidenceReportsTargetResolutionFailure \
+		TestCreateAssignmentWithEvidenceRejectsBlankTargetSHA \
+		TestCreateAssignmentWithEvidenceReportsAdmissionFailure \
+		TestCreateAssignmentWithEvidencePersistsTrimmedProof \
+		TestCreateAssignmentWithEvidenceFailsClosedWhenCheckpointObservationFails \
+		TestCreateAssignmentWithEvidenceRollsBackCommitFailure
+}
+
 new_fixture() {
 	local fixture="$1"
 	mkdir -p "$fixture/bin" "$fixture/pkg/example"
@@ -940,6 +1014,7 @@ TestStrictIncrementalMutation() {
 	run_missing_base_fixture "$tmp/missing-base"
 	TestStrictIncrementalMutationShards
 	TestTargetedMutationScope
+	TestDispatcherMutationContractSupplements
 
 	awk '
 		/^  incremental-mutation:$/ { in_job = 1; next }

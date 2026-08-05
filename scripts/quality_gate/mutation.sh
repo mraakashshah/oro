@@ -368,11 +368,73 @@ dispatcher_test_supplement() {
 	local match="$2"
 	local -a tests=()
 	[[ "$file" == pkg/dispatcher/assignment_reconcile.go && "$match" == *executableAfterEpicSideEffects* ]] &&
-		tests+=(TestFilterExecutableBeadsIgnoresPremortemGate)
+		tests+=(
+			TestExecutableAfterEpicSideEffectsClassifiesNonEpicAndChildlessEpic
+			TestExecutableAfterEpicSideEffectsFailsClosedAndAuditsChildLookupError
+			TestExecutableAfterEpicSideEffectsProcessesAndReleasesDecomposedEpic
+			TestExecutableAfterEpicSideEffectsDoesNotProcessBlockedOrUnknownAdmission
+			TestFilterExecutableBeadsIgnoresPremortemGate
+		)
+	[[ "$file" == pkg/dispatcher/assignment_reconcile.go && "$match" == *filterAssignable* ]] &&
+		tests+=(TestFilterAssignableAppliesEveryDurableEligibilityStage)
+	[[ "$file" == pkg/dispatcher/assignment_reconcile.go && "$match" == *filterExecutableBeads* ]] &&
+		tests+=(TestFilterExecutableBeadsReturnsOnlyExecutableInputs)
+	[[ "$file" == pkg/dispatcher/assignment_reconcile.go && "$match" == *filterReviewCheckpointBlockedBeads* ]] &&
+		tests+=(
+			TestFilterReviewCheckpointBlockedBeadsShortCircuitsEmptyAndNilDatabase
+			TestFilterReviewCheckpointBlockedBeadsFiltersAndAuditsExactRows
+			TestFilterReviewCheckpointBlockedBeadsFailsClosedAndRecordsObservation
+		)
+	[[ "$file" == pkg/dispatcher/assignment_reconcile.go && "$match" == *reviewCheckpointBlockedBeads* ]] &&
+		tests+=(TestReviewCheckpointBlockedBeadsReturnsExactSetAndScanErrors)
+	[[ "$file" == pkg/dispatcher/assignment_reconcile.go && "$match" == *reviewCheckpointBlocksAssignment* ]] &&
+		tests+=(
+			TestReviewCheckpointBlocksAssignmentHandlesNilDatabaseAndExactState
+			TestReviewCheckpointBlocksAssignmentReportsObservationFailure
+		)
 	[[ "$file" == pkg/dispatcher/assignment_reconcile.go && "$match" == *tryRecoverExternalCloseWork* ]] &&
-		tests+=(TestExternalCloseCleansUpAssignmentAndTracking)
+		tests+=(
+			TestTryRecoverExternalCloseWorkAuditsSuccessProof
+			TestTryRecoverExternalCloseWorkAuditsAndEscalatesFailureCause
+			TestExternalCloseCleansUpAssignmentAndTracking
+		)
+	[[ "$file" == pkg/dispatcher/assignment_side_effect_admission.go && "$match" == *acquireAssignmentSideEffectAdmission* ]] &&
+		tests+=(
+			TestAcquireAssignmentSideEffectAdmissionRejectsInvalidInputs
+			TestAcquireAssignmentSideEffectAdmissionPersistsOwnedToken
+			TestAcquireAssignmentSideEffectAdmissionBlocksAndAuditsReservedBead
+			TestAcquireAssignmentSideEffectAdmissionReportsStorageFailureAndObservation
+		)
+	[[ "$file" == pkg/dispatcher/assignment_side_effect_admission.go && "$match" == *releaseAssignmentSideEffectAdmission* ]] &&
+		tests+=(
+			TestReleaseAssignmentSideEffectAdmissionHandlesNilInputs
+			TestReleaseAssignmentSideEffectAdmissionDeletesOnlyOwnedToken
+			TestReleaseAssignmentSideEffectAdmissionAuditsStorageFailure
+		)
+	[[ "$file" == pkg/dispatcher/assignment_side_effect_admission.go && "$match" == *clearStaleAssignmentSideEffectAdmissions* ]] &&
+		tests+=(
+			TestClearStaleAssignmentSideEffectAdmissionsHandlesNilInputs
+			TestClearStaleAssignmentSideEffectAdmissionsRemovesAllRows
+			TestClearStaleAssignmentSideEffectAdmissionsReportsStorageFailure
+		)
+	[[ "$file" == pkg/dispatcher/assignment_state.go && "$match" == '^(createAssignment)$' ]] &&
+		tests+=(
+			TestCreateAssignmentReportsAdmissionFailure
+			TestCreateAssignmentPersistsExactIdentity
+			TestCreateAssignmentRejectsDurableCheckpointWithoutRow
+			TestCreateAssignmentFailsClosedWhenCheckpointObservationFails
+			TestCreateAssignmentRollsBackCommitFailure
+		)
 	[[ "$file" == pkg/dispatcher/assignment_state.go && "$match" == *createAssignmentWithEvidence* ]] &&
-		tests+=(TestReanchorAssignmentWithEvidencePreservesAdmissionAndCheckpointGate)
+		tests+=(
+			TestCreateAssignmentWithEvidenceReportsTargetResolutionFailure
+			TestCreateAssignmentWithEvidenceRejectsBlankTargetSHA
+			TestCreateAssignmentWithEvidenceReportsAdmissionFailure
+			TestCreateAssignmentWithEvidencePersistsTrimmedProof
+			TestCreateAssignmentWithEvidenceFailsClosedWhenCheckpointObservationFails
+			TestCreateAssignmentWithEvidenceRollsBackCommitFailure
+			TestReanchorAssignmentWithEvidencePreservesAdmissionAndCheckpointGate
+		)
 	[[ "$file" == pkg/dispatcher/epic_branch_admission.go && "$match" == *blockEpicBranchAdmission* ]] &&
 		tests+=(TestEpicBranchAdmissionBlocksUnsafeFreshInspection)
 	[[ "$file" == pkg/dispatcher/escalation.go && "$match" == *routeNewRoutableEscalation* ]] &&
@@ -516,7 +578,6 @@ run_mutation_shard() {
 		mutation_test_file=pkg/dispatcher/sqlite_busy_retry_test.go
 		;;
 	esac
-
 	if [[ -z "$match" ]]; then
 		write_shard_no_mutants "$result" "$index" "$file" "$match" "$test_pattern"
 		return
