@@ -1253,6 +1253,7 @@ TestMutationCapacity() {
 	local tmp
 	tmp=$(mktemp -d)
 	trap 'rm -rf "$tmp"' RETURN
+	run_parallel_capacity_fixture "$tmp/single" 1 240
 	run_parallel_capacity_fixture "$tmp/small" 3 240
 	run_parallel_capacity_fixture "$tmp/cold-190" 190 570
 	run_parallel_capacity_fixture "$tmp/capped" 302 900

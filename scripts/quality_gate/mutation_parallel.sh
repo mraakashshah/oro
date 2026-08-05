@@ -27,6 +27,7 @@ generation_root=""
 worker_pids=()
 worker_group_ids=()
 worker_stop_file="$executor_root/stop-workers"
+active_jobs_file="$executor_root/active-worker-jobs"
 shard_started_at=$SECONDS
 module_path=$(awk '$1 == "module" { print $2; exit }' go.mod)
 if [[ -z "$module_path" ]]; then
@@ -34,37 +35,50 @@ if [[ -z "$module_path" ]]; then
 	exit 2
 fi
 
-stop_mutant_workers() {
-	local attempt group groups_running pid
-	: >"$worker_stop_file"
+refresh_active_worker_groups() {
+	local active group
+	local -a running_jobs=()
+	active_worker_groups=()
+	jobs -pr >"$active_jobs_file" || true
+	while IFS= read -r active; do
+		[[ -n "$active" ]] || continue
+		running_jobs+=("$active")
+	done <"$active_jobs_file"
 	for group in "${worker_group_ids[@]}"; do
-		kill -TERM -- "-$group" 2>/dev/null || true
-	done
-	for ((attempt = 0; attempt < 25; attempt++)); do
-		groups_running=0
-		for group in "${worker_group_ids[@]}"; do
-			if kill -0 -- "-$group" 2>/dev/null; then
-				groups_running=1
+		for active in "${running_jobs[@]}"; do
+			if [[ "$group" == "$active" ]]; then
+				active_worker_groups+=("$group")
 				break
 			fi
 		done
+	done
+}
+
+stop_mutant_workers() {
+	local attempt group groups_running pid
+	: >"$worker_stop_file"
+	refresh_active_worker_groups
+	for group in "${active_worker_groups[@]}"; do
+		kill -TERM -- "-$group" 2>/dev/null || true
+	done
+	for ((attempt = 0; attempt < 25; attempt++)); do
+		refresh_active_worker_groups
+		groups_running=${#active_worker_groups[@]}
 		((groups_running != 0)) || break
 		sleep 0.01
 	done
-	for group in "${worker_group_ids[@]}"; do
-		if kill -0 -- "-$group" 2>/dev/null; then
-			kill -KILL -- "-$group" 2>/dev/null || true
-		fi
+	refresh_active_worker_groups
+	for group in "${active_worker_groups[@]}"; do
+		kill -KILL -- "-$group" 2>/dev/null || true
 	done
 	for pid in "${worker_pids[@]}"; do
 		wait "$pid" 2>/dev/null || true
 	done
-	for group in "${worker_group_ids[@]}"; do
-		if kill -0 -- "-$group" 2>/dev/null; then
-			printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
-			return 2
-		fi
-	done
+	refresh_active_worker_groups
+	if ((${#active_worker_groups[@]} != 0)); then
+		printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
+		return 2
+	fi
 	worker_pids=()
 	worker_group_ids=()
 }
@@ -134,6 +148,9 @@ done
 run_mutant_worker() {
 	local worker="$1"
 	set +m
+	local ready_file="$executor_root/workers/$worker.ready"
+	printf '%d\n' "$BASHPID" >"$ready_file.tmp"
+	mv -- "$ready_file.tmp" "$ready_file"
 	local worker_repo="$executor_root/workers/$worker/repo"
 	local worker_source="$worker_repo/$MUTATION_SOURCE_FILE"
 	local worker_test_file=""
@@ -170,23 +187,32 @@ if [[ "$-" != *m* ]]; then
 	set -m
 	restore_monitor=1
 fi
-worker_group_failure=0
 for ((worker = 0; worker < MUTATION_PARALLEL_WORKERS; worker++)); do
 	run_mutant_worker "$worker" &
 	pid=$!
-	group=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
-	if [[ "$group" != "$pid" ]]; then
-		printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
-		kill -KILL "$pid" 2>/dev/null || true
-		wait "$pid" 2>/dev/null || true
-		worker_group_failure=1
-		break
-	fi
 	worker_pids+=("$pid")
-	worker_group_ids+=("$group")
+	worker_group_ids+=("$pid")
 done
 ((restore_monitor == 0)) || set +m
-if ((worker_group_failure != 0)); then
+
+worker_ready_failure=0
+for ((worker = 0; worker < MUTATION_PARALLEL_WORKERS; worker++)); do
+	ready_file="$executor_root/workers/$worker.ready"
+	ready_pid=""
+	for ((attempt = 0; attempt < 100; attempt++)); do
+		if [[ -s "$ready_file" ]]; then
+			IFS= read -r ready_pid <"$ready_file" || true
+			break
+		fi
+		sleep 0.01
+	done
+	if [[ "$ready_pid" != "${worker_pids[$worker]}" ]]; then
+		printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
+		worker_ready_failure=1
+		break
+	fi
+done
+if ((worker_ready_failure != 0)); then
 	stop_mutant_workers
 	exit 2
 fi
