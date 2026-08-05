@@ -83,6 +83,66 @@ SELECT COUNT(*) FROM review_checkpoints_blocking_assignment WHERE bead_id = 'oro
 	}
 }
 
+func TestInitializeBeadSchemaRejectsLegacyBeadsWithoutMutation(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	db, err := dbutil.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("open in-memory db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec(`
+CREATE TABLE beads (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('open', 'closed'))
+);
+INSERT INTO beads (id, title, status) VALUES ('oro-legacy', 'legacy bead', 'open');
+`); err != nil {
+		t.Fatalf("create legacy bead schema: %v", err)
+	}
+	var schemaBefore string
+	if err := db.QueryRowContext(ctx,
+		`SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'beads'`,
+	).Scan(&schemaBefore); err != nil {
+		t.Fatalf("read legacy bead schema: %v", err)
+	}
+
+	err = protocol.InitializeBeadSchema(ctx, db)
+	if err == nil {
+		t.Fatal("InitializeBeadSchema error = nil, want fresh-database precondition error")
+	}
+	if !strings.Contains(err.Error(), "fresh database") || !strings.Contains(err.Error(), "MigrateBeadSchema") {
+		t.Fatalf("InitializeBeadSchema error = %q, want fresh-database guidance to MigrateBeadSchema", err)
+	}
+
+	var schemaAfter string
+	if err := db.QueryRowContext(ctx,
+		`SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'beads'`,
+	).Scan(&schemaAfter); err != nil {
+		t.Fatalf("read preserved legacy bead schema: %v", err)
+	}
+	if schemaAfter != schemaBefore {
+		t.Fatalf("legacy bead schema changed\n before: %s\n  after: %s", schemaBefore, schemaAfter)
+	}
+	var title, status string
+	if err := db.QueryRowContext(ctx, `SELECT title, status FROM beads WHERE id = 'oro-legacy'`).Scan(&title, &status); err != nil {
+		t.Fatalf("read preserved legacy bead: %v", err)
+	}
+	if title != "legacy bead" || status != "open" {
+		t.Fatalf("legacy bead = (%q, %q), want (%q, %q)", title, status, "legacy bead", "open")
+	}
+	var checkpointTables int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table' AND name = 'review_checkpoints'`,
+	).Scan(&checkpointTables); err != nil {
+		t.Fatalf("inspect review checkpoint schema: %v", err)
+	}
+	if checkpointTables != 0 {
+		t.Fatalf("review_checkpoints table count = %d, want 0 after rejected initialization", checkpointTables)
+	}
+}
+
 func TestMigrateBeadSchemaAddsAssignmentEvidenceIdentity(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

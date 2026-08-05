@@ -836,11 +836,30 @@ END;
 // created dispatcher database. Existing databases must use MigrateBeadSchema
 // so legacy data and schema variants are upgraded safely.
 func InitializeBeadSchema(ctx context.Context, db *sql.DB) error {
-	if _, err := db.ExecContext(ctx, reviewCheckpointSchemaDDL); err != nil {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("initialize bead schema: begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var beadsSchemaExists bool
+	if err := tx.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = 'beads')`,
+	).Scan(&beadsSchemaExists); err != nil {
+		return fmt.Errorf("initialize bead schema: inspect existing schema: %w", err)
+	}
+	if beadsSchemaExists {
+		return errors.New("initialize bead schema requires a fresh database without a beads schema; use MigrateBeadSchema for an existing database")
+	}
+
+	if _, err := tx.ExecContext(ctx, reviewCheckpointSchemaDDL); err != nil {
 		return fmt.Errorf("initialize review checkpoint schema: %w", err)
 	}
-	if _, err := db.ExecContext(ctx, beadSchemaDDL); err != nil {
+	if _, err := tx.ExecContext(ctx, beadSchemaDDL); err != nil {
 		return fmt.Errorf("initialize bead schema: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("initialize bead schema: commit transaction: %w", err)
 	}
 	return nil
 }
