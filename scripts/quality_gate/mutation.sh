@@ -266,19 +266,11 @@ touched_function_match() {
 	fi
 }
 
-cochanged_dispatcher_test_match() {
-	local base="$1"
-	local head="$2"
-	local file="$3"
-	local package_dir
-	package_dir=$(dirname "$file")
-
-	local test_names
-	test_names=$(
-		while read -r commit; do
-			git diff --unified=0 "${commit}^" "$commit" -- "$package_dir/*_test.go"
-		done < <(git log --no-merges --format=%H "$base..$head" -- "$file") |
-			awk '
+changed_dispatcher_test_names() {
+	local commit="$1"
+	local package_dir="$2"
+	git diff --unified=0 "${commit}^" "$commit" -- "$package_dir/*_test.go" |
+		awk '
 				function emit_test(line, name) {
 					sub(/^.*func[[:space:]]+/, "", line)
 					name = line
@@ -313,6 +305,33 @@ cochanged_dispatcher_test_match() {
 					flush_hunk()
 				}
 			' |
+		sort -u
+}
+
+cochanged_dispatcher_test_match() {
+	local base="$1"
+	local head="$2"
+	local file="$3"
+	local function="$4"
+	local package_dir
+	package_dir=$(dirname "$file")
+
+	local test_names
+	test_names=$(
+		while read -r commit; do
+			local commit_match commit_functions names
+			commit_match=$(touched_function_match "${commit}^" "$commit" "$file")
+			commit_functions=${commit_match#^(}
+			commit_functions=${commit_functions%)$}
+			if ! grep -Fxq "$function" < <(tr '|' '\n' <<<"$commit_functions"); then
+				continue
+			fi
+			names=$(changed_dispatcher_test_names "$commit" "$package_dir")
+			if [[ -n "$names" ]]; then
+				printf '%s\n' "$names"
+				break
+			fi
+		done < <(git log --no-merges --format=%H "$base..$head" -- "$file") |
 			sort -u |
 			paste -sd'|' -
 	)
@@ -325,16 +344,34 @@ dispatcher_test_supplement() {
 	local file="$1"
 	local match="$2"
 	local -a tests=()
+	[[ "$file" == pkg/dispatcher/assignment_reconcile.go && "$match" == *executableAfterEpicSideEffects* ]] &&
+		tests+=(TestFilterExecutableBeadsIgnoresPremortemGate)
 	[[ "$file" == pkg/dispatcher/assignment_reconcile.go && "$match" == *tryRecoverExternalCloseWork* ]] &&
 		tests+=(TestExternalCloseCleansUpAssignmentAndTracking)
+	[[ "$file" == pkg/dispatcher/assignment_state.go && "$match" == *createAssignmentWithEvidence* ]] &&
+		tests+=(TestReanchorAssignmentWithEvidencePreservesAdmissionAndCheckpointGate)
 	[[ "$file" == pkg/dispatcher/epic_branch_admission.go && "$match" == *blockEpicBranchAdmission* ]] &&
 		tests+=(TestEpicBranchAdmissionBlocksUnsafeFreshInspection)
 	[[ "$file" == pkg/dispatcher/escalation.go && "$match" == *routeNewRoutableEscalation* ]] &&
 		tests+=(TestEscalateOversizedRoutesToDecomposeProductionPath TestEscalateNoOpWhenBlockingOpsRunExists)
 	[[ "$file" == pkg/dispatcher/escalation.go && "$match" == *handleDecomposeValidationError* ]] &&
 		tests+=(TestOversizedDecomposeResultAcksOnlyAfterValidation)
+	[[ "$file" == pkg/dispatcher/escalation.go && "$match" == *escalateWithOneShot* ]] &&
+		tests+=(TestEscalateSpawnsOneShotForTargetTypes)
 	[[ "$file" == pkg/dispatcher/ops_runs.go && "$match" == *applyOpsResolve* ]] &&
 		tests+=(TestOpsRunDirectives)
+	[[ "$file" == pkg/dispatcher/ops_runs.go && "$match" == *findBlockingOpsRun* ]] &&
+		tests+=(TestFindBlockingOpsRun)
+	[[ "$file" == pkg/dispatcher/ops_runs.go && "$match" == *terminalOpsRunResult* ]] &&
+		tests+=(TestWatchReroutedOpsRunResultRunsSideEffectsOnlyForAcquiredCompletion)
+	[[ "$file" == pkg/dispatcher/ops_runs.go && "$match" == *watchReroutedOpsRunResult* ]] &&
+		tests+=(TestWatchReroutedOpsRunResultRunsSideEffectsOnlyForAcquiredCompletion)
+	[[ "$file" == pkg/dispatcher/ops_runs.go && "$match" == *supersedeOpsRunForRetry* ]] &&
+		tests+=(TestSupersedeOpsReviewRetryPreservesContext)
+	[[ "$file" == pkg/dispatcher/ops_runs.go && "$match" == *reviewContextFromWorkerLocked* ]] &&
+		tests+=(TestRouteOpsRunRoutesReviewOpsRun)
+	[[ "$file" == pkg/dispatcher/ops_runs.go && "$match" == *reviewContextFromAnyWorkerLocked* ]] &&
+		tests+=(TestRouteOpsRunRoutesReviewOpsRun)
 	[[ "$file" == pkg/dispatcher/scheduling.go && "$match" == *launchAssignment* ]] &&
 		tests+=(TestTimedOutSetupCannotClobberReplacement)
 	if [[ "$file" == pkg/dispatcher/review_checkpoint_store.go ]]; then
@@ -344,6 +381,8 @@ dispatcher_test_supplement() {
 			TestDispatcherStartupReturnsUnroutableReplacementFailureWriteError
 		)
 	fi
+	[[ "$file" == pkg/dispatcher/review_checkpoint_store.go && "$match" == *bindSingleLegacyCheckpoint* ]] &&
+		tests+=(TestRouteOpsRunRestoresExactReviewCheckpointIdentityWithoutWorker)
 	printf '%s\n' "${tests[@]}"
 }
 
@@ -404,8 +443,10 @@ targeted_test_pattern() {
 	elif [[ "$file" == pkg/dispatcher/scheduling.go && "$match" == '^(advanceAssignedGeneralIdle)$' ]]; then
 		printf '^TestAdvanceAssignedGeneralIdleConsumesReportedClaimAfterAsyncRelease$'
 	elif [[ "$file" == pkg/dispatcher/*.go ]]; then
-		local pattern supplements
-		pattern=$(cochanged_dispatcher_test_match "$base" "$head" "$file")
+		local function pattern supplements
+		function=${match#^(}
+		function=${function%)$}
+		pattern=$(cochanged_dispatcher_test_match "$base" "$head" "$file" "$function")
 		supplements=$(dispatcher_test_supplement "$file" "$match")
 		merge_test_patterns "$pattern" "$supplements"
 	fi
@@ -565,19 +606,34 @@ main() {
 	trap cleanup_mutation_shards EXIT
 	local result_dir="$shard_root/results"
 	mkdir -p "$result_dir"
+	local -a shard_files=()
 	local -a match_patterns=()
 	local -a test_patterns=()
 	local file
 	for file in "${changed_files[@]}"; do
 		local match
 		match=$(touched_function_match "$base" "$head" "$file")
-		match_patterns+=("$match")
-		test_patterns+=("$(targeted_test_pattern "$base" "$head" "$file" "$match")")
+		if [[ "$file" == pkg/dispatcher/*.go && -n "$match" ]]; then
+			local functions function function_match
+			functions=${match#^(}
+			functions=${functions%)$}
+			while IFS= read -r function; do
+				[[ -n "$function" ]] || continue
+				function_match="^(${function})$"
+				shard_files+=("$file")
+				match_patterns+=("$function_match")
+				test_patterns+=("$(targeted_test_pattern "$base" "$head" "$file" "$function_match")")
+			done < <(tr '|' '\n' <<<"$functions")
+		else
+			shard_files+=("$file")
+			match_patterns+=("$match")
+			test_patterns+=("$(targeted_test_pattern "$base" "$head" "$file" "$match")")
+		fi
 	done
 	local pending_shards
 	pending_shards=$(
-		for index in "${!changed_files[@]}"; do
-			jq -nc --arg file "${changed_files[$index]}" --arg match "${match_patterns[$index]}" \
+		for index in "${!shard_files[@]}"; do
+			jq -nc --arg file "${shard_files[$index]}" --arg match "${match_patterns[$index]}" \
 				--arg test_pattern "${test_patterns[$index]}" \
 				'{file: $file, match: $match, test_pattern: $test_pattern, conclusion: "pending", exit_code: 0, reason: "", score: null, passed: 0, failed: 0, duplicated: 0, skipped: 0, total: 0}'
 		done | jq -s '.'
@@ -585,16 +641,16 @@ main() {
 	write_sharded_evidence "$evidence" "$base" "$head" infrastructure_failure 2 null 0 "$pending_shards" "${changed_files[@]}"
 
 	local worker_count=$max_workers
-	if ((worker_count > ${#changed_files[@]})); then
-		worker_count=${#changed_files[@]}
+	if ((worker_count > ${#shard_files[@]})); then
+		worker_count=${#shard_files[@]}
 	fi
-	printf 'mutation shards: files=%d workers=%d file_timeout=%ss exec_timeout=%ss\n' \
-		"${#changed_files[@]}" "$worker_count" "$file_timeout" "$exec_timeout"
+	printf 'mutation shards: shards=%d files=%d workers=%d file_timeout=%ss exec_timeout=%ss\n' \
+		"${#shard_files[@]}" "${#changed_files[@]}" "$worker_count" "$file_timeout" "$exec_timeout"
 
 	local -a pids=()
 	local index key cache_slot pid
-	for index in "${!changed_files[@]}"; do
-		file=${changed_files[$index]}
+	for index in "${!shard_files[@]}"; do
+		file=${shard_files[$index]}
 		printf -v key '%06d' "$index"
 		cache_slot=$((index % worker_count))
 		run_mutation_shard "$key" "$file" "${match_patterns[$index]}" "${test_patterns[$index]}" "$cache_slot" "$head" "$shard_root" "$result_dir" "$file_timeout" "$exec_timeout" &
@@ -610,8 +666,8 @@ main() {
 		wait "$pid" || true
 	done
 
-	for index in "${!changed_files[@]}"; do
-		file=${changed_files[$index]}
+	for index in "${!shard_files[@]}"; do
+		file=${shard_files[$index]}
 		printf -v key '%06d' "$index"
 		if [[ ! -s "$result_dir/$key.json" ]]; then
 			write_shard_infrastructure "$result_dir/$key.json" "$key" "$file" "${match_patterns[$index]}" "${test_patterns[$index]}" 2 'mutation shard produced no evidence'
@@ -632,7 +688,7 @@ main() {
 			if index(124) != null then 124 elif length > 0 then .[0] else 2 end' <<<"$shards")
 		write_sharded_evidence "$evidence" "$base" "$head" infrastructure_failure "$infrastructure_exit" null 0 "$shards" "${changed_files[@]}"
 		printf 'infrastructure failure: %d of %d mutation shards did not complete\n' \
-			"$infrastructure_count" "${#changed_files[@]}" >&2
+			"$infrastructure_count" "${#shard_files[@]}" >&2
 		return 2
 	fi
 

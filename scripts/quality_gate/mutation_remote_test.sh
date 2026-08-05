@@ -138,6 +138,33 @@ new_targeted_fixture() {
 	printf '%s\n%s\n' "$base" "$head"
 }
 
+new_function_history_fixture() {
+	local fixture="$1"
+	mkdir -p "$fixture/bin" "$fixture/pkg/dispatcher"
+	git -C "$fixture" init -q
+	git -C "$fixture" config user.email mutation@example.test
+	git -C "$fixture" config user.name mutation-test
+	printf 'package dispatcher\n\nfunc First() bool { return false }\n\nfunc Second() bool { return false }\n' >"$fixture/pkg/dispatcher/function_history.go"
+	printf 'package dispatcher\n\nfunc TestExistingBehavior() {}\n' >"$fixture/pkg/dispatcher/function_history_test.go"
+	git -C "$fixture" add pkg/dispatcher/function_history.go pkg/dispatcher/function_history_test.go
+	git -C "$fixture" commit -qm base
+	base=$(git -C "$fixture" rev-parse HEAD)
+	printf 'package dispatcher\n\nfunc First() bool { return true }\n\nfunc Second() bool { return false }\n' >"$fixture/pkg/dispatcher/function_history.go"
+	printf '\nfunc TestFirstOwner() {}\n' >>"$fixture/pkg/dispatcher/function_history_test.go"
+	git -C "$fixture" add pkg/dispatcher/function_history.go pkg/dispatcher/function_history_test.go
+	git -C "$fixture" commit -qm first
+	printf 'package dispatcher\n\nfunc First() bool { return true }\n\nfunc Second() bool { return true }\n' >"$fixture/pkg/dispatcher/function_history.go"
+	printf '\nfunc TestSecondOwner() {}\n' >>"$fixture/pkg/dispatcher/function_history_test.go"
+	git -C "$fixture" add pkg/dispatcher/function_history.go pkg/dispatcher/function_history_test.go
+	git -C "$fixture" commit -qm second
+	printf 'package dispatcher\n\nfunc First() bool { return !false }\n\nfunc Second() bool { return true }\n' >"$fixture/pkg/dispatcher/function_history.go"
+	printf '\nfunc TestFirstNewestOwner() {}\n' >>"$fixture/pkg/dispatcher/function_history_test.go"
+	git -C "$fixture" add pkg/dispatcher/function_history.go pkg/dispatcher/function_history_test.go
+	git -C "$fixture" commit -qm first-newest
+	head=$(git -C "$fixture" rev-parse HEAD)
+	printf '%s\n%s\n' "$base" "$head"
+}
+
 write_fake_go() {
 	local path="$1"
 	cat >"$path" <<'EOF'
@@ -157,6 +184,9 @@ if [[ "$1" = test ]]; then
 		*TestHookPathsWouldLeak*) printf 'TestHookPathsWouldLeak\nTestHookPathsWouldLeak_NonTmpdirSandboxRoot\nTestHookPathsWouldLeak_NonstandardGoTempRoot\nTestInstallCodexHookConfigRefusesLeakyHooks\n' ;;
 		*TestAdvanceAssignedGeneralIdleConsumesReportedClaimAfterAsyncRelease*) printf 'TestAdvanceAssignedGeneralIdleConsumesReportedClaimAfterAsyncRelease\n' ;;
 		*TestReviewCheckpointStartupOrdering*) printf 'TestReviewCheckpointStartupOrdering\n' ;;
+		*TestFirstOwner*) printf 'TestFirstOwner\n' ;;
+		*TestFirstNewestOwner*) printf 'TestFirstNewestOwner\n' ;;
+		*TestSecondOwner*) printf 'TestSecondOwner\n' ;;
 		*) printf 'TestIsOroDistributedHookRecognizesFastPrePush\n' ;;
 		esac
 	fi
@@ -168,6 +198,8 @@ if [[ "$1" = tool && "$2" = cover ]]; then
 		printf 'pkg/dispatcher/startup_recovery.go:1: startupRecovery 100.0%%\n'
 	fi
 	printf 'pkg/dispatcher/scheduling.go:1: advanceAssignedGeneralIdle 100.0%%\n'
+	printf 'pkg/dispatcher/function_history.go:1: First 100.0%%\n'
+	printf 'pkg/dispatcher/function_history.go:2: Second 100.0%%\n'
 	printf 'pkg/example/value.go:1: Value 100.0%%\n'
 	exit 0
 fi
@@ -255,7 +287,7 @@ aggregate | aggregate-below | aggregate-zero | shard-timeout)
 	esac
 	;;
 targeted | targeted-fallback | targeted-list-miss | targeted-timeout | targeted-uncovered)
-	printf '%s\n' "$*" >"${MUTATION_ARGS_TRACE:?}"
+	printf '%s\n' "$*" >>"${MUTATION_ARGS_TRACE:?}"
 	if [[ "$MUTATION_FIXTURE" = targeted-timeout ]]; then
 		printf 'ORO_MUTATION_EXEC_TIMEOUT\n'
 		printf 'UNKOWN exit code for targeted mutation test timeout\n'
@@ -269,6 +301,36 @@ targeted | targeted-fallback | targeted-list-miss | targeted-timeout | targeted-
 esac
 EOF
 	chmod +x "$path"
+}
+
+run_function_history_fixture() {
+	local fixture="$1"
+	local outcome="$2"
+	local expected_status="$3"
+	local expected_exit="$4"
+	local base head evidence status args_trace list_trace
+	mapfile -t refs < <(new_function_history_fixture "$fixture")
+	base=${refs[0]}
+	head=${refs[1]}
+	evidence="$fixture/mutation-evidence.json"
+	args_trace="$fixture/mutation-args.txt"
+	list_trace="$fixture/mutation-list.txt"
+	write_fake_go "$fixture/bin/go"
+
+	set +e
+	(
+		cd "$fixture"
+		PATH="$fixture/bin:$PATH" MUTATION_FIXTURE="$outcome" \
+			MUTATION_ARGS_TRACE="$args_trace" MUTATION_LIST_TRACE="$list_trace" \
+			bash "$runner" --base "$base" --head "$head" --evidence "$evidence" \
+			>"$fixture/runner.log" 2>&1
+	)
+	status=$?
+	set -e
+	[[ "$status" = "$expected_exit" ]] || fail "$outcome exit = $status, want $expected_exit"
+	jq -e --arg status "$expected_status" '.conclusion == $status' "$evidence" >/dev/null ||
+		fail "$outcome did not preserve its expected conclusion"
+	printf '%s\n' "$evidence"
 }
 
 run_targeted_fixture() {
@@ -442,6 +504,29 @@ TestTargetedMutationScope() {
 	evidence=$(run_targeted_fixture "$tmp/targeted-timeout" targeted-timeout infrastructure_failure 2)
 	jq -e '.mutation_exit_code == 124 and .shards[0].exit_code == 124' "$evidence" >/dev/null ||
 		fail 'a targeted mutation test timeout must remain an infrastructure failure'
+
+	evidence=$(run_function_history_fixture "$tmp/function-history" targeted pass 0)
+	jq -e '
+		.changed_files == ["pkg/dispatcher/function_history.go"] and
+		[.shards[].file] == ["pkg/dispatcher/function_history.go", "pkg/dispatcher/function_history.go"] and
+		[.shards[].match] == ["^(First)$", "^(Second)$"] and
+		[.shards[].test_pattern] == ["^(TestFirstNewestOwner)$", "^(TestSecondOwner)$"] and
+		([.shards[].match] | unique | length) == 2 and
+		.score == 1 and .total == 2' \
+		"$evidence" >/dev/null ||
+		fail 'dispatcher files must split into complete, unique per-function shards with deterministic owners'
+	[[ "$(wc -l <"$tmp/function-history/mutation-args.txt" | tr -d ' ')" = 2 ]] ||
+		fail 'each touched dispatcher function must run exactly once'
+
+	evidence=$(run_function_history_fixture "$tmp/function-history-timeout" targeted-timeout infrastructure_failure 2)
+	jq -e '
+		.mutation_exit_code == 124 and .score == null and .total == 0 and
+		[.shards[].file] == ["pkg/dispatcher/function_history.go", "pkg/dispatcher/function_history.go"] and
+		[.shards[].match] == ["^(First)$", "^(Second)$"] and
+		[.shards[].conclusion] == ["infrastructure_failure", "infrastructure_failure"] and
+		[.shards[].exit_code] == [124, 124]' \
+		"$evidence" >/dev/null ||
+		fail 'per-function dispatcher timeout must remain honest infrastructure with repeated-file identity'
 }
 
 run_fixture() {
