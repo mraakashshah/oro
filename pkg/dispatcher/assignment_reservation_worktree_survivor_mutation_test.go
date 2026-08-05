@@ -46,6 +46,7 @@ func (*assignmentBCWorktrees) ForceDeleteBranch(context.Context, string) error {
 func (w *assignmentBCWorktrees) BranchExists(context.Context, string) (bool, error) {
 	return w.branchExists, nil
 }
+
 func (*assignmentBCWorktrees) MergeFFOnly(context.Context, string, string) (string, error) {
 	return "", nil
 }
@@ -53,6 +54,7 @@ func (*assignmentBCWorktrees) UpdateBranchRef(context.Context, string, string) e
 func (*assignmentBCWorktrees) BranchHead(context.Context, string) (string, error) {
 	return "assignment-bc-head", nil
 }
+
 func (*assignmentBCWorktrees) GCClosedWorktrees(context.Context, func(string) bool) error {
 	return nil
 }

@@ -201,8 +201,10 @@ func TestOpsRunMutationReviewContextIdentity(t *testing.T) {
 
 	t.Run("exact worker identity and state", func(t *testing.T) {
 		d, _, _, _, _, _ := newTestDispatcher(t)
-		w := &trackedWorker{id: "review-worker", beadID: "oro-mut-review", worktree: "/tmp/review-worktree",
-			targetBranch: "epic/review-target", assignmentID: 71, state: protocol.WorkerIdle}
+		w := &trackedWorker{
+			id: "review-worker", beadID: "oro-mut-review", worktree: "/tmp/review-worktree",
+			targetBranch: "epic/review-target", assignmentID: 71, state: protocol.WorkerIdle,
+		}
 		d.mu.Lock()
 		d.workers[w.id] = w
 		got := d.reviewContextFromWorkerLocked(OpsRunRecord{BeadID: w.beadID, WorkerID: w.id})
@@ -218,8 +220,10 @@ func TestOpsRunMutationReviewContextIdentity(t *testing.T) {
 		d.mu.Lock()
 		d.workers["wrong"] = &trackedWorker{id: "wrong", beadID: "other", worktree: "/tmp/wrong", targetBranch: "wrong"}
 		d.workers["nil"] = nil
-		d.workers["matching"] = &trackedWorker{id: "matching", beadID: "oro-mut-fallback", worktree: "/tmp/right",
-			targetBranch: "epic/right", assignmentID: 88}
+		d.workers["matching"] = &trackedWorker{
+			id: "matching", beadID: "oro-mut-fallback", worktree: "/tmp/right",
+			targetBranch: "epic/right", assignmentID: 88,
+		}
 		got := d.reviewContextFromWorkerLocked(OpsRunRecord{BeadID: "oro-mut-fallback", WorkerID: "wrong"})
 		d.mu.Unlock()
 		want := reviewOpsRunContext{worktree: "/tmp/right", targetBranch: "epic/right", workerID: "matching", assignmentID: 88}
@@ -239,8 +243,10 @@ func TestOpsRunMutationReviewContextIdentity(t *testing.T) {
 			t.Fatalf("create checkpoint: %v", err)
 		}
 		got := d.reviewContextForOpsRun(ctx, OpsRunRecord{BeadID: input.BeadID, WorkerID: "record-worker"})
-		want := reviewOpsRunContext{worktree: checkpoint.Worktree, targetBranch: checkpoint.TargetBranch,
-			workerID: "record-worker", assignmentID: input.OriginAssignmentID}
+		want := reviewOpsRunContext{
+			worktree: checkpoint.Worktree, targetBranch: checkpoint.TargetBranch,
+			workerID: "record-worker", assignmentID: input.OriginAssignmentID,
+		}
 		if got != want {
 			t.Fatalf("checkpoint context = %+v, want %+v", got, want)
 		}

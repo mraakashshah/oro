@@ -99,21 +99,27 @@ func (*assignmentClaimAuthoritativeWorktrees) Prune(context.Context) error { ret
 func (*assignmentClaimAuthoritativeWorktrees) DeleteBranch(context.Context, string) error {
 	return nil
 }
+
 func (*assignmentClaimAuthoritativeWorktrees) DeleteBranchMergedInto(context.Context, string, string) error {
 	return nil
 }
+
 func (*assignmentClaimAuthoritativeWorktrees) ForceDeleteBranch(context.Context, string) error {
 	return nil
 }
+
 func (*assignmentClaimAuthoritativeWorktrees) BranchExists(context.Context, string) (bool, error) {
 	return false, nil
 }
+
 func (*assignmentClaimAuthoritativeWorktrees) MergeFFOnly(context.Context, string, string) (string, error) {
 	return "", nil
 }
+
 func (*assignmentClaimAuthoritativeWorktrees) UpdateBranchRef(context.Context, string, string) error {
 	return nil
 }
+
 func (w *assignmentClaimAuthoritativeWorktrees) BranchHead(ctx context.Context, branch string) (string, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -122,9 +128,11 @@ func (w *assignmentClaimAuthoritativeWorktrees) BranchHead(ctx context.Context, 
 	}
 	return "sha-" + strings.TrimSpace(branch), nil
 }
+
 func (*assignmentClaimAuthoritativeWorktrees) GCClosedWorktrees(context.Context, func(string) bool) error {
 	return nil
 }
+
 func (w *assignmentClaimAuthoritativeWorktrees) Exists(ctx context.Context, path string) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -134,9 +142,11 @@ func (w *assignmentClaimAuthoritativeWorktrees) Exists(ctx context.Context, path
 	}
 	return true
 }
+
 func (*assignmentClaimAuthoritativeWorktrees) CurrentBranch(_ context.Context, path string) (string, error) {
 	return protocol.BranchPrefix + strings.TrimPrefix(filepath.Base(path), "claim-authoritative-"), nil
 }
+
 func (*assignmentClaimAuthoritativeWorktrees) RebaseOnto(context.Context, string, string) error {
 	return nil
 }
@@ -162,6 +172,7 @@ func (c *assignmentClaimAuthoritativeConn) Write(data []byte) (int, error) {
 	c.writes = append(c.writes, slices.Clone(data))
 	return len(data), nil
 }
+
 func (c *assignmentClaimAuthoritativeConn) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -195,6 +206,7 @@ type assignmentClaimAuthoritativeCodeIndex struct {
 func (i *assignmentClaimAuthoritativeCodeIndex) FTS5Search(context.Context, string, int) ([]CodeChunk, error) {
 	return slices.Clone(i.chunks), nil
 }
+
 func (*assignmentClaimAuthoritativeCodeIndex) Search(context.Context, string, int) ([]SearchResult, error) {
 	return nil, nil
 }

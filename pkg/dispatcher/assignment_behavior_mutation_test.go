@@ -112,15 +112,19 @@ func (*assignmentBehaviorWorktrees) ForceDeleteBranch(context.Context, string) e
 func (*assignmentBehaviorWorktrees) BranchExists(context.Context, string) (bool, error) {
 	return false, nil
 }
+
 func (*assignmentBehaviorWorktrees) MergeFFOnly(context.Context, string, string) (string, error) {
 	return "", nil
 }
+
 func (*assignmentBehaviorWorktrees) UpdateBranchRef(context.Context, string, string) error {
 	return nil
 }
+
 func (*assignmentBehaviorWorktrees) BranchHead(_ context.Context, branch string) (string, error) {
 	return "sha-" + strings.TrimSpace(branch), nil
 }
+
 func (*assignmentBehaviorWorktrees) GCClosedWorktrees(context.Context, func(string) bool) error {
 	return nil
 }
@@ -150,6 +154,7 @@ func (c *assignmentBehaviorConn) Write(data []byte) (int, error) {
 	c.written = append(c.written, slices.Clone(data))
 	return len(data), nil
 }
+
 func (c *assignmentBehaviorConn) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
