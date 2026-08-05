@@ -193,6 +193,49 @@ func assignmentBehaviorEventCount(t *testing.T, db *sql.DB, eventType string) in
 	return count
 }
 
+func assignmentBehaviorAdmissionCount(t *testing.T, db *sql.DB, beadID string) int {
+	t.Helper()
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM assignment_side_effect_admissions WHERE bead_id=?`, beadID).Scan(&count); err != nil {
+		t.Fatalf("count assignment admissions for %s: %v", beadID, err)
+	}
+	return count
+}
+
+func assignmentBehaviorSeedReviewCheckpoint(t *testing.T, d *Dispatcher, beadID string) ReviewCheckpoint {
+	t.Helper()
+	ctx := t.Context()
+	worktree := "/tmp/checkpoint-" + beadID
+	assignmentID, err := d.createAssignment(ctx, beadID, "mutation-review-worker", worktree)
+	if err != nil {
+		t.Fatalf("create checkpoint origin assignment: %v", err)
+	}
+	if err := d.requeueAssignment(ctx, assignmentID); err != nil {
+		t.Fatalf("requeue checkpoint origin assignment: %v", err)
+	}
+	checkpoint, err := NewReviewCheckpointStore(d.db).CreateOrReuse(ctx, CheckpointInput{
+		CheckpointKey:      "checkpoint-" + beadID,
+		BeadID:             beadID,
+		OriginAssignmentID: assignmentID,
+		Worktree:           worktree,
+		Branch:             protocol.BranchPrefix + beadID,
+		TargetBranch:       "main",
+		HeadSHA:            "head-" + beadID,
+		TargetSHA:          "target-" + beadID,
+		AcceptanceHash:     "acceptance-" + beadID,
+		QGScriptHash:       "qg-" + beadID,
+		QGMode:             "full",
+		ReviewPolicyHash:   "policy-" + beadID,
+		TriageRevision:     "triage-" + beadID,
+		ReadyAttempt:       "ready-" + beadID,
+		State:              ReviewCheckpointStateReviewRunning,
+	})
+	if err != nil {
+		t.Fatalf("create durable review checkpoint: %v", err)
+	}
+	return checkpoint
+}
+
 type assignmentBehaviorHarness struct {
 	d         *Dispatcher
 	beads     *assignmentBehaviorStore
@@ -230,6 +273,10 @@ func (h *assignmentBehaviorHarness) prepareCase(t *testing.T, beadID string) {
 	clear(h.beads.updateErrs)
 	h.beads.mu.Unlock()
 	h.d.nowFunc = time.Now
+	h.d.beforeAssignmentSideEffectAdmission = nil
+	h.d.mu.Lock()
+	h.d.focusVersion = 0
+	h.d.mu.Unlock()
 
 	h.d.mu.Lock()
 	_, assigning := h.d.assigningBeads[beadID]
@@ -243,6 +290,200 @@ func (h *assignmentBehaviorHarness) prepareCase(t *testing.T, beadID string) {
 	if assigning || tracked || failed || durableRows != 0 {
 		t.Fatalf("case %s inherited state: assigning=%v tracked=%v failed=%v durable_rows=%d",
 			beadID, assigning, tracked, failed, durableRows)
+	}
+}
+
+func assignmentBehaviorRejectsEmptyBeadID(t *testing.T, h *assignmentBehaviorHarness) {
+	worker := &trackedWorker{id: "mutation-empty-id-worker"}
+	var claims []bool
+	var outcomes []assignmentSetupOutcome
+
+	err := h.d.assignBeadWithClaim(context.Background(), worker, protocol.Bead{}, nil,
+		func(claimed bool) { claims = append(claims, claimed) },
+		func(outcome assignmentSetupOutcome) { outcomes = append(outcomes, outcome) })
+	if err == nil || !slices.Equal(claims, []bool{false}) ||
+		!slices.Equal(outcomes, []assignmentSetupOutcome{assignmentSetupNotDelivered}) {
+		t.Fatalf("empty ID result = err %v claims %v outcomes %v", err, claims, outcomes)
+	}
+}
+
+func assignmentBehaviorInitialCheckpointStopsExactlyOnce(t *testing.T, h *assignmentBehaviorHarness) {
+	d, beads, worktrees, worker, _, bead := h.fixture(t, "mutation-initial-checkpoint")
+	assignmentBehaviorSeedReviewCheckpoint(t, d, bead.ID)
+	var claims []bool
+
+	if err := d.assignBeadWithClaim(context.Background(), worker, bead, nil,
+		func(claimed bool) { claims = append(claims, claimed) }, nil); err != nil {
+		t.Fatalf("assign checkpoint-owned bead: %v", err)
+	}
+	beads.mu.Lock()
+	status := beads.updated[bead.ID]
+	beads.mu.Unlock()
+	if !slices.Equal(claims, []bool{false}) || worktrees.createdBead(bead.ID) ||
+		worker.state != protocol.WorkerIdle || status != "" ||
+		assignmentBehaviorEventCount(t, d.db, "review_checkpoint_assignment_blocked") != 1 {
+		t.Fatalf("initial checkpoint stop = claims %v worktree %v worker %q status %q events %d",
+			claims, worktrees.createdBead(bead.ID), worker.state, status,
+			assignmentBehaviorEventCount(t, d.db, "review_checkpoint_assignment_blocked"))
+	}
+}
+
+func assignmentBehaviorCallsAdmissionSeam(t *testing.T, h *assignmentBehaviorHarness) {
+	d, _, _, worker, _, bead := h.fixture(t, "mutation-admission-seam")
+	seamCalls := 0
+	d.beforeAssignmentSideEffectAdmission = func() {
+		seamCalls++
+		if _, err := d.db.Exec(`INSERT INTO assignment_side_effect_admissions (bead_id, owner_token) VALUES (?, ?)`,
+			bead.ID, "seam-owner"); err != nil {
+			t.Fatalf("reserve assignment admission from seam: %v", err)
+		}
+	}
+
+	if err := d.assignBeadWithClaim(context.Background(), worker, bead, nil, nil, nil); err != nil {
+		t.Fatalf("assign through admission seam: %v", err)
+	}
+	if seamCalls != 1 {
+		t.Fatalf("assignment admission seam calls = %d, want 1", seamCalls)
+	}
+}
+
+func assignmentBehaviorReservedAdmissionStopsBeforeClaim(t *testing.T, h *assignmentBehaviorHarness) {
+	d, _, worktrees, worker, _, bead := h.fixture(t, "mutation-reserved-admission")
+	if _, err := d.db.Exec(`INSERT INTO assignment_side_effect_admissions (bead_id, owner_token) VALUES (?, ?)`,
+		bead.ID, "existing-owner"); err != nil {
+		t.Fatalf("seed assignment admission: %v", err)
+	}
+	var claims []bool
+
+	if err := d.assignBeadWithClaim(context.Background(), worker, bead, nil,
+		func(claimed bool) { claims = append(claims, claimed) }, nil); err != nil {
+		t.Fatalf("assign reserved bead: %v", err)
+	}
+	if !slices.Equal(claims, []bool{false}) || worktrees.createdBead(bead.ID) ||
+		worker.state != protocol.WorkerIdle || assignmentBehaviorAdmissionCount(t, d.db, bead.ID) != 1 {
+		t.Fatalf("reserved admission stop = claims %v worktree %v worker %q admissions %d",
+			claims, worktrees.createdBead(bead.ID), worker.state,
+			assignmentBehaviorAdmissionCount(t, d.db, bead.ID))
+	}
+}
+
+func assignmentBehaviorStaleFocusStopsAndNotifies(t *testing.T, h *assignmentBehaviorHarness) {
+	d, _, worktrees, worker, _, bead := h.fixture(t, "mutation-stale-focus")
+	d.mu.Lock()
+	d.focusVersion = 1
+	d.mu.Unlock()
+	select {
+	case <-d.workerReadyCh:
+	default:
+	}
+	var claims []bool
+
+	if err := d.assignBeadWithClaim(context.Background(), worker, bead, []uint64{0},
+		func(claimed bool) { claims = append(claims, claimed) }, nil); err != nil {
+		t.Fatalf("assign across stale focus: %v", err)
+	}
+	notified := false
+	select {
+	case <-d.workerReadyCh:
+		notified = true
+	default:
+	}
+	if !slices.Equal(claims, []bool{false}) || !notified || worktrees.createdBead(bead.ID) ||
+		worker.state != protocol.WorkerIdle || assignmentBehaviorAdmissionCount(t, d.db, bead.ID) != 0 {
+		t.Fatalf("stale focus stop = claims %v notified %v worktree %v worker %q admissions %d",
+			claims, notified, worktrees.createdBead(bead.ID), worker.state,
+			assignmentBehaviorAdmissionCount(t, d.db, bead.ID))
+	}
+}
+
+func assignmentBehaviorDecomposedEpicStopsAndReleasesAdmission(t *testing.T, h *assignmentBehaviorHarness) {
+	d, beads, worktrees, worker, _, bead := h.fixture(t, "mutation-decomposed-epic")
+	bead.Type = "epic"
+	if _, err := beads.Create(t.Context(), beadstore.CreateParams{
+		ID:                 "mutation-decomposed-child",
+		Title:              "Open child",
+		Type:               "task",
+		Status:             "open",
+		ParentID:           bead.ID,
+		AcceptanceCriteria: "Test: child remains open",
+	}); err != nil {
+		t.Fatalf("seed open epic child: %v", err)
+	}
+	var claims []bool
+
+	if err := d.assignBeadWithClaim(context.Background(), worker, bead, nil,
+		func(claimed bool) { claims = append(claims, claimed) }, nil); err != nil {
+		t.Fatalf("assign decomposed epic: %v", err)
+	}
+	if !slices.Equal(claims, []bool{false}) || worktrees.createdBead(bead.ID) ||
+		worker.state != protocol.WorkerIdle || assignmentBehaviorAdmissionCount(t, d.db, bead.ID) != 0 {
+		t.Fatalf("decomposed epic stop = claims %v worktree %v worker %q admissions %d",
+			claims, worktrees.createdBead(bead.ID), worker.state,
+			assignmentBehaviorAdmissionCount(t, d.db, bead.ID))
+	}
+}
+
+func assignmentBehaviorFinalCheckpointStopsAfterAdmissionRelease(t *testing.T, h *assignmentBehaviorHarness) {
+	d, beads, worktrees, worker, _, bead := h.fixture(t, "mutation-final-checkpoint")
+	blockedEventsBefore := assignmentBehaviorEventCount(t, d.db, "review_checkpoint_assignment_blocked")
+	originID, err := d.createAssignment(t.Context(), bead.ID, "mutation-review-worker", "/tmp/checkpoint-"+bead.ID)
+	if err != nil {
+		t.Fatalf("create checkpoint origin assignment: %v", err)
+	}
+	if err := d.requeueAssignment(t.Context(), originID); err != nil {
+		t.Fatalf("requeue checkpoint origin assignment: %v", err)
+	}
+	if _, err := d.db.Exec(`
+CREATE TRIGGER mutation_final_checkpoint_after_admission
+AFTER DELETE ON assignment_side_effect_admissions
+WHEN OLD.bead_id = 'mutation-final-checkpoint'
+BEGIN
+  INSERT INTO review_checkpoints (
+    checkpoint_key, bead_id, origin_assignment_id, worktree, branch, target_branch,
+    head_sha, target_sha, acceptance_hash, qg_script_hash, qg_mode,
+    review_policy_hash, triage_revision, ready_attempt, state
+  ) VALUES (
+    'checkpoint-mutation-final-checkpoint', 'mutation-final-checkpoint',
+    (SELECT id FROM assignments WHERE bead_id='mutation-final-checkpoint' ORDER BY id DESC LIMIT 1),
+    '/tmp/checkpoint-mutation-final-checkpoint', 'agent/mutation-final-checkpoint', 'main',
+    'head-mutation-final-checkpoint', 'target-mutation-final-checkpoint',
+    'acceptance-mutation-final-checkpoint', 'qg-mutation-final-checkpoint', 'full',
+    'policy-mutation-final-checkpoint', 'triage-mutation-final-checkpoint',
+    'ready-mutation-final-checkpoint', 'review_running'
+  );
+END;`); err != nil {
+		t.Fatalf("install final checkpoint trigger: %v", err)
+	}
+	var claims []bool
+
+	if err := d.assignBeadWithClaim(context.Background(), worker, bead, nil,
+		func(claimed bool) { claims = append(claims, claimed) }, nil); err != nil {
+		t.Fatalf("assign across final checkpoint: %v", err)
+	}
+	beads.mu.Lock()
+	status := beads.updated[bead.ID]
+	beads.mu.Unlock()
+	if !slices.Equal(claims, []bool{false}) || worktrees.createdBead(bead.ID) ||
+		worker.state != protocol.WorkerIdle || status != "" ||
+		assignmentBehaviorEventCount(t, d.db, "review_checkpoint_assignment_blocked") != blockedEventsBefore+1 {
+		t.Fatalf("final checkpoint stop = claims %v worktree %v worker %q status %q events %d",
+			claims, worktrees.createdBead(bead.ID), worker.state, status,
+			assignmentBehaviorEventCount(t, d.db, "review_checkpoint_assignment_blocked"))
+	}
+}
+
+func assignmentBehaviorReadinessStopReleasesAdmission(t *testing.T, h *assignmentBehaviorHarness) {
+	d, beads, worktrees, worker, _, bead := h.fixture(t, "mutation-readiness-release")
+	beads.setStatus(t, bead.ID, "closed")
+
+	if err := d.assignBeadWithClaim(context.Background(), worker, bead, nil, nil, nil); err != nil {
+		t.Fatalf("assign closed bead with admission: %v", err)
+	}
+	if worktrees.createdBead(bead.ID) || worker.state != protocol.WorkerIdle ||
+		assignmentBehaviorAdmissionCount(t, d.db, bead.ID) != 0 {
+		t.Fatalf("readiness admission cleanup = worktree %v worker %q admissions %d",
+			worktrees.createdBead(bead.ID), worker.state,
+			assignmentBehaviorAdmissionCount(t, d.db, bead.ID))
 	}
 }
 
@@ -509,6 +750,14 @@ func TestAssignmentBehaviorMutation(t *testing.T) {
 		name string
 		run  func(*testing.T, *assignmentBehaviorHarness)
 	}{
+		{name: "empty bead ID is rejected", run: assignmentBehaviorRejectsEmptyBeadID},
+		{name: "initial checkpoint stops exactly once", run: assignmentBehaviorInitialCheckpointStopsExactlyOnce},
+		{name: "assignment admission seam is called", run: assignmentBehaviorCallsAdmissionSeam},
+		{name: "reserved admission stops before claim", run: assignmentBehaviorReservedAdmissionStopsBeforeClaim},
+		{name: "stale focus stops and notifies", run: assignmentBehaviorStaleFocusStopsAndNotifies},
+		{name: "decomposed epic stops and releases admission", run: assignmentBehaviorDecomposedEpicStopsAndReleasesAdmission},
+		{name: "final checkpoint stops after admission release", run: assignmentBehaviorFinalCheckpointStopsAfterAdmissionRelease},
+		{name: "readiness stop releases admission", run: assignmentBehaviorReadinessStopReleasesAdmission},
 		{name: "readiness stops before claim", run: assignmentBehaviorReadinessStopsBeforeClaim},
 		{name: "reserved owner blocks duplicate", run: assignmentBehaviorReservedOwnerBlocksDuplicate},
 		{name: "successful delivery persists progress", run: assignmentBehaviorSuccessfulDeliveryPersistsProgress},
