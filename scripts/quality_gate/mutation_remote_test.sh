@@ -448,6 +448,7 @@ run_missing_base_fixture() {
 }
 
 TestStrictIncrementalMutation() {
+	local file_timeout_seconds incident_file_count job_timeout_minutes minimum_timeout_minutes mutation_batches workers
 	tmp=$(mktemp -d)
 	trap 'rm -rf "$tmp"' RETURN
 
@@ -481,12 +482,22 @@ TestStrictIncrementalMutation() {
 		fail 'incremental-mutation job must upload its JSON evidence artifact'
 	grep -q 'if-no-files-found: error' "$tmp/incremental-mutation.yml" ||
 		fail 'incremental-mutation artifact loss must fail the job'
-	grep -q 'timeout-minutes: 35' "$tmp/incremental-mutation.yml" ||
-		fail 'incremental-mutation job must have a bounded outer deadline'
 	grep -q 'MUTATION_MAX_WORKERS: 2' "$tmp/incremental-mutation.yml" ||
 		fail 'incremental-mutation shard concurrency must match hosted runner capacity'
 	grep -q 'MUTATION_FILE_TIMEOUT_SECONDS: 240' "$tmp/incremental-mutation.yml" ||
 		fail 'incremental-mutation job must declare a per-file deadline'
+	job_timeout_minutes=$(awk '/^[[:space:]]+timeout-minutes:/ { print $2; exit }' "$tmp/incremental-mutation.yml")
+	workers=$(awk '/MUTATION_MAX_WORKERS:/ { print $2; exit }' "$tmp/incremental-mutation.yml")
+	file_timeout_seconds=$(awk '/MUTATION_FILE_TIMEOUT_SECONDS:/ { print $2; exit }' "$tmp/incremental-mutation.yml")
+	incident_file_count=24
+	mutation_batches=$(((incident_file_count + workers - 1) / workers))
+	minimum_timeout_minutes=$(((\
+		mutation_batches * file_timeout_seconds + 10 * 60 + 59) / \
+		60))
+	[[ "$job_timeout_minutes" =~ ^[1-9][0-9]*$ ]] ||
+		fail 'incremental-mutation job must have a numeric bounded outer deadline'
+	((job_timeout_minutes >= minimum_timeout_minutes)) ||
+		fail "incremental-mutation outer deadline must cover 24 shards at declared capacity plus 10 minutes overhead"
 }
 
 main() {

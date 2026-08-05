@@ -13,7 +13,9 @@ jobs:
   incremental-mutation:
     name: Incremental Mutation
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    # 24 files at two workers and 240 seconds per file require up to 48
+    # minutes; reserve 12 more for checkout, cache restore, and aggregation.
+    timeout-minutes: 60
     env:
       MUTATION_MAX_WORKERS: 2
       MUTATION_FILE_TIMEOUT_SECONDS: 240
