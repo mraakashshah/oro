@@ -30,6 +30,147 @@ func TestReviewReleaseCauseValues(t *testing.T) {
 	}
 }
 
+func TestReleaseCheckpointOwnedWorkerProductionPath(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	checkpointID, assignmentID, worker := seedCheckpointOwnedEdgeWorker(
+		t, d, "production-path", ReviewCheckpointStateReviewRunning, "active",
+	)
+	drainCheckpointReleaseWakes(d)
+
+	released, err := d.releaseCheckpointOwnedWorker(
+		context.Background(), worker, ReviewReleaseCauseConnectionLost,
+	)
+	if err != nil || !released {
+		t.Fatalf("release checkpoint-owned worker = (%t, %v), want (true, nil)", released, err)
+	}
+	assertCheckpointOwnedEdgeReleased(t, d, checkpointID, assignmentID, ReviewCheckpointStateReviewRunning)
+	if got := trackedReleaseWorker(d, worker.id); got != nil {
+		t.Fatalf("released production-path worker remains tracked: %p", got)
+	}
+	assertCheckpointReleaseEvent(t, d, worker.beadID, worker.id, ReviewReleaseCauseConnectionLost)
+	assertOneCheckpointReleaseWake(t, d)
+}
+
+func TestCheckpointWorkerReleaseLeaseAdmission(t *testing.T) {
+	tests := []struct {
+		name        string
+		configure   func(*Dispatcher, *trackedWorker, *mockConn) (*trackedWorker, *mockConn)
+		wantAcquire bool
+		wantDrain   bool
+	}{
+		{name: "nil expected", configure: func(_ *Dispatcher, _ *trackedWorker, conn *mockConn) (*trackedWorker, *mockConn) { return nil, conn }},
+		{name: "missing worker", configure: func(_ *Dispatcher, worker *trackedWorker, conn *mockConn) (*trackedWorker, *mockConn) {
+			return worker, conn
+		}},
+		{name: "stale pointer", configure: func(d *Dispatcher, worker *trackedWorker, conn *mockConn) (*trackedWorker, *mockConn) {
+			d.workers[worker.id] = &trackedWorker{id: worker.id, conn: conn, state: protocol.WorkerReviewing, beadID: worker.beadID}
+			return worker, conn
+		}},
+		{name: "connection mismatch", configure: func(d *Dispatcher, worker *trackedWorker, _ *mockConn) (*trackedWorker, *mockConn) {
+			d.workers[worker.id] = worker
+			return worker, newMockConn()
+		}},
+		{name: "wrong state", configure: func(d *Dispatcher, worker *trackedWorker, conn *mockConn) (*trackedWorker, *mockConn) {
+			worker.state = protocol.WorkerBusy
+			d.workers[worker.id] = worker
+			return worker, conn
+		}},
+		{name: "empty bead", configure: func(d *Dispatcher, worker *trackedWorker, conn *mockConn) (*trackedWorker, *mockConn) {
+			worker.beadID = ""
+			d.workers[worker.id] = worker
+			return worker, conn
+		}},
+		{name: "release already active", configure: func(d *Dispatcher, worker *trackedWorker, conn *mockConn) (*trackedWorker, *mockConn) {
+			worker.reviewReleaseToken = 41
+			d.workers[worker.id] = worker
+			return worker, conn
+		}},
+		{name: "eligible worker", wantAcquire: true, configure: func(d *Dispatcher, worker *trackedWorker, conn *mockConn) (*trackedWorker, *mockConn) {
+			d.workers[worker.id] = worker
+			return worker, conn
+		}},
+		{name: "in flight message creates drain", wantAcquire: true, wantDrain: true, configure: func(d *Dispatcher, worker *trackedWorker, conn *mockConn) (*trackedWorker, *mockConn) {
+			worker.reviewMessagesInFlight = 1
+			d.workers[worker.id] = worker
+			return worker, conn
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, _, _, _, _, _ := newTestDispatcher(t)
+			conn := newMockConn()
+			worker := &trackedWorker{id: "lease-admission", conn: conn, state: protocol.WorkerReviewing, beadID: "bead-lease-admission"}
+			expected, observedConn := tt.configure(d, worker, conn)
+
+			d.mu.Lock()
+			lease, acquired := d.acquireCheckpointWorkerReleaseLocked(expected, observedConn)
+			d.mu.Unlock()
+			if acquired != tt.wantAcquire {
+				t.Fatalf("acquired = %t, want %t", acquired, tt.wantAcquire)
+			}
+			if !acquired {
+				if lease != nil {
+					t.Fatalf("rejected lease = %p, want nil", lease)
+				}
+				return
+			}
+			if lease == nil || lease.expected != worker || lease.token == 0 {
+				t.Fatalf("acquired lease = %#v, want worker %p and nonzero token", lease, worker)
+			}
+			if (lease.drain != nil) != tt.wantDrain {
+				t.Fatalf("lease drain present = %t, want %t", lease.drain != nil, tt.wantDrain)
+			}
+			if tt.wantDrain && (worker.reviewMessagesDrained == nil || worker.reviewMessagesDrainToken != lease.token) {
+				t.Fatalf("worker drain/token = (%v, %d), want channel and %d", worker.reviewMessagesDrained, worker.reviewMessagesDrainToken, lease.token)
+			}
+			lease.abort()
+		})
+	}
+}
+
+func TestHandleMessageFromConnectionRoutesAcceptedMessage(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	conn := newMockConn()
+	worker := &trackedWorker{id: "message-route", conn: conn, state: protocol.WorkerIdle}
+	d.workers[worker.id] = worker
+
+	d.handleMessageFromConnection(context.Background(), worker.id, conn, protocol.Message{
+		Type: protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{
+			WorkerID:   worker.id,
+			ContextPct: 37,
+		},
+	})
+	if worker.lastSeen.IsZero() {
+		t.Fatal("accepted connection message was not dispatched")
+	}
+	if worker.reviewMessagesInFlight != 0 {
+		t.Fatalf("message in-flight count = %d, want 0 after dispatch", worker.reviewMessagesInFlight)
+	}
+}
+
+func TestBeginReviewWorkerResultAdmission(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	if worker, accepted := d.beginReviewWorkerResult("absent-result-worker"); worker != nil || !accepted {
+		t.Fatalf("absent worker admission = (%p, %t), want (nil, true)", worker, accepted)
+	}
+
+	worker := &trackedWorker{id: "result-admission", state: protocol.WorkerReviewing, beadID: "bead-result-admission"}
+	d.workers[worker.id] = worker
+	got, accepted := d.beginReviewWorkerResult(worker.id)
+	if !accepted || got != worker {
+		t.Fatalf("tracked worker admission = (%p, %t), want (%p, true)", got, accepted, worker)
+	}
+	if worker.reviewMessagesInFlight != 1 {
+		t.Fatalf("result in-flight count = %d, want 1", worker.reviewMessagesInFlight)
+	}
+	d.finishReviewWorkerMessage(worker)
+	if worker.reviewMessagesInFlight != 0 {
+		t.Fatalf("result in-flight count after finish = %d, want 0", worker.reviewMessagesInFlight)
+	}
+}
+
 func TestReleaseCheckpointOwnedWorkerDurableBeforeMemory(t *testing.T) {
 	ctx := context.Background()
 

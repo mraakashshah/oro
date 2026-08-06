@@ -51,6 +51,22 @@ review_checkpoint_pattern_for() {
 	bash -c "$function_source"$'\n''review_checkpoint_mutation_test_pattern "$1" "$2"' _ "$file" "$match"
 }
 
+review_worker_lifecycle_pattern_for() {
+	local file="$1"
+	local match="$2"
+	local function_source
+	function_source=$(awk '
+		/^review_worker_lifecycle_mutation_test_pattern\(\)/ { copying = 1 }
+		copying { print }
+		copying && /^}/ { exit }
+	' "$runner")
+	if [[ -z "$function_source" ]]; then
+		fail 'mutation runner omitted reviewed worker lifecycle owner mapping'
+		return 1
+	fi
+	bash -c "$function_source"$'\n''review_worker_lifecycle_mutation_test_pattern "$1" "$2"' _ "$file" "$match" || true
+}
+
 review_integration_recovery_pattern_for() {
 	local file="$1"
 	local match="$2"
@@ -345,8 +361,6 @@ pkg/dispatcher/ops_runs.go	isSQLiteUniqueConstraint	^TestOpsAuthoritativeSurvivo
 pkg/dispatcher/ops_runs.go	loadOpsRunByID	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
 pkg/dispatcher/ops_runs.go	replaceOpsRun	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
 pkg/dispatcher/ops_runs.go	reviewContextForOpsRun	^(TestOpsAuthoritativeSurvivorMutationReviewContexts|TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex)$
-pkg/dispatcher/ops_runs.go	reviewContextFromAnyWorkerLocked	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
-pkg/dispatcher/ops_runs.go	reviewContextFromWorkerLocked	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
 pkg/dispatcher/ops_runs.go	routeOpsRun	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
 pkg/dispatcher/ops_runs.go	routeReviewOpsRun	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
 pkg/dispatcher/ops_runs.go	supersedeAndRerouteOpsRun	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
@@ -688,6 +702,107 @@ TestMutationOwnerMappingsCoexist() {
 	got=$(startup_maintenance_pattern_for pkg/storage/dev_schedule.go \
 		'^(reconcileInterruptedWeeklyDevCacheSweep|runWeeklyDevCacheProviders)$')
 	[[ -z "$got" ]] || fail "weekly sweep resolver accepted a grouped function union: $got"
+}
+
+review_worker_lifecycle_mapping_cases() {
+	cat <<'EOF'
+pkg/dispatcher/directives.go	restartWorkerIfStillOnBead	^TestDispatcher_FocusDirectiveImmediateStopsNonFocusedWorkers$
+pkg/dispatcher/ops_runs.go	reviewContextFromAnyWorkerLocked	^(TestOpsAuthoritativeSurvivorMutationReviewContexts|TestReviewReleaseTokenFencesDirectReviewTransitions)$
+pkg/dispatcher/ops_runs.go	reviewContextFromWorkerLocked	^(TestOpsAuthoritativeSurvivorMutationReviewContexts|TestReviewReleaseTokenFencesDirectReviewTransitions)$
+pkg/dispatcher/qg_flow.go	withReservation	^TestReviewReleaseTokenFencesDirectReviewTransitions$
+pkg/dispatcher/reconnect.go	replayReconnectEvents	^TestHandleReconnect_WithBufferedEvents$
+pkg/dispatcher/review.go	beginReviewWorkerResult	^(TestBeginReviewWorkerResultAdmission|TestCheckpointWorkerReleaseFenceRejectsConcurrentReviewResult)$
+pkg/dispatcher/review.go	claimBlockedReviewAssignment	^TestReviewReleaseTokenFencesDirectReviewTransitions$
+pkg/dispatcher/review.go	claimReviewDependencyCheck	^TestReviewReleaseTokenFencesDirectReviewTransitions$
+pkg/dispatcher/review.go	handleReviewResultForAssignment	^TestCheckpointWorkerReleaseFenceRejectsConcurrentReviewResult$
+pkg/dispatcher/review.go	reserveReviewRetryAttempt	^TestReviewReleaseTokenFencesDirectReviewTransitions$
+pkg/dispatcher/review.go	reviewingWorkerMatches	^TestReviewReleaseTokenFencesDirectReviewTransitions$
+pkg/dispatcher/review.go	sendPreReviewGitDirtyFeedback	^TestReviewReleaseTokenFencesDirectReviewTransitions$
+pkg/dispatcher/review.go	sendReviewApproved	^TestReviewReleaseTokenFencesDirectReviewTransitions$
+pkg/dispatcher/review_checkpoint_store.go	ReleaseWorker	^TestReviewCheckpointStoreReleaseWorkerAtomicity$
+pkg/dispatcher/review_checkpoint_store.go	loadReviewCheckpointWorkerReleaseTarget	^TestReviewCheckpointStoreReleaseWorkerAtomicity$
+pkg/dispatcher/review_checkpoint_store.go	releaseWorkerWithHook	^TestReviewCheckpointStoreReleaseWorkerAtomicity$
+pkg/dispatcher/review_checkpoint_store.go	runReviewCheckpointWorkerReleaseHook	^TestReviewCheckpointStoreReleaseWorkerAtomicity$
+pkg/dispatcher/review_worker_release.go	abort	^(TestCheckpointWorkerReleaseContextCancelClearsOwnedDrain|TestCheckpointWorkerReleasePanicCleanup)$
+pkg/dispatcher/review_worker_release.go	acquireCheckpointWorkerRelease	^(TestCheckpointWorkerReleaseFenceTokenCannotBeClearedBySecondRelease|TestCheckpointWorkerReleaseLeaseAdmission)$
+pkg/dispatcher/review_worker_release.go	acquireCheckpointWorkerReleaseLocked	^(TestCheckpointWorkerReleaseFenceTokenCannotBeClearedBySecondRelease|TestCheckpointWorkerReleaseLeaseAdmission)$
+pkg/dispatcher/review_worker_release.go	current	^TestCheckpointWorkerReleaseFenceTokenCannotBeClearedBySecondRelease$
+pkg/dispatcher/review_worker_release.go	finalizeDurable	^TestCheckpointWorkerReleasePanicCleanup$
+pkg/dispatcher/review_worker_release.go	releaseCheckpointOwnedWorker	^TestReleaseCheckpointOwnedWorkerProductionPath$
+pkg/dispatcher/review_worker_release.go	releaseCheckpointOwnedWorkerUsing	^TestReleaseCheckpointOwnedWorkerDurableBeforeMemory$
+pkg/dispatcher/review_worker_release.go	releaseCheckpointOwnedWorkerGeneration	^(TestReviewWorkerDisconnectDurablyReleasesCurrentCheckpoint|TestReviewWorkerDisconnectReleaseFailurePreservesWorker)$
+pkg/dispatcher/review_worker_release.go	releaseCheckpointOwnedWorkerGenerationUsing	^TestReleaseCheckpointOwnedWorkerRejectsStaleConnectionGeneration$
+pkg/dispatcher/review_worker_release.go	releaseCheckpointOwnedWorkerGenerationWithActionUsing	^TestCheckpointWorkerReleasePanicCleanup$
+pkg/dispatcher/review_worker_release.go	runCheckpointWorkerReleaseLease	^TestCheckpointWorkerReleasePanicCleanup$
+pkg/dispatcher/review_worker_release.go	waitForMessages	^(TestCheckpointWorkerReleaseContextCancelClearsOwnedDrain|TestCheckpointWorkerReleaseWaitsForAllInFlightMessages)$
+pkg/dispatcher/startup_recovery.go	beginReviewWorkerMessage	^TestCheckpointWorkerReleaseWaitsForAllInFlightMessages$
+pkg/dispatcher/startup_recovery.go	checkpointOwnedWorkerForConnection	^(TestReviewWorkerDisconnectDurablyReleasesCurrentCheckpoint|TestReviewWorkerDisconnectReleaseFailurePreservesWorker|TestReviewWorkerDisconnectStaleConnectionPreservesReplacement|TestReviewWorkerDisconnectStaleConnectionPreservesSamePointerReconnect)$
+pkg/dispatcher/startup_recovery.go	connCloseCleanup	^(TestReviewWorkerDisconnectDurablyReleasesCurrentCheckpoint|TestReviewWorkerDisconnectReleaseFailurePreservesWorker|TestReviewWorkerDisconnectStaleConnectionPreservesReplacement|TestReviewWorkerDisconnectStaleConnectionPreservesSamePointerReconnect)$
+pkg/dispatcher/startup_recovery.go	finishReviewWorkerMessage	^TestCheckpointWorkerReleaseWaitsForAllInFlightMessages$
+pkg/dispatcher/startup_recovery.go	handleConn	^TestHandleReconnect_WithBufferedEvents$
+pkg/dispatcher/startup_recovery.go	handleMessageFromConnection	^(TestCheckpointWorkerReleaseFenceRejectsReconnectAndMessages|TestHandleMessageFromConnectionRoutesAcceptedMessage)$
+pkg/dispatcher/startup_recovery.go	handleMessageUnchecked	^TestHandleReconnect_WithBufferedEvents$
+pkg/dispatcher/worker_directives.go	applyKillWorker	^(TestOrdinaryWorkerDirectivesRetainExistingBehavior|TestReviewWorkerDirectivesDurablyReleaseCheckpoint)$
+pkg/dispatcher/worker_directives.go	applyRestartWorker	^(TestOrdinaryWorkerDirectivesRetainExistingBehavior|TestReviewWorkerDirectivesDurablyReleaseCheckpoint)$
+pkg/dispatcher/worker_directives.go	killCheckpointOwnedWorker	^(TestReviewWorkerDirectiveReleaseFailureDoesNotFallBack|TestReviewWorkerDirectivesDurablyReleaseCheckpoint)$
+pkg/dispatcher/worker_directives.go	killCheckpointOwnedWorkerUsing	^(TestReviewWorkerDirectiveReleaseFailureDoesNotFallBack|TestReviewWorkerDirectivesDurablyReleaseCheckpoint)$
+pkg/dispatcher/worker_directives.go	restartCheckpointOwnedWorker	^(TestReviewWorkerDirectivesDurablyReleaseCheckpoint|TestReviewWorkerRestartActionErrorsStillFinalizeDurableRelease|TestReviewWorkerRestartFenceSpansStoreKillAndSpawn)$
+pkg/dispatcher/worker_directives.go	restartCheckpointOwnedWorkerUsing	^(TestReviewWorkerDirectivesDurablyReleaseCheckpoint|TestReviewWorkerRestartActionErrorsStillFinalizeDurableRelease|TestReviewWorkerRestartFenceSpansStoreKillAndSpawn)$
+pkg/dispatcher/worker_pool.go	registerWorker	^TestSpawnFor_StopCleanupBeforeReconnectPreservesShutdownState$
+pkg/dispatcher/worker_pool.go	registerWorkerWithProtocol	^TestCheckpointWorkerReleaseFenceRejectsReconnectAndMessages$
+pkg/dispatcher/worker_pool.go	releaseReviewWorkerAfterSendFailure	^(TestReviewSendFailureDefersReleaseUntilCurrentMessageExits|TestReviewWorkerSendFailureDurablyReleasesBeforeFallback|TestReviewWorkerSendFailurePreservesSamePointerReconnect|TestReviewWorkerSendFailureReleaseFailurePreservesMemory|TestReviewWorkerSendFailureStaleGenerationPreservesReplacement|TestReviewWorkerSynchronousSendReleasePanicRestoresCallerLock)$
+pkg/dispatcher/worker_pool.go	releaseReviewWorkerAfterSendFailureUsing	^(TestReviewSendFailureDefersReleaseUntilCurrentMessageExits|TestReviewWorkerSendFailureDurablyReleasesBeforeFallback|TestReviewWorkerSendFailurePreservesSamePointerReconnect|TestReviewWorkerSendFailureReleaseFailurePreservesMemory|TestReviewWorkerSendFailureStaleGenerationPreservesReplacement|TestReviewWorkerSynchronousSendReleasePanicRestoresCallerLock)$
+pkg/dispatcher/worker_pool.go	removeDeadWorkersLocked	^TestCheckHeartbeats_RemovesDeadBusyWorker$
+pkg/dispatcher/worker_pool.go	removeStoppedSpawnForWorkersLocked	^TestSpawnFor_StoppedWorkerHeartbeatTimeoutDoesNotEscalateCrash$
+pkg/dispatcher/worker_pool.go	removeStuckWorkersLocked	^TestCheckHeartbeats_DetectsStuckWorker$
+pkg/dispatcher/worker_pool.go	sendShutdownToConnectionWithoutBuffering	^TestReviewWorkerDirectivesDurablyReleaseCheckpoint$
+pkg/dispatcher/worker_pool.go	sendToWorker	^(TestReviewSendFailureDefersReleaseUntilCurrentMessageExits|TestReviewWorkerSendFailureDurablyReleasesBeforeFallback|TestReviewWorkerSendFailurePreservesSamePointerReconnect|TestReviewWorkerSendFailureReleaseFailurePreservesMemory|TestReviewWorkerSendFailureStaleGenerationPreservesReplacement|TestReviewWorkerSynchronousSendReleasePanicRestoresCallerLock)$
+pkg/dispatcher/worker_pool.go	upsertWorker	^TestCheckpointWorkerReleaseFenceRejectsReconnectAndMessages$
+EOF
+}
+
+TestReviewWorkerLifecycleMutationMapping() {
+	local expected expected_count file function got listed rows=0
+	while IFS=$'\t' read -r file function expected; do
+		rows=$((rows + 1))
+		got=$(review_worker_lifecycle_pattern_for "$file" "^($function)$")
+		[[ "$got" == "$expected" ]] ||
+			fail "$file $function lifecycle owner = $got, want $expected"
+		listed=$(go test -list "$expected" ./pkg/dispatcher)
+		expected_count=$(awk -F'|' '{ print NF }' <<<"$expected")
+		[[ "$(grep -Ec '^Test' <<<"$listed")" = "$expected_count" ]] ||
+			fail "$file $function lifecycle owner cardinality != $expected_count: $listed"
+	done < <(review_worker_lifecycle_mapping_cases)
+	[[ "$rows" = 52 ]] || fail "lifecycle owner inventory = $rows functions, want 52"
+	[[ "$(review_worker_lifecycle_mapping_cases | cut -f1,2 | sort -u | wc -l | tr -d ' ')" = 52 ]] ||
+		fail 'lifecycle owner inventory contains duplicate file/function rows'
+
+	got=$(review_worker_lifecycle_pattern_for pkg/dispatcher/health.go '^(applyHealth)$')
+	[[ -z "$got" ]] || fail "lifecycle resolver accepted wrong source: $got"
+	got=$(review_worker_lifecycle_pattern_for pkg/dispatcher/review_checkpoint_store.go '^(LoadOwningForBead)$')
+	[[ -z "$got" ]] || fail "lifecycle resolver hijacked checkpoint owner: $got"
+}
+
+TestReviewWorkerLifecycleMutationCoverage() {
+	local coverage coverage_root expected file function key report
+	coverage_root=$(mktemp -d)
+	while IFS=$'\t' read -r file function expected; do
+		key=$(printf '%s' "$expected" | shasum | awk '{ print $1 }')
+		coverage="$coverage_root/$key.out"
+		if [[ ! -f "$coverage" ]]; then
+			timeout 60 go test -vet=off -count=1 -timeout 55s -coverprofile="$coverage" \
+				-run "$expected" ./pkg/dispatcher >/dev/null
+		fi
+		report=$(go tool cover -func="$coverage")
+		awk -v target="$function" '
+			$2 == target || $2 ~ ("[.]" target "$") {
+				value = $3
+				gsub(/%/, "", value)
+				if (value + 0 > 0) covered = 1
+			}
+			END { exit !covered }
+		' <<<"$report" || fail "$file $function lifecycle owner has zero production coverage"
+	done < <(review_worker_lifecycle_mapping_cases)
 }
 
 TestEscalationSurvivorMutationCoverage() {
@@ -3354,6 +3469,8 @@ TestStrictIncrementalMutation() {
 	TestMutationOwnerMappingsCoexist
 	TestStartupMaintenanceMutationMapping
 	TestStartupMaintenanceMutationSharding
+	TestReviewWorkerLifecycleMutationMapping
+	TestReviewWorkerLifecycleMutationCoverage
 
 	TestIncrementalMutationArtifactRetention "$tmp/workflow-artifact"
 	cp "$tmp/workflow-artifact/incremental-mutation.yml" "$tmp/incremental-mutation.yml"
@@ -3437,6 +3554,12 @@ main() {
 		;;
 	TestStartupMaintenanceMutationSharding)
 		TestStartupMaintenanceMutationSharding
+		;;
+	TestReviewWorkerLifecycleMutationMapping)
+		TestReviewWorkerLifecycleMutationMapping
+		;;
+	TestReviewWorkerLifecycleMutationCoverage)
+		TestReviewWorkerLifecycleMutationCoverage
 		;;
 	TestReviewIntegrationRecoveryMutationCoverage)
 		TestReviewIntegrationRecoveryMutationCoverage

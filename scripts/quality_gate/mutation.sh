@@ -384,6 +384,123 @@ review_checkpoint_mutation_test_pattern() {
 	esac
 }
 
+review_worker_lifecycle_mutation_test_pattern() {
+	local file="$1"
+	local match="$2"
+	case "$file:$match" in
+	'pkg/dispatcher/directives.go:^(restartWorkerIfStillOnBead)$')
+		printf '^TestDispatcher_FocusDirectiveImmediateStopsNonFocusedWorkers$'
+		;;
+	'pkg/dispatcher/ops_runs.go:^(reviewContextFromAnyWorkerLocked)$' | \
+		'pkg/dispatcher/ops_runs.go:^(reviewContextFromWorkerLocked)$')
+		printf '^(TestOpsAuthoritativeSurvivorMutationReviewContexts|TestReviewReleaseTokenFencesDirectReviewTransitions)$'
+		;;
+	'pkg/dispatcher/qg_flow.go:^(withReservation)$' | \
+		'pkg/dispatcher/review.go:^(claimBlockedReviewAssignment)$' | \
+		'pkg/dispatcher/review.go:^(claimReviewDependencyCheck)$' | \
+		'pkg/dispatcher/review.go:^(reserveReviewRetryAttempt)$' | \
+		'pkg/dispatcher/review.go:^(reviewingWorkerMatches)$' | \
+		'pkg/dispatcher/review.go:^(sendPreReviewGitDirtyFeedback)$' | \
+		'pkg/dispatcher/review.go:^(sendReviewApproved)$')
+		printf '^TestReviewReleaseTokenFencesDirectReviewTransitions$'
+		;;
+	'pkg/dispatcher/reconnect.go:^(replayReconnectEvents)$' | \
+		'pkg/dispatcher/startup_recovery.go:^(handleConn)$' | \
+		'pkg/dispatcher/startup_recovery.go:^(handleMessageUnchecked)$')
+		printf '^TestHandleReconnect_WithBufferedEvents$'
+		;;
+	'pkg/dispatcher/review.go:^(beginReviewWorkerResult)$')
+		printf '^(TestBeginReviewWorkerResultAdmission|TestCheckpointWorkerReleaseFenceRejectsConcurrentReviewResult)$'
+		;;
+	'pkg/dispatcher/review.go:^(handleReviewResultForAssignment)$')
+		printf '^TestCheckpointWorkerReleaseFenceRejectsConcurrentReviewResult$'
+		;;
+	'pkg/dispatcher/review_checkpoint_store.go:^(ReleaseWorker)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(loadReviewCheckpointWorkerReleaseTarget)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(releaseWorkerWithHook)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(runReviewCheckpointWorkerReleaseHook)$')
+		printf '^TestReviewCheckpointStoreReleaseWorkerAtomicity$'
+		;;
+	'pkg/dispatcher/review_worker_release.go:^(releaseCheckpointOwnedWorker)$')
+		printf '^TestReleaseCheckpointOwnedWorkerProductionPath$'
+		;;
+	'pkg/dispatcher/review_worker_release.go:^(releaseCheckpointOwnedWorkerUsing)$')
+		printf '^TestReleaseCheckpointOwnedWorkerDurableBeforeMemory$'
+		;;
+	'pkg/dispatcher/review_worker_release.go:^(releaseCheckpointOwnedWorkerGeneration)$')
+		printf '^(TestReviewWorkerDisconnectDurablyReleasesCurrentCheckpoint|TestReviewWorkerDisconnectReleaseFailurePreservesWorker)$'
+		;;
+	'pkg/dispatcher/review_worker_release.go:^(releaseCheckpointOwnedWorkerGenerationUsing)$')
+		printf '^TestReleaseCheckpointOwnedWorkerRejectsStaleConnectionGeneration$'
+		;;
+	'pkg/dispatcher/review_worker_release.go:^(releaseCheckpointOwnedWorkerGenerationWithActionUsing)$' | \
+		'pkg/dispatcher/review_worker_release.go:^(finalizeDurable)$' | \
+		'pkg/dispatcher/review_worker_release.go:^(runCheckpointWorkerReleaseLease)$')
+		printf '^TestCheckpointWorkerReleasePanicCleanup$'
+		;;
+	'pkg/dispatcher/review_worker_release.go:^(acquireCheckpointWorkerRelease)$' | \
+		'pkg/dispatcher/review_worker_release.go:^(acquireCheckpointWorkerReleaseLocked)$')
+		printf '^(TestCheckpointWorkerReleaseFenceTokenCannotBeClearedBySecondRelease|TestCheckpointWorkerReleaseLeaseAdmission)$'
+		;;
+	'pkg/dispatcher/review_worker_release.go:^(current)$')
+		printf '^TestCheckpointWorkerReleaseFenceTokenCannotBeClearedBySecondRelease$'
+		;;
+	'pkg/dispatcher/review_worker_release.go:^(waitForMessages)$')
+		printf '^(TestCheckpointWorkerReleaseContextCancelClearsOwnedDrain|TestCheckpointWorkerReleaseWaitsForAllInFlightMessages)$'
+		;;
+	'pkg/dispatcher/review_worker_release.go:^(abort)$')
+		printf '^(TestCheckpointWorkerReleaseContextCancelClearsOwnedDrain|TestCheckpointWorkerReleasePanicCleanup)$'
+		;;
+	'pkg/dispatcher/startup_recovery.go:^(beginReviewWorkerMessage)$' | \
+		'pkg/dispatcher/startup_recovery.go:^(finishReviewWorkerMessage)$')
+		printf '^TestCheckpointWorkerReleaseWaitsForAllInFlightMessages$'
+		;;
+	'pkg/dispatcher/startup_recovery.go:^(checkpointOwnedWorkerForConnection)$' | \
+		'pkg/dispatcher/startup_recovery.go:^(connCloseCleanup)$')
+		printf '^(TestReviewWorkerDisconnectDurablyReleasesCurrentCheckpoint|TestReviewWorkerDisconnectReleaseFailurePreservesWorker|TestReviewWorkerDisconnectStaleConnectionPreservesReplacement|TestReviewWorkerDisconnectStaleConnectionPreservesSamePointerReconnect)$'
+		;;
+	'pkg/dispatcher/startup_recovery.go:^(handleMessageFromConnection)$')
+		printf '^(TestCheckpointWorkerReleaseFenceRejectsReconnectAndMessages|TestHandleMessageFromConnectionRoutesAcceptedMessage)$'
+		;;
+	'pkg/dispatcher/worker_pool.go:^(registerWorkerWithProtocol)$' | \
+		'pkg/dispatcher/worker_pool.go:^(upsertWorker)$')
+		printf '^TestCheckpointWorkerReleaseFenceRejectsReconnectAndMessages$'
+		;;
+	'pkg/dispatcher/worker_directives.go:^(applyKillWorker)$' | \
+		'pkg/dispatcher/worker_directives.go:^(applyRestartWorker)$')
+		printf '^(TestOrdinaryWorkerDirectivesRetainExistingBehavior|TestReviewWorkerDirectivesDurablyReleaseCheckpoint)$'
+		;;
+	'pkg/dispatcher/worker_directives.go:^(killCheckpointOwnedWorker)$' | \
+		'pkg/dispatcher/worker_directives.go:^(killCheckpointOwnedWorkerUsing)$')
+		printf '^(TestReviewWorkerDirectiveReleaseFailureDoesNotFallBack|TestReviewWorkerDirectivesDurablyReleaseCheckpoint)$'
+		;;
+	'pkg/dispatcher/worker_directives.go:^(restartCheckpointOwnedWorker)$' | \
+		'pkg/dispatcher/worker_directives.go:^(restartCheckpointOwnedWorkerUsing)$')
+		printf '^(TestReviewWorkerDirectivesDurablyReleaseCheckpoint|TestReviewWorkerRestartActionErrorsStillFinalizeDurableRelease|TestReviewWorkerRestartFenceSpansStoreKillAndSpawn)$'
+		;;
+	'pkg/dispatcher/worker_pool.go:^(registerWorker)$')
+		printf '^TestSpawnFor_StopCleanupBeforeReconnectPreservesShutdownState$'
+		;;
+	'pkg/dispatcher/worker_pool.go:^(releaseReviewWorkerAfterSendFailure)$' | \
+		'pkg/dispatcher/worker_pool.go:^(releaseReviewWorkerAfterSendFailureUsing)$' | \
+		'pkg/dispatcher/worker_pool.go:^(sendToWorker)$')
+		printf '^(TestReviewSendFailureDefersReleaseUntilCurrentMessageExits|TestReviewWorkerSendFailureDurablyReleasesBeforeFallback|TestReviewWorkerSendFailurePreservesSamePointerReconnect|TestReviewWorkerSendFailureReleaseFailurePreservesMemory|TestReviewWorkerSendFailureStaleGenerationPreservesReplacement|TestReviewWorkerSynchronousSendReleasePanicRestoresCallerLock)$'
+		;;
+	'pkg/dispatcher/worker_pool.go:^(removeDeadWorkersLocked)$')
+		printf '^TestCheckHeartbeats_RemovesDeadBusyWorker$'
+		;;
+	'pkg/dispatcher/worker_pool.go:^(removeStoppedSpawnForWorkersLocked)$')
+		printf '^TestSpawnFor_StoppedWorkerHeartbeatTimeoutDoesNotEscalateCrash$'
+		;;
+	'pkg/dispatcher/worker_pool.go:^(removeStuckWorkersLocked)$')
+		printf '^TestCheckHeartbeats_DetectsStuckWorker$'
+		;;
+	'pkg/dispatcher/worker_pool.go:^(sendShutdownToConnectionWithoutBuffering)$')
+		printf '^TestReviewWorkerDirectivesDurablyReleaseCheckpoint$'
+		;;
+	esac
+}
+
 assignment_bc_mutation_test_pattern() {
 	local file="$1"
 	local match="$2"
@@ -526,11 +643,9 @@ authoritative_mutation_test_pattern() {
 		'pkg/dispatcher/ops_runs.go:^(completeOpsRunFromStatus)$' | \
 		'pkg/dispatcher/ops_runs.go:^(createOpsRun)$' | \
 		'pkg/dispatcher/ops_runs.go:^(findBlockingOpsRun)$' | \
-		'pkg/dispatcher/ops_runs.go:^(isSQLiteUniqueConstraint)$' | \
+	'pkg/dispatcher/ops_runs.go:^(isSQLiteUniqueConstraint)$' | \
 		'pkg/dispatcher/ops_runs.go:^(loadOpsRunByID)$' | \
 		'pkg/dispatcher/ops_runs.go:^(replaceOpsRun)$' | \
-		'pkg/dispatcher/ops_runs.go:^(reviewContextFromAnyWorkerLocked)$' | \
-		'pkg/dispatcher/ops_runs.go:^(reviewContextFromWorkerLocked)$' | \
 		'pkg/dispatcher/ops_runs.go:^(routeOpsRun)$' | \
 		'pkg/dispatcher/ops_runs.go:^(routeReviewOpsRun)$' | \
 		'pkg/dispatcher/ops_runs.go:^(supersedeAndRerouteOpsRun)$' | \
@@ -583,8 +698,6 @@ authoritative_mutation_test_file() {
 		'pkg/dispatcher/ops_runs.go:^(isSQLiteUniqueConstraint)$' | \
 		'pkg/dispatcher/ops_runs.go:^(loadOpsRunByID)$' | \
 		'pkg/dispatcher/ops_runs.go:^(replaceOpsRun)$' | \
-		'pkg/dispatcher/ops_runs.go:^(reviewContextFromAnyWorkerLocked)$' | \
-		'pkg/dispatcher/ops_runs.go:^(reviewContextFromWorkerLocked)$' | \
 		'pkg/dispatcher/ops_runs.go:^(routeOpsRun)$' | \
 		'pkg/dispatcher/ops_runs.go:^(routeReviewOpsRun)$' | \
 		'pkg/dispatcher/ops_runs.go:^(supersedeAndRerouteOpsRun)$' | \
@@ -818,10 +931,15 @@ targeted_test_pattern() {
 	local head="$2"
 	local file="$3"
 	local match="$4"
-	local assignment_admission_pattern assignment_bc_pattern authoritative_pattern escalation_survivor_pattern review_checkpoint_pattern review_integration_recovery_pattern startup_maintenance_pattern
+	local assignment_admission_pattern assignment_bc_pattern authoritative_pattern escalation_survivor_pattern review_checkpoint_pattern review_integration_recovery_pattern review_worker_lifecycle_pattern startup_maintenance_pattern
 	startup_maintenance_pattern=$(startup_maintenance_mutation_test_pattern "$file" "$match")
 	if [[ -n "$startup_maintenance_pattern" ]]; then
 		printf '%s' "$startup_maintenance_pattern"
+		return
+	fi
+	review_worker_lifecycle_pattern=$(review_worker_lifecycle_mutation_test_pattern "$file" "$match")
+	if [[ -n "$review_worker_lifecycle_pattern" ]]; then
+		printf '%s' "$review_worker_lifecycle_pattern"
 		return
 	fi
 	authoritative_pattern=$(authoritative_mutation_test_pattern "$file" "$match")

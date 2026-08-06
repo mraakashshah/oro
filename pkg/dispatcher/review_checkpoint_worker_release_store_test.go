@@ -180,6 +180,32 @@ END`)
 		}
 		assertReviewCheckpointWorkerReleaseState(ctx, t, store.db, checkpointID, assignmentID, "worker-database-failure", "active")
 	})
+
+	t.Run("hook failure rolls back unchanged records", func(t *testing.T) {
+		ctx := context.Background()
+		store := openReviewCheckpointStore(ctx, t, filepath.Join(t.TempDir(), "hook-failure.sqlite"))
+		checkpointID, assignmentID := seedReviewCheckpointWorkerRelease(ctx, t, store, "bead-hook-failure", "worker-hook-failure", ReviewCheckpointStateReviewRunning, "active")
+		wantErr := errors.New("injected release hook failure")
+
+		released, err := store.releaseWorkerWithHook(ctx, "bead-hook-failure", "worker-hook-failure", func(*sql.Tx) error {
+			return wantErr
+		})
+		if released || !errors.Is(err, wantErr) {
+			t.Fatalf("releaseWorkerWithHook() = (%t, %v), want (false, %v)", released, err, wantErr)
+		}
+		assertReviewCheckpointWorkerReleaseState(ctx, t, store.db, checkpointID, assignmentID, "worker-hook-failure", "active")
+	})
+
+	t.Run("cancelled context fails before transaction", func(t *testing.T) {
+		store := openReviewCheckpointStore(context.Background(), t, filepath.Join(t.TempDir(), "cancelled.sqlite"))
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		released, err := store.ReleaseWorker(ctx, "bead-cancelled", "worker-cancelled")
+		if released || !errors.Is(err, context.Canceled) {
+			t.Fatalf("ReleaseWorker(cancelled) = (%t, %v), want (false, context.Canceled)", released, err)
+		}
+	})
 }
 
 func seedReviewCheckpointWorkerRelease(
