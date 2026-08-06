@@ -282,7 +282,7 @@ TestGoCacheRestoresBeforeSetup() {
 }
 
 TestGoDispatcherIsolation() {
-	local go_job
+	local dispatcher_commands go_job
 	go_job=$(workflow_job_block go)
 	[[ -n "$go_job" ]] || fail 'workflow must define the Go job'
 
@@ -291,17 +291,28 @@ TestGoDispatcherIsolation() {
 	for required in \
 		'mapfile -t TEST_PKGS < <(go list ./internal/... ./pkg/... ./cmd/... | grep -vx '\''oro/pkg/dispatcher'\'')' \
 		'go test -race -shuffle=on "${TEST_PKGS[@]}"' \
-		'go test -race -shuffle=on -p 1 ./pkg/dispatcher' \
+		'go test -race -shuffle=on -p 1 -timeout=20m ./pkg/dispatcher' \
 		'mapfile -t COVERAGE_PKGS < <(go list ./internal/... ./pkg/... | grep -v '\''pkg/dashboard/'\'' | grep -vx '\''oro/pkg/dispatcher'\'')' \
 		'go test -race -shuffle=on -coverprofile=coverage-other.out "${COVERAGE_PKGS[@]}"' \
-		'go test -race -shuffle=on -p 1 -coverprofile=coverage-dispatcher.out ./pkg/dispatcher' \
+		'go test -race -shuffle=on -p 1 -timeout=20m -coverprofile=coverage-dispatcher.out ./pkg/dispatcher' \
 		'test "$(head -n 1 coverage-other.out)" = "mode: atomic"' \
 		'test "$(head -n 1 coverage-dispatcher.out)" = "mode: atomic"' \
 		'tail -n +2 coverage-dispatcher.out' \
-		'} >coverage.out'; do
+		'} >coverage.out' \
+		'COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '\''{print $3}'\'' | sed '\''s/%//'\'')' \
+		'awk "BEGIN {exit ($COVERAGE < 78)}"'; do
 		printf '%s\n' "$go_job" | grep -Fq -- "$required" ||
 			fail "Go Test + Coverage must isolate dispatcher without weakening race, shuffle, or coverage: $required"
 	done
+
+	dispatcher_commands=$(printf '%s\n' "$go_job" | grep -F 'go test ' | grep -F './pkg/dispatcher')
+	[[ $(printf '%s\n' "$dispatcher_commands" | wc -l) -eq 2 ]] ||
+		fail 'Go Test + Coverage must execute exactly two full dispatcher race commands'
+	[[ $(printf '%s\n' "$dispatcher_commands" | grep -Fc -- '-timeout=20m') -eq 2 ]] ||
+		fail 'each full dispatcher race command must use the explicit 20-minute package deadline'
+	if printf '%s\n' "$dispatcher_commands" | grep -Eq -- '(^|[[:space:]])-(run|skip)(=|[[:space:]])'; then
+		fail 'dispatcher race commands must not omit tests with -run or -skip'
+	fi
 
 	if printf '%s\n' "$go_job" | grep -Fq 'go test -race -shuffle=on ./internal/... ./pkg/... ./cmd/...'; then
 		fail 'Go correctness must not couple dispatcher to the broad concurrent package invocation'
