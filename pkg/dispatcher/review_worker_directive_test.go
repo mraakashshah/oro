@@ -1,7 +1,11 @@
 package dispatcher //nolint:testpackage // white-box lifecycle edge assertions
 
 import (
+	"context"
+	"errors"
+	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"oro/pkg/protocol"
@@ -166,5 +170,218 @@ func TestOrdinaryWorkerDirectivesRetainExistingBehavior(t *testing.T) {
 				t.Fatalf("ordinary %s worker remains tracked: %p", tc.name, got)
 			}
 		})
+	}
+}
+
+func TestReviewWorkerKillFenceRejectsReconnectUntilFinalized(t *testing.T) {
+	ctx := context.Background()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	d.targetWorkers = 2
+	checkpointID, assignmentID, worker := seedCheckpointOwnedEdgeWorker(t, d, "kill-fence", ReviewCheckpointStateReviewRunning, "active")
+	worker.managed = true
+	observedConn := worker.conn
+	storeStarted := make(chan struct{})
+	releaseStore := make(chan struct{})
+	done := make(chan error, 1)
+	drainCheckpointReleaseWakes(d)
+
+	go func() {
+		_, err := d.killCheckpointOwnedWorkerUsing(ctx, worker, observedConn,
+			func(ctx context.Context, beadID, workerID string) (bool, error) {
+				close(storeStarted)
+				<-releaseStore
+				return NewReviewCheckpointStore(d.db).ReleaseWorker(ctx, beadID, workerID)
+			})
+		done <- err
+	}()
+	<-storeStarted
+	if accepted := d.registerWorkerWithProtocol(worker.id, newMockConn(), false); accepted {
+		t.Fatal("kill fence accepted reconnect while Store blocked")
+	}
+	close(releaseStore)
+	if err := <-done; err != nil {
+		t.Fatalf("kill fenced review worker: %v", err)
+	}
+
+	assertCheckpointOwnedEdgeReleased(t, d, checkpointID, assignmentID, ReviewCheckpointStateReviewRunning)
+	assertCheckpointReleaseEvent(t, d, worker.beadID, worker.id, ReviewReleaseCauseKilled)
+	assertOneCheckpointReleaseWake(t, d)
+	if got := trackedReleaseWorker(d, worker.id); got != nil {
+		t.Fatalf("killed review worker remains tracked: %p", got)
+	}
+	if d.targetWorkers != 1 {
+		t.Fatalf("targetWorkers = %d, want 1", d.targetWorkers)
+	}
+	assertShutdownWrittenToConn(t, observedConn)
+	if accepted := d.registerWorkerWithProtocol(worker.id, newMockConn(), false); !accepted {
+		t.Fatal("kill fence rejected C3 after finalization")
+	}
+}
+
+func TestReviewWorkerRestartFenceSpansStoreKillAndSpawn(t *testing.T) {
+	ctx := context.Background()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	pm := newBlockingDirectiveProcessManager()
+	d.procMgr = pm
+	checkpointID, assignmentID, worker := seedCheckpointOwnedEdgeWorker(t, d, "restart-fence", ReviewCheckpointStateReviewRunning, "active")
+	worker.managed = true
+	observedConn := worker.conn
+	storeStarted := make(chan struct{})
+	releaseStore := make(chan struct{})
+	done := make(chan error, 1)
+	drainCheckpointReleaseWakes(d)
+
+	go func() {
+		_, err := d.restartCheckpointOwnedWorkerUsing(ctx, worker, observedConn,
+			func(ctx context.Context, beadID, workerID string) (bool, error) {
+				close(storeStarted)
+				<-releaseStore
+				return NewReviewCheckpointStore(d.db).ReleaseWorker(ctx, beadID, workerID)
+			})
+		done <- err
+	}()
+	<-storeStarted
+	assertReviewReconnectRejected(t, d, worker.id, "Store")
+	close(releaseStore)
+	<-pm.killStarted
+	assertReviewReconnectRejected(t, d, worker.id, "Kill")
+	close(pm.releaseKill)
+	<-pm.spawnStarted
+	d.mu.Lock()
+	pendingBefore := d.pendingManagedIDs[worker.id]
+	d.mu.Unlock()
+	if !pendingBefore {
+		t.Fatal("restart did not install pending-managed state before Spawn")
+	}
+	assertReviewReconnectRejected(t, d, worker.id, "Spawn")
+	d.mu.Lock()
+	pendingAfter := d.pendingManagedIDs[worker.id]
+	d.mu.Unlock()
+	if !pendingAfter {
+		t.Fatal("rejected Spawn-phase reconnect consumed pending-managed state")
+	}
+	close(pm.releaseSpawn)
+	if err := <-done; err != nil {
+		t.Fatalf("restart fenced review worker: %v", err)
+	}
+
+	assertCheckpointOwnedEdgeReleased(t, d, checkpointID, assignmentID, ReviewCheckpointStateReviewRunning)
+	assertCheckpointReleaseEvent(t, d, worker.beadID, worker.id, ReviewReleaseCauseRestarted)
+	assertOneCheckpointReleaseWake(t, d)
+	assertShutdownWrittenToConn(t, observedConn)
+	if got := trackedReleaseWorker(d, worker.id); got != nil {
+		t.Fatalf("restarted review worker remains tracked: %p", got)
+	}
+	if accepted := d.registerWorkerWithProtocol(worker.id, newMockConn(), false); !accepted {
+		t.Fatal("restart fence rejected C3 after finalization")
+	}
+}
+
+func TestReviewWorkerRestartActionErrorsStillFinalizeDurableRelease(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		killErr  error
+		spawnErr error
+	}{
+		{name: "kill error", killErr: errors.New("injected kill failure")},
+		{name: "spawn error", spawnErr: errors.New("injected spawn failure")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, _, _, _, _, _ := newTestDispatcher(t)
+			pm := &mockProcessManager{killErr: tc.killErr, spawnErr: tc.spawnErr}
+			d.procMgr = pm
+			checkpointID, assignmentID, worker := seedCheckpointOwnedEdgeWorker(t, d, "restart-action-"+tc.name, ReviewCheckpointStateReviewRunning, "active")
+			worker.managed = true
+			observedConn := worker.conn
+			drainCheckpointReleaseWakes(d)
+
+			_, err := d.restartCheckpointOwnedWorkerUsing(context.Background(), worker, observedConn,
+				NewReviewCheckpointStore(d.db).ReleaseWorker)
+
+			if err == nil {
+				t.Fatal("restart action error = nil")
+			}
+			assertCheckpointOwnedEdgeReleased(t, d, checkpointID, assignmentID, ReviewCheckpointStateReviewRunning)
+			assertCheckpointReleaseEvent(t, d, worker.beadID, worker.id, ReviewReleaseCauseRestarted)
+			assertOneCheckpointReleaseWake(t, d)
+			if got := trackedReleaseWorker(d, worker.id); got != nil {
+				t.Fatalf("action-error review worker remains tracked: %p", got)
+			}
+			d.mu.Lock()
+			pending := d.pendingManagedIDs[worker.id]
+			d.mu.Unlock()
+			if tc.killErr != nil && (pending || len(pm.SpawnedIDs()) != 0) {
+				t.Fatalf("kill error bookkeeping = pending %t spawned %v, want false/none", pending, pm.SpawnedIDs())
+			}
+			if tc.spawnErr != nil && !pending {
+				t.Fatal("spawn error did not preserve pending-managed retry state")
+			}
+			if accepted := d.registerWorkerWithProtocol(worker.id, newMockConn(), false); !accepted {
+				t.Fatal("action error retained restart fence")
+			}
+		})
+	}
+}
+
+type blockingDirectiveProcessManager struct {
+	killStarted  chan struct{}
+	releaseKill  chan struct{}
+	spawnStarted chan struct{}
+	releaseSpawn chan struct{}
+	mu           sync.Mutex
+	killed       []string
+	spawned      []string
+}
+
+func newBlockingDirectiveProcessManager() *blockingDirectiveProcessManager {
+	return &blockingDirectiveProcessManager{
+		killStarted:  make(chan struct{}),
+		releaseKill:  make(chan struct{}),
+		spawnStarted: make(chan struct{}),
+		releaseSpawn: make(chan struct{}),
+	}
+}
+
+func (p *blockingDirectiveProcessManager) Kill(id string) error {
+	p.mu.Lock()
+	p.killed = append(p.killed, id)
+	p.mu.Unlock()
+	close(p.killStarted)
+	<-p.releaseKill
+	return nil
+}
+
+func (p *blockingDirectiveProcessManager) Spawn(id string) (*os.Process, error) {
+	p.mu.Lock()
+	p.spawned = append(p.spawned, id)
+	p.mu.Unlock()
+	close(p.spawnStarted)
+	<-p.releaseSpawn
+	return nil, nil
+}
+
+func (*blockingDirectiveProcessManager) IsAlive(string) bool { return true }
+
+func assertReviewReconnectRejected(t *testing.T, d *Dispatcher, workerID, phase string) {
+	t.Helper()
+	conn := newMockConn()
+	if accepted := d.registerWorkerWithProtocol(workerID, conn, false); accepted {
+		t.Fatalf("restart fence accepted reconnect during %s", phase)
+	}
+	if !conn.closed {
+		t.Fatalf("restart fence left %s reconnect open", phase)
+	}
+}
+
+func assertShutdownWrittenToConn(t *testing.T, conn any) {
+	t.Helper()
+	mock, ok := conn.(*mockConn)
+	if !ok {
+		t.Fatalf("connection = %T, want *mockConn", conn)
+	}
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if len(mock.written) != 1 || !strings.Contains(string(mock.written[0]), string(protocol.MsgShutdown)) {
+		t.Fatalf("shutdown writes = %q, want one SHUTDOWN", mock.written)
 	}
 }

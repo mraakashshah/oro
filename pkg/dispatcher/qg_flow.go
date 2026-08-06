@@ -224,7 +224,7 @@ func (d *Dispatcher) withReservation(workerID string, ioFn func() string, assign
 
 	// Phase 2: Verify reservation still valid, then call assignFn.
 	w, ok := d.workers[workerID]
-	if !ok || w.state != protocol.WorkerReserved {
+	if !ok || w.state != protocol.WorkerReserved || w.reviewReleaseToken != 0 {
 		return false
 	}
 

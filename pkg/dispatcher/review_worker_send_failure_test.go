@@ -1,7 +1,9 @@
 package dispatcher //nolint:testpackage // white-box lifecycle edge assertions
 
 import (
+	"context"
 	"errors"
+	"net"
 	"testing"
 
 	"oro/pkg/protocol"
@@ -104,4 +106,86 @@ func TestReviewWorkerSendFailureStaleGenerationPreservesReplacement(t *testing.T
 	if got := len(stale.pendingMsgs); got != 0 {
 		t.Fatalf("stale review send buffered %d messages, want none", got)
 	}
+}
+
+func TestReviewWorkerSendFailurePreservesSamePointerReconnect(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	checkpointID, assignmentID, worker := seedCheckpointOwnedEdgeWorker(t, d, "send-same-pointer", ReviewCheckpointStateReviewRunning, "active")
+	replacementConn := newMockConn()
+	failingConn := &reconnectingFailConn{
+		failConn: &failConn{},
+		reconnect: func() {
+			worker.conn = replacementConn
+		},
+	}
+	worker.conn = failingConn
+	drainCheckpointReleaseWakes(d)
+
+	d.mu.Lock()
+	err := d.sendToWorker(worker, protocol.Message{Type: protocol.MsgReviewResult})
+	d.mu.Unlock()
+
+	if err == nil {
+		t.Fatal("sendToWorker error = nil, want failed stale send")
+	}
+	if got := trackedReleaseWorker(d, worker.id); got != worker {
+		t.Fatalf("failed stale send changed replacement worker: got %p, want %p", got, worker)
+	} else if got.conn != replacementConn {
+		t.Fatalf("failed stale send changed replacement connection: got %p, want %p", got.conn, replacementConn)
+	}
+	var checkpointWorker, assignmentStatus string
+	if err := d.db.QueryRow(`SELECT COALESCE(worker_id, '') FROM review_checkpoints WHERE id=?`, checkpointID).Scan(&checkpointWorker); err != nil {
+		t.Fatalf("load checkpoint worker: %v", err)
+	}
+	if err := d.db.QueryRow(`SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&assignmentStatus); err != nil {
+		t.Fatalf("load assignment: %v", err)
+	}
+	if checkpointWorker != worker.id || assignmentStatus != "active" {
+		t.Fatalf("stale send released durable ownership: worker/status=%q/%q, want %q/active", checkpointWorker, assignmentStatus, worker.id)
+	}
+	if got := len(worker.pendingMsgs); got != 0 {
+		t.Fatalf("stale review send buffered %d messages, want none", got)
+	}
+	assertCheckpointReleaseEventCount(t, d, 0)
+	assertNoCheckpointReleaseWake(t, d)
+}
+
+func TestReviewWorkerSynchronousSendReleasePanicRestoresCallerLock(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	_, _, worker := seedCheckpointOwnedEdgeWorker(t, d, "send-sync-panic", ReviewCheckpointStateReviewRunning, "active")
+	observedConn := worker.conn
+	d.mu.Lock()
+	panicValue := captureCheckpointReleasePanic(func() {
+		_, _, _, _ = d.releaseReviewWorkerAfterSendFailureUsing(
+			worker, observedConn,
+			func(context.Context, string, string) (bool, error) {
+				panic("sync send Store panic")
+			},
+		)
+	})
+	if panicValue != "sync send Store panic" {
+		t.Fatalf("panic = %v, want sync send Store panic", panicValue)
+	}
+	if unlockPanic := captureCheckpointReleasePanic(func() { d.mu.Unlock() }); unlockPanic != nil {
+		t.Fatalf("caller lock was not restored after panic: %v", unlockPanic)
+	}
+	d.mu.Lock()
+	workersInitialized := d.workers != nil
+	d.mu.Unlock()
+	if !workersInitialized {
+		t.Fatal("dispatcher workers map unusable after panic")
+	}
+	if got := trackedReleaseWorker(d, worker.id); got != worker {
+		t.Fatalf("sync Store panic changed worker: got %p, want %p", got, worker)
+	}
+}
+
+type reconnectingFailConn struct {
+	*failConn
+	reconnect func()
+}
+
+func (c *reconnectingFailConn) Write([]byte) (int, error) {
+	c.reconnect()
+	return 0, net.ErrClosed
 }

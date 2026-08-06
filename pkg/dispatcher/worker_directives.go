@@ -29,8 +29,9 @@ func (d *Dispatcher) applyKillWorker(args string) (string, error) {
 		return "", fmt.Errorf("worker not found")
 	}
 	if w.state == protocol.WorkerReviewing && w.beadID != "" {
+		observedConn := w.conn
 		d.mu.Unlock()
-		return d.killCheckpointOwnedWorker(ctx, w)
+		return d.killCheckpointOwnedWorker(ctx, w, observedConn)
 	}
 
 	// Capture fields before removing worker.
@@ -79,29 +80,40 @@ func (d *Dispatcher) applyKillWorker(args string) (string, error) {
 	return fmt.Sprintf("worker %s killed", workerID), nil
 }
 
-func (d *Dispatcher) killCheckpointOwnedWorker(ctx context.Context, expected *trackedWorker) (string, error) {
-	released, err := d.releaseCheckpointOwnedWorker(ctx, expected, ReviewReleaseCauseKilled)
+func (d *Dispatcher) killCheckpointOwnedWorker(
+	ctx context.Context,
+	expected *trackedWorker,
+	observedConn net.Conn,
+) (string, error) {
+	return d.killCheckpointOwnedWorkerUsing(
+		ctx, expected, observedConn, NewReviewCheckpointStore(d.db).ReleaseWorker,
+	)
+}
+
+func (d *Dispatcher) killCheckpointOwnedWorkerUsing(
+	ctx context.Context,
+	expected *trackedWorker,
+	observedConn net.Conn,
+	releaseFn checkpointWorkerReleaseFunc,
+) (string, error) {
+	released, err := d.releaseCheckpointOwnedWorkerGenerationWithActionUsing(
+		ctx, expected, observedConn, ReviewReleaseCauseKilled, releaseFn,
+		func(*checkpointWorkerReleaseLease) error {
+			sendShutdownToConnectionWithoutBuffering(observedConn)
+			return nil
+		},
+		func(lease *checkpointWorkerReleaseLease) {
+			if lease.managed && !lease.spawnFor && d.targetWorkers > 0 {
+				d.targetWorkers--
+			}
+		},
+	)
 	if err != nil {
 		return "", fmt.Errorf("release review checkpoint worker for kill: %w", err)
 	}
 	if !released {
 		return "", fmt.Errorf("release review checkpoint worker for kill: ownership changed")
 	}
-
-	d.mu.Lock()
-	_, replacementPresent := d.workers[expected.id]
-	if replacementPresent {
-		d.mu.Unlock()
-		return fmt.Sprintf("worker %s killed", expected.id), nil
-	}
-	if expected.managed && !expected.spawnFor && d.targetWorkers > 0 {
-		d.targetWorkers--
-	}
-	d.mu.Unlock()
-
-	// The durable release owns worker removal, event emission, and assignment-loop
-	// notification. Only process shutdown and capacity bookkeeping remains here.
-	sendShutdownWithoutBuffering(expected)
 	return fmt.Sprintf("worker %s killed", expected.id), nil
 }
 
@@ -342,9 +354,9 @@ func (d *Dispatcher) applyRestartWorker(args string) (string, error) {
 		return "", fmt.Errorf("worker not found")
 	}
 	if w.state == protocol.WorkerReviewing && w.beadID != "" {
-		procMgr := d.procMgr
+		observedConn := w.conn
 		d.mu.Unlock()
-		return d.restartCheckpointOwnedWorker(ctx, w, procMgr)
+		return d.restartCheckpointOwnedWorker(ctx, w, observedConn)
 	}
 	d.mu.Unlock()
 
@@ -392,39 +404,49 @@ func (d *Dispatcher) applyRestartWorker(args string) (string, error) {
 func (d *Dispatcher) restartCheckpointOwnedWorker(
 	ctx context.Context,
 	expected *trackedWorker,
-	procMgr ProcessManager,
+	observedConn net.Conn,
 ) (string, error) {
-	released, err := d.releaseCheckpointOwnedWorker(ctx, expected, ReviewReleaseCauseRestarted)
+	return d.restartCheckpointOwnedWorkerUsing(
+		ctx, expected, observedConn, NewReviewCheckpointStore(d.db).ReleaseWorker,
+	)
+}
+
+func (d *Dispatcher) restartCheckpointOwnedWorkerUsing(
+	ctx context.Context,
+	expected *trackedWorker,
+	observedConn net.Conn,
+	releaseFn checkpointWorkerReleaseFunc,
+) (string, error) {
+	released, err := d.releaseCheckpointOwnedWorkerGenerationWithActionUsing(
+		ctx, expected, observedConn, ReviewReleaseCauseRestarted, releaseFn,
+		func(lease *checkpointWorkerReleaseLease) error {
+			sendShutdownToConnectionWithoutBuffering(observedConn)
+			if err := d.killManagedWorkerForRestart(ctx, lease.procMgr, lease.workerID, lease.beadID, lease.managed); err != nil {
+				return err
+			}
+			if lease.managed {
+				d.mu.Lock()
+				current := d.workers[lease.workerID]
+				if current == expected && current.reviewReleaseToken == lease.token && current.conn == observedConn {
+					d.pendingManagedIDs[lease.workerID] = true
+					d.pendingManagedSince[lease.workerID] = d.nowFunc()
+				}
+				d.mu.Unlock()
+			}
+			if lease.procMgr != nil {
+				if _, err := lease.procMgr.Spawn(lease.workerID); err != nil {
+					return fmt.Errorf("spawn new worker: %w", err)
+				}
+			}
+			return nil
+		},
+		nil,
+	)
 	if err != nil {
 		return "", fmt.Errorf("release review checkpoint worker for restart: %w", err)
 	}
 	if !released {
 		return "", fmt.Errorf("release review checkpoint worker for restart: ownership changed")
-	}
-
-	// A replacement generation may connect while the durable transaction is in
-	// flight. It already owns the worker ID, so never kill or respawn over it.
-	d.mu.Lock()
-	current := d.workers[expected.id]
-	d.mu.Unlock()
-	if current != nil {
-		return fmt.Sprintf("worker %s restarted", expected.id), nil
-	}
-
-	sendShutdownWithoutBuffering(expected)
-	if err := d.killManagedWorkerForRestart(ctx, procMgr, expected.id, expected.beadID, expected.managed); err != nil {
-		return "", err
-	}
-	if expected.managed {
-		d.mu.Lock()
-		d.pendingManagedIDs[expected.id] = true
-		d.pendingManagedSince[expected.id] = d.nowFunc()
-		d.mu.Unlock()
-	}
-	if procMgr != nil {
-		if _, err := procMgr.Spawn(expected.id); err != nil {
-			return "", fmt.Errorf("spawn new worker: %w", err)
-		}
 	}
 	return fmt.Sprintf("worker %s restarted", expected.id), nil
 }

@@ -93,6 +93,24 @@ func TestReviewWorkerDisconnectStaleConnectionPreservesReplacement(t *testing.T)
 	}
 }
 
+func TestReviewWorkerDisconnectStaleConnectionPreservesSamePointerReconnect(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	_, _, worker := seedCheckpointOwnedEdgeWorker(t, d, "disconnect-same-pointer", ReviewCheckpointStateReviewRunning, "active")
+	staleConn := worker.conn
+	replacementConn := newMockConn()
+	d.mu.Lock()
+	worker.conn = replacementConn
+	d.mu.Unlock()
+
+	d.connCloseCleanup(worker.id, staleConn)
+
+	if got := trackedReleaseWorker(d, worker.id); got != worker {
+		t.Fatalf("stale disconnect changed same-pointer worker: got %p, want %p", got, worker)
+	} else if got.conn != replacementConn {
+		t.Fatalf("stale disconnect changed replacement connection: got %p, want %p", got.conn, replacementConn)
+	}
+}
+
 func seedCheckpointOwnedEdgeWorker(
 	t *testing.T,
 	d *Dispatcher,
