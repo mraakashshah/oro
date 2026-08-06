@@ -982,7 +982,9 @@ const maxPendingMessages = 10
 
 // sendToWorker sends a message to a tracked worker. If the worker is
 // disconnected (write fails), the message is buffered up to maxPendingMessages.
-// If the buffer exceeds maxPendingMessages, the worker is removed from tracking.
+// Checkpoint-owned review workers are durably released instead of entering the
+// ordinary buffer/removal fallback. If an ordinary worker's buffer exceeds
+// maxPendingMessages, the worker is removed from tracking.
 // Caller must hold d.mu.
 func (d *Dispatcher) sendToWorker(w *trackedWorker, msg protocol.Message) error {
 	data, err := json.Marshal(msg)
@@ -996,6 +998,23 @@ func (d *Dispatcher) sendToWorker(w *trackedWorker, msg protocol.Message) error 
 	}
 	_, err = w.conn.Write(data)
 	if err != nil {
+		workerID, beadID := w.id, w.beadID
+		attempted, released, releaseErr := d.releaseReviewWorkerAfterSendFailure(w)
+		if attempted {
+			if releaseErr != nil {
+				return fmt.Errorf("release review checkpoint after send failure: %w", releaseErr)
+			}
+			reason := fmt.Sprintf("write failed: %v (review checkpoint release did not commit)", err)
+			if released {
+				reason = fmt.Sprintf("write failed: %v (review checkpoint released)", err)
+			}
+			return &protocol.WorkerUnreachableError{
+				WorkerID: workerID,
+				BeadID:   beadID,
+				Reason:   reason,
+			}
+		}
+
 		// Connection is broken — buffer the message
 		w.pendingMsgs = append(w.pendingMsgs, msg)
 
@@ -1019,6 +1038,20 @@ func (d *Dispatcher) sendToWorker(w *trackedWorker, msg protocol.Message) error 
 		}
 	}
 	return nil
+}
+
+// releaseReviewWorkerAfterSendFailure temporarily drops d.mu so the durable
+// checkpoint transaction precedes any in-memory removal. attempted is true for
+// every review-owned send failure, including conflicts and stale generations;
+// callers must not enter the ordinary fallback after such an attempt.
+func (d *Dispatcher) releaseReviewWorkerAfterSendFailure(w *trackedWorker) (attempted, released bool, err error) {
+	if w.state != protocol.WorkerReviewing || w.beadID == "" {
+		return false, false, nil
+	}
+	d.mu.Unlock()
+	released, err = d.releaseCheckpointOwnedWorker(context.Background(), w, ReviewReleaseCauseSendFailed)
+	d.mu.Lock()
+	return true, released, err
 }
 
 // --- Graceful shutdown ---
