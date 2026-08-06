@@ -233,6 +233,7 @@ func (h *autonomousIntakeHarness) start(t *testing.T) {
 		AllowZeroWorkers: true,
 		HeartbeatTimeout: 10 * time.Second,
 		PollInterval:     time.Hour,
+		ShutdownTimeout:  1 * time.Second,
 	}
 	d, err := dispatcher.New(cfg, db, merge.NewCoordinator(&merge.ExecGitRunner{}), ops.NewSpawner(nil), beadstore.NewSQLiteStore(db), dispatcher.NewGitWorktreeManager(h.managedWorktree, "", "", &dispatcher.ExecCommandRunner{}), dispatcher.NoopEscalator{}, nil)
 	if err != nil {

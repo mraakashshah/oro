@@ -237,7 +237,7 @@ func TestEnsureCanonicalBeadQueueViewsRepairsRealSQLiteSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open SQLite database: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
 		t.Fatalf("ping SQLite database: %v", err)
