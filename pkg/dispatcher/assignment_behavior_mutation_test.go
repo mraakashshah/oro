@@ -312,14 +312,10 @@ func assignmentBehaviorAssignBounded(
 	go func() {
 		result <- d.assignBeadWithClaim(context.Background(), worker, bead, focusVersionOpt, onClaim, onOutcome)
 	}()
-	select {
-	case err := <-result:
-		assertDispatcherMutexAvailableWithin(t, d, 250*time.Millisecond)
-		return err
-	case <-time.After(5 * time.Second):
-		t.Fatal("assignBeadWithClaim did not return; dispatcher mutex may be retained")
-		return nil
-	}
+	err := waitForDispatcherOperationWithin(t, d, result, 5*time.Second,
+		"assignBeadWithClaim did not return; dispatcher mutex may be retained")
+	assertDispatcherMutexAvailableWithin(t, d, 250*time.Millisecond)
+	return err
 }
 
 func assignmentBehaviorRejectsEmptyBeadID(t *testing.T, h *assignmentBehaviorHarness) {
@@ -371,7 +367,7 @@ func assignmentBehaviorCallsAdmissionSeam(t *testing.T, h *assignmentBehaviorHar
 		}
 	}
 
-	if err := d.assignBeadWithClaim(context.Background(), worker, bead, nil, nil, nil); err != nil {
+	if err := assignmentBehaviorAssignBounded(t, d, worker, bead, nil, nil, nil); err != nil {
 		t.Fatalf("assign through admission seam: %v", err)
 	}
 	if seamCalls != 1 {
@@ -670,7 +666,7 @@ func assignmentBehaviorStatusFailureReleasesClaimAndMutex(t *testing.T, h *assig
 	beads.mu.Unlock()
 	var claims []bool
 
-	if err := d.assignBeadWithClaim(context.Background(), worker, bead, nil,
+	if err := assignmentBehaviorAssignBounded(t, d, worker, bead, nil,
 		func(claimed bool) { claims = append(claims, claimed) }, nil); err != nil {
 		t.Fatalf("assign with status failure: %v", err)
 	}
@@ -743,7 +739,7 @@ func assignmentBehaviorAtomicObservationFailureIsAudited(t *testing.T, h *assign
 		return "/tmp/worktree-" + bead.ID, protocol.BranchPrefix + bead.ID, nil
 	})
 
-	if err := d.assignBeadWithClaim(context.Background(), worker, bead, nil, nil, nil); err != nil {
+	if err := assignmentBehaviorAssignBounded(t, d, worker, bead, nil, nil, nil); err != nil {
 		t.Fatalf("assign with failed checkpoint observation: %v", err)
 	}
 	removed := worktrees.removedSince(removedBefore)
@@ -773,7 +769,7 @@ END;`); err != nil {
 		t.Fatalf("install cleanup failure triggers: %v", err)
 	}
 
-	if err := d.assignBeadWithClaim(context.Background(), worker, bead, nil, nil, nil); err != nil {
+	if err := assignmentBehaviorAssignBounded(t, d, worker, bead, nil, nil, nil); err != nil {
 		t.Fatalf("assign with capability failure: %v", err)
 	}
 	removed := worktrees.removedSince(removedBefore)

@@ -294,15 +294,12 @@ func assignmentClaimAuthoritativeAssign(t *testing.T, h *assignmentClaimAuthorit
 			func(claimed bool) { claims = append(claims, claimed) },
 			func(outcome assignmentSetupOutcome) { outcomes = append(outcomes, outcome) })
 	}()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("assign bead: %v", err)
-		}
-		assertDispatcherMutexAvailableWithin(t, h.d, 250*time.Millisecond)
-	case <-time.After(2 * time.Second):
-		t.Fatal("assign bead did not return; dispatcher lock was retained")
+	err := waitForDispatcherOperationWithin(t, h.d, done, 2*time.Second,
+		"assign bead did not return; dispatcher lock was retained")
+	if err != nil {
+		t.Fatalf("assign bead: %v", err)
 	}
+	assertDispatcherMutexAvailableWithin(t, h.d, 250*time.Millisecond)
 	return claims, outcomes
 }
 

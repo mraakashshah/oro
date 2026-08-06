@@ -42,6 +42,43 @@ func TestDispatcherMutexWatchdogReleasesRetainedMutexForCleanup(t *testing.T) {
 	}
 }
 
+func TestDispatcherOperationWatchdogReleasesRetainedMutexForCleanup(t *testing.T) {
+	const childEnv = "ORO_TEST_RETAINED_DISPATCHER_MUTEX_DURING_OPERATION"
+	if os.Getenv(childEnv) == "1" {
+		d := &Dispatcher{}
+		d.mu.Lock()
+		returned := make(chan struct{})
+		go func() {
+			d.mu.Lock()
+			d.mu.Unlock()
+			close(returned)
+		}()
+		t.Cleanup(func() {
+			d.mu.Lock()
+			d.mu.Unlock()
+		})
+		waitForDispatcherOperationWithin(t, d, returned, 20*time.Millisecond,
+			"bounded operation did not return; dispatcher mutex may be retained")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], //nolint:gosec // test helper re-executes this binary with fixed arguments
+		"-test.run=^TestDispatcherOperationWatchdogReleasesRetainedMutexForCleanup$", "-test.count=1")
+	cmd.Env = append(os.Environ(), childEnv+"=1")
+	output, err := cmd.CombinedOutput()
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		t.Fatalf("in-flight retained-mutex watchdog hung during cleanup: %s", output)
+	}
+	if err == nil {
+		t.Fatal("in-flight retained-mutex watchdog child passed, want the watchdog assertion to fail")
+	}
+	if !strings.Contains(string(output), "bounded operation did not return; dispatcher mutex may be retained") {
+		t.Fatalf("in-flight retained-mutex watchdog output = %s", output)
+	}
+}
+
 func TestSpawnEscalationOneShotReturnsAfterReadingWorktree(t *testing.T) {
 	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
 	const beadID = "mutation-bounded-escalation"
@@ -153,18 +190,43 @@ func reviewContextForOpsRunWithin(
 	record OpsRunRecord,
 ) reviewOpsRunContext {
 	t.Helper()
-	returned := make(chan struct{})
-	var reviewCtx reviewOpsRunContext
+	returned := make(chan reviewOpsRunContext, 1)
 	go func() {
-		reviewCtx = d.reviewContextForOpsRun(ctx, record)
-		close(returned)
+		returned <- d.reviewContextForOpsRun(ctx, record)
 	}()
+	reviewCtx := waitForDispatcherOperationWithin(t, d, returned, 250*time.Millisecond,
+		"reviewContextForOpsRun did not return within its bounded in-memory contract")
+	return reviewCtx
+}
+
+func waitForDispatcherOperationWithin[T any](
+	t *testing.T,
+	d *Dispatcher,
+	returned <-chan T,
+	timeout time.Duration,
+	failure string,
+) T {
+	t.Helper()
 	select {
-	case <-returned:
-		return reviewCtx
-	case <-time.After(250 * time.Millisecond):
-		t.Fatal("reviewContextForOpsRun did not return within its bounded in-memory contract")
-		return reviewOpsRunContext{}
+	case result := <-returned:
+		return result
+	case <-time.After(timeout):
+	}
+	if d.mu.TryLock() {
+		d.mu.Unlock()
+	} else {
+		// The bounded operation is the only possible mutex owner. Release a
+		// mutant-retained lock so it and test cleanup can finish before failing.
+		d.mu.Unlock()
+	}
+	select {
+	case result := <-returned:
+		t.Fatal(failure)
+		return result
+	case <-time.After(timeout):
+		var zero T
+		t.Fatal(failure)
+		return zero
 	}
 }
 
