@@ -538,8 +538,11 @@ func TestOpsAuthoritativeSurvivorMutationReviewContexts(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM events WHERE type='review_checkpoint_context_restore_failed'`).Scan(&emptyEvents); err != nil || emptyEvents != 0 {
 		t.Fatalf("empty bead restore events = %d err %v", emptyEvents, err)
 	}
-	if absent := d.reviewContextForOpsRun(ctx, OpsRunRecord{BeadID: "authoritative-absent"}); absent != (reviewOpsRunContext{}) {
-		t.Fatalf("absent worker context = %+v", absent)
+	absent, absentSnapshot := opsAuthoritativeReviewContextSnapshot(
+		t, d, ctx, OpsRunRecord{BeadID: "authoritative-absent"},
+	)
+	if absent != (reviewOpsRunContext{}) || absentSnapshot != "" {
+		t.Fatalf("absent worker context = %+v, worktree snapshot = %q", absent, absentSnapshot)
 	}
 	checkpoint, err := NewReviewCheckpointStore(db).CreateOrReuse(ctx, CheckpointInput{
 		CheckpointKey: "authoritative-checkpoint", BeadID: "authoritative-owned",
@@ -591,6 +594,27 @@ func TestOpsAuthoritativeSurvivorMutationReviewContexts(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM events WHERE type='review_checkpoint_context_restore_failed'`).Scan(&events); err != nil || events != 1 {
 		t.Fatalf("context restore events = %d err %v", events, err)
 	}
+}
+
+func opsAuthoritativeReviewContextSnapshot(
+	t *testing.T,
+	d *Dispatcher,
+	ctx context.Context,
+	record OpsRunRecord,
+) (reviewOpsRunContext, string) {
+	t.Helper()
+	reviewCtx := d.reviewContextForOpsRun(ctx, record)
+
+	if !d.mu.TryLock() {
+		// The isolated fallback path has returned and has no competing mutex user.
+		// Release a mutant-retained lock so test cleanup cannot hang.
+		d.mu.Unlock()
+		t.Fatal("reviewContextForOpsRun returned while retaining the dispatcher mutex")
+		return reviewOpsRunContext{}, ""
+	}
+	worktree := d.worktreeByBead[record.BeadID]
+	d.mu.Unlock()
+	return reviewCtx, worktree
 }
 
 func TestOpsAuthoritativeSurvivorMutationRoutingGuards(t *testing.T) {
