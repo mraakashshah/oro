@@ -1,4 +1,4 @@
-package beadstore
+package beadstore //nolint:testpackage // white-box mutation tests require internal SQLite fixtures and database access
 
 import (
 	"context"

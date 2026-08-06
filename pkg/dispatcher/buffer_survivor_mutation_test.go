@@ -1,4 +1,4 @@
-package dispatcher
+package dispatcher //nolint:testpackage // white-box mutation tests exercise private admission buffering state
 
 import (
 	"context"

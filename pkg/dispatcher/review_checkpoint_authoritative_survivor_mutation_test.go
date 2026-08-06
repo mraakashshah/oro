@@ -1,4 +1,4 @@
-package dispatcher
+package dispatcher //nolint:testpackage // white-box mutation tests exercise private checkpoint identity and transition helpers
 
 import (
 	"context"

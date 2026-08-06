@@ -1,4 +1,4 @@
-package dispatcher
+package dispatcher //nolint:testpackage // white-box mutation tests exercise private health state and audit seams
 
 import (
 	"context"

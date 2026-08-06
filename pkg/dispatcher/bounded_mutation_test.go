@@ -62,7 +62,7 @@ func TestApplyHealthReturnsAndReleasesDispatcherMutex(t *testing.T) {
 	lockAvailable := make(chan struct{})
 	go func() {
 		d.mu.Lock()
-		d.mu.Unlock()
+		d.mu.Unlock() //nolint:staticcheck // lock/unlock completion is the bounded mutex-release assertion
 		close(lockAvailable)
 	}()
 	select {
@@ -95,7 +95,7 @@ func TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex(t *testing.T) {
 		t.Fatalf("link checkpoint to ops run: %v", err)
 	}
 
-	reviewCtx := reviewContextForOpsRunWithin(t, d, ctx, OpsRunRecord{
+	reviewCtx := reviewContextForOpsRunWithin(ctx, t, d, OpsRunRecord{
 		ID: opsRunID, BeadID: beadID, WorkerID: workerID,
 	})
 	if reviewCtx.worktree != worktree || reviewCtx.assignmentID != assignmentID {
@@ -105,7 +105,7 @@ func TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex(t *testing.T) {
 
 	fallback, _, _, _, _, _ := newTestDispatcher(t)
 	fallback.worktreeByBead[beadID] = worktree
-	reviewCtx = reviewContextForOpsRunWithin(t, fallback, ctx, OpsRunRecord{BeadID: beadID, WorkerID: workerID})
+	reviewCtx = reviewContextForOpsRunWithin(ctx, t, fallback, OpsRunRecord{BeadID: beadID, WorkerID: workerID})
 	if reviewCtx.worktree != worktree {
 		t.Fatalf("fallback review context = %+v, want worktree %q", reviewCtx, worktree)
 	}
@@ -113,9 +113,9 @@ func TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex(t *testing.T) {
 }
 
 func reviewContextForOpsRunWithin(
+	ctx context.Context,
 	t *testing.T,
 	d *Dispatcher,
-	ctx context.Context,
 	record OpsRunRecord,
 ) reviewOpsRunContext {
 	t.Helper()
@@ -139,7 +139,7 @@ func assertDispatcherMutexAvailableWithin(t *testing.T, d *Dispatcher, timeout t
 	lockAvailable := make(chan struct{})
 	go func() {
 		d.mu.Lock()
-		d.mu.Unlock()
+		d.mu.Unlock() //nolint:staticcheck // lock/unlock completion is the bounded mutex-release assertion
 		close(lockAvailable)
 	}()
 	select {

@@ -235,7 +235,7 @@ type reviewCheckpointMutationTx struct {
 
 func (tx *reviewCheckpointMutationTx) Commit() error {
 	if tx.commitErr != nil {
-		_ = tx.Tx.Rollback()
+		_ = tx.Rollback()
 		return tx.commitErr
 	}
 	return tx.Tx.Commit()

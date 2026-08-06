@@ -1,4 +1,4 @@
-package dispatcher
+package dispatcher //nolint:testpackage // white-box mutation tests exercise private ops-run transitions and routing state
 
 import (
 	"context"

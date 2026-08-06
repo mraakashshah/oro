@@ -323,6 +323,7 @@ func assignmentBehaviorAssignBounded(
 }
 
 func assignmentBehaviorRejectsEmptyBeadID(t *testing.T, h *assignmentBehaviorHarness) {
+	t.Helper()
 	worker := &trackedWorker{id: "mutation-empty-id-worker"}
 	var claims []bool
 	var outcomes []assignmentSetupOutcome
@@ -337,6 +338,7 @@ func assignmentBehaviorRejectsEmptyBeadID(t *testing.T, h *assignmentBehaviorHar
 }
 
 func assignmentBehaviorInitialCheckpointStopsExactlyOnce(t *testing.T, h *assignmentBehaviorHarness) {
+	t.Helper()
 	d, beads, worktrees, worker, _, bead := h.fixture(t, "mutation-initial-checkpoint")
 	assignmentBehaviorSeedReviewCheckpoint(t, d, bead.ID)
 	var claims []bool
@@ -358,6 +360,7 @@ func assignmentBehaviorInitialCheckpointStopsExactlyOnce(t *testing.T, h *assign
 }
 
 func assignmentBehaviorCallsAdmissionSeam(t *testing.T, h *assignmentBehaviorHarness) {
+	t.Helper()
 	d, _, _, worker, _, bead := h.fixture(t, "mutation-admission-seam")
 	seamCalls := 0
 	d.beforeAssignmentSideEffectAdmission = func() {
@@ -377,6 +380,7 @@ func assignmentBehaviorCallsAdmissionSeam(t *testing.T, h *assignmentBehaviorHar
 }
 
 func assignmentBehaviorReservedAdmissionStopsBeforeClaim(t *testing.T, h *assignmentBehaviorHarness) {
+	t.Helper()
 	d, _, worktrees, worker, _, bead := h.fixture(t, "mutation-reserved-admission")
 	if _, err := d.db.Exec(`INSERT INTO assignment_side_effect_admissions (bead_id, owner_token) VALUES (?, ?)`,
 		bead.ID, "existing-owner"); err != nil {
@@ -397,6 +401,7 @@ func assignmentBehaviorReservedAdmissionStopsBeforeClaim(t *testing.T, h *assign
 }
 
 func assignmentBehaviorStaleFocusStopsAndNotifies(t *testing.T, h *assignmentBehaviorHarness) {
+	t.Helper()
 	d, _, worktrees, worker, _, bead := h.fixture(t, "mutation-stale-focus")
 	d.mu.Lock()
 	d.focusVersion = 1
@@ -426,6 +431,7 @@ func assignmentBehaviorStaleFocusStopsAndNotifies(t *testing.T, h *assignmentBeh
 }
 
 func assignmentBehaviorDecomposedEpicStopsAndReleasesAdmission(t *testing.T, h *assignmentBehaviorHarness) {
+	t.Helper()
 	d, beads, worktrees, worker, _, bead := h.fixture(t, "mutation-decomposed-epic")
 	bead.Type = "epic"
 	if _, err := beads.Create(t.Context(), beadstore.CreateParams{
@@ -453,6 +459,7 @@ func assignmentBehaviorDecomposedEpicStopsAndReleasesAdmission(t *testing.T, h *
 }
 
 func assignmentBehaviorFinalCheckpointStopsAfterAdmissionRelease(t *testing.T, h *assignmentBehaviorHarness) {
+	t.Helper()
 	d, beads, worktrees, worker, _, bead := h.fixture(t, "mutation-final-checkpoint")
 	blockedEventsBefore := assignmentBehaviorEventCount(t, d.db, "review_checkpoint_assignment_blocked")
 	originID, err := d.createAssignment(t.Context(), bead.ID, "mutation-review-worker", "/tmp/checkpoint-"+bead.ID)
@@ -502,6 +509,7 @@ END;`); err != nil {
 }
 
 func assignmentBehaviorReadinessStopReleasesAdmission(t *testing.T, h *assignmentBehaviorHarness) {
+	t.Helper()
 	d, beads, worktrees, worker, _, bead := h.fixture(t, "mutation-readiness-release")
 	beads.setStatus(t, bead.ID, "closed")
 
@@ -546,6 +554,7 @@ func (h *assignmentBehaviorHarness) fixture(
 }
 
 func assignmentBehaviorReadinessStopsBeforeClaim(t *testing.T, h *assignmentBehaviorHarness) {
+	t.Helper()
 	d, beads, worktrees, worker, _, bead := h.fixture(t, "mutation-readiness")
 	beads.setStatus(t, bead.ID, "closed")
 	var claims []bool
@@ -567,6 +576,7 @@ func assignmentBehaviorReadinessStopsBeforeClaim(t *testing.T, h *assignmentBeha
 }
 
 func assignmentBehaviorReservedOwnerBlocksDuplicate(t *testing.T, h *assignmentBehaviorHarness) {
+	t.Helper()
 	d, _, worktrees, worker, _, bead := h.fixture(t, "mutation-reserved-owner")
 	owner := &trackedWorker{
 		id:             "mutation-existing-owner",
@@ -592,6 +602,7 @@ func assignmentBehaviorReservedOwnerBlocksDuplicate(t *testing.T, h *assignmentB
 }
 
 func assignmentBehaviorSuccessfulDeliveryPersistsProgress(t *testing.T, h *assignmentBehaviorHarness) {
+	t.Helper()
 	d, _, _, worker, conn, bead := h.fixture(t, "mutation-delivery")
 	fixedNow := time.Date(2026, 8, 5, 14, 0, 0, 0, time.UTC)
 	d.nowFunc = func() time.Time { return fixedNow }
@@ -652,6 +663,7 @@ func assignmentBehaviorSuccessfulDeliveryPersistsProgress(t *testing.T, h *assig
 }
 
 func assignmentBehaviorStatusFailureReleasesClaimAndMutex(t *testing.T, h *assignmentBehaviorHarness) {
+	t.Helper()
 	d, beads, _, worker, _, bead := h.fixture(t, "mutation-status-failure")
 	beads.mu.Lock()
 	beads.updateErrs[bead.ID] = errors.New("injected status failure")
@@ -674,7 +686,7 @@ func assignmentBehaviorStatusFailureReleasesClaimAndMutex(t *testing.T, h *assig
 	lockAvailable := make(chan struct{})
 	go func() {
 		d.mu.Lock()
-		d.mu.Unlock()
+		d.mu.Unlock() //nolint:staticcheck // lock/unlock completion is the bounded mutex-release assertion
 		close(lockAvailable)
 	}()
 	select {
@@ -685,6 +697,7 @@ func assignmentBehaviorStatusFailureReleasesClaimAndMutex(t *testing.T, h *assig
 }
 
 func assignmentBehaviorFocusChangeAbortsPreparedWork(t *testing.T, h *assignmentBehaviorHarness) {
+	t.Helper()
 	d, beads, worktrees, worker, conn, bead := h.fixture(t, "mutation-focus-abort")
 	removedBefore := worktrees.removedCount()
 	worktrees.setCreateFn(func(context.Context, string, string) (string, string, error) {
@@ -720,6 +733,7 @@ func assignmentBehaviorFocusChangeAbortsPreparedWork(t *testing.T, h *assignment
 }
 
 func assignmentBehaviorAtomicObservationFailureIsAudited(t *testing.T, h *assignmentBehaviorHarness) {
+	t.Helper()
 	d, _, worktrees, worker, _, bead := h.fixture(t, "mutation-observation-failure")
 	removedBefore := worktrees.removedCount()
 	worktrees.setCreateFn(func(context.Context, string, string) (string, string, error) {
@@ -741,6 +755,7 @@ func assignmentBehaviorAtomicObservationFailureIsAudited(t *testing.T, h *assign
 }
 
 func assignmentBehaviorCapabilityCleanupFailureIsAudited(t *testing.T, h *assignmentBehaviorHarness) {
+	t.Helper()
 	d, _, worktrees, worker, conn, bead := h.fixture(t, "mutation-capability-cleanup")
 	removedBefore := worktrees.removedCount()
 	if _, err := d.db.Exec(`

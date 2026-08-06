@@ -1,4 +1,4 @@
-package dispatcher
+package dispatcher //nolint:testpackage // white-box mutation tests exercise private escalation state and handlers
 
 import (
 	"context"
@@ -360,7 +360,7 @@ func TestEscalationSurvivorMutationFailureAndCleanupContracts(t *testing.T) {
 	lockAvailable := make(chan struct{})
 	go func() {
 		d.mu.Lock()
-		d.mu.Unlock()
+		d.mu.Unlock() //nolint:staticcheck // lock/unlock completion is the bounded mutex-release assertion
 		close(lockAvailable)
 	}()
 	select {

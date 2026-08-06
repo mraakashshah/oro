@@ -333,6 +333,7 @@ func TestAssignmentClaimAuthoritativeSurvivorMutation(t *testing.T) {
 	}
 
 	run("dirty reservation fields are reset before status failure", func(t *testing.T) {
+		t.Helper()
 		h := newAssignmentClaimAuthoritativeHarness(t, "claim-dirty-reservation")
 		h.worker.assignmentID = 91
 		h.worker.epicID = "old-epic"
@@ -361,6 +362,7 @@ func TestAssignmentClaimAuthoritativeSurvivorMutation(t *testing.T) {
 	})
 
 	run("worker admission guards reject every invalid owner shape", func(t *testing.T) {
+		t.Helper()
 		cases := []struct {
 			name   string
 			mutate func(*assignmentClaimAuthoritativeHarness)
@@ -388,6 +390,7 @@ func TestAssignmentClaimAuthoritativeSurvivorMutation(t *testing.T) {
 	})
 
 	run("ephemeral assigning claim blocks duplicate", func(t *testing.T) {
+		t.Helper()
 		h := newAssignmentClaimAuthoritativeHarness(t, "claim-ephemeral-duplicate")
 		h.d.mu.Lock()
 		h.d.assigningBeads[h.bead.ID] = true
@@ -401,6 +404,7 @@ func TestAssignmentClaimAuthoritativeSurvivorMutation(t *testing.T) {
 	})
 
 	run("busy owner blocks while idle lookalike does not", func(t *testing.T) {
+		t.Helper()
 		for _, ownerState := range []protocol.WorkerState{protocol.WorkerBusy, protocol.WorkerReserved} {
 			h := newAssignmentClaimAuthoritativeHarness(t, "claim-owner-"+string(ownerState))
 			owner := &trackedWorker{id: "owner-" + string(ownerState), state: ownerState, beadID: h.bead.ID}
@@ -425,6 +429,7 @@ func TestAssignmentClaimAuthoritativeSurvivorMutation(t *testing.T) {
 	})
 
 	run("successful delivery carries capability search and exact worker state", func(t *testing.T) {
+		t.Helper()
 		h := newAssignmentClaimAuthoritativeHarness(t, "claim-rich-delivery")
 		h.d.codeIndex = &assignmentClaimAuthoritativeCodeIndex{chunks: []CodeChunk{{
 			FilePath: "pkg/example.go", StartLine: 4, EndLine: 9, Content: "func Example() {}",
@@ -449,6 +454,7 @@ func TestAssignmentClaimAuthoritativeSurvivorMutation(t *testing.T) {
 	})
 
 	run("estimator is gated by both explicit model and estimate", func(t *testing.T) {
+		t.Helper()
 		cases := []struct {
 			name      string
 			model     string
@@ -483,6 +489,7 @@ func TestAssignmentClaimAuthoritativeSurvivorMutation(t *testing.T) {
 	})
 
 	run("empty branch metadata keeps default branch", func(t *testing.T) {
+		t.Helper()
 		h := newAssignmentClaimAuthoritativeHarness(t, "claim-empty-branch")
 		h.bead.Metadata = map[string]any{MetaBranch: ""}
 		assignmentClaimAuthoritativeAssign(t, h)
@@ -493,6 +500,7 @@ func TestAssignmentClaimAuthoritativeSurvivorMutation(t *testing.T) {
 	})
 
 	run("absent worktree never probes existence", func(t *testing.T) {
+		t.Helper()
 		h := newAssignmentClaimAuthoritativeHarness(t, "claim-no-worktree")
 		assignmentClaimAuthoritativeAssign(t, h)
 		if len(h.worktrees.existsPaths) != 0 || assignmentClaimAuthoritativeEventCount(t, h.d.db, "stale_worktree_cleared") != 0 {
@@ -502,6 +510,7 @@ func TestAssignmentClaimAuthoritativeSurvivorMutation(t *testing.T) {
 	})
 
 	run("existing worktree is reused when it still exists", func(t *testing.T) {
+		t.Helper()
 		h := newAssignmentClaimAuthoritativeHarness(t, "claim-reuse-worktree")
 		path := "/tmp/claim-authoritative-" + h.bead.ID
 		h.d.mu.Lock()
@@ -516,6 +525,7 @@ func TestAssignmentClaimAuthoritativeSurvivorMutation(t *testing.T) {
 	})
 
 	run("missing tracked worktree is cleared and recreated", func(t *testing.T) {
+		t.Helper()
 		h := newAssignmentClaimAuthoritativeHarness(t, "claim-stale-worktree")
 		stale := "/tmp/missing-" + h.bead.ID
 		h.d.mu.Lock()
@@ -531,6 +541,7 @@ func TestAssignmentClaimAuthoritativeSurvivorMutation(t *testing.T) {
 	})
 
 	run("epic ancestry resolution failure restores the durable claim", func(t *testing.T) {
+		t.Helper()
 		h := newAssignmentClaimAuthoritativeHarness(t, "claim-epic-resolution-error")
 		h.bead.Epic = "missing-parent"
 		h.store.mu.Lock()
@@ -552,6 +563,7 @@ func TestAssignmentClaimAuthoritativeSurvivorMutation(t *testing.T) {
 	})
 
 	run("assignment insert failure invokes seam and removes created worktree", func(t *testing.T) {
+		t.Helper()
 		h := newAssignmentClaimAuthoritativeHarness(t, "claim-insert-failure")
 		if _, err := h.d.db.Exec(`
 CREATE TRIGGER claim_authoritative_fail_assignment_insert
@@ -588,6 +600,7 @@ END;`); err != nil {
 	})
 
 	run("worktree creation failure releases reservation and reopens bead", func(t *testing.T) {
+		t.Helper()
 		h := newAssignmentClaimAuthoritativeHarness(t, "claim-worktree-create-error")
 		h.worktrees.createFn = func(context.Context, string, string) (string, string, error) {
 			return "", "", errors.New("injected worktree create failure")
@@ -607,6 +620,7 @@ END;`); err != nil {
 	})
 
 	run("focus change after status claim aborts before worktree creation", func(t *testing.T) {
+		t.Helper()
 		h := newAssignmentClaimAuthoritativeHarness(t, "claim-focus-after-status")
 		h.store.mu.Lock()
 		h.store.updateHook = func(_ string, status string) {
@@ -628,6 +642,7 @@ END;`); err != nil {
 	})
 
 	run("focus change during target evidence aborts persisted assignment", func(t *testing.T) {
+		t.Helper()
 		h := newAssignmentClaimAuthoritativeHarness(t, "claim-focus-after-insert")
 		h.worktrees.branchHeadFn = func(context.Context, string) (string, error) {
 			h.d.mu.Lock()
@@ -652,6 +667,7 @@ END;`); err != nil {
 	})
 
 	run("reservation loss during target evidence completes orphan assignment", func(t *testing.T) {
+		t.Helper()
 		h := newAssignmentClaimAuthoritativeHarness(t, "claim-reservation-after-insert")
 		h.worktrees.branchHeadFn = func(context.Context, string) (string, error) {
 			h.d.mu.Lock()
@@ -673,6 +689,7 @@ END;`); err != nil {
 	})
 
 	run("final focus recheck cleans attached assignment", func(t *testing.T) {
+		t.Helper()
 		h := newAssignmentClaimAuthoritativeHarness(t, "claim-final-focus")
 		estimator := &assignmentClaimAuthoritativeEstimator{result: 3, hook: func() {
 			h.d.mu.Lock()
@@ -695,6 +712,7 @@ END;`); err != nil {
 	})
 
 	run("final reservation recheck completes attached orphan", func(t *testing.T) {
+		t.Helper()
 		h := newAssignmentClaimAuthoritativeHarness(t, "claim-final-reservation")
 		estimator := &assignmentClaimAuthoritativeEstimator{result: 3, hook: func() {
 			h.d.mu.Lock()
@@ -716,6 +734,7 @@ END;`); err != nil {
 	})
 
 	run("capability failure reopens and removes created worktree", func(t *testing.T) {
+		t.Helper()
 		h := newAssignmentClaimAuthoritativeHarness(t, "claim-capability-failure")
 		if _, err := h.d.db.Exec(`
 CREATE TRIGGER claim_authoritative_fail_capability
@@ -742,6 +761,7 @@ END;`); err != nil {
 	})
 
 	run("dead worker socket closes worker and durable assignment", func(t *testing.T) {
+		t.Helper()
 		h := newAssignmentClaimAuthoritativeHarness(t, "claim-dead-socket")
 		h.conn.writeErr = errors.New("injected dead socket")
 		claims, outcomes := assignmentClaimAuthoritativeAssign(t, h)

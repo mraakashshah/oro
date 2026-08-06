@@ -1,4 +1,4 @@
-package protocol
+package protocol //nolint:testpackage // white-box failure tests exercise the unexported schema rebuild helper
 
 import (
 	"context"

@@ -188,7 +188,7 @@ func assignmentBCAssertLockAvailable(t *testing.T, d *Dispatcher) {
 	acquired := make(chan struct{})
 	go func() {
 		d.mu.Lock()
-		d.mu.Unlock()
+		d.mu.Unlock() //nolint:staticcheck // lock/unlock completion is the bounded mutex-release assertion
 		close(acquired)
 	}()
 	select {
