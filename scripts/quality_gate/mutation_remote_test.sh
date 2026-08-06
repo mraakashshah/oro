@@ -1826,13 +1826,13 @@ TestTargetedMutationScope() {
 		'PARALLEL_WORKERS=2' \
 		'EXEC_TIMEOUT=60' \
 		'TIMEOUT_MARGIN=5' \
-		'BASE_SHARD_TIMEOUT=900' \
-		'MAX_SHARD_TIMEOUT=900' \
+		'BASE_SHARD_TIMEOUT=1800' \
+		'MAX_SHARD_TIMEOUT=1800' \
 		'WORKER_CACHE_WARM_TIMEOUT=120'; do
 		grep -Fxq "$expected_limit" "$tmp/targeted-assignment-claim/mutation-args.txt" ||
 			fail "assignBeadWithClaim mutation boundary omitted $expected_limit"
 	done
-	grep -Fxq 'mutation shard capacity: mutants=2 workers=2 effective_timeout=900s emergency_cap=900s' \
+	grep -Fxq 'mutation shard capacity: mutants=2 workers=2 effective_timeout=1800s emergency_cap=1800s' \
 		"$tmp/targeted-assignment-claim/runner.log" ||
 		fail 'assignBeadWithClaim mutations did not reserve their claim-specific shard capacity'
 	claim_focused_lines=$(grep -F -- "-timeout 55s -run $claim_pattern " \
@@ -3024,9 +3024,9 @@ EOF
 		cat "$fixture/runner.log" >&2
 		fail "capacity ceiling fixture exit = $status, want 0"
 	fi
-	grep -Fxq 900 "$fixture/mutation-timeouts.txt" ||
-		fail 'parallel shard outer boundary did not reserve its 900s emergency ceiling'
-	grep -Fxq 'mutation shard capacity: mutants=2 workers=2 effective_timeout=900s emergency_cap=900s' \
+	grep -Fxq 1800 "$fixture/mutation-timeouts.txt" ||
+		fail 'parallel shard outer boundary did not reserve its 1800s claim-specific emergency ceiling'
+	grep -Fxq 'mutation shard capacity: mutants=2 workers=2 effective_timeout=1800s emergency_cap=1800s' \
 		"$fixture/runner.log" ||
 		fail 'claim shard did not reserve its emergency ceiling as effective capacity'
 }

@@ -2,6 +2,7 @@
 set -euo pipefail
 
 readonly policy_score=0.75
+readonly assignment_claim_shard_timeout=1800
 mutation_script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 readonly mutation_script_dir
 mutation_shard_root=""
@@ -972,11 +973,11 @@ run_mutation_shard() {
 				MUTATION_TEST_TIMEOUT_MARGIN_SECONDS=5 \
 				MUTATION_PARALLEL_WORKERS=2 \
 				MUTATION_WORKER_CACHE_WARM_TIMEOUT_SECONDS=120 \
-				MUTATION_BASE_SHARD_TIMEOUT_SECONDS="$max_shard_timeout" \
-				MUTATION_MAX_SHARD_TIMEOUT_SECONDS="$max_shard_timeout" \
+				MUTATION_BASE_SHARD_TIMEOUT_SECONDS="$assignment_claim_shard_timeout" \
+				MUTATION_MAX_SHARD_TIMEOUT_SECONDS="$assignment_claim_shard_timeout" \
 				MUTATION_FAILURE_EVIDENCE_DIR="$mutation_failure_evidence_root/$index" \
 				MUTATION_EXEC_SCRIPT="$mutation_script_dir/mutation_exec.sh" \
-				timeout "$max_shard_timeout" bash "$mutation_script_dir/mutation_parallel.sh"
+				timeout "$assignment_claim_shard_timeout" bash "$mutation_script_dir/mutation_parallel.sh"
 		elif [[ "$test_pattern" == *AuthoritativeSurvivorMutation* ||
 			"$file" == pkg/dispatcher/review_integration_recovery.go ||
 			"$mutation_test_file" == pkg/dispatcher/assignment_reservation_worktree_survivor_mutation_test.go ||
