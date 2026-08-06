@@ -2,11 +2,45 @@ package dispatcher //nolint:testpackage // targeted white-box tests exercise bou
 
 import (
 	"context"
+	"errors"
+	"os"
+	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
 	"oro/pkg/protocol"
 )
+
+func TestDispatcherMutexWatchdogReleasesRetainedMutexForCleanup(t *testing.T) {
+	const childEnv = "ORO_TEST_RETAINED_DISPATCHER_MUTEX"
+	if os.Getenv(childEnv) == "1" {
+		d := &Dispatcher{}
+		d.mu.Lock()
+		t.Cleanup(func() {
+			d.mu.Lock()
+			d.mu.Unlock()
+		})
+		assertDispatcherMutexAvailableWithin(t, d, 20*time.Millisecond)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], //nolint:gosec // test helper re-executes this binary with fixed arguments
+		"-test.run=^TestDispatcherMutexWatchdogReleasesRetainedMutexForCleanup$", "-test.count=1")
+	cmd.Env = append(os.Environ(), childEnv+"=1")
+	output, err := cmd.CombinedOutput()
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		t.Fatalf("retained-mutex watchdog detected the lock but hung during cleanup: %s", output)
+	}
+	if err == nil {
+		t.Fatal("retained-mutex watchdog child passed, want the watchdog assertion to fail")
+	}
+	if !strings.Contains(string(output), "dispatcher mutex remained locked after bounded operation returned") {
+		t.Fatalf("retained-mutex watchdog output = %s", output)
+	}
+}
 
 func TestSpawnEscalationOneShotReturnsAfterReadingWorktree(t *testing.T) {
 	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
@@ -134,17 +168,14 @@ func reviewContextForOpsRunWithin(
 	}
 }
 
-func assertDispatcherMutexAvailableWithin(t *testing.T, d *Dispatcher, timeout time.Duration) {
+func assertDispatcherMutexAvailableWithin(t *testing.T, d *Dispatcher, _ time.Duration) {
 	t.Helper()
-	lockAvailable := make(chan struct{})
-	go func() {
-		d.mu.Lock()
-		d.mu.Unlock() //nolint:staticcheck // lock/unlock completion is the bounded mutex-release assertion
-		close(lockAvailable)
-	}()
-	select {
-	case <-lockAvailable:
-	case <-time.After(timeout):
+	if !d.mu.TryLock() {
+		// Every caller invokes this after an isolated operation has returned, so
+		// no competing mutex user remains. Release a mutant-retained lock before
+		// failing so test cleanup cannot hang.
+		d.mu.Unlock()
 		t.Fatal("dispatcher mutex remained locked after bounded operation returned")
 	}
+	d.mu.Unlock()
 }

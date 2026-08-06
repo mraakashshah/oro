@@ -589,7 +589,7 @@ func assignmentBehaviorReservedOwnerBlocksDuplicate(t *testing.T, h *assignmentB
 	d.mu.Unlock()
 	var claims []bool
 
-	if err := d.assignBeadWithClaim(context.Background(), worker, bead, nil,
+	if err := assignmentBehaviorAssignBounded(t, d, worker, bead, nil,
 		func(claimed bool) { claims = append(claims, claimed) }, nil); err != nil {
 		t.Fatalf("assign duplicate reserved bead: %v", err)
 	}
