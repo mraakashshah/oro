@@ -500,7 +500,7 @@ CREATE TABLE IF NOT EXISTS review_quarantine_deliveries (
     PRIMARY KEY(checkpoint_id, scheduled_at, sink)
 );`
 
-const beadSchemaDDL = beadTableDDL + `
+const beadSchemaCoreDDL = beadTableDDL + `
 CREATE TABLE IF NOT EXISTS assignments (
     id INTEGER PRIMARY KEY,
     bead_id TEXT NOT NULL,
@@ -623,7 +623,9 @@ CREATE TRIGGER IF NOT EXISTS beads_fts_au AFTER UPDATE ON beads BEGIN
   VALUES (new.rowid, new.title, new.description, new.acceptance_criteria);
 END;
 
-` + BeadParentTouchTriggerDDL + BeadQueueViewsDDL
+` + BeadParentTouchTriggerDDL
+
+const beadSchemaDDL = beadSchemaCoreDDL + BeadQueueViewsDDL
 
 // BeadQueueViewsDDL is the canonical definition of the bead readiness views.
 // Schema migrations must execute this exact DDL after rebuilding beads so
@@ -866,7 +868,7 @@ func InitializeBeadSchema(ctx context.Context, db *sql.DB) error {
 
 // MigrateBeadSchema adds the native bead store schema to the dispatcher state DB.
 func MigrateBeadSchema(ctx context.Context, db *sql.DB) error {
-	_, err := db.ExecContext(ctx, beadSchemaDDL)
+	_, err := db.ExecContext(ctx, beadSchemaCoreDDL)
 	if err != nil {
 		return fmt.Errorf("migrate bead schema: %w", err)
 	}
@@ -889,9 +891,12 @@ func MigrateBeadSchema(ctx context.Context, db *sql.DB) error {
 	if err := ensureOpsRunsDropsLegacyEscalationUnique(ctx, db); err != nil {
 		return fmt.Errorf("migrate ops_runs legacy uniqueness: %w", err)
 	}
-	_, err = db.ExecContext(ctx, beadSchemaDDL)
+	_, err = db.ExecContext(ctx, beadSchemaCoreDDL)
 	if err != nil {
 		return fmt.Errorf("refresh bead schema: %w", err)
+	}
+	if err := ensureCanonicalBeadQueueViews(ctx, db); err != nil {
+		return fmt.Errorf("refresh bead queue views: %w", err)
 	}
 	if rebuiltStatusConstraint {
 		if _, err := db.ExecContext(ctx, `INSERT INTO beads_fts(beads_fts) VALUES('rebuild')`); err != nil {
@@ -899,6 +904,108 @@ func MigrateBeadSchema(ctx context.Context, db *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+func ensureCanonicalBeadQueueViews(ctx context.Context, db *sql.DB) error {
+	canonical, err := hasCanonicalBeadQueueViews(ctx, db)
+	if err != nil {
+		return err
+	}
+	if canonical {
+		return nil
+	}
+
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire sqlite connection: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return fmt.Errorf("begin queue view refresh: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
+		}
+	}()
+
+	canonical, err = hasCanonicalBeadQueueViews(ctx, conn)
+	if err != nil {
+		return err
+	}
+	if !canonical {
+		if _, err := conn.ExecContext(ctx, BeadQueueViewsDDL); err != nil {
+			return fmt.Errorf("install canonical queue views: %w", err)
+		}
+	}
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return fmt.Errorf("commit queue view refresh: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+type beadQueueViewQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func hasCanonicalBeadQueueViews(ctx context.Context, db beadQueueViewQueryer) (bool, error) {
+	expected := canonicalBeadQueueViewDefinitions()
+	if len(expected) != 3 {
+		return false, fmt.Errorf("derive canonical queue view definitions: got %d, want 3", len(expected))
+	}
+	rows, err := db.QueryContext(ctx, `
+SELECT name, sql
+FROM sqlite_schema
+WHERE type = 'view'
+  AND name IN ('beads_ready', 'beads_blocked', 'review_checkpoints_blocking_assignment')`)
+	if err != nil {
+		return false, fmt.Errorf("query queue view definitions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	found := 0
+	for rows.Next() {
+		var name, definition string
+		if err := rows.Scan(&name, &definition); err != nil {
+			return false, fmt.Errorf("scan queue view definition: %w", err)
+		}
+		want, ok := expected[name]
+		if !ok || normalizeBeadQueueViewSQL(definition) != want {
+			return false, nil
+		}
+		found++
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate queue view definitions: %w", err)
+	}
+	return found == len(expected), nil
+}
+
+func canonicalBeadQueueViewDefinitions() map[string]string {
+	definitions := make(map[string]string, 3)
+	for _, statement := range strings.Split(BeadQueueViewsDDL, ";") {
+		upper := strings.ToUpper(statement)
+		create := strings.Index(upper, "CREATE VIEW")
+		if create < 0 {
+			continue
+		}
+		normalized := normalizeBeadQueueViewSQL(statement[create:])
+		for _, name := range []string{"beads_ready", "beads_blocked", "review_checkpoints_blocking_assignment"} {
+			if strings.HasPrefix(normalized, "createview"+name+"as") {
+				definitions[name] = normalized
+				break
+			}
+		}
+	}
+	return definitions
+}
+
+func normalizeBeadQueueViewSQL(sqlText string) string {
+	normalized := strings.NewReplacer(" ", "", "\n", "", "\r", "", "\t", "").Replace(strings.ToLower(sqlText))
+	return strings.Replace(normalized, "createviewifnotexists", "createview", 1)
 }
 
 func ensureAssignmentEvidenceColumns(ctx context.Context, db *sql.DB) error {
@@ -1236,8 +1343,8 @@ func rebuildReviewCheckpoints(ctx context.Context, db *sql.DB, columns map[strin
 
 	// The assignment-admission views depend on review_checkpoints. Drop them
 	// inside the rebuild transaction so SQLite does not retarget the durable
-	// predicate at review_checkpoints_legacy during ALTER TABLE. beadSchemaDDL
-	// recreates both views after the checkpoint migration completes.
+	// predicate at review_checkpoints_legacy during ALTER TABLE.
+	// MigrateBeadSchema recreates both views after this rebuild completes.
 	if _, err := tx.ExecContext(ctx, `DROP VIEW IF EXISTS beads_ready`); err != nil {
 		return fmt.Errorf("drop ready view before review checkpoint rebuild: %w", err)
 	}
