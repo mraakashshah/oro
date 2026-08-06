@@ -134,20 +134,7 @@ func TestRestartWorkerIfStillOnBeadAdmissionAndEffects(t *testing.T) {
 			current := d.workers[workerID]
 			pending := d.pendingManagedIDs[workerID]
 			d.mu.Unlock()
-			if tc.workerPresent {
-				if current != worker {
-					t.Fatalf("rejected worker = %p, want unchanged %p", current, worker)
-				}
-				conn.mu.Lock()
-				closed := conn.closed
-				conn.mu.Unlock()
-				if closed {
-					t.Fatal("rejected worker connection was closed")
-				}
-				if status := workerDirectiveAssignmentStatus(t, d, assignmentID); status != "active" {
-					t.Fatalf("rejected assignment status = %q, want active", status)
-				}
-			} else if current != nil {
+			if !tc.workerPresent && current != nil {
 				t.Fatalf("missing worker unexpectedly installed: %p", current)
 			}
 			if pending {
@@ -155,6 +142,21 @@ func TestRestartWorkerIfStillOnBeadAdmissionAndEffects(t *testing.T) {
 			}
 			if count := eventCount(t, d.db, "worker_restarted"); count != 0 {
 				t.Fatalf("rejected worker logged %d worker_restarted events, want 0", count)
+			}
+			if !tc.workerPresent {
+				return
+			}
+			if current != worker {
+				t.Fatalf("rejected worker = %p, want unchanged %p", current, worker)
+			}
+			conn.mu.Lock()
+			closed := conn.closed
+			conn.mu.Unlock()
+			if closed {
+				t.Fatal("rejected worker connection was closed")
+			}
+			if status := workerDirectiveAssignmentStatus(t, d, assignmentID); status != "active" {
+				t.Fatalf("rejected assignment status = %q, want active", status)
 			}
 		})
 	}

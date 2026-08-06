@@ -425,7 +425,7 @@ review_worker_lifecycle_mutation_test_pattern() {
 		printf '^(TestBeginReviewWorkerResultAdmission|TestCheckpointWorkerReleaseFenceRejectsConcurrentReviewResult)$'
 		;;
 	'pkg/dispatcher/review.go:^(handleReviewResultForAssignment)$')
-		printf '^(TestCheckpointWorkerReleaseFenceRejectsConcurrentReviewResult|TestDispatcher_ReviewApproved_WorkerSignalsDone|TestDispatcher_ReviewRejected_FeedbackSent|TestHandleReviewResult_SubprocessErrorReleasesReviewingWorker|TestHandleReviewResult_UnknownVerdict|TestReviewSandboxBlockedCountsTowardBoundedRetry)$'
+		printf '^TestHandleReviewResultForAssignmentOutcomeMatrix$'
 		;;
 	'pkg/dispatcher/review_checkpoint_store.go:^(ReleaseWorker)$' | \
 		'pkg/dispatcher/review_checkpoint_store.go:^(releaseWorkerWithHook)$' | \
@@ -1033,6 +1033,35 @@ targeted_test_pattern() {
 	fi
 }
 
+reset_mutation_cache_slot() {
+	local shard_root="$1"
+	local cache_slot="$2"
+	local cache_root
+	[[ -n "$shard_root" && -d "$shard_root" && "$cache_slot" =~ ^[0-9]+$ ]] || return 2
+	cache_root="$shard_root/caches/$cache_slot"
+	case "$cache_root" in
+	"$shard_root"/caches/[0-9]*) ;;
+	*) return 2 ;;
+	esac
+	rm -rf -- "$cache_root"
+	mkdir -p "$cache_root"
+}
+
+heavy_parallel_mutation_shard() {
+	local file="$1"
+	local match="$2"
+	case "$file:$match" in
+	'pkg/dispatcher/review_checkpoint_store.go:^(releaseWorkerWithHook)$' | \
+		'pkg/dispatcher/review_worker_release.go:^(acquireCheckpointWorkerReleaseLocked)$' | \
+		'pkg/dispatcher/review_worker_release.go:^(runCheckpointWorkerReleaseLease)$' | \
+		'pkg/dispatcher/worker_directives.go:^(applyKillWorker)$' | \
+		'pkg/dispatcher/worker_directives.go:^(applyRestartWorker)$')
+		return 0
+		;;
+	esac
+	return 1
+}
+
 run_mutation_shard() {
 	local index="$1"
 	local file="$2"
@@ -1093,7 +1122,11 @@ run_mutation_shard() {
 		write_shard_no_mutants "$result" "$index" "$file" "$match" "$test_pattern"
 		return
 	fi
-	mkdir -p "$checkout" "$shard_root/logs" "$shard_root/caches/$cache_slot" "$shard_root/tmp/$index"
+	mkdir -p "$checkout" "$shard_root/logs" "$shard_root/tmp/$index"
+	if ! reset_mutation_cache_slot "$shard_root" "$cache_slot"; then
+		write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" 2 'reset isolated mutation cache slot'
+		return
+	fi
 	if ! git archive "$head" | tar -x -C "$checkout"; then
 		write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" 2 'create isolated mutation checkout'
 		return
@@ -1112,15 +1145,22 @@ run_mutation_shard() {
 	if [[ -n "$test_pattern" ]]; then
 		local package
 		package="./$(dirname "$file")"
-		local listed_tests
-		if ! listed_tests=$(
+		local listed_tests list_output_file list_reason
+		list_output_file="$shard_root/logs/$index.list.log"
+		if ! (
 			cd "$checkout"
 			GOCACHE="$shard_root/caches/$cache_slot" GOTMPDIR="$shard_root/tmp/$index" \
 				go test -list "$test_pattern" "$package"
-		); then
-			write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" 2 'list targeted mutation tests'
+		) >"$list_output_file" 2>&1; then
+			cat "$list_output_file" >>"$output_file"
+			list_reason='list targeted mutation tests'
+			if grep -Fqi 'no space left on device' "$list_output_file"; then
+				list_reason='list targeted mutation tests: no space left on device'
+			fi
+			write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" 2 "$list_reason"
 			return
 		fi
+		listed_tests=$(<"$list_output_file")
 		if ! grep -Eq "$test_pattern" <<<"$listed_tests"; then
 			write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" 2 'targeted mutation test pattern matched no tests'
 			return
@@ -1137,6 +1177,9 @@ run_mutation_shard() {
 		if ((baseline_exit != 0)); then
 			local reason='targeted mutation baseline failed'
 			((baseline_exit == 124)) && reason='targeted mutation baseline deadline exceeded'
+			if grep -Fqi 'no space left on device' "$output_file"; then
+				reason='targeted mutation baseline failed: no space left on device'
+			fi
 			write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" "$baseline_exit" "$reason"
 			return
 		fi
@@ -1163,6 +1206,22 @@ run_mutation_shard() {
 				MUTATION_FAILURE_EVIDENCE_DIR="$mutation_failure_evidence_root/$index" \
 				MUTATION_EXEC_SCRIPT="$mutation_script_dir/mutation_exec.sh" \
 				timeout "$assignment_claim_shard_timeout" bash "$mutation_script_dir/mutation_parallel.sh"
+		elif heavy_parallel_mutation_shard "$file" "$match"; then
+			GOCACHE="$shard_root/caches/$cache_slot" \
+				GOTMPDIR="$shard_root/tmp/$index" \
+				MUTATION_SOURCE_FILE="$file" \
+				MUTATION_FUNCTION_MATCH="$match" \
+				MUTATION_TEST_PATTERN="$test_pattern" \
+				MUTATION_TEST_FILE="$mutation_test_file" \
+				MUTATION_EXEC_TIMEOUT="$exec_timeout" \
+				MUTATION_TEST_TIMEOUT_MARGIN_SECONDS=5 \
+				MUTATION_PARALLEL_WORKERS=2 \
+				MUTATION_WORKER_CACHE_WARM_TIMEOUT_SECONDS=120 \
+				MUTATION_BASE_SHARD_TIMEOUT_SECONDS="$file_timeout" \
+				MUTATION_MAX_SHARD_TIMEOUT_SECONDS="$file_timeout" \
+				MUTATION_FAILURE_EVIDENCE_DIR="$mutation_failure_evidence_root/$index" \
+				MUTATION_EXEC_SCRIPT="$mutation_script_dir/mutation_exec.sh" \
+				timeout "$file_timeout" bash "$mutation_script_dir/mutation_parallel.sh"
 		elif [[ "$test_pattern" == *AuthoritativeSurvivorMutation* ||
 			"$file" == pkg/dispatcher/review_integration_recovery.go ||
 			"$mutation_test_file" == pkg/dispatcher/assignment_reservation_worktree_survivor_mutation_test.go ||
@@ -1316,7 +1375,8 @@ main() {
 		file=${shard_files[$index]}
 		printf -v key '%06d' "$index"
 		cache_slot=$((index % worker_count))
-		if [[ ("$file" == pkg/dispatcher/assignment.go &&
+		if heavy_parallel_mutation_shard "$file" "${match_patterns[$index]}" ||
+			[[ ("$file" == pkg/dispatcher/assignment.go &&
 			("${match_patterns[$index]}" == '^(assignBeadWithClaim)$' ||
 				"${test_patterns[$index]}" == *TestAssignmentBC*)) ||
 			"${test_patterns[$index]}" == *AuthoritativeSurvivorMutation* ||

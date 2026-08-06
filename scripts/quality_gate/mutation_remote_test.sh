@@ -714,7 +714,7 @@ pkg/dispatcher/reconnect.go	replayReconnectEvents	^TestReplayReconnectEventsSynt
 pkg/dispatcher/review.go	beginReviewWorkerResult	^(TestBeginReviewWorkerResultAdmission|TestCheckpointWorkerReleaseFenceRejectsConcurrentReviewResult)$
 pkg/dispatcher/review.go	claimBlockedReviewAssignment	^(TestDirectReviewTransitionAdmissionMatrix|TestReviewReleaseTokenFencesDirectReviewTransitions)$
 pkg/dispatcher/review.go	claimReviewDependencyCheck	^(TestDirectReviewTransitionAdmissionMatrix|TestReviewReleaseTokenFencesDirectReviewTransitions)$
-pkg/dispatcher/review.go	handleReviewResultForAssignment	^(TestCheckpointWorkerReleaseFenceRejectsConcurrentReviewResult|TestDispatcher_ReviewApproved_WorkerSignalsDone|TestDispatcher_ReviewRejected_FeedbackSent|TestHandleReviewResult_SubprocessErrorReleasesReviewingWorker|TestHandleReviewResult_UnknownVerdict|TestReviewSandboxBlockedCountsTowardBoundedRetry)$
+pkg/dispatcher/review.go	handleReviewResultForAssignment	^TestHandleReviewResultForAssignmentOutcomeMatrix$
 pkg/dispatcher/review.go	reserveReviewRetryAttempt	^(TestReserveReviewRetryAttemptOutcomes|TestReviewReleaseTokenFencesDirectReviewTransitions)$
 pkg/dispatcher/review.go	reviewingWorkerMatches	^(TestDirectReviewTransitionAdmissionMatrix|TestReviewReleaseTokenFencesDirectReviewTransitions)$
 pkg/dispatcher/review.go	sendPreReviewGitDirtyFeedback	^TestSendPreReviewGitDirtyFeedbackRevalidatesAfterPayloadBuild$
@@ -1049,6 +1049,27 @@ new_multi_fixture() {
 	printf 'package example\n\nfunc Value() int { return 2 }\n' >"$fixture/pkg/example/value.go"
 	printf 'package other\n\nfunc Other() int { return 2 }\n' >"$fixture/pkg/other/other.go"
 	git -C "$fixture" add pkg/example/value.go pkg/other/other.go
+	git -C "$fixture" commit -qm head
+	head=$(git -C "$fixture" rev-parse HEAD)
+	printf '%s\n%s\n' "$base" "$head"
+}
+
+new_cache_rotation_fixture() {
+	local fixture="$1"
+	mkdir -p "$fixture/bin" "$fixture/pkg/example" "$fixture/pkg/other" "$fixture/pkg/third"
+	git -C "$fixture" init -q
+	git -C "$fixture" config user.email mutation@example.test
+	git -C "$fixture" config user.name mutation-test
+	printf 'package example\n\nfunc Value() int { return 1 }\n' >"$fixture/pkg/example/value.go"
+	printf 'package other\n\nfunc Other() int { return 1 }\n' >"$fixture/pkg/other/other.go"
+	printf 'package third\n\nfunc Third() int { return 1 }\n' >"$fixture/pkg/third/third.go"
+	git -C "$fixture" add pkg/example/value.go pkg/other/other.go pkg/third/third.go
+	git -C "$fixture" commit -qm base
+	base=$(git -C "$fixture" rev-parse HEAD)
+	printf 'package example\n\nfunc Value() int { return 2 }\n' >"$fixture/pkg/example/value.go"
+	printf 'package other\n\nfunc Other() int { return 2 }\n' >"$fixture/pkg/other/other.go"
+	printf 'package third\n\nfunc Third() int { return 2 }\n' >"$fixture/pkg/third/third.go"
+	git -C "$fixture" add pkg/example/value.go pkg/other/other.go pkg/third/third.go
 	git -C "$fixture" commit -qm head
 	head=$(git -C "$fixture" rev-parse HEAD)
 	printf '%s\n%s\n' "$base" "$head"
@@ -1677,6 +1698,10 @@ fi
 
 if [[ "$1" = test ]]; then
 	printf '%s\n' "$*" >>"${MUTATION_LIST_TRACE:?}"
+	if [[ "$MUTATION_FIXTURE" = targeted-list-enospc ]]; then
+		printf 'go: writing test binary: no space left on device\n' >&2
+		exit 1
+	fi
 	for arg in "$@"; do
 		case "$arg" in
 		-coverprofile=*) printf 'mode: set\n' >"${arg#-coverprofile=}" ;;
@@ -1828,6 +1853,13 @@ aggregate | aggregate-below | aggregate-zero | shard-timeout)
 	target=${*: -1}
 	exec_arg=""
 	match=""
+	if [[ -n "${MUTATION_CACHE_ROTATION_TRACE:-}" ]]; then
+		cache_state=fresh
+		[[ ! -e "$GOCACHE/prior-shard" ]] || cache_state=stale
+		printf '%s\t%s\n' "$GOCACHE" "$cache_state" >>"$MUTATION_CACHE_ROTATION_TRACE"
+		mkdir -p "$GOCACHE"
+		: >"$GOCACHE/prior-shard"
+	fi
 	for arg in "$@"; do
 		case "$arg" in
 		--exec=*) exec_arg=${arg#--exec=} ;;
@@ -1858,13 +1890,16 @@ aggregate | aggregate-below | aggregate-zero | shard-timeout)
 			printf 'The mutation score is 0.600000 (6 passed, 4 failed, 2 duplicated, 0 skipped, total is 10)\n'
 		fi
 		;;
+	*pkg/third/third.go)
+		printf 'The mutation score is 1.000000 (10 passed, 0 failed, 0 duplicated, 0 skipped, total is 10)\n'
+		;;
 	*)
 		echo "unexpected mutation target: $target" >&2
 		exit 65
 		;;
 	esac
 	;;
-targeted | targeted-fallback | targeted-list-miss | targeted-timeout | targeted-uncovered)
+targeted | targeted-fallback | targeted-list-miss | targeted-list-enospc | targeted-timeout | targeted-uncovered)
 	printf '%s\n' "$*" >>"${MUTATION_ARGS_TRACE:?}"
 	if [[ -n "${MUTATION_TEST_FILE:-}" ]]; then
 		printf 'MUTATION_TEST_FILE=%s\n' "$MUTATION_TEST_FILE" >>"${MUTATION_ARGS_TRACE:?}"
@@ -2016,6 +2051,75 @@ run_multi_fixture() {
 		 [.shards[].file] == .changed_files' \
 		"$evidence" >/dev/null || fail "$outcome evidence is missing deterministic shard identity"
 	printf '%s\n' "$evidence"
+}
+
+TestMutationCacheSlotRotation() {
+	local base evidence fixture head status trace
+	local -a refs
+	fixture=$(mktemp -d)
+	# shellcheck disable=SC2064 # Bind this fixture before another test replaces the local.
+	trap "rm -rf '$fixture'" RETURN
+	mapfile -t refs < <(new_cache_rotation_fixture "$fixture")
+	base=${refs[0]}
+	head=${refs[1]}
+	evidence="$fixture/mutation-evidence.json"
+	trace="$fixture/cache-rotation.tsv"
+	write_fake_go "$fixture/bin/go"
+
+	set +e
+	(
+		cd "$fixture"
+		PATH="$fixture/bin:$PATH" MUTATION_FIXTURE=aggregate \
+			MUTATION_TRACE="$fixture/mutation-trace.tsv" \
+			MUTATION_LIST_TRACE="$fixture/mutation-list.txt" \
+			MUTATION_CACHE_ROTATION_TRACE="$trace" \
+			MUTATION_MAX_WORKERS=2 MUTATION_FILE_TIMEOUT_SECONDS=5 \
+			bash "$runner" --base "$base" --head "$head" --evidence "$evidence" \
+			>"$fixture/runner.log" 2>&1
+	)
+	status=$?
+	set -e
+	if [[ "$status" != 0 ]]; then
+		cat "$fixture/runner.log" >&2
+		fail "cache rotation fixture exit = $status, want 0"
+	fi
+	[[ "$(wc -l <"$trace" | tr -d ' ')" = 3 ]] ||
+		fail 'cache rotation fixture did not observe all three shards'
+	[[ "$(cut -f1 "$trace" | sort -u | wc -l | tr -d ' ')" = 2 ]] ||
+		fail 'cache rotation fixture did not reuse exactly two bounded cache slots'
+	! grep -q $'\tstale$' "$trace" ||
+		fail 'a reused mutation cache slot retained artifacts from its prior shard'
+}
+
+TestTargetedMutationListENOSPC() {
+	local evidence fixture
+	fixture=$(mktemp -d)
+	# shellcheck disable=SC2064 # Bind this fixture before another test replaces the local.
+	trap "rm -rf '$fixture'" RETURN
+	evidence=$(run_targeted_fixture "$fixture" targeted-list-enospc infrastructure_failure 2)
+	jq -e \
+		'.score == null and .total == 0 and
+		 .shards[0].reason == "list targeted mutation tests: no space left on device"' \
+		"$evidence" >/dev/null || fail 'list ENOSPC did not retain an explicit infrastructure reason'
+	grep -Fq 'go: writing test binary: no space left on device' "$fixture/runner.log" ||
+		fail 'list ENOSPC diagnostics were not retained in the shard log'
+}
+
+TestHeavyMutationShardRouting() {
+	(
+		set --
+		# Load the runner functions without executing its final main invocation.
+		# shellcheck disable=SC1090 # The process substitution intentionally omits main.
+		source <(sed '$d' "$runner")
+		heavy_parallel_mutation_shard pkg/dispatcher/review_checkpoint_store.go '^(releaseWorkerWithHook)$'
+		heavy_parallel_mutation_shard pkg/dispatcher/review_worker_release.go '^(acquireCheckpointWorkerReleaseLocked)$'
+		heavy_parallel_mutation_shard pkg/dispatcher/review_worker_release.go '^(runCheckpointWorkerReleaseLease)$'
+		heavy_parallel_mutation_shard pkg/dispatcher/worker_directives.go '^(applyKillWorker)$'
+		heavy_parallel_mutation_shard pkg/dispatcher/worker_directives.go '^(applyRestartWorker)$'
+		! heavy_parallel_mutation_shard pkg/dispatcher/review.go '^(reserveReviewRetryAttempt)$'
+	) || fail 'known compile-heavy mutation shards are not routed to bounded parallel execution'
+	[[ "$(grep -Fc "heavy_parallel_mutation_shard \"\$file\"" "$runner")" = 2 ]] ||
+		fail 'heavy mutation routing must drive both inner execution and outer serialization'
 }
 
 TestStrictIncrementalMutationShards() {
@@ -3451,6 +3555,9 @@ TestStrictIncrementalMutation() {
 		fail 'annotated output did not preserve its score and total'
 	run_missing_base_fixture "$tmp/missing-base"
 	TestStrictIncrementalMutationShards
+	TestMutationCacheSlotRotation
+	TestTargetedMutationListENOSPC
+	TestHeavyMutationShardRouting
 	TestTargetedMutationScope
 	TestDispatcherMutationContractSupplements
 	TestReviewCheckpointMutationMapping
@@ -3574,6 +3681,15 @@ main() {
 		;;
 	TestMutationCapacity)
 		TestMutationCapacity
+		;;
+	TestMutationCacheSlotRotation)
+		TestMutationCacheSlotRotation
+		;;
+	TestTargetedMutationListENOSPC)
+		TestTargetedMutationListENOSPC
+		;;
+	TestHeavyMutationShardRouting)
+		TestHeavyMutationShardRouting
 		;;
 	TestMutationExecInternalDeadline)
 		TestMutationExecInternalDeadline

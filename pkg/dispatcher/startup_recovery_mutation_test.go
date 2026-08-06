@@ -21,7 +21,7 @@ func TestHandleConnLifecycleMatrix(t *testing.T) {
 			Directive: &protocol.DirectivePayload{Op: "not-a-directive"},
 		})
 
-		invokeHandleConnBounded(t, d, context.Background(), conn)
+		invokeHandleConnBounded(context.Background(), t, d, conn)
 
 		if got := conn.closeCount(); got != 1 {
 			t.Fatalf("connection Close calls = %d, want exactly 1", got)
@@ -47,7 +47,7 @@ func TestHandleConnLifecycleMatrix(t *testing.T) {
 			},
 		})
 
-		invokeHandleConnBounded(t, d, context.Background(), conn)
+		invokeHandleConnBounded(context.Background(), t, d, conn)
 
 		response := conn.singleWrittenMessage(t)
 		if response.Type != protocol.MsgShutdown {
@@ -79,7 +79,7 @@ func TestHandleConnLifecycleMatrix(t *testing.T) {
 			},
 		)
 
-		invokeHandleConnBounded(t, d, context.Background(), conn)
+		invokeHandleConnBounded(context.Background(), t, d, conn)
 
 		if state := d.GetState(); state != StateInert {
 			t.Fatalf("dispatcher state = %s, want %s; buffered follow-up ran after failed registration", state, StateInert)
@@ -100,7 +100,7 @@ func TestHandleConnLifecycleMatrix(t *testing.T) {
 		d, _, _, _, _, _ := newTestDispatcher(t)
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		client, done := startHandleConnMutationTest(t, d, ctx)
+		client, done := startHandleConnMutationTest(ctx, t, d)
 		encodeHandleConnMessage(t, client, canonicalHeartbeatMessage("canceled-conn-worker", 19))
 		waitHandleConnDone(t, done)
 		if got := d.ConnectedWorkers(); got != 0 {
@@ -110,7 +110,7 @@ func TestHandleConnLifecycleMatrix(t *testing.T) {
 
 	t.Run("directive receives ack closes and never registers worker", func(t *testing.T) {
 		d, _, _, _, _, _ := newTestDispatcher(t)
-		client, done := startHandleConnMutationTest(t, d, context.Background())
+		client, done := startHandleConnMutationTest(context.Background(), t, d)
 		encodeHandleConnMessage(t, client, protocol.Message{
 			Type:      protocol.MsgDirective,
 			Directive: &protocol.DirectivePayload{Op: "not-a-directive"},
@@ -132,7 +132,7 @@ func TestHandleConnLifecycleMatrix(t *testing.T) {
 		d.rerankerFactory = func(string) (Reranker, error) {
 			return &fakeReranker{scores: []float64{0.75}}, nil
 		}
-		client, done := startHandleConnMutationTest(t, d, context.Background())
+		client, done := startHandleConnMutationTest(context.Background(), t, d)
 		encodeHandleConnMessage(t, client, protocol.Message{
 			Type: protocol.MsgRerankByIDsRequest,
 			RerankReq: &protocol.RerankByIDsRequest{
@@ -149,7 +149,7 @@ func TestHandleConnLifecycleMatrix(t *testing.T) {
 
 	t.Run("work request receives response and closes", func(t *testing.T) {
 		d, _, _, _, _, _ := newTestDispatcher(t)
-		client, done := startHandleConnMutationTest(t, d, context.Background())
+		client, done := startHandleConnMutationTest(context.Background(), t, d)
 		encodeHandleConnMessage(t, client, protocol.Message{
 			Type:            protocol.MsgEvidenceRequest,
 			EvidenceRequest: &protocol.EvidenceRequest{},
@@ -163,7 +163,7 @@ func TestHandleConnLifecycleMatrix(t *testing.T) {
 
 	t.Run("rejected legacy admission sends shutdown and returns", func(t *testing.T) {
 		d, _, _, _, _, _ := newTestDispatcher(t)
-		client, done := startHandleConnMutationTest(t, d, context.Background())
+		client, done := startHandleConnMutationTest(context.Background(), t, d)
 		encodeHandleConnMessage(t, client, protocol.Message{
 			Type:      protocol.MsgHeartbeat,
 			Heartbeat: &protocol.HeartbeatPayload{WorkerID: "legacy-rejected-worker"},
@@ -180,7 +180,7 @@ func TestHandleConnLifecycleMatrix(t *testing.T) {
 
 	t.Run("scanner accepts messages above default buffer", func(t *testing.T) {
 		d, _, _, _, _, _ := newTestDispatcher(t)
-		client, done := startHandleConnMutationTest(t, d, context.Background())
+		client, done := startHandleConnMutationTest(context.Background(), t, d)
 		const workerID = "large-message-worker"
 		encodeHandleConnMessage(t, client, canonicalHeartbeatMessage(workerID, 4))
 		waitFor(t, func() bool {
@@ -204,7 +204,7 @@ func TestHandleConnLifecycleMatrix(t *testing.T) {
 
 	t.Run("eof closes connection and runs ownership cleanup", func(t *testing.T) {
 		d, beads, _, _, _, _ := newTestDispatcher(t)
-		client, done := startHandleConnMutationTest(t, d, context.Background())
+		client, done := startHandleConnMutationTest(context.Background(), t, d)
 		const (
 			workerID = "eof-cleanup-worker"
 			beadID   = "eof-cleanup-bead"
@@ -304,7 +304,7 @@ type startupRecoveryTestAddr string
 func (a startupRecoveryTestAddr) Network() string { return string(a) }
 func (a startupRecoveryTestAddr) String() string  { return string(a) }
 
-func invokeHandleConnBounded(t *testing.T, d *Dispatcher, ctx context.Context, conn net.Conn) {
+func invokeHandleConnBounded(ctx context.Context, t *testing.T, d *Dispatcher, conn net.Conn) {
 	t.Helper()
 	done := make(chan struct{})
 	go func() {
@@ -314,7 +314,7 @@ func invokeHandleConnBounded(t *testing.T, d *Dispatcher, ctx context.Context, c
 	waitHandleConnDone(t, done)
 }
 
-func startHandleConnMutationTest(t *testing.T, d *Dispatcher, ctx context.Context) (net.Conn, <-chan struct{}) {
+func startHandleConnMutationTest(ctx context.Context, t *testing.T, d *Dispatcher) (net.Conn, <-chan struct{}) {
 	t.Helper()
 	server, client := net.Pipe()
 	done := make(chan struct{})
