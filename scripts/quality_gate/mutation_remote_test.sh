@@ -215,7 +215,7 @@ pkg/dispatcher/ops_runs.go	findBlockingOpsRun	^TestOpsAuthoritativeSurvivorMutat
 pkg/dispatcher/ops_runs.go	isSQLiteUniqueConstraint	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
 pkg/dispatcher/ops_runs.go	loadOpsRunByID	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
 pkg/dispatcher/ops_runs.go	replaceOpsRun	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
-pkg/dispatcher/ops_runs.go	reviewContextForOpsRun	^(TestOpsAuthoritativeSurvivorMutation|TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex$)
+pkg/dispatcher/ops_runs.go	reviewContextForOpsRun	^(TestOpsAuthoritativeSurvivorMutationReviewContexts|TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex)$
 pkg/dispatcher/ops_runs.go	reviewContextFromAnyWorkerLocked	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
 pkg/dispatcher/ops_runs.go	reviewContextFromWorkerLocked	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
 pkg/dispatcher/ops_runs.go	routeOpsRun	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
@@ -248,6 +248,16 @@ EOF
 	[[ -z "$got" ]] || fail "unmapped assignment function unexpectedly selected $got"
 	got=$(authoritative_pattern_for pkg/dispatcher/review_checkpoint_store.go '^(LoadOwningForBead)$')
 	[[ -z "$got" ]] || fail "non-survivor checkpoint function unexpectedly selected $got"
+
+	local listed review_context_pattern
+	review_context_pattern=$(authoritative_pattern_for pkg/dispatcher/ops_runs.go '^(reviewContextForOpsRun)$')
+	listed=$(go test -list "$review_context_pattern" ./pkg/dispatcher)
+	[[ "$(grep -Ec '^Test' <<<"$listed")" = 2 ]] ||
+		fail 'reviewContextForOpsRun mutation owner must select exactly two real tests'
+	grep -Fxq TestOpsAuthoritativeSurvivorMutationReviewContexts <<<"$listed" ||
+		fail 'reviewContextForOpsRun mutation owner omitted its exact authoritative contract'
+	grep -Fxq TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex <<<"$listed" ||
+		fail 'reviewContextForOpsRun mutation owner omitted its bounded mutex contract'
 }
 
 TestAuthoritativeMutationTargetedScope() {
@@ -297,7 +307,7 @@ TestAuthoritativeMutationTargetedScope() {
 	done <<'EOF'
 authoritative-assignment	pkg/dispatcher/assignment.go	assignmentInsertFailureAllowsReopen	^TestAssignmentAuthoritativeSurvivorMutation	pkg/dispatcher/assignment_authoritative_survivor_mutation_test.go
 authoritative-ops	pkg/dispatcher/ops_runs.go	applyOpsResolve	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
-authoritative-ops-conflict	pkg/dispatcher/ops_runs.go	reviewContextForOpsRun	^(TestOpsAuthoritativeSurvivorMutation|TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex$)	-
+authoritative-ops-conflict	pkg/dispatcher/ops_runs.go	reviewContextForOpsRun	^(TestOpsAuthoritativeSurvivorMutationReviewContexts|TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex)$	-
 authoritative-health	pkg/dispatcher/health.go	evaluateFactoryHealth	^TestHealthAuthoritativeSurvivorMutation	pkg/dispatcher/health_authoritative_survivor_mutation_test.go
 authoritative-health-conflict	pkg/dispatcher/health.go	applyHealth	^(TestHealthAuthoritativeSurvivorMutation|TestApplyHealthReturnsAndReleasesDispatcherMutex$)	-
 authoritative-review	pkg/dispatcher/review_checkpoint_store.go	AdvanceIntegrationStep	^TestReviewCheckpointAuthoritativeSurvivorMutation	pkg/dispatcher/review_checkpoint_authoritative_survivor_mutation_test.go
@@ -489,7 +499,7 @@ TestMutationOwnerMappingsCoexist() {
 	[[ "$got" == '^(TestAssignmentClaimAuthoritativeSurvivorMutation|TestAssignmentBehaviorMutation|TestStandaloneAssignmentBehaviorHarnessCaseIsolation)$' ]] ||
 		fail "coexisting authoritative assignment claim resolver selected $got"
 	got=$(authoritative_pattern_for pkg/dispatcher/ops_runs.go '^(reviewContextForOpsRun)$')
-	[[ "$got" == '^(TestOpsAuthoritativeSurvivorMutation|TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex$)' ]] ||
+	[[ "$got" == '^(TestOpsAuthoritativeSurvivorMutationReviewContexts|TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex)$' ]] ||
 		fail "coexisting authoritative ops/bounded resolver selected $got"
 	got=$(authoritative_pattern_for pkg/dispatcher/health.go '^(applyHealth)$')
 	[[ "$got" == '^(TestHealthAuthoritativeSurvivorMutation|TestApplyHealthReturnsAndReleasesDispatcherMutex$)' ]] ||
@@ -2031,7 +2041,7 @@ EOF
 		'.shards[0].match == "^(applyHealth)$" and .shards[0].test_pattern == $pattern' \
 		"$evidence" >/dev/null || fail 'applyHealth mutations must preserve authoritative and bounded mutex-release contracts'
 
-	review_context_pattern='^(TestOpsAuthoritativeSurvivorMutation|TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex$)'
+	review_context_pattern='^(TestOpsAuthoritativeSurvivorMutationReviewContexts|TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex)$'
 	evidence=$(run_targeted_fixture "$tmp/targeted-ops-review-context" targeted pass 0 false ops-review-context)
 	grep -Fq -- "-list $review_context_pattern ./pkg/dispatcher" "$tmp/targeted-ops-review-context/mutation-list.txt" ||
 		fail 'reviewContextForOpsRun mutations must preflight authoritative and bounded mutex-release contracts'

@@ -481,7 +481,7 @@ authoritative_mutation_test_pattern() {
 		printf '^TestAssignmentAuthoritativeSurvivorMutation'
 		;;
 	'pkg/dispatcher/ops_runs.go:^(reviewContextForOpsRun)$')
-		printf '^(TestOpsAuthoritativeSurvivorMutation|TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex$)'
+		printf '^(TestOpsAuthoritativeSurvivorMutationReviewContexts|TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex)$'
 		;;
 	'pkg/dispatcher/ops_runs.go:^(CompleteOpsRun)$' | \
 		'pkg/dispatcher/ops_runs.go:^(CreateOpsRun)$' | \
