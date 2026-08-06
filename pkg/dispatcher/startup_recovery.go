@@ -329,6 +329,12 @@ func (d *Dispatcher) connCloseCleanup(workerID string, conn net.Conn) {
 	if workerID == "" {
 		return
 	}
+	if expected, checkpointOwned := d.checkpointOwnedWorkerForConnection(workerID, conn); checkpointOwned {
+		_, _ = d.releaseCheckpointOwnedWorker(
+			context.Background(), expected, ReviewReleaseCauseConnectionLost,
+		)
+		return
+	}
 	st, proceed, notify := d.takeConnCloseState(workerID, conn)
 	if !proceed {
 		if notify {
@@ -369,6 +375,16 @@ func (d *Dispatcher) connCloseCleanup(workerID string, conn net.Conn) {
 	// Wake the assign loop so reconcileScale can spawn a replacement immediately
 	// rather than waiting for the next fsnotify event or fallback tick.
 	d.notifyAssignLoop()
+}
+
+// checkpointOwnedWorkerForConnection returns the exact review-worker generation
+// served by conn. Its caller must durably release that generation before using
+// the ordinary disconnect cleanup path.
+func (d *Dispatcher) checkpointOwnedWorkerForConnection(workerID string, conn net.Conn) (*trackedWorker, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	w, ok := d.workers[workerID]
+	return w, ok && w.conn == conn && w.state == protocol.WorkerReviewing && w.beadID != ""
 }
 
 func (d *Dispatcher) quarantineDisconnectedPreservedAssignment(ctx context.Context, workerID, beadID string, assignmentID int64, worktree, baseBranch, cause string) bool {
