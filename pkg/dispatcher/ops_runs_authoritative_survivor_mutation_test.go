@@ -539,7 +539,7 @@ func TestOpsAuthoritativeSurvivorMutationReviewContexts(t *testing.T) {
 		t.Fatalf("empty bead restore events = %d err %v", emptyEvents, err)
 	}
 	absent, absentSnapshot := opsAuthoritativeReviewContextSnapshot(
-		t, d, ctx, OpsRunRecord{BeadID: "authoritative-absent"},
+		ctx, t, d, OpsRunRecord{BeadID: "authoritative-absent"},
 	)
 	if absent != (reviewOpsRunContext{}) || absentSnapshot != "" {
 		t.Fatalf("absent worker context = %+v, worktree snapshot = %q", absent, absentSnapshot)
@@ -597,9 +597,9 @@ func TestOpsAuthoritativeSurvivorMutationReviewContexts(t *testing.T) {
 }
 
 func opsAuthoritativeReviewContextSnapshot(
+	ctx context.Context,
 	t *testing.T,
 	d *Dispatcher,
-	ctx context.Context,
 	record OpsRunRecord,
 ) (reviewOpsRunContext, string) {
 	t.Helper()
