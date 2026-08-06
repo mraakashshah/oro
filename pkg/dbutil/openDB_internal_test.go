@@ -71,7 +71,6 @@ func TestRetrySQLiteBusyRetriesBaseAndExtendedBusyCodes(t *testing.T) {
 				}
 				return nil
 			})
-
 			if err != nil {
 				t.Fatalf("retrySQLiteBusy error = %v, want nil", err)
 			}

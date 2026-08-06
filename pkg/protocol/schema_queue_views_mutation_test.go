@@ -411,9 +411,11 @@ func (*scriptedQueueViewConn) Close() error { return nil }
 func (*scriptedQueueViewConn) Begin() (driver.Tx, error) {
 	return nil, errors.New("begin not supported")
 }
+
 func (c *scriptedQueueViewConn) QueryContext(context.Context, string, []driver.NamedValue) (driver.Rows, error) {
 	return c.script.nextQuery()
 }
+
 func (c *scriptedQueueViewConn) ExecContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Result, error) {
 	return c.script.exec(query)
 }
@@ -432,6 +434,7 @@ func (r *scriptedQueueViewRows) Close() error {
 	r.script.mu.Unlock()
 	return nil
 }
+
 func (r *scriptedQueueViewRows) Next(dest []driver.Value) error {
 	if r.index < len(r.query.values) {
 		copy(dest, r.query.values[r.index])
