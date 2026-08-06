@@ -50,12 +50,12 @@ func TestDispatcherOperationWatchdogReleasesRetainedMutexForCleanup(t *testing.T
 		returned := make(chan struct{})
 		go func() {
 			d.mu.Lock()
-			d.mu.Unlock()
+			d.mu.Unlock() //nolint:staticcheck // lock/unlock completion proves watchdog recovery unblocked the operation
 			close(returned)
 		}()
 		t.Cleanup(func() {
 			d.mu.Lock()
-			d.mu.Unlock()
+			d.mu.Unlock() //nolint:staticcheck // cleanup completes only after the mutation watchdog releases the retained lock
 		})
 		waitForDispatcherOperationWithin(t, d, returned, 20*time.Millisecond,
 			"bounded operation did not return; dispatcher mutex may be retained")
@@ -220,9 +220,10 @@ func waitForDispatcherOperationWithin[T any](
 		d.mu.Unlock()
 	}
 	select {
-	case result := <-returned:
+	case <-returned:
 		t.Fatal(failure)
-		return result
+		var zero T
+		return zero
 	case <-time.After(timeout):
 		var zero T
 		t.Fatal(failure)
