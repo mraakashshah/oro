@@ -19,7 +19,7 @@ func TestDispatcherMutexWatchdogReleasesRetainedMutexForCleanup(t *testing.T) {
 		d.mu.Lock()
 		t.Cleanup(func() {
 			d.mu.Lock()
-			d.mu.Unlock()
+			d.mu.Unlock() //nolint:staticcheck // cleanup completes only after the mutation watchdog releases a retained lock
 		})
 		assertDispatcherMutexAvailableWithin(t, d, 20*time.Millisecond)
 		return
