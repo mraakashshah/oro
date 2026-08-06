@@ -1349,6 +1349,9 @@ if [[ "$1" = tool && "$2" = go-mutesting && " $* " == *" --no-exec "* ]]; then
 	printf 'TIMEOUT_MARGIN=%s\n' "${MUTATION_TEST_TIMEOUT_MARGIN_SECONDS:-}" >>"${MUTATION_ARGS_TRACE:?}"
 	printf 'BASE_SHARD_TIMEOUT=%s\n' "${MUTATION_BASE_SHARD_TIMEOUT_SECONDS:-}" >>"${MUTATION_ARGS_TRACE:?}"
 	printf 'MAX_SHARD_TIMEOUT=%s\n' "${MUTATION_MAX_SHARD_TIMEOUT_SECONDS:-}" >>"${MUTATION_ARGS_TRACE:?}"
+	if [[ -n "${MUTATION_WORKER_CACHE_WARM_TIMEOUT_SECONDS:-}" ]]; then
+		printf 'WORKER_CACHE_WARM_TIMEOUT=%s\n' "$MUTATION_WORKER_CACHE_WARM_TIMEOUT_SECONDS" >>"${MUTATION_ARGS_TRACE:?}"
+	fi
 	if [[ -n "${MUTATION_TEST_FILE:-}" ]]; then
 		printf 'MUTATION_TEST_FILE=%s\n' "$MUTATION_TEST_FILE" >>"${MUTATION_ARGS_TRACE:?}"
 	fi
@@ -1814,7 +1817,8 @@ TestTargetedMutationScope() {
 		'EXEC_TIMEOUT=60' \
 		'TIMEOUT_MARGIN=5' \
 		'BASE_SHARD_TIMEOUT=900' \
-		'MAX_SHARD_TIMEOUT=900'; do
+		'MAX_SHARD_TIMEOUT=900' \
+		'WORKER_CACHE_WARM_TIMEOUT=120'; do
 		grep -Fxq "$expected_limit" "$tmp/targeted-assignment-claim/mutation-args.txt" ||
 			fail "assignBeadWithClaim mutation boundary omitted $expected_limit"
 	done
@@ -1842,6 +1846,8 @@ TestTargetedMutationScope() {
 	grep -Fxq 'MUTATION_TEST_FILE=pkg/dispatcher/assignment_mutation_test.go' \
 		"$tmp/targeted-assignment-release/mutation-args.txt" ||
 		fail 'releaseAssignmentReservation mutations must compile only their standalone focused test file'
+	! grep -q '^WORKER_CACHE_WARM_TIMEOUT=' "$tmp/targeted-assignment-release/mutation-args.txt" ||
+		fail 'non-claim dispatcher mutations must not opt into worker cache prewarming'
 
 	local assignment_bc_function assignment_bc_target assignment_bc_test_file focused_line focused_lines
 	assignment_bc_test_file=pkg/dispatcher/assignment_reservation_worktree_survivor_mutation_test.go
@@ -2450,6 +2456,143 @@ EOF
 		fail "$mutant_count-mutant shard did not reserve a 5s margin below its 60s executor deadline"
 }
 
+run_parallel_worker_cache_prewarm_fixture() {
+	local fixture="$1"
+	local mode="$2"
+	local output="$fixture/parallel.log"
+	local evidence_path status warm_timeout=10
+	[[ "$mode" != timeout ]] || warm_timeout=2
+	mkdir -p "$fixture/bin" "$fixture/pkg/example" "$fixture/cache" "$fixture/tmp" "$fixture/state" "$fixture/evidence"
+	printf 'module example.test/prewarm\n\ngo 1.26\n' >"$fixture/go.mod"
+	printf 'package example\n\nfunc Value() int { return 1 }\n' >"$fixture/pkg/example/value.go"
+	printf 'package example\n\nfunc TestValue() {}\n' >"$fixture/pkg/example/value_test.go"
+	git hash-object "$fixture/pkg/example/value.go" >"$fixture/state/original.hash"
+	cat >"$fixture/bin/go" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" = tool && "$2" = go-mutesting ]]; then
+	source_file=${*: -1}
+	generation="$MUTATION_FAKE_STATE/generated"
+	mkdir -p "$generation/$(dirname "$source_file")"
+	cp "$source_file" "$generation/$source_file.original"
+	for index in 0 1; do
+		sed "s/return 1/return $((index + 2))/" "$source_file" >"$generation/$source_file.$index"
+	done
+	printf 'Save mutations into %q\n' "$generation"
+	exit 0
+fi
+[[ "$1" = test ]] || exit 64
+if compgen -G "$MUTATION_FAILURE_EVIDENCE_DIR/run.*/mutant-*.json" >/dev/null; then
+	: >"$MUTATION_FAKE_STATE/prewarm-after-record"
+fi
+git hash-object "$MUTATION_SOURCE_FILE" >>"$MUTATION_FAKE_STATE/prewarm-source-hashes"
+printf '%s\n' "$GOCACHE" >>"$MUTATION_FAKE_STATE/prewarm-caches"
+slot=""
+while [[ -z "$slot" ]]; do
+	for candidate in 1 2; do
+		if mkdir "$MUTATION_FAKE_STATE/prewarm-slot-$candidate" 2>/dev/null; then
+			slot=$candidate
+			break
+		fi
+	done
+done
+trap 'rmdir "$MUTATION_FAKE_STATE/prewarm-slot-$slot"' EXIT
+if [[ -d "$MUTATION_FAKE_STATE/prewarm-slot-1" && -d "$MUTATION_FAKE_STATE/prewarm-slot-2" ]]; then
+	: >"$MUTATION_FAKE_STATE/reached-two-prewarm-workers"
+fi
+case "$MUTATION_FAKE_MODE" in
+success)
+	sleep 0.1
+	: >"$GOCACHE/prewarm-complete"
+	exit 0
+	;;
+timeout)
+	sleep 5
+	;;
+nonzero)
+	exit 17
+	;;
+esac
+EOF
+	cat >"$fixture/bin/mutation-exec" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ -f "$GOCACHE/prewarm-complete" ]] || exit 66
+printf '%s\n' "$MUTATE_CHANGED" >>"$MUTATION_FAKE_STATE/executions"
+git hash-object "$MUTATE_ORIGINAL" >>"$MUTATION_FAKE_STATE/execution-source-before"
+cp "$MUTATE_ORIGINAL" "$MUTATE_ORIGINAL.test-backup"
+cp "$MUTATE_CHANGED" "$MUTATE_ORIGINAL"
+mv "$MUTATE_ORIGINAL.test-backup" "$MUTATE_ORIGINAL"
+git hash-object "$MUTATE_ORIGINAL" >>"$MUTATION_FAKE_STATE/execution-source-after"
+exit 0
+EOF
+	chmod +x "$fixture/bin/go" "$fixture/bin/mutation-exec"
+
+	set +e
+	(
+		cd "$fixture"
+		PATH="$fixture/bin:$PATH" MUTATION_FAKE_STATE="$fixture/state" MUTATION_FAKE_MODE="$mode" \
+			GOCACHE="$fixture/cache" GOTMPDIR="$fixture/tmp" \
+			MUTATION_FAILURE_EVIDENCE_DIR="$fixture/evidence" \
+			MUTATION_SOURCE_FILE=pkg/example/value.go MUTATION_FUNCTION_MATCH='^(Value)$' \
+			MUTATION_TEST_PATTERN='^TestValue$' MUTATION_TEST_FILE=pkg/example/value_test.go \
+			MUTATION_EXEC_TIMEOUT=60 MUTATION_TEST_TIMEOUT_MARGIN_SECONDS=1 MUTATION_PARALLEL_WORKERS=2 \
+			MUTATION_WORKER_CACHE_WARM_TIMEOUT_SECONDS="$warm_timeout" \
+			MUTATION_EXEC_SCRIPT="$fixture/bin/mutation-exec" \
+			bash "$repo_root/scripts/quality_gate/mutation_parallel.sh" >"$output" 2>&1
+	)
+	status=$?
+	set -e
+
+	if [[ "$mode" = success ]]; then
+		[[ "$status" = 0 ]] || fail "worker cache prewarm fixture exit = $status, want 0"
+		[[ -f "$fixture/state/reached-two-prewarm-workers" ]] ||
+			fail 'worker cache prewarm did not populate both isolated caches concurrently'
+		[[ ! -e "$fixture/state/prewarm-after-record" ]] ||
+			fail 'worker cache prewarm started after mutant evidence clocks'
+		[[ "$(sort -u "$fixture/state/prewarm-caches" | wc -l | tr -d ' ')" = 2 ]] ||
+			fail 'worker cache prewarm reused one cache across workers'
+		[[ "$(wc -l <"$fixture/state/executions" | tr -d ' ')" = 2 ]] ||
+			fail 'worker cache prewarm changed mutation execution cardinality'
+		[[ "$(sort -u "$fixture/state/executions" | wc -l | tr -d ' ')" = 2 ]] ||
+			fail 'worker cache prewarm duplicated a mutant execution'
+		for hashes in prewarm-source-hashes execution-source-before execution-source-after; do
+			[[ "$(sort -u "$fixture/state/$hashes")" = "$(<"$fixture/state/original.hash")" ]] ||
+				fail "worker cache prewarm changed source identity in $hashes"
+		done
+		grep -Fxq 'The mutation score is 1.000000 (2 passed, 0 failed, 0 duplicated, 0 skipped, total is 2)' "$output" ||
+			fail 'worker cache prewarm changed the mutation denominator'
+		evidence_path=$(find "$fixture/evidence" -mindepth 1 -maxdepth 1 -type d -name 'run.*')
+		jq -s -e 'length == 2 and map(.mutant_index) == [0, 1] and all(.exit_class == "killed")' \
+			"$evidence_path"/mutant-*.json >/dev/null ||
+			fail 'worker cache prewarm changed mutant evidence mapping or cardinality'
+		return
+	fi
+
+	[[ "$status" = 2 ]] || fail "$mode worker cache prewarm exit = $status, want 2"
+	evidence_path=$(sed -n 's/^ORO_MUTATION_FAILURE_EVIDENCE://p' "$output")
+	[[ "$(wc -l <<<"$evidence_path" | tr -d ' ')" = 1 && -d "$evidence_path" ]] ||
+		fail "$mode worker cache prewarm omitted its durable failure marker"
+	[[ ! -e "$fixture/state/executions" ]] ||
+		fail "$mode worker cache prewarm executed mutants after setup failure"
+	! compgen -G "$evidence_path/mutant-*.json" >/dev/null ||
+		fail "$mode worker cache prewarm published mutant records after setup failure"
+	if [[ "$mode" = timeout ]]; then
+		grep -Fxq 'ORO_MUTATION_EXEC_FAILURE:124' "$output" ||
+			fail 'timed out worker cache prewarm lost its fail-closed status'
+	else
+		grep -Fxq 'ORO_MUTATION_EXEC_FAILURE:17' "$output" ||
+			fail 'failed worker cache prewarm lost its fail-closed status'
+	fi
+}
+
+test_parallel_worker_cache_prewarm() {
+	local fixture="$1"
+	run_parallel_worker_cache_prewarm_fixture "$fixture/success" success
+	run_parallel_worker_cache_prewarm_fixture "$fixture/timeout" timeout
+	run_parallel_worker_cache_prewarm_fixture "$fixture/nonzero" nonzero
+}
+
 run_parallel_completion_handshake_fixture() {
 	local fixture="$1"
 	local mode="$2"
@@ -2890,6 +3033,7 @@ TestMutationCapacity() {
 	test_parallel_completion_handshakes "$tmp/completion"
 	test_parallel_abnormal_teardown_evidence "$tmp/abnormal-teardown"
 	test_parallel_internal_timeout_margin_validation "$tmp/internal-timeout-margin"
+	test_parallel_worker_cache_prewarm "$tmp/worker-cache-prewarm"
 	test_parallel_emergency_ceiling "$tmp/ceiling"
 }
 

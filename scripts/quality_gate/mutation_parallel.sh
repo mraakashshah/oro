@@ -9,6 +9,7 @@ set -euo pipefail
 : "${MUTATION_TEST_TIMEOUT_MARGIN_SECONDS:=5}"
 : "${MUTATION_PARALLEL_WORKERS:?}"
 : "${MUTATION_EXEC_SCRIPT:=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mutation_exec.sh}"
+: "${MUTATION_WORKER_CACHE_WARM_TIMEOUT_SECONDS:=0}"
 : "${MUTATION_BASE_SHARD_TIMEOUT_SECONDS:=240}"
 : "${MUTATION_MAX_SHARD_TIMEOUT_SECONDS:=900}"
 : "${GOCACHE:?}"
@@ -17,9 +18,12 @@ set -euo pipefail
 if [[ ! "$MUTATION_PARALLEL_WORKERS" =~ ^[1-9][0-9]*$ ||
 	! "$MUTATION_EXEC_TIMEOUT" =~ ^[1-9][0-9]*$ ||
 	! "$MUTATION_TEST_TIMEOUT_MARGIN_SECONDS" =~ ^[1-9][0-9]*$ ||
+	! "$MUTATION_WORKER_CACHE_WARM_TIMEOUT_SECONDS" =~ ^[0-9]+$ ||
 	! "$MUTATION_BASE_SHARD_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ||
 	! "$MUTATION_MAX_SHARD_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] ||
 	((MUTATION_TEST_TIMEOUT_MARGIN_SECONDS >= MUTATION_EXEC_TIMEOUT ||
+		(MUTATION_WORKER_CACHE_WARM_TIMEOUT_SECONDS != 0 &&
+			MUTATION_TEST_TIMEOUT_MARGIN_SECONDS >= MUTATION_WORKER_CACHE_WARM_TIMEOUT_SECONDS) ||
 		MUTATION_MAX_SHARD_TIMEOUT_SECONDS < MUTATION_BASE_SHARD_TIMEOUT_SECONDS)); then
 	printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
 	exit 2
@@ -237,6 +241,69 @@ for ((worker = 0; worker < MUTATION_PARALLEL_WORKERS; worker++)); do
 	mkdir -p "$worker_parent" "$GOCACHE/parallel-$worker" "$GOTMPDIR/parallel-worker-$worker"
 	cp -R . "$worker_parent/repo"
 done
+
+warm_worker_cache() {
+	local worker="$1"
+	local worker_repo="$executor_root/workers/$worker/repo"
+	local worker_source="$worker_repo/$MUTATION_SOURCE_FILE"
+	local worker_test_file=""
+	local package_dir package_dir_abs test_file_dir_abs
+	local -a test_targets=("$module_path/$(dirname "$MUTATION_SOURCE_FILE")")
+	if [[ -n "$MUTATION_TEST_FILE" ]]; then
+		worker_test_file="$worker_repo/$MUTATION_TEST_FILE"
+		package_dir=$(dirname -- "$worker_source")
+		package_dir_abs=$(cd "$package_dir" && pwd -P)
+		test_file_dir_abs=$(cd "$(dirname -- "$worker_test_file")" 2>/dev/null && pwd -P) || true
+		if [[ -z "$test_file_dir_abs" || "$test_file_dir_abs" != "$package_dir_abs" ||
+			"$(basename -- "$worker_test_file")" != *_test.go || ! -f "$worker_test_file" ]]; then
+			return 2
+		fi
+		mapfile -t test_targets < <(find "$package_dir" -maxdepth 1 -type f -name '*.go' ! -name '*_test.go' | sort)
+		test_targets+=("$worker_test_file")
+	fi
+	(
+		cd "$worker_repo"
+		GOCACHE="$GOCACHE/parallel-$worker" \
+			GOTMPDIR="$GOTMPDIR/parallel-worker-$worker" \
+			timeout --foreground "$MUTATION_WORKER_CACHE_WARM_TIMEOUT_SECONDS" \
+			go test -vet=off -count=1 \
+			-timeout "$((MUTATION_WORKER_CACHE_WARM_TIMEOUT_SECONDS - MUTATION_TEST_TIMEOUT_MARGIN_SECONDS))s" \
+			-run '^$' "${test_targets[@]}"
+	)
+}
+
+if ((MUTATION_WORKER_CACHE_WARM_TIMEOUT_SECONDS != 0)); then
+	printf 'mutation worker cache prewarm: workers=%d timeout=%ds\n' \
+		"$MUTATION_PARALLEL_WORKERS" "$MUTATION_WORKER_CACHE_WARM_TIMEOUT_SECONDS"
+	warm_pids=()
+	for ((worker = 0; worker < MUTATION_PARALLEL_WORKERS; worker++)); do
+		warm_worker_cache "$worker" >"$executor_root/logs/prewarm-$worker.log" 2>&1 &
+		warm_pids+=("$!")
+	done
+	warm_failure=0
+	for ((worker = 0; worker < MUTATION_PARALLEL_WORKERS; worker++)); do
+		warm_status=0
+		if wait "${warm_pids[$worker]}"; then
+			:
+		else
+			warm_status=$?
+			warm_failure=1
+			cat "$executor_root/logs/prewarm-$worker.log"
+			printf 'ORO_MUTATION_EXEC_FAILURE:%d\n' "$warm_status"
+		fi
+	done
+	if ((warm_failure != 0)); then
+		announce_failure_evidence
+		exit 2
+	fi
+	for ((worker = 0; worker < MUTATION_PARALLEL_WORKERS; worker++)); do
+		if ! cmp -s "$original_source" "$executor_root/workers/$worker/repo/$MUTATION_SOURCE_FILE"; then
+			announce_failure_evidence
+			printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
+			exit 2
+		fi
+	done
+fi
 
 run_mutant_worker() {
 	local worker="$1"
