@@ -8,11 +8,52 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"oro/pkg/dbutil"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
 )
+
+func TestReviewCheckpointInsertionSerializesWithAssignmentSideEffectAdmission(t *testing.T) {
+	ctx := context.Background()
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	const beadID = "oro-checkpoint-admission-serialization"
+	admission, err := d.acquireAssignmentSideEffectAdmission(ctx, beadID, "worker-serialization", "test")
+	if err != nil || admission == nil {
+		t.Fatalf("acquire admission = %#v, %v", admission, err)
+	}
+	input := reviewCheckpointInput(beadID)
+	result := make(chan error, 1)
+	go func() {
+		_, createErr := NewReviewCheckpointStore(d.db).CreateOrReuse(ctx, input)
+		result <- createErr
+	}()
+	select {
+	case createErr := <-result:
+		t.Fatalf("checkpoint insertion completed during side-effect admission: %v", createErr)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	d.releaseAssignmentSideEffectAdmission(ctx, admission)
+	select {
+	case createErr := <-result:
+		if createErr != nil {
+			t.Fatalf("checkpoint insertion after release: %v", createErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("checkpoint insertion did not resume after admission release")
+	}
+
+	blocked, err := d.acquireAssignmentSideEffectAdmission(ctx, beadID, "worker-late", "test")
+	if err != nil {
+		t.Fatalf("acquire admission after checkpoint: %v", err)
+	}
+	if blocked != nil {
+		d.releaseAssignmentSideEffectAdmission(ctx, blocked)
+		t.Fatal("assignment admission acquired after durable checkpoint")
+	}
+}
 
 func TestReviewCheckpointStoreCAS(t *testing.T) {
 	ctx := context.Background()
@@ -35,6 +76,7 @@ func TestReviewCheckpointStoreCAS(t *testing.T) {
 		ReviewPolicyHash:    "policy",
 		TriageRevision:      "triage",
 		ReadyAttempt:        "ready-1",
+		OpsRunID:            23,
 		State:               ReviewCheckpointStateReviewRunning,
 	}
 

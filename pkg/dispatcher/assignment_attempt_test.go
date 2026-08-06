@@ -185,6 +185,9 @@ func TestCompleteAssignmentRetriesTransientSQLiteBusy(t *testing.T) {
 	if _, err := db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
 		t.Fatalf("init schema: %v", err)
 	}
+	if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
+		t.Fatalf("init bead schema: %v", err)
+	}
 	if _, err := db.ExecContext(ctx, `PRAGMA busy_timeout=1`); err != nil {
 		t.Fatalf("set dispatcher busy timeout: %v", err)
 	}

@@ -14,6 +14,9 @@ import (
 	"oro/pkg/agentmodel"
 	"oro/pkg/ops"
 	"oro/pkg/protocol"
+
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 const (
@@ -51,12 +54,21 @@ func CreateOpsRun(ctx context.Context, db *sql.DB, rec OpsRunRecord) (OpsRunReco
 	if db == nil {
 		return OpsRunRecord{}, false, errors.New("create ops run: db is nil")
 	}
+	return createOpsRun(ctx, db, rec)
+}
+
+type opsRunStore interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func createOpsRun(ctx context.Context, store opsRunStore, rec OpsRunRecord) (OpsRunRecord, bool, error) {
 	rec = normalizeOpsRunRecord(rec)
 	if err := validateOpsRunStatus(rec.Status); err != nil {
 		return OpsRunRecord{}, false, err
 	}
 
-	result, err := db.ExecContext(ctx, `
+	result, err := store.ExecContext(ctx, `
 INSERT INTO ops_runs (
   escalation_id, type, bead_id, worker_id, dispatcher_pid, process_pid,
   runtime, model, status, verdict, feedback, error
@@ -65,7 +77,10 @@ INSERT INTO ops_runs (
 		nullableInt(rec.DispatcherPID), nullableInt(rec.ProcessPID),
 		rec.Runtime, rec.Model, rec.Status, rec.Verdict, rec.Feedback, rec.Error)
 	if err != nil {
-		blocking, findErr := FindBlockingOpsRun(ctx, db, rec.Type, rec.BeadID)
+		if !isSQLiteUniqueConstraint(err) {
+			return OpsRunRecord{}, false, fmt.Errorf("create ops run: %w", err)
+		}
+		blocking, findErr := findBlockingOpsRun(ctx, store, rec.Type, rec.BeadID)
 		if findErr == nil && blocking != nil {
 			return *blocking, false, nil
 		}
@@ -76,11 +91,16 @@ INSERT INTO ops_runs (
 	if err != nil {
 		return OpsRunRecord{}, false, fmt.Errorf("create ops run id: %w", err)
 	}
-	created, err := loadOpsRunByID(ctx, db, id)
+	created, err := loadOpsRunByID(ctx, store, id)
 	if err != nil {
 		return OpsRunRecord{}, false, err
 	}
 	return created, true, nil
+}
+
+func isSQLiteUniqueConstraint(err error) bool {
+	var sqliteErr *sqlite.Error
+	return errors.As(err, &sqliteErr) && sqliteErr.Code() == sqlite3.SQLITE_CONSTRAINT_UNIQUE
 }
 
 // FindBlockingOpsRun returns the active blocking row for type/bead, if any.
@@ -89,7 +109,11 @@ func FindBlockingOpsRun(ctx context.Context, db *sql.DB, runType, beadID string)
 	if db == nil {
 		return nil, errors.New("find blocking ops run: db is nil")
 	}
-	rec, err := scanOpsRun(db.QueryRowContext(ctx, `
+	return findBlockingOpsRun(ctx, db, runType, beadID)
+}
+
+func findBlockingOpsRun(ctx context.Context, store opsRunStore, runType, beadID string) (*OpsRunRecord, error) {
+	rec, err := scanOpsRun(store.QueryRowContext(ctx, `
 SELECT id, escalation_id, type, bead_id, worker_id, dispatcher_pid, process_pid, runtime, model, status, verdict, feedback, error, started_at, completed_at
 FROM ops_runs
 WHERE type = ?
@@ -113,28 +137,59 @@ func CompleteOpsRun(ctx context.Context, db *sql.DB, id int64, status, verdict, 
 	if db == nil {
 		return errors.New("complete ops run: db is nil")
 	}
-	if err := validateOpsRunCompletionStatus(status); err != nil {
-		return err
+	_, err := completeOpsRunFromStatus(ctx, db, id, opsRunStatusRunning, status, verdict, feedback, errorText)
+	return err
+}
+
+type opsRunCompletionOutcome uint8
+
+const (
+	opsRunCompletionAcquired opsRunCompletionOutcome = iota
+	opsRunCompletionExactReplay
+)
+
+func completeOpsRunFromStatus(
+	ctx context.Context,
+	store opsRunStore,
+	id int64,
+	expectedStatus, status, verdict, feedback, errorText string,
+) (opsRunCompletionOutcome, error) {
+	if !isBlockingOpsRunStatus(expectedStatus) {
+		return 0, fmt.Errorf("complete ops run %d: invalid expected status %q", id, expectedStatus)
 	}
-	result, err := db.ExecContext(ctx, `
+	if err := validateOpsRunCompletionStatus(status); err != nil {
+		return 0, err
+	}
+	result, err := store.ExecContext(ctx, `
 UPDATE ops_runs
 SET status = ?,
     verdict = ?,
     feedback = ?,
     error = ?,
     completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP)
-WHERE id = ?`, status, verdict, feedback, errorText, id)
+WHERE id = ?
+  AND status = ?`, status, verdict, feedback, errorText, id, expectedStatus)
 	if err != nil {
-		return fmt.Errorf("complete ops run %d: %w", id, err)
+		return 0, fmt.Errorf("complete ops run %d: %w", id, err)
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("complete ops run %d rows affected: %w", id, err)
+		return 0, fmt.Errorf("complete ops run %d rows affected: %w", id, err)
 	}
 	if affected == 0 {
-		return fmt.Errorf("complete ops run %d: not found", id)
+		current, loadErr := loadOpsRunByID(ctx, store, id)
+		if errors.Is(loadErr, sql.ErrNoRows) {
+			return 0, fmt.Errorf("complete ops run %d: not found", id)
+		}
+		if loadErr != nil {
+			return 0, loadErr
+		}
+		if current.Status == status && current.Verdict == verdict && current.Feedback == feedback && current.Error == errorText {
+			return opsRunCompletionExactReplay, nil
+		}
+		return 0, fmt.Errorf("complete ops run %d: expected status %q, found %q", id, expectedStatus, current.Status)
 	}
-	return nil
+	return opsRunCompletionAcquired, nil
 }
 
 func (d *Dispatcher) applyOpsDirective(dir protocol.Directive, args string) (detail string, handled bool, err error) {
@@ -227,10 +282,16 @@ func (d *Dispatcher) applyOpsRetry(args string) (string, error) {
 }
 
 func (d *Dispatcher) supersedeOpsRunForRetry(rec OpsRunRecord) (OpsRunRecord, bool, error) {
-	if err := CompleteOpsRun(context.Background(), d.db, rec.ID, opsRunStatusSuperseded, rec.Verdict, rec.Feedback, fmt.Sprintf("manual retry superseded ops run %d", rec.ID)); err != nil {
-		return OpsRunRecord{}, false, err
+	if !isBlockingOpsRunStatus(rec.Status) {
+		blocking, err := FindBlockingOpsRun(context.Background(), d.db, rec.Type, rec.BeadID)
+		if err != nil {
+			return OpsRunRecord{}, false, err
+		}
+		if blocking != nil {
+			return OpsRunRecord{}, false, fmt.Errorf("retry ops run %d: blocking ops run %d already exists", rec.ID, blocking.ID)
+		}
+		return OpsRunRecord{}, false, fmt.Errorf("retry ops run %d: status %q is not retryable", rec.ID, rec.Status)
 	}
-
 	next := rec
 	next.ID = 0
 	next.Status = opsRunStatusRunning
@@ -246,7 +307,9 @@ func (d *Dispatcher) supersedeOpsRunForRetry(rec OpsRunRecord) (OpsRunRecord, bo
 	next.CompletedAt = ""
 	fillOpsRunRuntimeModel(&next)
 
-	created, wasCreated, err := CreateOpsRun(context.Background(), d.db, next)
+	created, wasCreated, err := replaceOpsRun(
+		context.Background(), d.db, rec, next, fmt.Sprintf("manual retry superseded ops run %d", rec.ID),
+	)
 	if err != nil {
 		return OpsRunRecord{}, false, err
 	}
@@ -290,7 +353,9 @@ func (d *Dispatcher) applyOpsResolve(args string) (string, error) {
 			return "", err
 		}
 	}
-	if err := CompleteOpsRun(context.Background(), d.db, rec.ID, opsRunStatusResolved, rec.Verdict, rec.Feedback, reason); err != nil {
+	if _, err := completeOpsRunFromStatus(
+		context.Background(), d.db, rec.ID, rec.Status, opsRunStatusResolved, rec.Verdict, rec.Feedback, reason,
+	); err != nil {
 		return "", err
 	}
 	d.ackEscalation(context.Background(), rec.EscalationID, rec.BeadID, rec.WorkerID)
@@ -425,9 +490,6 @@ ORDER BY id`)
 }
 
 func (d *Dispatcher) supersedeAndRerouteOpsRun(ctx context.Context, rec OpsRunRecord) error {
-	if err := CompleteOpsRun(ctx, d.db, rec.ID, opsRunStatusSuperseded, rec.Verdict, rec.Feedback, "orphaned dead process superseded on dispatcher startup"); err != nil {
-		return err
-	}
 	next := rec
 	next.ID = 0
 	next.Status = opsRunStatusRunning
@@ -439,7 +501,9 @@ func (d *Dispatcher) supersedeAndRerouteOpsRun(ctx context.Context, rec OpsRunRe
 	next.StartedAt = ""
 	next.CompletedAt = ""
 	fillOpsRunRuntimeModel(&next)
-	created, wasCreated, err := CreateOpsRun(ctx, d.db, next)
+	created, wasCreated, err := replaceOpsRun(
+		ctx, d.db, rec, next, "orphaned dead process superseded on dispatcher startup",
+	)
 	if err != nil {
 		return err
 	}
@@ -447,34 +511,81 @@ func (d *Dispatcher) supersedeAndRerouteOpsRun(ctx context.Context, rec OpsRunRe
 		return nil
 	}
 	routed := d.routeOpsRun(ctx, created)
+	if !routed {
+		const diagnostic = "orphaned ops run replacement could not be routed on dispatcher startup"
+		if err := CompleteOpsRun(ctx, d.db, created.ID, opsRunStatusFailed, "", "", diagnostic); err != nil {
+			return fmt.Errorf("fail unroutable replacement ops run %d: %w", created.ID, err)
+		}
+	}
 	_ = d.logEvent(ctx, "ops_run_superseded", "dispatcher", rec.BeadID, rec.WorkerID,
 		fmt.Sprintf(`{"ops_run_id":%d,"new_ops_run_id":%d,"type":%q,"routed":%t}`, rec.ID, created.ID, rec.Type, routed))
 	return nil
+}
+
+func replaceOpsRun(
+	ctx context.Context,
+	db *sql.DB,
+	current OpsRunRecord,
+	next OpsRunRecord,
+	supersedeReason string,
+) (OpsRunRecord, bool, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return OpsRunRecord{}, false, fmt.Errorf("begin ops run replacement: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	outcome, err := completeOpsRunFromStatus(
+		ctx, tx, current.ID, current.Status, opsRunStatusSuperseded, current.Verdict, current.Feedback, supersedeReason,
+	)
+	if err != nil {
+		return OpsRunRecord{}, false, err
+	}
+	if outcome != opsRunCompletionAcquired {
+		return OpsRunRecord{}, false, fmt.Errorf("replace ops run %d: completion ownership was not acquired", current.ID)
+	}
+	created, wasCreated, err := createOpsRun(ctx, tx, next)
+	if err != nil {
+		return OpsRunRecord{}, false, err
+	}
+	if !wasCreated {
+		return created, false, nil
+	}
+	if _, err := tx.ExecContext(ctx, `
+UPDATE review_checkpoints SET ops_run_id=?, updated_at=datetime('now')
+WHERE ops_run_id=?`, created.ID, current.ID); err != nil {
+		return OpsRunRecord{}, false, fmt.Errorf("relink review checkpoint from ops run %d to %d: %w", current.ID, created.ID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return OpsRunRecord{}, false, fmt.Errorf("commit ops run replacement: %w", err)
+	}
+	return created, true, nil
 }
 
 func (d *Dispatcher) routeOpsRun(ctx context.Context, rec OpsRunRecord) bool {
 	if d.ops == nil {
 		return false
 	}
+	var resultCh <-chan ops.Result
 	switch ops.Type(rec.Type) {
 	case ops.OpsReview:
 		return d.routeReviewOpsRun(ctx, rec)
 	case ops.OpsDecompose:
-		d.ops.Decompose(ctx, ops.DecomposeOpts{
+		resultCh = d.ops.Decompose(ctx, ops.DecomposeOpts{
 			BeadID:  rec.BeadID,
 			Workdir: d.workdirForOpsRun(rec.BeadID),
 			Reason:  rec.Error,
 		})
 	case ops.OpsWriteAC:
 		title, description := d.beadContextForOpsRun(ctx, rec.BeadID)
-		d.ops.WriteAC(ctx, ops.WriteACOpts{
+		resultCh = d.ops.WriteAC(ctx, ops.WriteACOpts{
 			BeadID:          rec.BeadID,
 			BeadTitle:       title,
 			BeadDescription: description,
 			Workdir:         d.workdirForOpsRun(rec.BeadID),
 		})
 	case ops.OpsDiagnosis:
-		d.ops.Diagnose(ctx, ops.DiagOpts{
+		resultCh = d.ops.Diagnose(ctx, ops.DiagOpts{
 			BeadID:   rec.BeadID,
 			Worktree: d.workdirForOpsRun(rec.BeadID),
 			Symptom:  "orphaned ops run rerouted on dispatcher startup",
@@ -485,7 +596,7 @@ func (d *Dispatcher) routeOpsRun(ctx context.Context, rec OpsRunRecord) bool {
 		if escType == "" {
 			escType = "ORPHANED_OPS_RUN"
 		}
-		d.ops.Escalate(ctx, ops.EscalationOpts{
+		resultCh = d.ops.Escalate(ctx, ops.EscalationOpts{
 			EscalationType: escType,
 			BeadID:         rec.BeadID,
 			BeadTitle:      title,
@@ -494,10 +605,11 @@ func (d *Dispatcher) routeOpsRun(ctx context.Context, rec OpsRunRecord) bool {
 			Workdir:        d.workdirForOpsRun(rec.BeadID),
 		})
 	case ops.OpsDream:
-		d.ops.Dream(ctx, d.dreamOpts(ctx))
+		resultCh = d.ops.Dream(ctx, d.dreamOpts(ctx))
 	default:
 		return false
 	}
+	d.watchReroutedOpsRunResult(ctx, rec, resultCh, nil)
 	return true
 }
 
@@ -505,63 +617,159 @@ func (d *Dispatcher) routeReviewOpsRun(ctx context.Context, rec OpsRunRecord) bo
 	if err := d.observeStorageController(ctx); err != nil || !d.storageAdmissionAllowed() {
 		return false
 	}
-	worktree, targetBranch := d.reviewContextForOpsRun(rec)
-	if worktree == "" {
+	reviewCtx := d.reviewContextForOpsRun(ctx, rec)
+	if reviewCtx.worktree == "" || reviewCtx.targetBranch == "" {
+		return false
+	}
+	if d.worktrees == nil || !d.worktrees.Exists(ctx, reviewCtx.worktree) {
 		return false
 	}
 	title, acceptance, _ := d.lookupBeadDetail(ctx, rec.BeadID, rec.WorkerID)
 	resultCh := d.ops.Review(ctx, ops.ReviewOpts{
 		BeadID:             rec.BeadID,
 		BeadTitle:          title,
-		Worktree:           worktree,
+		Worktree:           reviewCtx.worktree,
 		AcceptanceCriteria: acceptance,
-		BaseBranch:         targetBranch,
-		ProjectRoot:        worktree,
+		BaseBranch:         reviewCtx.targetBranch,
+		ProjectRoot:        reviewCtx.worktree,
 	})
-	d.safeGo(func() { d.handleReviewResult(ctx, rec.WorkerID, rec.BeadID, resultCh) })
+	d.watchReroutedOpsRunResult(ctx, rec, resultCh, func(result ops.Result) {
+		forward := make(chan ops.Result, 1)
+		forward <- result
+		d.handleReviewResultForAssignment(ctx, reviewCtx.workerID, rec.BeadID, reviewCtx.assignmentID, forward)
+	})
 	return true
 }
 
-func (d *Dispatcher) reviewContextForOpsRun(rec OpsRunRecord) (worktree, targetBranch string) {
+func (d *Dispatcher) watchReroutedOpsRunResult(
+	ctx context.Context,
+	rec OpsRunRecord,
+	resultCh <-chan ops.Result,
+	afterComplete func(ops.Result),
+) {
+	d.safeGo(func() {
+		result := <-resultCh
+		status, verdict, errorText := terminalOpsRunResult(result)
+		if rec.ID <= 0 {
+			return
+		}
+		outcome, err := completeOpsRunFromStatus(
+			ctx, d.db, rec.ID, opsRunStatusRunning, status, verdict, result.Feedback, errorText,
+		)
+		if err != nil {
+			_ = d.logEvent(ctx, "ops_run_complete_failed", "dispatcher", rec.BeadID, rec.WorkerID,
+				fmt.Sprintf(`{"ops_run_id":%d,"type":%q,"status":%q,"error":%q}`, rec.ID, rec.Type, status, err.Error()))
+			return
+		}
+		if outcome != opsRunCompletionAcquired {
+			return
+		}
+		if afterComplete != nil {
+			afterComplete(result)
+		}
+	})
+}
+
+func terminalOpsRunResult(result ops.Result) (status, verdict, errorText string) {
+	status = opsRunStatusResolved
+	verdict = string(result.Verdict)
+	if result.Err != nil {
+		status = opsRunStatusFailed
+		errorText = result.Err.Error()
+	} else if result.Verdict == ops.VerdictFailed {
+		status = opsRunStatusFailed
+		errorText = result.Feedback
+	}
+	if verdict != "" {
+		return status, verdict, errorText
+	}
+	if status == opsRunStatusFailed {
+		verdict = string(ops.VerdictFailed)
+	} else {
+		verdict = string(ops.VerdictResolved)
+	}
+	return status, verdict, errorText
+}
+
+type reviewOpsRunContext struct {
+	worktree     string
+	targetBranch string
+	workerID     string
+	assignmentID int64
+}
+
+func (d *Dispatcher) reviewContextForOpsRun(ctx context.Context, rec OpsRunRecord) reviewOpsRunContext {
 	if d == nil || rec.BeadID == "" {
-		return "", ""
+		return reviewOpsRunContext{}
+	}
+	store := NewReviewCheckpointStore(d.db)
+	var checkpoint *ReviewCheckpoint
+	var err error
+	if rec.ID > 0 {
+		checkpoint, err = store.LoadForOpsRunOrBindLegacy(ctx, rec.ID, rec.BeadID)
+	} else {
+		checkpoint, err = store.LoadOwningForBead(ctx, rec.BeadID)
+	}
+	if err != nil {
+		_ = d.logEvent(ctx, "review_checkpoint_context_restore_failed", "dispatcher", rec.BeadID, rec.WorkerID, err.Error())
+		return reviewOpsRunContext{}
+	}
+	if checkpoint != nil {
+		d.mu.Lock()
+		d.worktreeByBead[rec.BeadID] = checkpoint.Worktree
+		d.mu.Unlock()
+		assignmentID := checkpoint.CurrentAssignmentID
+		if assignmentID <= 0 {
+			assignmentID = checkpoint.OriginAssignmentID
+		}
+		return reviewOpsRunContext{
+			worktree:     checkpoint.Worktree,
+			targetBranch: checkpoint.TargetBranch,
+			workerID:     firstNonEmpty(checkpoint.WorkerID, rec.WorkerID),
+			assignmentID: assignmentID,
+		}
 	}
 	d.mu.Lock()
-	worktree, targetBranch = d.reviewContextFromWorkerLocked(rec)
-	if worktree == "" {
-		worktree = d.worktreeByBead[rec.BeadID]
+	reviewCtx := d.reviewContextFromWorkerLocked(rec)
+	if reviewCtx.worktree == "" {
+		reviewCtx.worktree = d.worktreeByBead[rec.BeadID]
 	}
 	d.mu.Unlock()
 
-	if worktree == "" {
-		return "", ""
+	if reviewCtx.worktree == "" {
+		return reviewOpsRunContext{}
 	}
-	if targetBranch == "" {
-		targetBranch = d.cfg.DefaultBranch
+	if reviewCtx.targetBranch == "" {
+		reviewCtx.targetBranch = d.cfg.DefaultBranch
 	}
-	return worktree, targetBranch
+	return reviewCtx
 }
 
-func (d *Dispatcher) reviewContextFromWorkerLocked(rec OpsRunRecord) (worktree, targetBranch string) {
+func (d *Dispatcher) reviewContextFromWorkerLocked(rec OpsRunRecord) reviewOpsRunContext {
 	if w, ok := d.workers[rec.WorkerID]; ok && w != nil && w.beadID == rec.BeadID {
 		w.state = protocol.WorkerReviewing
-		return w.worktree, w.targetBranch
+		return reviewOpsRunContext{worktree: w.worktree, targetBranch: w.targetBranch, workerID: w.id, assignmentID: w.assignmentID}
 	}
 	return d.reviewContextFromAnyWorkerLocked(rec.BeadID)
 }
 
-func (d *Dispatcher) reviewContextFromAnyWorkerLocked(beadID string) (worktree, targetBranch string) {
+func (d *Dispatcher) reviewContextFromAnyWorkerLocked(beadID string) reviewOpsRunContext {
+	var reviewCtx reviewOpsRunContext
 	for _, w := range d.workers {
 		if w == nil || w.beadID != beadID {
 			continue
 		}
-		worktree = firstNonEmpty(worktree, w.worktree)
-		targetBranch = firstNonEmpty(targetBranch, w.targetBranch)
-		if worktree != "" && targetBranch != "" {
-			return worktree, targetBranch
+		reviewCtx.worktree = firstNonEmpty(reviewCtx.worktree, w.worktree)
+		reviewCtx.targetBranch = firstNonEmpty(reviewCtx.targetBranch, w.targetBranch)
+		if reviewCtx.workerID == "" {
+			reviewCtx.workerID = w.id
+			reviewCtx.assignmentID = w.assignmentID
+		}
+		if reviewCtx.worktree != "" && reviewCtx.targetBranch != "" {
+			return reviewCtx
 		}
 	}
-	return worktree, targetBranch
+	return reviewCtx
 }
 
 func firstNonEmpty(current, candidate string) string {
@@ -640,8 +848,8 @@ func validateOpsRunCompletionStatus(status string) error {
 	}
 }
 
-func loadOpsRunByID(ctx context.Context, db *sql.DB, id int64) (OpsRunRecord, error) {
-	rec, err := scanOpsRun(db.QueryRowContext(ctx, `
+func loadOpsRunByID(ctx context.Context, store opsRunStore, id int64) (OpsRunRecord, error) {
+	rec, err := scanOpsRun(store.QueryRowContext(ctx, `
 SELECT id, escalation_id, type, bead_id, worker_id, dispatcher_pid, process_pid, runtime, model, status, verdict, feedback, error, started_at, completed_at
 FROM ops_runs
 WHERE id = ?`, id))

@@ -315,3 +315,64 @@ func TestStatusQueueBeadsSkipsDecomposedEpics(t *testing.T) {
 		}
 	}
 }
+
+func TestStatusQueueBeadsFiltersDurableReviewCheckpoints(t *testing.T) {
+	states := []ReviewCheckpointState{
+		ReviewCheckpointStateQGPassed,
+		ReviewCheckpointStateReviewRunning,
+		ReviewCheckpointStateRejected,
+		ReviewCheckpointStateCorrectionAssigning,
+		ReviewCheckpointStateCorrectionAssigned,
+		ReviewCheckpointStateContractRepairRunning,
+		ReviewCheckpointStateBlocked,
+		ReviewCheckpointStateFailed,
+		ReviewCheckpointStateRecoveryRunning,
+		ReviewCheckpointStateQuarantined,
+		ReviewCheckpointStateApproved,
+		ReviewCheckpointStateManualIntegrationPending,
+		ReviewCheckpointStateIntegrating,
+		ReviewCheckpointStateIntegrated,
+		ReviewCheckpointStateSuperseded,
+	}
+
+	for _, state := range states {
+		state := state
+		t.Run(string(state), func(t *testing.T) {
+			ctx := context.Background()
+			d, _, _, _, _, _ := newTestDispatcher(t)
+			if err := protocol.MigrateBeadSchema(ctx, d.db); err != nil {
+				t.Fatalf("migrate bead schema: %v", err)
+			}
+			beadID := "status-review-" + string(state)
+			assignmentID, err := d.createAssignment(ctx, beadID, "review-worker", "/tmp/"+beadID)
+			if err != nil {
+				t.Fatalf("create origin assignment: %v", err)
+			}
+			if err := d.requeueAssignment(ctx, assignmentID); err != nil {
+				t.Fatalf("requeue origin assignment: %v", err)
+			}
+			seedDurableReviewCheckpoint(t, d, beadID, assignmentID, "/tmp/"+beadID, state)
+
+			got := d.statusQueueBeads(ctx, []protocol.Bead{{ID: beadID, Type: "task"}})
+			terminal := state == ReviewCheckpointStateIntegrated || state == ReviewCheckpointStateSuperseded
+			want := 0
+			if terminal {
+				want = 1
+			}
+			if len(got) != want {
+				t.Fatalf("statusQueueBeads count = %d, want %d: %+v", len(got), want, got)
+			}
+		})
+	}
+}
+
+func TestStatusQueueBeadsFailsClosedOnCheckpointLookupError(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	if err := d.db.Close(); err != nil {
+		t.Fatalf("close state DB: %v", err)
+	}
+	got := d.statusQueueBeads(context.Background(), []protocol.Bead{{ID: "external-ready", Type: "task"}})
+	if len(got) != 0 {
+		t.Fatalf("statusQueueBeads = %+v, want fail-closed empty queue", got)
+	}
+}

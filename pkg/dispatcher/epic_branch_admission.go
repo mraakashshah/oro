@@ -36,7 +36,7 @@ func (d *Dispatcher) withEpicBranchAdmission(
 		return d.ensureEpicBranchReady(ctx, bead, &trackedWorker{id: workerID}, branch, epicID)
 	}
 	store := newEpicBranchAdmissionStore(d.db)
-	lease, acquired, err := store.acquire(ctx, branch, epicID, targetBranch, uuid.NewString(), workerID, d.nowFunc())
+	lease, acquired, err := d.acquireEpicBranchAdmissionWithRetry(ctx, store, branch, epicID, targetBranch, workerID)
 	if err != nil {
 		if ctx.Err() != nil {
 			return false
@@ -61,7 +61,9 @@ func (d *Dispatcher) withEpicBranchAdmission(
 	<-renewed
 	releaseCtx, cancelRelease := epicBranchAdmissionCleanupContext(ctx)
 	defer cancelRelease()
-	releaseErr := store.release(releaseCtx, lease.branch, lease.leaseToken, lease.generation, d.nowFunc())
+	releaseErr := retrySQLiteBusyOperation(releaseCtx, func() error {
+		return store.release(releaseCtx, lease.branch, lease.leaseToken, lease.generation, d.nowFunc())
+	})
 	if !prepared || operationCtx.Err() != nil {
 		if releaseErr != nil && !errors.Is(releaseErr, ErrEpicBranchAdmissionCAS) {
 			_ = d.logEvent(releaseCtx, "epic_branch_admission_release_failed", "dispatcher", bead.ID, workerID, releaseErr.Error())
@@ -75,6 +77,23 @@ func (d *Dispatcher) withEpicBranchAdmission(
 		return d.rejectEpicBranchPreparation(ctx, bead.ID, workerID, branch, releaseErr)
 	}
 	return true
+}
+
+func (d *Dispatcher) acquireEpicBranchAdmissionWithRetry(
+	ctx context.Context,
+	store *epicBranchAdmissionStore,
+	branch, epicID, targetBranch, workerID string,
+) (lease epicBranchAdmission, acquired bool, err error) {
+	leaseToken := uuid.NewString()
+	err = retrySQLiteBusyOperation(ctx, func() error {
+		var acquireErr error
+		lease, acquired, acquireErr = store.acquire(ctx, branch, epicID, targetBranch, leaseToken, workerID, d.nowFunc())
+		return acquireErr
+	})
+	if err == nil && !acquired && lease.state == "leased" && lease.leaseToken == leaseToken && lease.leaseOwner == workerID {
+		acquired = true
+	}
+	return lease, acquired, err
 }
 
 func (d *Dispatcher) admitLinkedEpicBranchRecovery(
@@ -124,7 +143,10 @@ func (d *Dispatcher) renewEpicBranchAdmission(ctx context.Context, lease epicBra
 		case <-done:
 			return
 		case <-ticker.C:
-			if err := store.renew(ctx, lease.branch, lease.leaseToken, lease.generation, d.nowFunc()); err != nil {
+			err := retrySQLiteBusyOperation(ctx, func() error {
+				return store.renew(ctx, lease.branch, lease.leaseToken, lease.generation, d.nowFunc())
+			})
+			if err != nil {
 				if errors.Is(err, ErrEpicBranchAdmissionCAS) &&
 					isOwnedBlockedEpicBranchAdmission(ctx, store, lease) {
 					return
@@ -232,9 +254,10 @@ func (d *Dispatcher) retainEpicBranchAdmissionOwnership(
 	beadID, workerID string,
 	lease epicBranchAdmission,
 ) bool {
-	err := newEpicBranchAdmissionStore(d.db).renew(
-		ctx, lease.branch, lease.leaseToken, lease.generation, d.nowFunc(),
-	)
+	store := newEpicBranchAdmissionStore(d.db)
+	err := retrySQLiteBusyOperation(ctx, func() error {
+		return store.renew(ctx, lease.branch, lease.leaseToken, lease.generation, d.nowFunc())
+	})
 	if err == nil {
 		return true
 	}
@@ -260,8 +283,13 @@ func (d *Dispatcher) blockEpicBranchAdmission(
 	details string,
 ) bool {
 	store := newEpicBranchAdmissionStore(d.db)
-	admission, err := store.block(ctx, lease.branch, lease.leaseToken, lease.generation, blockerKind, checkoutPath,
-		inspection.BranchOID, inspection.BaseOID, "", details, d.nowFunc())
+	var admission epicBranchAdmission
+	err := retrySQLiteBusyOperation(ctx, func() error {
+		var blockErr error
+		admission, blockErr = store.block(ctx, lease.branch, lease.leaseToken, lease.generation, blockerKind, checkoutPath,
+			inspection.BranchOID, inspection.BaseOID, "", details, d.nowFunc())
+		return blockErr
+	})
 	if err != nil {
 		if ctx.Err() != nil || errors.Is(err, ErrEpicBranchAdmissionCAS) {
 			return false

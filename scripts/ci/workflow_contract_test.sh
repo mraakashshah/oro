@@ -152,6 +152,85 @@ TestIncrementalMutationCheckoutMatchesHead() {
 	fi
 }
 
+TestIncrementalMutationCapacityDeadline() {
+	local expected_timeout_minutes file_timeout_seconds incident_shard_count
+	local mutation_job observed_frontier observed_window_minutes runner parallel_runner
+	local timeout_margin_minutes timeout_minutes workers
+	mutation_job=$(workflow_job_block incremental-mutation)
+	[[ -n "$mutation_job" ]] || fail 'workflow must define an incremental-mutation job'
+
+	# Three consecutive hosted runs reached only shards 58-59 of this
+	# 117-shard incident campaign before the 60-minute job deadline cancelled
+	# them. Size the outer boundary from the conservative observed frontier and
+	# retain 28 minutes for shard-cost variance and final evidence aggregation.
+	incident_shard_count=117
+	observed_frontier=58
+	observed_window_minutes=60
+	timeout_margin_minutes=28
+	expected_timeout_minutes=$(((
+		incident_shard_count * observed_window_minutes + observed_frontier - 1
+	) / observed_frontier + timeout_margin_minutes))
+
+	timeout_minutes=$(printf '%s\n' "$mutation_job" |
+		awk '/^    timeout-minutes:/ { print $2; exit }')
+	workers=$(printf '%s\n' "$mutation_job" |
+		awk '/MUTATION_MAX_WORKERS:/ { print $2; exit }')
+	file_timeout_seconds=$(printf '%s\n' "$mutation_job" |
+		awk '/MUTATION_FILE_TIMEOUT_SECONDS:/ { print $2; exit }')
+	[[ "$timeout_minutes" == "$expected_timeout_minutes" ]] ||
+		fail "incremental-mutation timeout = ${timeout_minutes:-missing}, want $expected_timeout_minutes for the observed 117-shard campaign"
+	[[ "$workers" == 2 ]] || fail 'incremental-mutation must retain two hosted-runner workers'
+	[[ "$file_timeout_seconds" == 240 ]] || fail 'incremental-mutation must retain its 240-second shard boundary'
+
+	# These are literal workflow shell and GitHub expressions.
+	# shellcheck disable=SC2016
+	for required in \
+		'bash scripts/quality_gate/mutation.sh' \
+		'--base "$base_sha"' \
+		'--head "${{ github.sha }}"' \
+		'            --evidence mutation-evidence.json' \
+		'      - name: Initialize isolated Go cache roots' \
+		'          cache_root="$RUNNER_TEMP/oro-go-cache"' \
+		'            printf '\''GOMODCACHE=%s/go-mod\n'\'' "$cache_root"' \
+		'            printf '\''GOCACHE=%s/go-build\n'\'' "$cache_root"' \
+		'            printf '\''GOTMPDIR=%s/go-tmp\n'\'' "$cache_root"' \
+		'      - name: Upload incremental mutation evidence' \
+		'        if: ${{ always() }}' \
+		'          name: incremental-mutation-evidence' \
+		'            mutation-evidence.json' \
+		'            mutation-failures/' \
+		'          if-no-files-found: error'; do
+		printf '%s\n' "$mutation_job" | grep -Fq -- "$required" ||
+			fail "incremental-mutation capacity change must preserve: $required"
+	done
+
+	runner="$repo_root/scripts/quality_gate/mutation.sh"
+	parallel_runner="$repo_root/scripts/quality_gate/mutation_parallel.sh"
+	# These are literal runner defaults, not expansions in this contract test.
+	# shellcheck disable=SC2016
+	for required in \
+		'local exec_timeout=${MUTATION_EXEC_TIMEOUT_SECONDS:-60}' \
+		'local max_shard_timeout=${MUTATION_MAX_SHARD_TIMEOUT_SECONDS:-900}'; do
+		grep -Fq -- "$required" "$runner" ||
+			fail "strict mutation runner must retain its fail-closed limit: $required"
+	done
+	# These are literal runner defaults, not expansions in this contract test.
+	# shellcheck disable=SC2016
+	for required in \
+		': "${MUTATION_TEST_TIMEOUT_MARGIN_SECONDS:=5}"' \
+		': "${MUTATION_BASE_SHARD_TIMEOUT_SECONDS:=240}"' \
+		': "${MUTATION_MAX_SHARD_TIMEOUT_SECONDS:=900}"' \
+		'124) exit_class=timeout ;;' \
+		'*) exit_class=infrastructure ;;'; do
+		grep -Fq -- "$required" "$parallel_runner" ||
+			fail "parallel mutation runner must retain its fail-closed limit: $required"
+	done
+
+	TestGoCacheRestoresBeforeSetup
+	TestExplicitQGStressLane
+	TestPortableQGAggregate
+}
+
 TestGoCacheRestoresBeforeSetup() {
 	local job job_block job_env initialize_line cache_line setup_line
 	for job in incremental-mutation go cgo-free qg-stress; do
@@ -203,7 +282,7 @@ TestGoCacheRestoresBeforeSetup() {
 }
 
 TestGoDispatcherIsolation() {
-	local go_job
+	local dispatcher_commands go_job
 	go_job=$(workflow_job_block go)
 	[[ -n "$go_job" ]] || fail 'workflow must define the Go job'
 
@@ -212,17 +291,28 @@ TestGoDispatcherIsolation() {
 	for required in \
 		'mapfile -t TEST_PKGS < <(go list ./internal/... ./pkg/... ./cmd/... | grep -vx '\''oro/pkg/dispatcher'\'')' \
 		'go test -race -shuffle=on "${TEST_PKGS[@]}"' \
-		'go test -race -shuffle=on -p 1 ./pkg/dispatcher' \
+		'go test -race -shuffle=on -p 1 -timeout=20m ./pkg/dispatcher' \
 		'mapfile -t COVERAGE_PKGS < <(go list ./internal/... ./pkg/... | grep -v '\''pkg/dashboard/'\'' | grep -vx '\''oro/pkg/dispatcher'\'')' \
 		'go test -race -shuffle=on -coverprofile=coverage-other.out "${COVERAGE_PKGS[@]}"' \
-		'go test -race -shuffle=on -p 1 -coverprofile=coverage-dispatcher.out ./pkg/dispatcher' \
+		'go test -race -shuffle=on -p 1 -timeout=20m -coverprofile=coverage-dispatcher.out ./pkg/dispatcher' \
 		'test "$(head -n 1 coverage-other.out)" = "mode: atomic"' \
 		'test "$(head -n 1 coverage-dispatcher.out)" = "mode: atomic"' \
 		'tail -n +2 coverage-dispatcher.out' \
-		'} >coverage.out'; do
+		'} >coverage.out' \
+		'COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '\''{print $3}'\'' | sed '\''s/%//'\'')' \
+		'awk "BEGIN {exit ($COVERAGE < 78)}"'; do
 		printf '%s\n' "$go_job" | grep -Fq -- "$required" ||
 			fail "Go Test + Coverage must isolate dispatcher without weakening race, shuffle, or coverage: $required"
 	done
+
+	dispatcher_commands=$(printf '%s\n' "$go_job" | grep -F 'go test ' | grep -F './pkg/dispatcher')
+	[[ $(printf '%s\n' "$dispatcher_commands" | wc -l) -eq 2 ]] ||
+		fail 'Go Test + Coverage must execute exactly two full dispatcher race commands'
+	[[ $(printf '%s\n' "$dispatcher_commands" | grep -Fc -- '-timeout=20m') -eq 2 ]] ||
+		fail 'each full dispatcher race command must use the explicit 20-minute package deadline'
+	if printf '%s\n' "$dispatcher_commands" | grep -Eq -- '(^|[[:space:]])-(run|skip)(=|[[:space:]])'; then
+		fail 'dispatcher race commands must not omit tests with -run or -skip'
+	fi
 
 	if printf '%s\n' "$go_job" | grep -Fq 'go test -race -shuffle=on ./internal/... ./pkg/... ./cmd/...'; then
 		fail 'Go correctness must not couple dispatcher to the broad concurrent package invocation'
@@ -276,6 +366,9 @@ main() {
 		;;
 	TestIncrementalMutationCheckoutMatchesHead)
 		TestIncrementalMutationCheckoutMatchesHead
+		;;
+	TestIncrementalMutationCapacityDeadline)
+		TestIncrementalMutationCapacityDeadline
 		;;
 	TestGoCacheRestoresBeforeSetup)
 		TestGoCacheRestoresBeforeSetup

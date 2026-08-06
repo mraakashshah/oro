@@ -2,7 +2,9 @@ package dispatcher //nolint:testpackage // white-box test needs internal access
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -88,6 +90,197 @@ func TestApplyHealthReportsStorageUnavailableWithoutObservation(t *testing.T) {
 	if !hasHealthFinding(health, factoryhealth.FindingStorageUnavailable) {
 		t.Fatalf("missing storage unavailable finding: %+v", health.Findings)
 	}
+}
+
+func TestReadyObservationFailureBlocksAssignmentAndDegradesHealthAndStatus(t *testing.T) {
+	d, beads, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	beads.readyErr = errors.New("injected ready observation failure")
+	beads.beads = []protocol.Bead{{ID: "oro-ready-observation", Title: "Ready observation", Status: "open", Type: "task"}}
+	d.cfg.StorageHealth = func(context.Context) *factoryhealth.StorageHealth {
+		return &factoryhealth.StorageHealth{Available: true}
+	}
+	conn := newMockConn()
+	d.mu.Lock()
+	d.state = StateRunning
+	d.workers["idle-ready-observation"] = &trackedWorker{
+		id: "idle-ready-observation", conn: conn, encoder: json.NewEncoder(conn), state: protocol.WorkerIdle,
+	}
+	d.mu.Unlock()
+
+	tryAssignAndWait(t, d, ctx)
+	assertNoAssignmentMessage(t, conn)
+	assertAssignmentObservationDegraded(t, d, "ready", "injected ready observation failure")
+}
+
+func TestCheckpointObservationFailureBlocksAssignmentAndDegradesHealthAndStatus(t *testing.T) {
+	d, beads, _, _, _, _ := newTestDispatcher(t)
+	ctx := context.Background()
+	const beadID = "oro-checkpoint-observation"
+	beads.beads = []protocol.Bead{{ID: beadID, Title: "Checkpoint observation", Status: "open", Type: "task"}}
+	beads.shown[beadID] = &protocol.BeadDetail{ID: beadID, Title: "Checkpoint observation", Status: "open"}
+	d.cfg.StorageHealth = func(context.Context) *factoryhealth.StorageHealth {
+		return &factoryhealth.StorageHealth{Available: true}
+	}
+	if err := protocol.MigrateBeadSchema(ctx, d.db); err != nil {
+		t.Fatalf("migrate bead schema: %v", err)
+	}
+	if _, err := d.db.ExecContext(ctx, `
+DROP VIEW review_checkpoints_blocking_assignment;
+CREATE VIEW review_checkpoints_blocking_assignment AS
+SELECT id, bead_id FROM review_checkpoints WHERE missing_checkpoint_state = 1;`); err != nil {
+		t.Fatalf("install failing checkpoint observation view: %v", err)
+	}
+	conn := newMockConn()
+	d.mu.Lock()
+	d.state = StateRunning
+	d.workers["idle-checkpoint-observation"] = &trackedWorker{
+		id: "idle-checkpoint-observation", conn: conn, encoder: json.NewEncoder(conn), state: protocol.WorkerIdle,
+	}
+	d.mu.Unlock()
+
+	tryAssignAndWait(t, d, ctx)
+	assertNoAssignmentMessage(t, conn)
+	assertAssignmentObservationDegraded(t, d, "review_checkpoint", "missing_checkpoint_state")
+}
+
+func TestMissingCheckpointAdmissionViewFailsClosedAtEveryAssignmentPath(t *testing.T) {
+	const beadID = "oro-missing-checkpoint-admission-view"
+	candidate := protocol.Bead{ID: beadID, Title: "Missing checkpoint admission view", Status: "open", Type: "task"}
+
+	newSubject := func(t *testing.T) (*Dispatcher, *fakeBeadStore, *mockWorktreeManager, *mockConn, *trackedWorker) {
+		t.Helper()
+		d, beads, worktrees, _, _, _ := newTestDispatcher(t)
+		if err := protocol.MigrateBeadSchema(t.Context(), d.db); err != nil {
+			t.Fatalf("migrate bead schema: %v", err)
+		}
+		beads.shown[beadID] = &protocol.BeadDetail{
+			ID:                 beadID,
+			Title:              candidate.Title,
+			Status:             "open",
+			AcceptanceCriteria: "Test: missing checkpoint admission schema fails closed",
+		}
+		d.cfg.StorageHealth = func(context.Context) *factoryhealth.StorageHealth {
+			return &factoryhealth.StorageHealth{Available: true}
+		}
+		conn := newMockConn()
+		worker := &trackedWorker{id: "missing-view-worker", conn: conn, encoder: json.NewEncoder(conn), state: protocol.WorkerIdle}
+		d.mu.Lock()
+		d.workers[worker.id] = worker
+		d.mu.Unlock()
+		return d, beads, worktrees, conn, worker
+	}
+
+	t.Run("bulk filter", func(t *testing.T) {
+		d, _, _, _, _ := newSubject(t)
+		dropCheckpointAdmissionView(t.Context(), t, d.db)
+
+		if got := d.filterAssignable(t.Context(), []protocol.Bead{candidate}); len(got) != 0 {
+			t.Fatalf("filterAssignable = %+v, want no candidates when admission view is missing", got)
+		}
+		assertAssignmentObservationDegraded(t, d, "review_checkpoint", "no such table")
+	})
+
+	t.Run("final recheck", func(t *testing.T) {
+		d, _, worktrees, conn, worker := newSubject(t)
+		dropCheckpointAdmissionView(t.Context(), t, d.db)
+
+		if err := d.assignBead(t.Context(), worker, candidate); err != nil {
+			t.Fatalf("assignBead: %v", err)
+		}
+		assertNoAssignmentMessage(t, conn)
+		if got := countActiveAssignmentsForBead(t, d, beadID); got != 0 {
+			t.Fatalf("active assignments = %d, want 0 when final admission recheck cannot observe checkpoints", got)
+		}
+		worktrees.mu.Lock()
+		created := len(worktrees.created)
+		worktrees.mu.Unlock()
+		if created != 0 {
+			t.Fatalf("created worktrees = %d, want 0 when final admission recheck fails", created)
+		}
+		assertAssignmentObservationDegraded(t, d, "review_checkpoint", "no such table")
+	})
+
+	t.Run("atomic insert", func(t *testing.T) {
+		d, _, worktrees, conn, worker := newSubject(t)
+		worktrees.createFn = func(ctx context.Context, gotBeadID, _ string) (string, string, error) {
+			if gotBeadID != beadID {
+				t.Fatalf("worktree bead ID = %q, want %q", gotBeadID, beadID)
+			}
+			dropCheckpointAdmissionView(ctx, t, d.db)
+			return "/tmp/worktree-" + beadID, protocol.BranchPrefix + beadID, nil
+		}
+
+		if err := d.assignBead(t.Context(), worker, candidate); err != nil {
+			t.Fatalf("assignBead: %v", err)
+		}
+		assertNoAssignmentMessage(t, conn)
+		if got := countActiveAssignmentsForBead(t, d, beadID); got != 0 {
+			t.Fatalf("active assignments = %d, want 0 when atomic admission cannot observe checkpoints", got)
+		}
+		worktrees.mu.Lock()
+		removed := append([]string(nil), worktrees.removed...)
+		worktrees.mu.Unlock()
+		if len(removed) != 1 {
+			t.Fatalf("removed worktrees = %+v, want failed atomic admission worktree cleanup", removed)
+		}
+		assertAssignmentObservationDegraded(t, d, "review_checkpoint", "no such table")
+	})
+}
+
+func dropCheckpointAdmissionView(ctx context.Context, t *testing.T, db *sql.DB) {
+	t.Helper()
+	if _, err := db.ExecContext(ctx, `DROP VIEW review_checkpoints_blocking_assignment`); err != nil {
+		t.Fatalf("drop checkpoint admission view: %v", err)
+	}
+}
+
+func assertNoAssignmentMessage(t *testing.T, conn *mockConn) {
+	t.Helper()
+	conn.mu.Lock()
+	writes := len(conn.written)
+	conn.mu.Unlock()
+	if writes != 0 {
+		t.Fatalf("worker messages = %d, want no ASSIGN", writes)
+	}
+}
+
+func assertAssignmentObservationDegraded(t *testing.T, d *Dispatcher, source, detail string) {
+	t.Helper()
+	healthJSON, err := d.applyHealth()
+	if err != nil {
+		t.Fatalf("applyHealth: %v", err)
+	}
+	var health SwarmHealth
+	if err := json.Unmarshal([]byte(healthJSON), &health); err != nil {
+		t.Fatalf("unmarshal health: %v", err)
+	}
+	assertAssignmentObservationFinding(t, health, source, detail)
+
+	var status statusResponse
+	if err := json.Unmarshal([]byte(d.buildStatusJSON()), &status); err != nil {
+		t.Fatalf("unmarshal status: %v", err)
+	}
+	if status.Health == nil {
+		t.Fatal("status health = nil, want degraded health")
+	}
+	assertAssignmentObservationFinding(t, *status.Health, source, detail)
+}
+
+func assertAssignmentObservationFinding(t *testing.T, health SwarmHealth, source, detail string) {
+	t.Helper()
+	if health.State == factoryhealth.StateHealthy {
+		t.Fatalf("health state = %q with unknown assignment admission, want non-healthy", health.State)
+	}
+	for _, finding := range health.Findings {
+		if finding.Code == "assignment_admission_unknown" {
+			if !strings.Contains(finding.Message, source) || !strings.Contains(finding.Message, detail) {
+				t.Fatalf("assignment observation finding = %+v, want source %q detail %q", finding, source, detail)
+			}
+			return
+		}
+	}
+	t.Fatalf("missing assignment admission unknown finding: %+v", health.Findings)
 }
 
 func TestDirectiveStatusStorageHealthMatchesHealthDirective(t *testing.T) {

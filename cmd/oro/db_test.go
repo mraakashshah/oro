@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"oro/pkg/dbutil"
+	"oro/pkg/protocol"
 )
 
 func TestOpenDB_PingSucceeds(t *testing.T) {
@@ -197,6 +200,73 @@ func TestOpenStateDBIdempotent(t *testing.T) {
 	var count int
 	if err := db2.QueryRow("SELECT COUNT(*) FROM events").Scan(&count); err != nil {
 		t.Fatalf("query events after idempotent open: %v", err)
+	}
+}
+
+func TestOpenStateDBPreV4PreservesReviewCheckpointReadyExclusion(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	db, err := openDB(dbPath)
+	if err != nil {
+		t.Fatalf("open pre-v4 state DB: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, protocol.SchemaDDL); err != nil {
+		t.Fatalf("apply state schema: %v", err)
+	}
+	if err := protocol.MigrateBeadSchema(ctx, db); err != nil {
+		t.Fatalf("apply pre-v4 bead schema: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO beads (id, title, status) VALUES ('review-owned', 'review owned', 'open')`); err != nil {
+		t.Fatalf("insert review-owned bead: %v", err)
+	}
+	assignment, err := db.ExecContext(ctx, `
+INSERT INTO assignments (bead_id, worker_id, worktree, status)
+VALUES ('review-owned', 'review-worker', '/tmp/review-owned', 'requeued')`)
+	if err != nil {
+		t.Fatalf("insert requeued assignment: %v", err)
+	}
+	assignmentID, err := assignment.LastInsertId()
+	if err != nil {
+		t.Fatalf("requeued assignment ID: %v", err)
+	}
+	seedDBTestReviewCheckpoint(ctx, t, db, "review-owned", assignmentID, "review_running")
+	if err := db.Close(); err != nil {
+		t.Fatalf("close pre-v4 state DB: %v", err)
+	}
+
+	db, err = openStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("openStateDB pre-v4 migration: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	assertDBTestReadyCount(ctx, t, db, "review-owned", 0)
+	if _, err := db.ExecContext(ctx, `UPDATE review_checkpoints SET state='integrated' WHERE bead_id='review-owned'`); err != nil {
+		t.Fatalf("integrate review checkpoint: %v", err)
+	}
+	assertDBTestReadyCount(ctx, t, db, "review-owned", 1)
+}
+
+func seedDBTestReviewCheckpoint(ctx context.Context, t *testing.T, db *sql.DB, beadID string, assignmentID int64, state string) {
+	t.Helper()
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO review_checkpoints (
+  checkpoint_key, bead_id, origin_assignment_id, worktree, branch, target_branch,
+  head_sha, target_sha, acceptance_hash, qg_script_hash, qg_mode,
+  review_policy_hash, triage_revision, ready_attempt, state
+) VALUES (?, ?, ?, ?, ?, 'main', 'head', 'target', 'acceptance', 'qg', 'full', 'policy', 'triage', 'ready', ?)`,
+		"checkpoint-"+beadID, beadID, assignmentID, "/tmp/"+beadID, protocol.BranchPrefix+beadID, state); err != nil {
+		t.Fatalf("insert review checkpoint: %v", err)
+	}
+}
+
+func assertDBTestReadyCount(ctx context.Context, t *testing.T, db *sql.DB, beadID string, want int) {
+	t.Helper()
+	var got int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM beads_ready WHERE id=?`, beadID).Scan(&got); err != nil {
+		t.Fatalf("query beads_ready: %v", err)
+	}
+	if got != want {
+		t.Fatalf("beads_ready count for %q = %d, want %d", beadID, got, want)
 	}
 }
 

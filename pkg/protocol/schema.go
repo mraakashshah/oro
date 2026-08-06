@@ -451,7 +451,18 @@ const reviewCheckpointSchemaDDL = reviewCheckpointTableDDL + `
 CREATE UNIQUE INDEX IF NOT EXISTS idx_review_checkpoints_active_key
 ON review_checkpoints(checkpoint_key)
 WHERE state <> 'superseded';
-` + reviewCheckpointFindingsTableDDL + reviewRecoveryAttemptsTableDDL + reviewQuarantineDeliveriesTableDDL
+CREATE UNIQUE INDEX IF NOT EXISTS idx_review_checkpoints_ops_run
+ON review_checkpoints(ops_run_id)
+WHERE ops_run_id IS NOT NULL;
+` + assignmentSideEffectAdmissionsTableDDL + reviewCheckpointFindingsTableDDL + reviewRecoveryAttemptsTableDDL + reviewQuarantineDeliveriesTableDDL
+
+const assignmentSideEffectAdmissionsTableDDL = `
+CREATE TABLE IF NOT EXISTS assignment_side_effect_admissions (
+    bead_id TEXT PRIMARY KEY,
+    owner_token TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`
 
 const reviewCheckpointFindingsTableDDL = `
 CREATE TABLE IF NOT EXISTS review_checkpoint_findings (
@@ -612,10 +623,22 @@ CREATE TRIGGER IF NOT EXISTS beads_fts_au AFTER UPDATE ON beads BEGIN
   VALUES (new.rowid, new.title, new.description, new.acceptance_criteria);
 END;
 
-` + BeadParentTouchTriggerDDL + `
+` + BeadParentTouchTriggerDDL + BeadQueueViewsDDL
 
+// BeadQueueViewsDDL is the canonical definition of the bead readiness views.
+// Schema migrations must execute this exact DDL after rebuilding beads so
+// durable review-checkpoint ownership cannot drift between schema versions.
+const BeadQueueViewsDDL = `
 DROP VIEW IF EXISTS beads_ready;
 DROP VIEW IF EXISTS beads_blocked;
+DROP VIEW IF EXISTS review_checkpoints_blocking_assignment;
+
+-- This view is the single durable predicate for ordinary assignment admission.
+-- Every checkpoint state blocks until review lifecycle ownership is terminal.
+CREATE VIEW review_checkpoints_blocking_assignment AS
+SELECT id, bead_id
+FROM review_checkpoints
+WHERE state NOT IN ('integrated', 'superseded');
 
 CREATE VIEW IF NOT EXISTS beads_ready AS
 SELECT b.*
@@ -628,6 +651,10 @@ WHERE b.deleted = 0
     SELECT 1 FROM assignments a
     WHERE a.bead_id = b.id
       AND a.status = 'active'
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM review_checkpoints_blocking_assignment checkpoint
+    WHERE checkpoint.bead_id = b.id
   )
   AND NOT EXISTS (
     SELECT 1 FROM bead_deps d
@@ -804,6 +831,38 @@ CREATE TRIGGER IF NOT EXISTS bead_notes_touch_parent_ad AFTER DELETE ON bead_not
   UPDATE beads SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = old.bead_id;
 END;
 `
+
+// InitializeBeadSchema installs the current native bead schema in a newly
+// created dispatcher database. Existing databases must use MigrateBeadSchema
+// so legacy data and schema variants are upgraded safely.
+func InitializeBeadSchema(ctx context.Context, db *sql.DB) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("initialize bead schema: begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var beadsSchemaExists bool
+	if err := tx.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = 'beads')`,
+	).Scan(&beadsSchemaExists); err != nil {
+		return fmt.Errorf("initialize bead schema: inspect existing schema: %w", err)
+	}
+	if beadsSchemaExists {
+		return errors.New("initialize bead schema requires a fresh database without a beads schema; use MigrateBeadSchema for an existing database")
+	}
+
+	if _, err := tx.ExecContext(ctx, reviewCheckpointSchemaDDL); err != nil {
+		return fmt.Errorf("initialize review checkpoint schema: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, beadSchemaDDL); err != nil {
+		return fmt.Errorf("initialize bead schema: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("initialize bead schema: commit transaction: %w", err)
+	}
+	return nil
+}
 
 // MigrateBeadSchema adds the native bead store schema to the dispatcher state DB.
 func MigrateBeadSchema(ctx context.Context, db *sql.DB) error {
@@ -1175,6 +1234,16 @@ func rebuildReviewCheckpoints(ctx context.Context, db *sql.DB, columns map[strin
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// The assignment-admission views depend on review_checkpoints. Drop them
+	// inside the rebuild transaction so SQLite does not retarget the durable
+	// predicate at review_checkpoints_legacy during ALTER TABLE. beadSchemaDDL
+	// recreates both views after the checkpoint migration completes.
+	if _, err := tx.ExecContext(ctx, `DROP VIEW IF EXISTS beads_ready`); err != nil {
+		return fmt.Errorf("drop ready view before review checkpoint rebuild: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DROP VIEW IF EXISTS review_checkpoints_blocking_assignment`); err != nil {
+		return fmt.Errorf("drop assignment admission view before review checkpoint rebuild: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `ALTER TABLE review_checkpoints RENAME TO review_checkpoints_legacy`); err != nil {
 		return fmt.Errorf("rename legacy review checkpoints: %w", err)
 	}

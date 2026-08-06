@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -349,4 +350,65 @@ func TestSweepers(t *testing.T) {
 			t.Error("runSweepLoop did not stop after context cancel")
 		}
 	})
+}
+
+func TestPromoteChildrenOnParentCloseRecoversJourneyPartialCommit(t *testing.T) {
+	ctx := context.Background()
+	db := sweeperTestDB(t)
+	store := beadstore.NewSQLiteStore(db)
+	const (
+		parentID = "native-parent-promotion-partial"
+		childID  = "native-child-promotion-partial"
+	)
+	if _, err := store.Create(ctx, beadstore.CreateParams{
+		ID: parentID, Title: "Closed research parent", Type: "research", Status: "closed",
+	}); err != nil {
+		t.Fatalf("create native parent: %v", err)
+	}
+	if _, err := store.Create(ctx, beadstore.CreateParams{
+		ID: childID, Title: "Waiting child", Type: "task", ParentID: parentID,
+		Tags: []string{tagAwaitsParentClose, "preserved"},
+	}); err != nil {
+		t.Fatalf("create native child: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+CREATE TRIGGER fail_parent_closed_promoted_journey
+BEFORE INSERT ON bead_journey
+WHEN NEW.event = 'parent_closed_promoted'
+BEGIN
+  SELECT RAISE(ABORT, 'injected child promotion journey failure');
+END`); err != nil {
+		t.Fatalf("install child journey failure: %v", err)
+	}
+
+	if err := PromoteChildrenOnParentClose(ctx, store, parentID); err == nil {
+		t.Fatal("first child promotion succeeded despite injected journey failure")
+	}
+	if _, err := db.ExecContext(ctx, `DROP TRIGGER fail_parent_closed_promoted_journey`); err != nil {
+		t.Fatalf("remove child journey failure: %v", err)
+	}
+
+	store = beadstore.NewSQLiteStore(db)
+	if err := PromoteChildrenOnParentClose(ctx, store, parentID); err != nil {
+		t.Fatalf("restart child promotion: %v", err)
+	}
+	child, err := store.Show(ctx, childID)
+	if err != nil {
+		t.Fatalf("show promoted child: %v", err)
+	}
+	if child == nil {
+		t.Fatal("promoted child is missing")
+	}
+	if slices.Contains(child.Tags, tagAwaitsParentClose) || !slices.Contains(child.Tags, "preserved") {
+		t.Fatalf("child tags after retry = %v, want only preserved tag", child.Tags)
+	}
+	var journeys int
+	if err := db.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM bead_journey WHERE bead_id=? AND event='parent_closed_promoted'`, childID).
+		Scan(&journeys); err != nil {
+		t.Fatalf("count child promotion journeys: %v", err)
+	}
+	if journeys != 1 {
+		t.Fatalf("child promotion journeys = %d, want exactly 1", journeys)
+	}
 }

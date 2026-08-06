@@ -44,7 +44,7 @@ func (d *Dispatcher) escalateWithOneShot(ctx context.Context, msg, beadID, worke
 	escalationID := d.insertEscalation(ctx, dbEscType, beadID, workerID, msg)
 
 	if protocol.EscalationType(oneShot) == protocol.EscOversizedBead {
-		d.spawnEscalationOneShot(ctx, escalationID, oneShot, beadID, workerID, msg)
+		d.spawnEscalationOneShot(ctx, 0, escalationID, oneShot, beadID, workerID, msg)
 		return
 	}
 
@@ -61,7 +61,7 @@ func (d *Dispatcher) escalateWithOneShot(ctx context.Context, msg, beadID, worke
 	// Spawn one-shot manager agent for actionable escalation types.
 	// Only spawn for types with a one-shot playbook (use parseEscalationType, not extractEscalationType).
 	if oneShot != "" {
-		d.spawnEscalationOneShot(ctx, escalationID, oneShot, beadID, workerID, msg)
+		d.spawnEscalationOneShot(ctx, 0, escalationID, oneShot, beadID, workerID, msg)
 	}
 }
 
@@ -100,7 +100,7 @@ func (d *Dispatcher) routeNewRoutableEscalation(ctx context.Context, escType pro
 		}
 	}
 
-	d.spawnEscalationOneShot(ctx, escalationID, string(escType), beadID, workerID, msg)
+	d.spawnEscalationOneShot(ctx, rec.ID, escalationID, string(escType), beadID, workerID, msg)
 	return true
 }
 
@@ -336,7 +336,7 @@ func (d *Dispatcher) routeExistingRoutableEscalation(ctx context.Context, escala
 		d.ackEscalation(ctx, escalationID, beadID, workerID)
 		return nil
 	}
-	d.spawnEscalationOneShot(ctx, escalationID, string(escType), beadID, workerID, msg)
+	d.spawnEscalationOneShot(ctx, rec.ID, escalationID, string(escType), beadID, workerID, msg)
 	return nil
 }
 
@@ -484,7 +484,7 @@ func extractEscalationType(msg string) string {
 
 // spawnEscalationOneShot launches a one-shot claude -p process to handle
 // the escalation. The result is logged asynchronously.
-func (d *Dispatcher) spawnEscalationOneShot(ctx context.Context, escalationID int64, escType, beadID, workerID, msg string) {
+func (d *Dispatcher) spawnEscalationOneShot(ctx context.Context, opsRunID, escalationID int64, escType, beadID, workerID, msg string) {
 	// Look up bead details for context (best-effort).
 	var beadTitle, beadContext string
 	if beadID != "" {
@@ -536,56 +536,93 @@ func (d *Dispatcher) spawnEscalationOneShot(ctx context.Context, escalationID in
 	}
 
 	d.safeGo(func() {
-		d.handleEscalationResult(ctx, escalationID, escType, beadID, workerID, resultCh)
+		d.handleEscalationResult(ctx, opsRunID, escalationID, escType, beadID, workerID, resultCh)
 	})
 }
 
 // handleEscalationResult logs the one-shot escalation agent's outcome.
 // If the one-shot fails (timeout, error, or non-zero exit), it records a
 // failed ops run so health reporting can surface the failure.
-func (d *Dispatcher) handleEscalationResult(ctx context.Context, escalationID int64, escType, beadID, workerID string, resultCh <-chan ops.Result) {
+func (d *Dispatcher) handleEscalationResult(ctx context.Context, opsRunID, escalationID int64, escType, beadID, workerID string, resultCh <-chan ops.Result) {
 	result := <-resultCh
 	if result.Err != nil {
-		_ = d.logEvent(ctx, "oneshot_escalation_failed", "ops", beadID, workerID,
-			fmt.Sprintf(`{"type":%q,"error":%q}`, escType, result.Err.Error()))
-		if protocol.EscalationType(escType) == protocol.EscMissingAC || protocol.EscalationType(escType) == protocol.EscOversizedBead {
-			d.recordAssignmentFailure(beadID)
-		}
-		d.completeOneShotOpsRunFailureBestEffort(ctx, escalationID, escType, beadID, workerID, result)
-		d.ackEscalation(ctx, escalationID, beadID, workerID)
-		return
-	}
-	_ = d.logEvent(ctx, "oneshot_escalation_complete", "ops", beadID, workerID,
-		fmt.Sprintf(`{"type":%q,"verdict":%q,"feedback":%q}`, escType, result.Verdict, result.Feedback))
-
-	if protocol.EscalationType(escType) == protocol.EscOversizedBead && result.Verdict == ops.VerdictFailed {
-		d.recordAssignmentFailure(beadID)
-		d.completeDecomposeOpsRunBestEffort(ctx, beadID, opsRunStatusFailed, string(result.Verdict), result.Feedback, result.Feedback)
-		d.ackEscalation(ctx, escalationID, beadID, workerID)
+		d.handleFailedEscalationResult(ctx, opsRunID, escalationID, escType, beadID, workerID, result)
 		return
 	}
 	if protocol.EscalationType(escType) == protocol.EscOversizedBead {
-		if err := d.validateDecomposeResult(ctx, beadID); err != nil {
-			if errors.Is(err, errDecomposeValidationUnavailable) {
-				_ = d.logEvent(ctx, "oneshot_escalation_validation_skipped", "ops", beadID, workerID,
-					fmt.Sprintf(`{"type":%q,"error":%q}`, escType, err.Error()))
-				d.clearAssignmentFailure(beadID)
-				d.completeDecomposeOpsRunBestEffort(ctx, beadID, opsRunStatusResolved, string(result.Verdict), result.Feedback, "")
-				d.ackEscalation(ctx, escalationID, beadID, workerID)
-				return
-			}
-			d.recordAssignmentFailure(beadID)
-			d.completeDecomposeOpsRunBestEffort(ctx, beadID, opsRunStatusFailed, string(result.Verdict), result.Feedback, err.Error())
-			_ = d.logEvent(ctx, "oneshot_escalation_validation_failed", "ops", beadID, workerID,
-				fmt.Sprintf(`{"type":%q,"error":%q}`, escType, err.Error()))
-			return
-		}
-		d.clearAssignmentFailure(beadID)
-		d.completeDecomposeOpsRunBestEffort(ctx, beadID, opsRunStatusResolved, string(result.Verdict), result.Feedback, "")
+		d.handleDecomposeResult(ctx, opsRunID, escalationID, escType, beadID, workerID, result)
+		return
 	}
+
+	runType, hasRunType := opsRunTypeForEscalationResult(escType, result)
+	if opsRunID > 0 && (!hasRunType || !d.completeOpsRunBestEffort(ctx, opsRunID, escalationID, runType, beadID, workerID, opsRunStatusResolved, string(result.Verdict), result.Feedback, "")) {
+		return
+	}
+	d.logCompletedEscalationResult(ctx, escType, beadID, workerID, result)
 
 	// Ack the escalation in the persistent queue so the retry loop doesn't re-deliver it.
 	d.ackEscalation(ctx, escalationID, beadID, workerID)
+}
+
+func (d *Dispatcher) handleFailedEscalationResult(ctx context.Context, opsRunID, escalationID int64, escType, beadID, workerID string, result ops.Result) {
+	if !d.completeOneShotOpsRunFailureBestEffort(ctx, opsRunID, escalationID, escType, beadID, workerID, result) {
+		return
+	}
+	_ = d.logEvent(ctx, "oneshot_escalation_failed", "ops", beadID, workerID,
+		fmt.Sprintf(`{"type":%q,"error":%q}`, escType, result.Err.Error()))
+	if protocol.EscalationType(escType) == protocol.EscMissingAC || protocol.EscalationType(escType) == protocol.EscOversizedBead {
+		d.recordAssignmentFailure(beadID)
+	}
+	d.ackEscalation(ctx, escalationID, beadID, workerID)
+}
+
+func (d *Dispatcher) handleDecomposeResult(ctx context.Context, opsRunID, escalationID int64, escType, beadID, workerID string, result ops.Result) {
+	if result.Verdict == ops.VerdictFailed {
+		if !d.completeOneShotOpsRunFailureBestEffort(ctx, opsRunID, escalationID, escType, beadID, workerID, result) {
+			return
+		}
+		d.logCompletedEscalationResult(ctx, escType, beadID, workerID, result)
+		d.recordAssignmentFailure(beadID)
+		d.ackEscalation(ctx, escalationID, beadID, workerID)
+		return
+	}
+
+	if err := d.validateDecomposeResult(ctx, beadID); err != nil {
+		d.handleDecomposeValidationError(ctx, opsRunID, escalationID, escType, beadID, workerID, result, err)
+		return
+	}
+	if !d.completeOpsRunBestEffort(ctx, opsRunID, escalationID, ops.OpsDecompose, beadID, workerID, opsRunStatusResolved, string(result.Verdict), result.Feedback, "") {
+		return
+	}
+	d.logCompletedEscalationResult(ctx, escType, beadID, workerID, result)
+	d.clearAssignmentFailure(beadID)
+	d.ackEscalation(ctx, escalationID, beadID, workerID)
+}
+
+func (d *Dispatcher) handleDecomposeValidationError(ctx context.Context, opsRunID, escalationID int64, escType, beadID, workerID string, result ops.Result, validationErr error) {
+	if errors.Is(validationErr, errDecomposeValidationUnavailable) {
+		if !d.completeOpsRunBestEffort(ctx, opsRunID, escalationID, ops.OpsDecompose, beadID, workerID, opsRunStatusResolved, string(result.Verdict), result.Feedback, "") {
+			return
+		}
+		d.logCompletedEscalationResult(ctx, escType, beadID, workerID, result)
+		_ = d.logEvent(ctx, "oneshot_escalation_validation_skipped", "ops", beadID, workerID,
+			fmt.Sprintf(`{"type":%q,"error":%q}`, escType, validationErr.Error()))
+		d.clearAssignmentFailure(beadID)
+		d.ackEscalation(ctx, escalationID, beadID, workerID)
+		return
+	}
+	if !d.completeOpsRunBestEffort(ctx, opsRunID, escalationID, ops.OpsDecompose, beadID, workerID, opsRunStatusFailed, string(result.Verdict), result.Feedback, validationErr.Error()) {
+		return
+	}
+	d.logCompletedEscalationResult(ctx, escType, beadID, workerID, result)
+	d.recordAssignmentFailure(beadID)
+	_ = d.logEvent(ctx, "oneshot_escalation_validation_failed", "ops", beadID, workerID,
+		fmt.Sprintf(`{"type":%q,"error":%q}`, escType, validationErr.Error()))
+}
+
+func (d *Dispatcher) logCompletedEscalationResult(ctx context.Context, escType, beadID, workerID string, result ops.Result) {
+	_ = d.logEvent(ctx, "oneshot_escalation_complete", "ops", beadID, workerID,
+		fmt.Sprintf(`{"type":%q,"verdict":%q,"feedback":%q}`, escType, result.Verdict, result.Feedback))
 }
 
 func (d *Dispatcher) validateDecomposeResult(ctx context.Context, beadID string) error {
@@ -693,26 +730,10 @@ func (d *Dispatcher) clearAssignmentFailure(beadID string) {
 	d.mu.Unlock()
 }
 
-func (d *Dispatcher) completeDecomposeOpsRunBestEffort(ctx context.Context, beadID, status, verdict, feedback, errorText string) {
-	rec, err := FindBlockingOpsRun(ctx, d.db, string(ops.OpsDecompose), beadID)
-	if err != nil {
-		_ = d.logEvent(ctx, "ops_run_complete_failed", "dispatcher", beadID, "",
-			fmt.Sprintf(`{"type":%q,"status":%q,"error":%q}`, ops.OpsDecompose, status, err.Error()))
-		return
-	}
-	if rec == nil {
-		return
-	}
-	if err := CompleteOpsRun(ctx, d.db, rec.ID, status, verdict, feedback, errorText); err != nil {
-		_ = d.logEvent(ctx, "ops_run_complete_failed", "dispatcher", beadID, "",
-			fmt.Sprintf(`{"ops_run_id":%d,"type":%q,"status":%q,"error":%q}`, rec.ID, ops.OpsDecompose, status, err.Error()))
-	}
-}
-
-func (d *Dispatcher) completeOneShotOpsRunFailureBestEffort(ctx context.Context, escalationID int64, escType, beadID, workerID string, result ops.Result) {
+func (d *Dispatcher) completeOneShotOpsRunFailureBestEffort(ctx context.Context, opsRunID, escalationID int64, escType, beadID, workerID string, result ops.Result) bool {
 	runType, ok := opsRunTypeForEscalationResult(escType, result)
 	if !ok {
-		return
+		return false
 	}
 	errorText := ""
 	if result.Err != nil {
@@ -722,21 +743,10 @@ func (d *Dispatcher) completeOneShotOpsRunFailureBestEffort(ctx context.Context,
 	if verdict == "" {
 		verdict = string(ops.VerdictFailed)
 	}
-	rec, err := FindBlockingOpsRun(ctx, d.db, string(runType), beadID)
-	if err != nil {
-		_ = d.logEvent(ctx, "ops_run_complete_failed", "dispatcher", beadID, workerID,
-			fmt.Sprintf(`{"type":%q,"status":%q,"error":%q}`, runType, opsRunStatusFailed, err.Error()))
-		return
+	if opsRunID > 0 {
+		return d.completeOpsRunBestEffort(ctx, opsRunID, escalationID, runType, beadID, workerID, opsRunStatusFailed, verdict, result.Feedback, errorText)
 	}
-	if rec != nil {
-		d.populateOpsRunEscalationIDBestEffort(ctx, rec.ID, escalationID, runType, beadID, workerID)
-		if err := CompleteOpsRun(ctx, d.db, rec.ID, opsRunStatusFailed, verdict, result.Feedback, errorText); err != nil {
-			_ = d.logEvent(ctx, "ops_run_complete_failed", "dispatcher", beadID, workerID,
-				fmt.Sprintf(`{"ops_run_id":%d,"type":%q,"status":%q,"error":%q}`, rec.ID, runType, opsRunStatusFailed, err.Error()))
-		}
-		return
-	}
-	if _, _, err := CreateOpsRun(ctx, d.db, OpsRunRecord{
+	_, created, err := CreateOpsRun(ctx, d.db, OpsRunRecord{
 		EscalationID:  escalationID,
 		Type:          string(runType),
 		BeadID:        beadID,
@@ -746,10 +756,37 @@ func (d *Dispatcher) completeOneShotOpsRunFailureBestEffort(ctx context.Context,
 		Verdict:       verdict,
 		Feedback:      result.Feedback,
 		Error:         errorText,
-	}); err != nil {
+	})
+	if err != nil {
 		_ = d.logEvent(ctx, "ops_run_complete_failed", "dispatcher", beadID, workerID,
 			fmt.Sprintf(`{"type":%q,"status":%q,"error":%q}`, runType, opsRunStatusFailed, err.Error()))
+		return false
 	}
+	return created
+}
+
+func (d *Dispatcher) completeOpsRunBestEffort(
+	ctx context.Context,
+	opsRunID, escalationID int64,
+	runType ops.Type,
+	beadID, workerID, status, verdict, feedback, errorText string,
+) bool {
+	if opsRunID <= 0 {
+		return true
+	}
+	outcome, err := completeOpsRunFromStatus(
+		ctx, d.db, opsRunID, opsRunStatusRunning, status, verdict, feedback, errorText,
+	)
+	if err != nil {
+		_ = d.logEvent(ctx, "ops_run_complete_failed", "dispatcher", beadID, workerID,
+			fmt.Sprintf(`{"ops_run_id":%d,"type":%q,"status":%q,"error":%q}`, opsRunID, runType, status, err.Error()))
+		return false
+	}
+	if outcome != opsRunCompletionAcquired {
+		return false
+	}
+	d.populateOpsRunEscalationIDBestEffort(ctx, opsRunID, escalationID, runType, beadID, workerID)
+	return true
 }
 
 func (d *Dispatcher) populateOpsRunEscalationIDBestEffort(ctx context.Context, opsRunID, escalationID int64, runType ops.Type, beadID, workerID string) {

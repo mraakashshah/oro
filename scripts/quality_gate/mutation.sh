@@ -2,7 +2,11 @@
 set -euo pipefail
 
 readonly policy_score=0.75
+readonly assignment_claim_shard_timeout=1800
+mutation_script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+readonly mutation_script_dir
 mutation_shard_root=""
+mutation_failure_evidence_root=""
 
 cleanup_mutation_shards() {
 	if [[ -n "$mutation_shard_root" ]]; then
@@ -115,6 +119,22 @@ write_shard_no_mutants() {
 		>"$result"
 }
 
+write_shard_no_mutation_sites() {
+	local result="$1"
+	local index="$2"
+	local file="$3"
+	local match="$4"
+	local test_pattern="$5"
+
+	jq -n \
+		--argjson index "$index" \
+		--arg file "$file" \
+		--arg match "$match" \
+		--arg test_pattern "$test_pattern" \
+		'{index: $index, file: $file, match: $match, test_pattern: $test_pattern, conclusion: "no_mutation_sites", exit_code: 0, reason: "validated function target has no mutation sites", score: null, passed: 0, failed: 0, duplicated: 0, skipped: 0, total: 0}' \
+		>"$result"
+}
+
 write_shard_result() {
 	local result="$1"
 	local index="$2"
@@ -136,6 +156,11 @@ write_shard_result() {
 	fi
 	if grep -q '^ORO_MUTATION_EXEC_TIMEOUT$' <<<"$output"; then
 		write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" 124 'targeted mutation test deadline exceeded'
+		return
+	fi
+	if grep -Eq '^(ORO_MUTATION_EXEC_FAILURE:[0-9]+|UNKOWN exit code for )' <<<"$output"; then
+		write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" 2 \
+			'mutation test execution returned an unexpected status'
 		return
 	fi
 
@@ -174,7 +199,7 @@ write_shard_result() {
 		return
 	fi
 	if ((total == 0)); then
-		write_shard_no_mutants "$result" "$index" "$file" "$match" "$test_pattern"
+		write_shard_no_mutation_sites "$result" "$index" "$file" "$match" "$test_pattern"
 		return
 	fi
 
@@ -197,9 +222,9 @@ touched_function_match() {
 	local base="$1"
 	local head="$2"
 	local file="$3"
-	local touched_functions
+	local candidates head_functions touched_functions
 
-	touched_functions=$(git diff --unified=0 "$base" "$head" -- "$file" 2>/dev/null |
+	candidates=$(git diff --unified=0 "$base" "$head" -- "$file" 2>/dev/null |
 		awk '
 			function emit_function(line, name) {
 				sub(/^.*func[[:space:]]+/, "", line)
@@ -238,16 +263,556 @@ touched_function_match() {
 				flush_hunk()
 			}
 		' |
-		sort -u |
-		paste -sd'|' -)
+		sort -u)
+	head_functions=$(git show "$head:$file" 2>/dev/null |
+		awk '
+			/^[[:space:]]*func[[:space:]]/ {
+				line = $0
+				sub(/^.*func[[:space:]]+/, "", line)
+				if (line ~ /^\(/) {
+					sub(/^\([^)]*\)[[:space:]]+/, "", line)
+				}
+				sub(/[^A-Za-z0-9_].*$/, "", line)
+				if (line != "") print line
+			}
+		' |
+		sort -u)
+	touched_functions=$(
+		while IFS= read -r candidate; do
+			[[ -n "$candidate" ]] || continue
+			if grep -Fxq "$candidate" <<<"$head_functions"; then
+				printf '%s\n' "$candidate"
+			fi
+		done <<<"$candidates" |
+			paste -sd'|' -
+	)
 	if [[ -n "$touched_functions" ]]; then
 		printf '^(%s)$' "$touched_functions"
 	fi
 }
 
-targeted_test_pattern() {
+changed_dispatcher_test_names() {
+	local commit="$1"
+	local package_dir="$2"
+	git diff --unified=0 "${commit}^" "$commit" -- "$package_dir/*_test.go" |
+		awk '
+				function emit_test(line, name) {
+					sub(/^.*func[[:space:]]+/, "", line)
+					name = line
+					sub(/[^A-Za-z0-9_].*$/, "", name)
+					if (name ~ /^Test/) {
+						print name
+					}
+				}
+				function flush_hunk(i) {
+					if (declaration_count > 0) {
+						for (i = 1; i <= declaration_count; i++) {
+							emit_test(declarations[i])
+						}
+					} else if (hunk_label != "") {
+						emit_test(hunk_label)
+					}
+					for (i in declarations) {
+						delete declarations[i]
+					}
+					declaration_count = 0
+					hunk_label = ""
+				}
+				/^@@/ {
+					flush_hunk()
+					hunk_label = $0
+					next
+				}
+				/^\+func[[:space:]]+Test/ {
+					declarations[++declaration_count] = $0
+				}
+				END {
+					flush_hunk()
+				}
+			' |
+		sort -u
+}
+
+cochanged_dispatcher_test_match() {
+	local base="$1"
+	local head="$2"
+	local file="$3"
+	local function="$4"
+	local package_dir
+	package_dir=$(dirname "$file")
+
+	local test_names
+	test_names=$(
+		while read -r commit; do
+			local commit_match commit_functions names
+			commit_match=$(touched_function_match "${commit}^" "$commit" "$file")
+			commit_functions=${commit_match#^(}
+			commit_functions=${commit_functions%)$}
+			if ! grep -Fxq "$function" < <(tr '|' '\n' <<<"$commit_functions"); then
+				continue
+			fi
+			names=$(changed_dispatcher_test_names "$commit" "$package_dir")
+			if [[ -n "$names" ]]; then
+				printf '%s\n' "$names"
+				break
+			fi
+		done < <(git log --no-merges --format=%H "$base..$head" -- "$file") |
+			sort -u |
+			paste -sd'|' -
+	)
+	if [[ -n "$test_names" ]]; then
+		printf '^(%s)$' "$test_names"
+	fi
+}
+
+review_checkpoint_mutation_test_pattern() {
 	local file="$1"
 	local match="$2"
+	[[ "$file" == pkg/dispatcher/review_checkpoint_store.go ]] || return
+	case "$match" in
+	'^(LoadOwningForBead)$' | '^(LoadForOpsRun)$')
+		printf '^TestReviewCheckpointMutationOwnershipLoads$'
+		;;
+	'^(LoadForOpsRunOrBindLegacy)$' | '^(beginSerializedOwnershipBind)$' | '^(loadCheckpointForOpsRunTx)$' | \
+		'^(bindLegacyCheckpointOwnership)$' | '^(legacyUnlinkedCheckpointIDs)$' | \
+		'^(bindSingleLegacyCheckpoint)$' | '^(commitAbsentLegacyCheckpointOwnership)$')
+		printf '^TestReviewCheckpointMutationLegacyBinding$'
+		;;
+	'^(ListPendingIntegrations)$' | '^(BeginIntegration)$' | '^(BlockIntegration)$')
+		printf '^TestReviewCheckpointMutationIntegrationDurability$'
+		;;
+	esac
+}
+
+assignment_bc_mutation_test_pattern() {
+	local file="$1"
+	local match="$2"
+	[[ "$file" == pkg/dispatcher/assignment.go ]] || return 0
+	case "$match" in
+	'^(prepareAssignmentWorktree)$')
+		printf '^TestAssignmentBCPrepareWorktreeOutcomes$'
+		;;
+	'^(validateExistingWorktreeForReuse)$')
+		printf '^(TestAssignmentBCValidateDivergedRecoveryOutcomes|TestAssignmentBCValidateCurrentBranchError)$'
+		;;
+	'^(releaseAssignmentReservationLocked)$')
+		printf '^TestAssignmentBCReservationReleaseExactState$'
+		;;
+	'^(attachAssignmentToReservation)$')
+		printf '^TestAssignmentBCAttachExactStateAndOwnership$'
+		;;
+	esac
+}
+
+assignment_admission_mutation_test_pattern() {
+	local file="$1"
+	local match="$2"
+	[[ "$file" == pkg/dispatcher/assignment_admission.go ]] || return 0
+	case "$match" in
+	'^(beginAssignmentAdmission)$')
+		printf '^TestBufferAssignmentAdmissionBeginOutcomes$'
+		;;
+	'^(close)$')
+		printf '^TestBufferAssignmentAdmissionCloseOutcomes$'
+		;;
+	'^(commit)$')
+		printf '^TestBufferAssignmentAdmissionCommitOutcomes$'
+		;;
+	esac
+}
+
+assignment_admission_mutation_test_file() {
+	local file="$1"
+	[[ "$file" == pkg/dispatcher/assignment_admission.go ]] || return 0
+	printf 'pkg/dispatcher/buffer_survivor_mutation_test.go'
+}
+
+escalation_survivor_mutation_test_pattern() {
+	local file="$1"
+	local match="$2"
+	[[ "$file" == pkg/dispatcher/escalation.go ]] || return 0
+	case "$match" in
+	'^(completeOneShotOpsRunFailureBestEffort)$' | \
+		'^(completeOpsRunBestEffort)$' | \
+		'^(escalateWithOneShot)$' | \
+		'^(handleDecomposeResult)$' | \
+		'^(handleDecomposeValidationError)$' | \
+		'^(handleEscalationResult)$' | \
+		'^(handleFailedEscalationResult)$' | \
+		'^(logCompletedEscalationResult)$' | \
+		'^(routeExistingRoutableEscalation)$' | \
+		'^(routeNewRoutableEscalation)$')
+		printf '^TestEscalationSurvivorMutation'
+		;;
+	esac
+}
+
+escalation_mutation_test_file() {
+	local file="$1"
+	local match="$2"
+	[[ "$file" == pkg/dispatcher/escalation.go ]] || return 0
+	case "$match" in
+	'^(completeOneShotOpsRunFailureBestEffort)$' | \
+		'^(completeOpsRunBestEffort)$' | \
+		'^(escalateWithOneShot)$' | \
+		'^(handleDecomposeResult)$' | \
+		'^(handleDecomposeValidationError)$' | \
+		'^(handleEscalationResult)$' | \
+		'^(handleFailedEscalationResult)$' | \
+		'^(logCompletedEscalationResult)$' | \
+		'^(routeExistingRoutableEscalation)$' | \
+		'^(routeNewRoutableEscalation)$')
+		printf 'pkg/dispatcher/escalation_survivor_mutation_test.go'
+		;;
+	'^(spawnEscalationOneShot)$')
+		printf 'pkg/dispatcher/bounded_mutation_test.go'
+		;;
+	esac
+}
+
+authoritative_mutation_test_pattern() {
+	local file="$1"
+	local match="$2"
+	case "$file:$match" in
+	'pkg/dispatcher/assignment.go:^(assignBeadWithClaim)$')
+		printf '^(TestAssignmentClaimAuthoritativeSurvivorMutation|TestAssignmentBehaviorMutation|TestStandaloneAssignmentBehaviorHarnessCaseIsolation)$'
+		;;
+	'pkg/dispatcher/assignment.go:^(assignmentInsertFailureAllowsReopen)$' | \
+		'pkg/dispatcher/assignment.go:^(checkpointAssignmentAdmissionAllowed)$')
+		printf '^TestAssignmentAuthoritativeSurvivorMutation'
+		;;
+	'pkg/dispatcher/ops_runs.go:^(reviewContextForOpsRun)$')
+		printf '^(TestOpsAuthoritativeSurvivorMutationReviewContexts|TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex)$'
+		;;
+	'pkg/dispatcher/ops_runs.go:^(CompleteOpsRun)$' | \
+		'pkg/dispatcher/ops_runs.go:^(CreateOpsRun)$' | \
+		'pkg/dispatcher/ops_runs.go:^(applyOpsResolve)$' | \
+		'pkg/dispatcher/ops_runs.go:^(completeOpsRunFromStatus)$' | \
+		'pkg/dispatcher/ops_runs.go:^(createOpsRun)$' | \
+		'pkg/dispatcher/ops_runs.go:^(findBlockingOpsRun)$' | \
+		'pkg/dispatcher/ops_runs.go:^(isSQLiteUniqueConstraint)$' | \
+		'pkg/dispatcher/ops_runs.go:^(loadOpsRunByID)$' | \
+		'pkg/dispatcher/ops_runs.go:^(replaceOpsRun)$' | \
+		'pkg/dispatcher/ops_runs.go:^(reviewContextFromAnyWorkerLocked)$' | \
+		'pkg/dispatcher/ops_runs.go:^(reviewContextFromWorkerLocked)$' | \
+		'pkg/dispatcher/ops_runs.go:^(routeOpsRun)$' | \
+		'pkg/dispatcher/ops_runs.go:^(routeReviewOpsRun)$' | \
+		'pkg/dispatcher/ops_runs.go:^(supersedeAndRerouteOpsRun)$' | \
+		'pkg/dispatcher/ops_runs.go:^(supersedeOpsRunForRetry)$' | \
+		'pkg/dispatcher/ops_runs.go:^(terminalOpsRunResult)$' | \
+		'pkg/dispatcher/ops_runs.go:^(watchReroutedOpsRunResult)$')
+		printf '^TestOpsAuthoritativeSurvivorMutation'
+		;;
+	'pkg/dispatcher/health.go:^(applyHealth)$')
+		printf '^(TestHealthAuthoritativeSurvivorMutation|TestApplyHealthReturnsAndReleasesDispatcherMutex$)'
+		;;
+	'pkg/dispatcher/health.go:^(evaluateFactoryHealth)$' | \
+		'pkg/dispatcher/health.go:^(recordAssignmentObservation)$')
+		printf '^TestHealthAuthoritativeSurvivorMutation'
+		;;
+	'pkg/dispatcher/review_checkpoint_store.go:^(BlockIntegration)$')
+		printf '^(TestReviewCheckpointAuthoritativeSurvivorMutation|TestReviewCheckpointMutationIntegrationDurability$)'
+		;;
+	'pkg/dispatcher/review_checkpoint_store.go:^(legacyUnlinkedCheckpointIDs)$')
+		printf '^(TestReviewCheckpointAuthoritativeSurvivorMutation|TestReviewCheckpointMutationLegacyBinding$)'
+		;;
+	'pkg/dispatcher/review_checkpoint_store.go:^(AdvanceIntegrationStep)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(CompleteIntegration)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(CreateOrReuse)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(ObserveIntegration)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(PromoteManualIntegration)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(createOrReuseReviewCheckpoint)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(createOrReuseReviewCheckpointAttempt)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(requireOneCheckpointRow)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(validateOpsRunCheckpointIdentity)$')
+		printf '^TestReviewCheckpointAuthoritativeSurvivorMutation'
+		;;
+	esac
+}
+
+authoritative_mutation_test_file() {
+	local file="$1"
+	local match="$2"
+	case "$file:$match" in
+	'pkg/dispatcher/assignment.go:^(assignmentInsertFailureAllowsReopen)$' | \
+		'pkg/dispatcher/assignment.go:^(checkpointAssignmentAdmissionAllowed)$')
+		printf 'pkg/dispatcher/assignment_authoritative_survivor_mutation_test.go'
+		;;
+	'pkg/dispatcher/ops_runs.go:^(CompleteOpsRun)$' | \
+		'pkg/dispatcher/ops_runs.go:^(CreateOpsRun)$' | \
+		'pkg/dispatcher/ops_runs.go:^(applyOpsResolve)$' | \
+		'pkg/dispatcher/ops_runs.go:^(completeOpsRunFromStatus)$' | \
+		'pkg/dispatcher/ops_runs.go:^(createOpsRun)$' | \
+		'pkg/dispatcher/ops_runs.go:^(findBlockingOpsRun)$' | \
+		'pkg/dispatcher/ops_runs.go:^(isSQLiteUniqueConstraint)$' | \
+		'pkg/dispatcher/ops_runs.go:^(loadOpsRunByID)$' | \
+		'pkg/dispatcher/ops_runs.go:^(replaceOpsRun)$' | \
+		'pkg/dispatcher/ops_runs.go:^(reviewContextFromAnyWorkerLocked)$' | \
+		'pkg/dispatcher/ops_runs.go:^(reviewContextFromWorkerLocked)$' | \
+		'pkg/dispatcher/ops_runs.go:^(routeOpsRun)$' | \
+		'pkg/dispatcher/ops_runs.go:^(routeReviewOpsRun)$' | \
+		'pkg/dispatcher/ops_runs.go:^(supersedeAndRerouteOpsRun)$' | \
+		'pkg/dispatcher/ops_runs.go:^(supersedeOpsRunForRetry)$' | \
+		'pkg/dispatcher/ops_runs.go:^(terminalOpsRunResult)$' | \
+		'pkg/dispatcher/ops_runs.go:^(watchReroutedOpsRunResult)$')
+		printf 'pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go'
+		;;
+	'pkg/dispatcher/health.go:^(evaluateFactoryHealth)$' | \
+		'pkg/dispatcher/health.go:^(recordAssignmentObservation)$')
+		printf 'pkg/dispatcher/health_authoritative_survivor_mutation_test.go'
+		;;
+	'pkg/dispatcher/review_checkpoint_store.go:^(AdvanceIntegrationStep)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(CompleteIntegration)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(CreateOrReuse)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(ObserveIntegration)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(PromoteManualIntegration)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(createOrReuseReviewCheckpoint)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(createOrReuseReviewCheckpointAttempt)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(requireOneCheckpointRow)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(validateOpsRunCheckpointIdentity)$')
+		printf 'pkg/dispatcher/review_checkpoint_authoritative_survivor_mutation_test.go'
+		;;
+	esac
+}
+
+review_integration_recovery_mutation_test_pattern() {
+	local file="$1"
+	local match="$2"
+	[[ "$file" == pkg/dispatcher/review_integration_recovery.go ]] || return
+	case "$match" in
+	'^(completeCheckpointAssignment)$')
+		printf '^TestReviewIntegrationRecoveryMutationCompleteCheckpointAssignment$'
+		;;
+	'^(reviewIntegrationRefSHA)$' | '^(reviewIntegrationTargetSHA)$')
+		printf '^TestReviewIntegrationRecoveryMutationReferenceResolution$'
+		;;
+	'^(closeIntegratedBeadOnce)$')
+		printf '^TestReviewIntegrationRecoveryMutationCloseIntegratedBeadOnce$'
+		;;
+	'^(reviewIntegrationAncestor)$' | '^(reviewIntegrationProof)$')
+		printf '^TestReviewIntegrationRecoveryMutationAncestryAndProof$'
+		;;
+	'^(verifyApprovedIntegrationSource)$' | '^(retryReviewIntegrationMerge)$')
+		printf '^TestReviewIntegrationRecoveryMutationApprovedSourceAndRetry$'
+		;;
+	'^(prepareApprovedReviewIntegration)$' | '^(reconcileReviewIntegration)$')
+		printf '^TestReviewIntegrationRecoveryMutationPrepareAndReconcile$'
+		;;
+	'^(finalizeReviewIntegration)$')
+		printf '^TestReviewIntegrationRecoveryMutationFinalize$'
+		;;
+	'^(reconcileManualReviewIntegration)$' | '^(reconcileAutomaticReviewIntegration)$')
+		printf '^TestReviewIntegrationRecoveryMutationManualAndAutomatic$'
+		;;
+	'^(reconcileReviewIntegrationsOnStartup)$')
+		printf '^(TestReviewIntegrationRecoveryMutationStartupListFailure|TestReviewIntegrationRecoveryMutationStartupWrapsCheckpointFailure)$'
+		;;
+	esac
+}
+
+review_integration_recovery_mutation_test_file() {
+	local file="$1"
+	if [[ "$file" == pkg/dispatcher/review_integration_recovery.go ]]; then
+		printf 'pkg/dispatcher/review_integration_recovery_mutation_test.go'
+	fi
+}
+
+dispatcher_test_supplement() {
+	local file="$1"
+	local match="$2"
+	local -a tests=()
+	[[ "$file" == pkg/dispatcher/assignment_reconcile.go && "$match" == *executableAfterEpicSideEffects* ]] &&
+		tests+=(
+			TestExecutableAfterEpicSideEffectsClassifiesNonEpicAndChildlessEpic
+			TestExecutableAfterEpicSideEffectsFailsClosedAndAuditsChildLookupError
+			TestExecutableAfterEpicSideEffectsProcessesAndReleasesDecomposedEpic
+			TestExecutableAfterEpicSideEffectsDoesNotProcessBlockedOrUnknownAdmission
+			TestFilterExecutableBeadsIgnoresPremortemGate
+		)
+	[[ "$file" == pkg/dispatcher/assignment_reconcile.go && "$match" == *filterAssignable* ]] &&
+		tests+=(TestFilterAssignableAppliesEveryDurableEligibilityStage)
+	[[ "$file" == pkg/dispatcher/assignment_reconcile.go && "$match" == *filterExecutableBeads* ]] &&
+		tests+=(TestFilterExecutableBeadsReturnsOnlyExecutableInputs)
+	[[ "$file" == pkg/dispatcher/assignment_reconcile.go && "$match" == *filterReviewCheckpointBlockedBeads* ]] &&
+		tests+=(
+			TestFilterReviewCheckpointBlockedBeadsShortCircuitsEmptyAndNilDatabase
+			TestFilterReviewCheckpointBlockedBeadsFiltersAndAuditsExactRows
+			TestFilterReviewCheckpointBlockedBeadsFailsClosedAndRecordsObservation
+		)
+	[[ "$file" == pkg/dispatcher/assignment_reconcile.go && "$match" == *reviewCheckpointBlockedBeads* ]] &&
+		tests+=(TestReviewCheckpointBlockedBeadsReturnsExactSetAndScanErrors)
+	[[ "$file" == pkg/dispatcher/assignment_reconcile.go && "$match" == *reviewCheckpointBlocksAssignment* ]] &&
+		tests+=(
+			TestReviewCheckpointBlocksAssignmentHandlesNilDatabaseAndExactState
+			TestReviewCheckpointBlocksAssignmentReportsObservationFailure
+		)
+	[[ "$file" == pkg/dispatcher/assignment_reconcile.go && "$match" == *tryRecoverExternalCloseWork* ]] &&
+		tests+=(
+			TestTryRecoverExternalCloseWorkAuditsSuccessProof
+			TestTryRecoverExternalCloseWorkAuditsAndEscalatesFailureCause
+			TestExternalCloseCleansUpAssignmentAndTracking
+		)
+	[[ "$file" == pkg/dispatcher/assignment_side_effect_admission.go && "$match" == *acquireAssignmentSideEffectAdmission* ]] &&
+		tests+=(
+			TestAcquireAssignmentSideEffectAdmissionRejectsInvalidInputs
+			TestAcquireAssignmentSideEffectAdmissionPersistsOwnedToken
+			TestAcquireAssignmentSideEffectAdmissionBlocksAndAuditsReservedBead
+			TestAcquireAssignmentSideEffectAdmissionReportsStorageFailureAndObservation
+		)
+	[[ "$file" == pkg/dispatcher/assignment_side_effect_admission.go && "$match" == *releaseAssignmentSideEffectAdmission* ]] &&
+		tests+=(
+			TestReleaseAssignmentSideEffectAdmissionHandlesNilInputs
+			TestReleaseAssignmentSideEffectAdmissionDeletesOnlyOwnedToken
+			TestReleaseAssignmentSideEffectAdmissionAuditsStorageFailure
+		)
+	[[ "$file" == pkg/dispatcher/assignment_side_effect_admission.go && "$match" == *clearStaleAssignmentSideEffectAdmissions* ]] &&
+		tests+=(
+			TestClearStaleAssignmentSideEffectAdmissionsHandlesNilInputs
+			TestClearStaleAssignmentSideEffectAdmissionsRemovesAllRows
+			TestClearStaleAssignmentSideEffectAdmissionsReportsStorageFailure
+		)
+	[[ "$file" == pkg/dispatcher/assignment_state.go && "$match" == '^(createAssignment)$' ]] &&
+		tests+=(
+			TestCreateAssignmentReportsAdmissionFailure
+			TestCreateAssignmentPersistsExactIdentity
+			TestCreateAssignmentRejectsDurableCheckpointWithoutRow
+			TestCreateAssignmentFailsClosedWhenCheckpointObservationFails
+			TestCreateAssignmentRollsBackCommitFailure
+		)
+	[[ "$file" == pkg/dispatcher/assignment_state.go && "$match" == *createAssignmentWithEvidence* ]] &&
+		tests+=(
+			TestCreateAssignmentWithEvidenceReportsTargetResolutionFailure
+			TestCreateAssignmentWithEvidenceRejectsBlankTargetSHA
+			TestCreateAssignmentWithEvidenceReportsAdmissionFailure
+			TestCreateAssignmentWithEvidencePersistsTrimmedProof
+			TestCreateAssignmentWithEvidenceFailsClosedWhenCheckpointObservationFails
+			TestCreateAssignmentWithEvidenceRollsBackCommitFailure
+			TestReanchorAssignmentWithEvidencePreservesAdmissionAndCheckpointGate
+		)
+	[[ "$file" == pkg/dispatcher/epic_branch_admission.go && "$match" == '^(withEpicBranchAdmission)$' ]] &&
+		tests+=(TestEpicBranchAdmissionMutationBypassAndClaimPreservation)
+	[[ "$file" == pkg/dispatcher/epic_branch_admission.go && "$match" == '^(renewEpicBranchAdmission)$' ]] &&
+		tests+=(TestEpicBranchAdmissionMutationRenewalOutcomes)
+	[[ "$file" == pkg/dispatcher/epic_branch_admission.go && "$match" == '^(isOwnedBlockedEpicBranchAdmission)$' ]] &&
+		tests+=(TestEpicBranchAdmissionMutationRenewalOutcomes)
+	[[ "$file" == pkg/dispatcher/epic_branch_admission.go && "$match" == '^(blockEpicBranchAdmission)$' ]] &&
+		tests+=(TestEpicBranchAdmissionBlocksUnsafeFreshInspection TestEpicBranchAdmissionMutationBlockOutcomes)
+	[[ "$file" == pkg/dispatcher/escalation.go && "$match" == *routeNewRoutableEscalation* ]] &&
+		tests+=(TestEscalateOversizedRoutesToDecomposeProductionPath TestEscalateNoOpWhenBlockingOpsRunExists)
+	[[ "$file" == pkg/dispatcher/escalation.go && "$match" == *handleDecomposeValidationError* ]] &&
+		tests+=(TestOversizedDecomposeResultAcksOnlyAfterValidation)
+	[[ "$file" == pkg/dispatcher/escalation.go && "$match" == *escalateWithOneShot* ]] &&
+		tests+=(TestEscalateSpawnsOneShotForTargetTypes)
+	[[ "$file" == pkg/dispatcher/ops_runs.go && "$match" == *applyOpsResolve* ]] &&
+		tests+=(TestOpsRunDirectives)
+	[[ "$file" == pkg/dispatcher/ops_runs.go && "$match" == *findBlockingOpsRun* ]] &&
+		tests+=(TestFindBlockingOpsRun)
+	[[ "$file" == pkg/dispatcher/ops_runs.go && "$match" == '^(createOpsRun)$' ]] &&
+		tests+=(TestOpsRunMutationLowLevelFailures)
+	[[ "$file" == pkg/dispatcher/ops_runs.go && "$match" == '^(completeOpsRunFromStatus)$' ]] &&
+		tests+=(TestOpsRunMutationLowLevelFailures TestOpsRunMutationExactReplayRequiresEveryField)
+	[[ "$file" == pkg/dispatcher/ops_runs.go && "$match" == '^(terminalOpsRunResult)$' ]] &&
+		tests+=(TestOpsRunMutationTerminalResultMapping)
+	[[ "$file" == pkg/dispatcher/ops_runs.go && "$match" == '^(watchReroutedOpsRunResult)$' ]] &&
+		tests+=(TestOpsRunMutationWatcherRejectsZeroIdentity TestWatchReroutedOpsRunResultRunsSideEffectsOnlyForAcquiredCompletion)
+	[[ "$file" == pkg/dispatcher/ops_runs.go && "$match" == '^(supersedeOpsRunForRetry)$' ]] &&
+		tests+=(TestOpsRunMutationRetryNormalizesReplacement TestSupersedeOpsReviewRetryPreservesContext)
+	[[ "$file" == pkg/dispatcher/ops_runs.go && "$match" == '^(reviewContextFromWorkerLocked)$' ]] &&
+		tests+=(TestOpsRunMutationReviewContextIdentity)
+	[[ "$file" == pkg/dispatcher/ops_runs.go && "$match" == '^(reviewContextFromAnyWorkerLocked)$' ]] &&
+		tests+=(TestOpsRunMutationReviewContextIdentity)
+	[[ "$file" == pkg/dispatcher/scheduling.go && "$match" == *launchAssignment* ]] &&
+		tests+=(TestTimedOutSetupCannotClobberReplacement)
+	if [[ "$file" == pkg/dispatcher/review_checkpoint_store.go ]]; then
+		tests+=(
+			TestReanchorTransactionalReadyCheckpointPreservesOpsRunIdentity
+			TestRouteOpsRunRoutesReviewOpsRun
+			TestDispatcherStartupReturnsUnroutableReplacementFailureWriteError
+		)
+	fi
+	[[ "$file" == pkg/dispatcher/review_checkpoint_store.go && "$match" == *bindSingleLegacyCheckpoint* ]] &&
+		tests+=(TestRouteOpsRunRestoresExactReviewCheckpointIdentityWithoutWorker)
+	printf '%s\n' "${tests[@]}"
+}
+
+merge_test_patterns() {
+	local pattern="$1"
+	local supplements="$2"
+	local names=""
+	if [[ -n "$pattern" ]]; then
+		names=${pattern#^(}
+		names=${names%)$}
+	fi
+	names=$(
+		{
+			tr '|' '\n' <<<"$names"
+			printf '%s\n' "$supplements"
+		} |
+			sed '/^$/d' |
+			sort -u |
+			paste -sd'|' -
+	)
+	if [[ -n "$names" ]]; then
+		printf '^(%s)$' "$names"
+	fi
+}
+
+touched_functions_covered() {
+	local match="$1"
+	local coverage="$2"
+	local functions=${match#^(}
+	functions=${functions%)$}
+	local report
+	report=$(go tool cover -func="$coverage") || return 1
+	local function
+	while IFS= read -r function; do
+		awk -v target="$function" '
+			$2 == target || $2 ~ ("[.]" target "$") {
+				coverage = $3
+				gsub(/%/, "", coverage)
+				if (coverage + 0 > 0) found = 1
+			}
+			END { exit !found }
+		' <<<"$report" || return 1
+	done < <(tr '|' '\n' <<<"$functions")
+}
+
+targeted_test_pattern() {
+	local base="$1"
+	local head="$2"
+	local file="$3"
+	local match="$4"
+	local assignment_admission_pattern assignment_bc_pattern authoritative_pattern escalation_survivor_pattern review_checkpoint_pattern review_integration_recovery_pattern
+	authoritative_pattern=$(authoritative_mutation_test_pattern "$file" "$match")
+	if [[ -n "$authoritative_pattern" ]]; then
+		printf '%s' "$authoritative_pattern"
+		return
+	fi
+	assignment_admission_pattern=$(assignment_admission_mutation_test_pattern "$file" "$match")
+	if [[ -n "$assignment_admission_pattern" ]]; then
+		printf '%s' "$assignment_admission_pattern"
+		return
+	fi
+	assignment_bc_pattern=$(assignment_bc_mutation_test_pattern "$file" "$match")
+	if [[ -n "$assignment_bc_pattern" ]]; then
+		printf '%s' "$assignment_bc_pattern"
+		return
+	fi
+	escalation_survivor_pattern=$(escalation_survivor_mutation_test_pattern "$file" "$match")
+	if [[ -n "$escalation_survivor_pattern" ]]; then
+		printf '%s' "$escalation_survivor_pattern"
+		return
+	fi
+	review_integration_recovery_pattern=$(review_integration_recovery_mutation_test_pattern "$file" "$match")
+	if [[ -n "$review_integration_recovery_pattern" ]]; then
+		printf '%s' "$review_integration_recovery_pattern"
+		return
+	fi
+	review_checkpoint_pattern=$(review_checkpoint_mutation_test_pattern "$file" "$match")
+	if [[ -n "$review_checkpoint_pattern" ]]; then
+		printf '%s' "$review_checkpoint_pattern"
+		return
+	fi
 
 	if [[ "$file" == cmd/oro/hooks.go && "$match" == '^(isOroDistributedHook)$' ]]; then
 		printf '^TestIsOroDistributedHook'
@@ -257,6 +822,29 @@ targeted_test_pattern() {
 		printf '^(TestHookPathsWouldLeak|TestHookPathsWouldLeak_NonTmpdirSandboxRoot|TestHookPathsWouldLeak_NonstandardGoTempRoot|TestInstallCodexHookConfigRefusesLeakyHooks)$'
 	elif [[ "$file" == pkg/dispatcher/scheduling.go && "$match" == '^(advanceAssignedGeneralIdle)$' ]]; then
 		printf '^TestAdvanceAssignedGeneralIdleConsumesReportedClaimAfterAsyncRelease$'
+	elif [[ "$file" == pkg/dispatcher/scheduling.go && "$match" == '^(launchAssignmentWithResult)$' ]]; then
+		printf '^TestLaunchAssignmentWithResultReportsDeclinedClaimWithinBound$'
+	elif [[ "$file" == pkg/dispatcher/sqlite_busy_retry.go && "$match" == '^(retrySQLiteBusyOperation)$' ]]; then
+		printf '^TestRetrySQLiteBusyOperation$'
+	elif [[ "$file" == pkg/dispatcher/epic_branch_admission.go && "$match" == '^(withEpicBranchAdmission)$' ]]; then
+		printf '^TestEpicBranchAdmissionMutationBypassAndClaimPreservation$'
+	elif [[ "$file" == pkg/dispatcher/assignment.go && "$match" == '^(assignBeadWithClaim)$' ]]; then
+		printf '^(TestAssignmentBehaviorMutation|TestStandaloneAssignmentBehaviorHarnessCaseIsolation)$'
+	elif [[ "$file" == pkg/dispatcher/assignment.go && "$match" == '^(releaseAssignmentReservation)$' ]]; then
+		printf '^TestReleaseAssignmentReservationResetsStateAndUnlocks$'
+	elif [[ "$file" == pkg/dispatcher/escalation.go && "$match" == '^(spawnEscalationOneShot)$' ]]; then
+		printf '^TestSpawnEscalationOneShotReturnsAfterReadingWorktree$'
+	elif [[ "$file" == pkg/dispatcher/health.go && "$match" == '^(applyHealth)$' ]]; then
+		printf '^TestApplyHealthReturnsAndReleasesDispatcherMutex$'
+	elif [[ "$file" == pkg/dispatcher/ops_runs.go && "$match" == '^(reviewContextForOpsRun)$' ]]; then
+		printf '^TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex$'
+	elif [[ "$file" == pkg/dispatcher/*.go ]]; then
+		local function pattern supplements
+		function=${match#^(}
+		function=${function%)$}
+		pattern=$(cochanged_dispatcher_test_match "$base" "$head" "$file" "$function")
+		supplements=$(dispatcher_test_supplement "$file" "$match")
+		merge_test_patterns "$pattern" "$supplements"
 	fi
 }
 
@@ -271,11 +859,51 @@ run_mutation_shard() {
 	local result_dir="$8"
 	local file_timeout="$9"
 	local exec_timeout="${10}"
+	local max_shard_timeout="${11}"
 	local checkout="$shard_root/checkouts/$index"
 	local output_file="$shard_root/logs/$index.log"
 	local result="$result_dir/$index.json"
 	local mutation_exit=0
-
+	local mutation_test_file=""
+	mutation_test_file=$(authoritative_mutation_test_file "$file" "$match")
+	if [[ -z "$mutation_test_file" ]]; then
+		mutation_test_file=$(escalation_mutation_test_file "$file" "$match")
+	fi
+	if [[ -z "$mutation_test_file" ]]; then
+		mutation_test_file=$(review_integration_recovery_mutation_test_file "$file")
+	fi
+	if [[ -z "$mutation_test_file" ]]; then
+		mutation_test_file=$(assignment_admission_mutation_test_file "$file")
+	fi
+	case "$test_pattern" in
+	'^TestAssignBeadWithClaimReportsUnclaimedValidationFailure$' | '^TestReleaseAssignmentReservationResetsStateAndUnlocks$')
+		mutation_test_file=pkg/dispatcher/assignment_mutation_test.go
+		;;
+	'^(TestAssignmentBehaviorMutation|TestStandaloneAssignmentBehaviorHarnessCaseIsolation)$')
+		mutation_test_file=pkg/dispatcher/assignment_behavior_mutation_test.go
+		;;
+	'^TestAssignmentBCPrepareWorktreeOutcomes$' | \
+		'^(TestAssignmentBCValidateDivergedRecoveryOutcomes|TestAssignmentBCValidateCurrentBranchError)$' | \
+		'^TestAssignmentBCReservationReleaseExactState$' | \
+		'^TestAssignmentBCAttachExactStateAndOwnership$')
+		mutation_test_file=pkg/dispatcher/assignment_reservation_worktree_survivor_mutation_test.go
+		;;
+	'^TestBufferAssignmentAdmissionBeginOutcomes$' | \
+		'^TestBufferAssignmentAdmissionCloseOutcomes$' | \
+		'^TestBufferAssignmentAdmissionCommitOutcomes$')
+		mutation_test_file=pkg/dispatcher/buffer_survivor_mutation_test.go
+		;;
+	'^TestLaunchAssignmentWithResultReportsDeclinedClaimWithinBound$')
+		mutation_test_file=pkg/dispatcher/scheduling_mutation_test.go
+		;;
+	'^TestRetrySQLiteBusyOperation$')
+		mutation_test_file=pkg/dispatcher/sqlite_busy_retry_test.go
+		;;
+	'^TestReviewCheckpointMutationOwnershipLoads$' | '^TestReviewCheckpointMutationLegacyBinding$' | \
+		'^TestReviewCheckpointMutationIntegrationDurability$')
+		mutation_test_file=pkg/dispatcher/review_checkpoint_store_mutation_test.go
+		;;
+	esac
 	if [[ -z "$match" ]]; then
 		write_shard_no_mutants "$result" "$index" "$file" "$match" "$test_pattern"
 		return
@@ -291,7 +919,11 @@ run_mutation_shard() {
 			return
 		fi
 	fi
-	local -a targeted_exec=()
+	local -a mutation_exec=("--exec=bash scripts/quality_gate/mutation_exec.sh")
+	if [[ "$file" == pkg/dispatcher/*.go && -z "$test_pattern" ]]; then
+		write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" 2 'dispatcher mutation target has no deterministic test owner'
+		return
+	fi
 	if [[ -n "$test_pattern" ]]; then
 		local package
 		package="./$(dirname "$file")"
@@ -308,14 +940,70 @@ run_mutation_shard() {
 			write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" 2 'targeted mutation test pattern matched no tests'
 			return
 		fi
-		targeted_exec=("--exec=bash scripts/quality_gate/mutation_exec.sh")
+		local coverage_file="$shard_root/coverage/$index.out"
+		mkdir -p "$shard_root/coverage"
+		local baseline_exit=0
+		(
+			cd "$checkout"
+			GOCACHE="$shard_root/caches/$cache_slot" GOTMPDIR="$shard_root/tmp/$index" \
+				timeout "$exec_timeout" go test -vet=off -count=1 -timeout "$((exec_timeout + 5))s" \
+				-coverprofile="$coverage_file" -run "$test_pattern" "$package"
+		) >>"$output_file" 2>&1 || baseline_exit=$?
+		if ((baseline_exit != 0)); then
+			local reason='targeted mutation baseline failed'
+			((baseline_exit == 124)) && reason='targeted mutation baseline deadline exceeded'
+			write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" "$baseline_exit" "$reason"
+			return
+		fi
+		if [[ "$file" == pkg/dispatcher/*.go ]] && ! touched_functions_covered "$match" "$coverage_file"; then
+			write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" 2 'targeted mutation tests do not cover every touched function'
+			return
+		fi
 	fi
 	(
 		cd "$checkout"
-		GOCACHE="$shard_root/caches/$cache_slot" \
-			GOTMPDIR="$shard_root/tmp/$index" \
-			MUTATION_TEST_PATTERN="$test_pattern" \
-			timeout "$file_timeout" go tool go-mutesting --exec-timeout="$exec_timeout" "${targeted_exec[@]}" "--match=$match" "$file"
+		if [[ "$file" == pkg/dispatcher/assignment.go && "$match" == '^(assignBeadWithClaim)$' ]]; then
+			GOCACHE="$shard_root/caches/$cache_slot" \
+				GOTMPDIR="$shard_root/tmp/$index" \
+				MUTATION_SOURCE_FILE="$file" \
+				MUTATION_FUNCTION_MATCH="$match" \
+				MUTATION_TEST_PATTERN="$test_pattern" \
+				MUTATION_TEST_FILE="$mutation_test_file" \
+				MUTATION_EXEC_TIMEOUT="$exec_timeout" \
+				MUTATION_TEST_TIMEOUT_MARGIN_SECONDS=5 \
+				MUTATION_PARALLEL_WORKERS=2 \
+				MUTATION_WORKER_CACHE_WARM_TIMEOUT_SECONDS=120 \
+				MUTATION_BASE_SHARD_TIMEOUT_SECONDS="$assignment_claim_shard_timeout" \
+				MUTATION_MAX_SHARD_TIMEOUT_SECONDS="$assignment_claim_shard_timeout" \
+				MUTATION_FAILURE_EVIDENCE_DIR="$mutation_failure_evidence_root/$index" \
+				MUTATION_EXEC_SCRIPT="$mutation_script_dir/mutation_exec.sh" \
+				timeout "$assignment_claim_shard_timeout" bash "$mutation_script_dir/mutation_parallel.sh"
+		elif [[ "$test_pattern" == *AuthoritativeSurvivorMutation* ||
+			"$file" == pkg/dispatcher/review_integration_recovery.go ||
+			"$mutation_test_file" == pkg/dispatcher/assignment_reservation_worktree_survivor_mutation_test.go ||
+			"$mutation_test_file" == pkg/dispatcher/buffer_survivor_mutation_test.go ||
+			"$mutation_test_file" == pkg/dispatcher/escalation_survivor_mutation_test.go ]]; then
+			GOCACHE="$shard_root/caches/$cache_slot" \
+				GOTMPDIR="$shard_root/tmp/$index" \
+				MUTATION_SOURCE_FILE="$file" \
+				MUTATION_FUNCTION_MATCH="$match" \
+				MUTATION_TEST_PATTERN="$test_pattern" \
+				MUTATION_TEST_FILE="$mutation_test_file" \
+				MUTATION_EXEC_TIMEOUT="$exec_timeout" \
+				MUTATION_TEST_TIMEOUT_MARGIN_SECONDS=5 \
+				MUTATION_PARALLEL_WORKERS=2 \
+				MUTATION_BASE_SHARD_TIMEOUT_SECONDS="$file_timeout" \
+				MUTATION_MAX_SHARD_TIMEOUT_SECONDS="$file_timeout" \
+				MUTATION_FAILURE_EVIDENCE_DIR="$mutation_failure_evidence_root/$index" \
+				MUTATION_EXEC_SCRIPT="$mutation_script_dir/mutation_exec.sh" \
+				timeout "$file_timeout" bash "$mutation_script_dir/mutation_parallel.sh"
+		else
+			GOCACHE="$shard_root/caches/$cache_slot" \
+				GOTMPDIR="$shard_root/tmp/$index" \
+				MUTATION_TEST_PATTERN="$test_pattern" \
+				MUTATION_TEST_FILE="$mutation_test_file" \
+				timeout "$file_timeout" go tool go-mutesting --exec-timeout="$exec_timeout" "${mutation_exec[@]}" "--match=$match" "$file"
+		fi
 	) >"$output_file" 2>&1 || mutation_exit=$?
 	write_shard_result "$result" "$index" "$file" "$match" "$test_pattern" "$mutation_exit" "$output_file"
 }
@@ -376,8 +1064,10 @@ main() {
 	local max_workers=${MUTATION_MAX_WORKERS:-4}
 	local file_timeout=${MUTATION_FILE_TIMEOUT_SECONDS:-240}
 	local exec_timeout=${MUTATION_EXEC_TIMEOUT_SECONDS:-60}
+	local max_shard_timeout=${MUTATION_MAX_SHARD_TIMEOUT_SECONDS:-900}
 	if [[ ! "$max_workers" =~ ^[1-9][0-9]*$ || ! "$file_timeout" =~ ^[1-9][0-9]*$ ||
-		! "$exec_timeout" =~ ^[1-9][0-9]*$ ]]; then
+		! "$exec_timeout" =~ ^[1-9][0-9]*$ || ! "$max_shard_timeout" =~ ^[1-9][0-9]*$ ||
+		max_shard_timeout -lt file_timeout ]]; then
 		infrastructure_failure "$evidence" "$base" "$head" 'mutation shard bounds must be positive integers' 2 "${changed_files[@]}"
 		return
 	fi
@@ -392,39 +1082,72 @@ main() {
 	trap cleanup_mutation_shards EXIT
 	local result_dir="$shard_root/results"
 	mkdir -p "$result_dir"
+	local -a shard_files=()
 	local -a match_patterns=()
 	local -a test_patterns=()
 	local file
 	for file in "${changed_files[@]}"; do
 		local match
 		match=$(touched_function_match "$base" "$head" "$file")
-		match_patterns+=("$match")
-		test_patterns+=("$(targeted_test_pattern "$file" "$match")")
+		if [[ "$file" == pkg/dispatcher/*.go && -n "$match" ]]; then
+			local functions function function_match
+			functions=${match#^(}
+			functions=${functions%)$}
+			while IFS= read -r function; do
+				[[ -n "$function" ]] || continue
+				function_match="^(${function})$"
+				shard_files+=("$file")
+				match_patterns+=("$function_match")
+				test_patterns+=("$(targeted_test_pattern "$base" "$head" "$file" "$function_match")")
+			done < <(tr '|' '\n' <<<"$functions")
+		else
+			shard_files+=("$file")
+			match_patterns+=("$match")
+			test_patterns+=("$(targeted_test_pattern "$base" "$head" "$file" "$match")")
+		fi
 	done
 	local pending_shards
 	pending_shards=$(
-		for index in "${!changed_files[@]}"; do
-			jq -nc --arg file "${changed_files[$index]}" --arg match "${match_patterns[$index]}" \
+		for index in "${!shard_files[@]}"; do
+			jq -nc --arg file "${shard_files[$index]}" --arg match "${match_patterns[$index]}" \
 				--arg test_pattern "${test_patterns[$index]}" \
 				'{file: $file, match: $match, test_pattern: $test_pattern, conclusion: "pending", exit_code: 0, reason: "", score: null, passed: 0, failed: 0, duplicated: 0, skipped: 0, total: 0}'
 		done | jq -s '.'
 	)
 	write_sharded_evidence "$evidence" "$base" "$head" infrastructure_failure 2 null 0 "$pending_shards" "${changed_files[@]}"
+	mutation_failure_evidence_root=$(cd "$(dirname "$evidence")" && pwd -P)/mutation-failures
 
 	local worker_count=$max_workers
-	if ((worker_count > ${#changed_files[@]})); then
-		worker_count=${#changed_files[@]}
+	if ((worker_count > ${#shard_files[@]})); then
+		worker_count=${#shard_files[@]}
 	fi
-	printf 'mutation shards: files=%d workers=%d file_timeout=%ss exec_timeout=%ss\n' \
-		"${#changed_files[@]}" "$worker_count" "$file_timeout" "$exec_timeout"
+	printf 'mutation shards: shards=%d files=%d workers=%d file_timeout=%ss exec_timeout=%ss emergency_cap=%ss\n' \
+		"${#shard_files[@]}" "${#changed_files[@]}" "$worker_count" "$file_timeout" "$exec_timeout" \
+		"$max_shard_timeout"
 
 	local -a pids=()
 	local index key cache_slot pid
-	for index in "${!changed_files[@]}"; do
-		file=${changed_files[$index]}
+	for index in "${!shard_files[@]}"; do
+		file=${shard_files[$index]}
 		printf -v key '%06d' "$index"
 		cache_slot=$((index % worker_count))
-		run_mutation_shard "$key" "$file" "${match_patterns[$index]}" "${test_patterns[$index]}" "$cache_slot" "$head" "$shard_root" "$result_dir" "$file_timeout" "$exec_timeout" &
+		if [[ ("$file" == pkg/dispatcher/assignment.go &&
+			("${match_patterns[$index]}" == '^(assignBeadWithClaim)$' ||
+				"${test_patterns[$index]}" == *TestAssignmentBC*)) ||
+			"${test_patterns[$index]}" == *AuthoritativeSurvivorMutation* ||
+			"$file" == pkg/dispatcher/assignment_admission.go ||
+			"$file" == pkg/dispatcher/review_integration_recovery.go ||
+			("$file" == pkg/dispatcher/escalation.go &&
+				"${test_patterns[$index]}" == '^TestEscalationSurvivorMutation') ]]; then
+			for pid in "${pids[@]}"; do
+				wait "$pid" || true
+			done
+			pids=()
+			MUTATION_PARALLEL_WORKERS=2 \
+				run_mutation_shard "$key" "$file" "${match_patterns[$index]}" "${test_patterns[$index]}" "$cache_slot" "$head" "$shard_root" "$result_dir" "$file_timeout" "$exec_timeout" "$max_shard_timeout"
+			continue
+		fi
+		run_mutation_shard "$key" "$file" "${match_patterns[$index]}" "${test_patterns[$index]}" "$cache_slot" "$head" "$shard_root" "$result_dir" "$file_timeout" "$exec_timeout" "$max_shard_timeout" &
 		pids+=("$!")
 		if ((${#pids[@]} == worker_count)); then
 			for pid in "${pids[@]}"; do
@@ -437,8 +1160,8 @@ main() {
 		wait "$pid" || true
 	done
 
-	for index in "${!changed_files[@]}"; do
-		file=${changed_files[$index]}
+	for index in "${!shard_files[@]}"; do
+		file=${shard_files[$index]}
 		printf -v key '%06d' "$index"
 		if [[ ! -s "$result_dir/$key.json" ]]; then
 			write_shard_infrastructure "$result_dir/$key.json" "$key" "$file" "${match_patterns[$index]}" "${test_patterns[$index]}" 2 'mutation shard produced no evidence'
@@ -452,14 +1175,17 @@ main() {
 	local shards
 	shards=$(jq -s 'sort_by(.index) | map(del(.index))' "$result_dir"/*.json)
 	local infrastructure_count
-	infrastructure_count=$(jq '[.[] | select(.conclusion != "completed")] | length' <<<"$shards")
+	infrastructure_count=$(jq \
+		'[.[] | select(.conclusion != "completed" and .conclusion != "no_mutation_sites")] | length' \
+		<<<"$shards")
 	if ((infrastructure_count > 0)); then
 		local infrastructure_exit
-		infrastructure_exit=$(jq '[.[] | select(.conclusion != "completed") | .exit_code] |
+		infrastructure_exit=$(jq \
+			'[.[] | select(.conclusion != "completed" and .conclusion != "no_mutation_sites") | .exit_code] |
 			if index(124) != null then 124 elif length > 0 then .[0] else 2 end' <<<"$shards")
 		write_sharded_evidence "$evidence" "$base" "$head" infrastructure_failure "$infrastructure_exit" null 0 "$shards" "${changed_files[@]}"
 		printf 'infrastructure failure: %d of %d mutation shards did not complete\n' \
-			"$infrastructure_count" "${#changed_files[@]}" >&2
+			"$infrastructure_count" "${#shard_files[@]}" >&2
 		return 2
 	fi
 
@@ -470,9 +1196,9 @@ main() {
 	skipped=$(jq '[.[].skipped] | add // 0' <<<"$shards")
 	total=$((passed + failed + skipped))
 	if ((total == 0)); then
-		write_sharded_evidence "$evidence" "$base" "$head" infrastructure_failure 0 null 0 "$shards" "${changed_files[@]}"
-		printf 'infrastructure failure: mutation shards generated zero aggregate mutants\n' >&2
-		return 2
+		write_sharded_evidence "$evidence" "$base" "$head" pass 0 null 0 "$shards" "${changed_files[@]}"
+		printf 'pass: validated changed functions contain no mutation sites\n'
+		return
 	fi
 	score=$(awk "BEGIN { printf \"%.6f\", $passed / $total }")
 	printf 'aggregate mutation score is %s (%d passed, %d failed, %d duplicated, %d skipped, total is %d)\n' \

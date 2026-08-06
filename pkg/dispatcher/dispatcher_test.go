@@ -1318,6 +1318,7 @@ type mockBatchSpawner struct {
 	mu       sync.Mutex
 	verdict  string
 	spawnErr error
+	wait     <-chan struct{}
 	spawns   []spawnCall
 }
 
@@ -1328,7 +1329,7 @@ func (m *mockBatchSpawner) Spawn(_ context.Context, model string, prompt string,
 	if m.spawnErr != nil {
 		return nil, m.spawnErr
 	}
-	return &mockProcess{output: m.verdict}, nil
+	return &mockProcess{output: m.verdict, wait: m.wait}, nil
 }
 
 func (m *mockBatchSpawner) SpawnCount() int {
@@ -1395,9 +1396,15 @@ func (m *blockingAcceptanceRunner) callCount() int {
 
 type mockProcess struct {
 	output string
+	wait   <-chan struct{}
 }
 
-func (m *mockProcess) Wait() error             { return nil }
+func (m *mockProcess) Wait() error {
+	if m.wait != nil {
+		<-m.wait
+	}
+	return nil
+}
 func (m *mockProcess) Kill() error             { return nil }
 func (m *mockProcess) Output() (string, error) { return m.output, nil }
 func (m *mockProcess) LastOutputAt() time.Time { return time.Time{} }
@@ -1545,6 +1552,9 @@ func newTestDB(t *testing.T) *sql.DB {
 	}
 	if _, err := db.Exec(protocol.SchemaDDL); err != nil {
 		t.Fatalf("init schema: %v", err)
+	}
+	if err := protocol.InitializeBeadSchema(context.Background(), db); err != nil {
+		t.Fatalf("init bead schema: %v", err)
 	}
 	if _, err := db.Exec(protocol.MigrateSemanticMemorySearchEvents); err != nil {
 		t.Fatalf("init semantic memory search events: %v", err)
@@ -4621,7 +4631,7 @@ func TestSpawnEscalationOneShotRoutesOversizedToDecompose(t *testing.T) {
 	d.mu.Unlock()
 
 	msg := protocol.FormatEscalation(protocol.EscOversizedBead, beadID, "touches 3 modules — needs decomposition", "")
-	d.spawnEscalationOneShot(ctx, 0, string(protocol.EscOversizedBead), beadID, "w1", msg)
+	d.spawnEscalationOneShot(ctx, 0, 0, string(protocol.EscOversizedBead), beadID, "w1", msg)
 
 	waitFor(t, func() bool {
 		return spawnMock.SpawnCount() > 0
@@ -4835,7 +4845,7 @@ func TestOneShotFailureCreatesOpsRunFailureWithoutManagerFallback(t *testing.T) 
 		Err:      errors.New("write-ac agent exited 1"),
 	}
 
-	d.handleEscalationResult(ctx, escalationID, string(protocol.EscMissingAC), beadID, workerID, resultCh)
+	d.handleEscalationResult(ctx, 0, escalationID, string(protocol.EscMissingAC), beadID, workerID, resultCh)
 
 	if got := len(esc.Messages()); got != 0 {
 		t.Fatalf("one-shot failure pasted fallback to manager, got %d messages: %v", got, esc.Messages())
@@ -4886,7 +4896,7 @@ func TestOneShotEscalationFailureCreatesFailedOpsRunWithMetadata(t *testing.T) {
 		Err:    errors.New(spawnFailure),
 	}
 
-	d.handleEscalationResult(ctx, escalationID, string(protocol.EscStuckWorker), beadID, workerID, resultCh)
+	d.handleEscalationResult(ctx, 0, escalationID, string(protocol.EscStuckWorker), beadID, workerID, resultCh)
 
 	if got := len(esc.Messages()); got != 0 {
 		t.Fatalf("one-shot spawn failure pasted fallback to manager, got %d messages: %v", got, esc.Messages())
@@ -4950,7 +4960,7 @@ func TestEscalationSpawnFailureKeepsEmptyIdentifiers(t *testing.T) {
 			Err: errors.New(spawnFailure),
 		}
 
-		d.handleEscalationResult(ctx, escalationID, string(protocol.EscStuckWorker), "", "", resultCh)
+		d.handleEscalationResult(ctx, 0, escalationID, string(protocol.EscStuckWorker), "", "", resultCh)
 	}
 
 	if got := len(esc.Messages()); got != 0 {
@@ -5010,7 +5020,7 @@ func TestDecomposeOpsRunSpawnFailureCreatesFailedIncident(t *testing.T) {
 		Err:    errors.New("spawn failed: executable not found"),
 	}
 
-	d.handleEscalationResult(ctx, escalationID, string(protocol.EscOversizedBead), beadID, workerID, resultCh)
+	d.handleEscalationResult(ctx, 0, escalationID, string(protocol.EscOversizedBead), beadID, workerID, resultCh)
 
 	if got := len(esc.Messages()); got != 0 {
 		t.Fatalf("decompose spawn failure pasted fallback to manager, got %d messages: %v", got, esc.Messages())
@@ -5079,7 +5089,7 @@ func TestDecomposeOpsRunSpawnFailureCompletesExistingRunningRow(t *testing.T) {
 		Err:      errors.New("spawn failed: executable not found"),
 	}
 
-	d.handleEscalationResult(ctx, escalationID, string(protocol.EscOversizedBead), beadID, workerID, resultCh)
+	d.handleEscalationResult(ctx, existingRunID, escalationID, string(protocol.EscOversizedBead), beadID, workerID, resultCh)
 
 	if got := len(esc.Messages()); got != 0 {
 		t.Fatalf("decompose spawn failure pasted fallback to manager, got %d messages: %v", got, esc.Messages())
@@ -5153,12 +5163,12 @@ func TestOversizedDecomposeResultAcksOnlyAfterValidation(t *testing.T) {
 
 	insertDispatcherTestBead(t, d.db, beadID, "task", "", tddAcceptanceForTest())
 	invalidEscID := insertDispatcherTestEscalation(t, d.db, protocol.EscOversizedBead, beadID, workerID)
-	insertDispatcherTestOpsRun(t, d, ops.OpsDecompose, beadID, workerID)
+	invalidRunID := insertDispatcherTestOpsRun(t, d, ops.OpsDecompose, beadID, workerID)
 
 	invalidResultCh := make(chan ops.Result, 1)
 	invalidResultCh <- ops.Result{Type: ops.OpsDecompose, BeadID: beadID, Verdict: ops.VerdictResolved}
 
-	d.handleEscalationResult(ctx, invalidEscID, string(protocol.EscOversizedBead), beadID, workerID, invalidResultCh)
+	d.handleEscalationResult(ctx, invalidRunID, invalidEscID, string(protocol.EscOversizedBead), beadID, workerID, invalidResultCh)
 
 	if got := dispatcherTestEscalationStatus(t, d.db, invalidEscID); got != "pending" {
 		t.Fatalf("invalid decompose escalation status = %q, want pending", got)
@@ -5167,7 +5177,26 @@ func TestOversizedDecomposeResultAcksOnlyAfterValidation(t *testing.T) {
 	insertDispatcherTestBead(t, d.db, childID, "task", beadID, tddAcceptanceForTest())
 	insertDispatcherTestDependency(t, d.db, beadID, childID, "blocks")
 	validEscID := insertDispatcherTestEscalation(t, d.db, protocol.EscOversizedBead, beadID, workerID)
-	insertDispatcherTestOpsRun(t, d, ops.OpsDecompose, beadID, workerID)
+	failed, err := FindBlockingOpsRun(ctx, d.db, string(ops.OpsDecompose), beadID)
+	if err != nil || failed == nil {
+		t.Fatalf("find failed decompose run: rec=%#v err=%v", failed, err)
+	}
+	next := *failed
+	next.ID = 0
+	next.Status = opsRunStatusRunning
+	next.DispatcherPID = os.Getpid()
+	next.ProcessPID = 0
+	next.Verdict = ""
+	next.Feedback = ""
+	next.Error = ""
+	next.StartedAt = ""
+	next.CompletedAt = ""
+	replacement, created, err := replaceOpsRun(ctx, d.db, *failed, next, "test retry after invalid decompose result")
+	if err != nil {
+		t.Fatalf("replace failed decompose run: %v", err)
+	} else if !created {
+		t.Fatal("replace failed decompose run created = false, want a new running owner")
+	}
 
 	d.mu.Lock()
 	d.worktreeFailures[beadID] = time.Now()
@@ -5176,7 +5205,7 @@ func TestOversizedDecomposeResultAcksOnlyAfterValidation(t *testing.T) {
 	validResultCh := make(chan ops.Result, 1)
 	validResultCh <- ops.Result{Type: ops.OpsDecompose, BeadID: beadID, Verdict: ops.VerdictResolved}
 
-	d.handleEscalationResult(ctx, validEscID, string(protocol.EscOversizedBead), beadID, workerID, validResultCh)
+	d.handleEscalationResult(ctx, replacement.ID, validEscID, string(protocol.EscOversizedBead), beadID, workerID, validResultCh)
 
 	if got := dispatcherTestEscalationStatus(t, d.db, validEscID); got != "acked" {
 		t.Fatalf("valid decompose escalation status = %q, want acked", got)
@@ -5224,6 +5253,8 @@ func TestOpsRunDirectives(t *testing.T) {
 	t.Run("retry supersedes blocking row and clears cooldown", func(t *testing.T) {
 		d, _, _, _, _, spawner := newTestDispatcher(t)
 		ctx := context.Background()
+		processRelease := make(chan struct{})
+		spawner.wait = processRelease
 		const beadID = "oro-ops-retry"
 		runID := insertDispatcherTestOpsRun(t, d, ops.OpsDecompose, beadID, "w-ops-retry")
 		if err := CompleteOpsRun(ctx, d.db, runID, opsRunStatusFailed, "", "", "previous failure"); err != nil {
@@ -5265,6 +5296,11 @@ func TestOpsRunDirectives(t *testing.T) {
 		waitFor(t, func() bool { return spawner.SpawnCount() == 1 }, time.Second)
 		if got := spawner.SpawnCount(); got != 1 {
 			t.Fatalf("ops-retry spawn count = %d, want 1", got)
+		}
+		close(processRelease)
+		d.wg.Wait()
+		if status := dispatcherTestOpsRunStatusByID(t, d.db, got.NewOpsRunID); status != opsRunStatusFailed {
+			t.Fatalf("new ops_run terminal status = %q, want %q for invalid decompose output", status, opsRunStatusFailed)
 		}
 
 		resolvedID := insertDispatcherTestOpsRun(t, d, ops.OpsDecompose, "oro-ops-retry-resolved", "w-resolved")
@@ -5388,12 +5424,12 @@ func TestHandleEscalationResult_OversizedFailsOpsRunOnMissingChildren(t *testing
 
 	insertDispatcherTestBead(t, d.db, beadID, "task", "", tddAcceptanceForTest())
 	escalationID := insertDispatcherTestEscalation(t, d.db, protocol.EscOversizedBead, beadID, workerID)
-	insertDispatcherTestOpsRun(t, d, ops.OpsDecompose, beadID, workerID)
+	runID := insertDispatcherTestOpsRun(t, d, ops.OpsDecompose, beadID, workerID)
 
 	resultCh := make(chan ops.Result, 1)
 	resultCh <- ops.Result{Type: ops.OpsDecompose, BeadID: beadID, Verdict: ops.VerdictResolved}
 
-	d.handleEscalationResult(ctx, escalationID, string(protocol.EscOversizedBead), beadID, workerID, resultCh)
+	d.handleEscalationResult(ctx, runID, escalationID, string(protocol.EscOversizedBead), beadID, workerID, resultCh)
 
 	if got := dispatcherTestEscalationStatus(t, d.db, escalationID); got != "pending" {
 		t.Fatalf("escalation status = %q, want pending until validation passes", got)
@@ -5462,7 +5498,7 @@ func TestFailedDecomposeOpsRunSetsAssignmentCooldown(t *testing.T) {
 	)
 
 	escalationID := insertDispatcherTestEscalation(t, d.db, protocol.EscOversizedBead, beadID, workerID)
-	insertDispatcherTestOpsRun(t, d, ops.OpsDecompose, beadID, workerID)
+	runID := insertDispatcherTestOpsRun(t, d, ops.OpsDecompose, beadID, workerID)
 
 	resultCh := make(chan ops.Result, 1)
 	resultCh <- ops.Result{
@@ -5472,7 +5508,7 @@ func TestFailedDecomposeOpsRunSetsAssignmentCooldown(t *testing.T) {
 		Err:     errors.New("decompose agent failed"),
 	}
 
-	d.handleEscalationResult(ctx, escalationID, string(protocol.EscOversizedBead), beadID, workerID, resultCh)
+	d.handleEscalationResult(ctx, runID, escalationID, string(protocol.EscOversizedBead), beadID, workerID, resultCh)
 
 	if got := dispatcherTestOpsRunStatus(t, d.db, ops.OpsDecompose, beadID); got != opsRunStatusFailed {
 		t.Fatalf("decompose ops_run status = %q, want %q", got, opsRunStatusFailed)
@@ -24505,8 +24541,8 @@ func TestTryAssign_FillsIdleWorkersAcrossEpicUnitsByPriority(t *testing.T) {
 	})
 
 	tryAssignAndWait(t, d, context.Background())
-	// Same-epic children race for one branch admission lease. The quiet loser
-	// remains eligible and fills the released worker on the next scheduling pass.
+	// Same-epic children share one branch admission lease, so the next child
+	// remains eligible and fills a released worker on the next scheduling pass.
 	tryAssignAndWait(t, d, context.Background())
 
 	got := assignedBeadIDsSorted(t, d.db)
@@ -24534,8 +24570,8 @@ func TestTryAssign_ConcentratesWorkersOnTopEpic(t *testing.T) {
 	})
 
 	tryAssignAndWait(t, d, context.Background())
-	// The first pass admits one child for the epic; its quiet lease contender
-	// remains eligible to concentrate the second worker on the next pass.
+	// The first pass admits one child for the epic; the next child remains
+	// eligible to concentrate the second worker on the next pass.
 	tryAssignAndWait(t, d, context.Background())
 
 	got := assignedBeadIDsSorted(t, d.db)

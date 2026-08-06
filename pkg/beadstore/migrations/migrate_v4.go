@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+
+	"oro/pkg/protocol"
 )
 
 const v4BeadColumns = `id, title, contract_version, draft, description, acceptance_criteria, status, priority, type, parent_id, owner, estimated_minutes, tier, model, deferred_until, close_reason, created_at, updated_at, closed_at, deleted, next_action, blockers, linked_artifacts, worker_state, pipeline_stage, sandbox_session, allowed_external_fns, context_thresholds`
@@ -131,7 +133,7 @@ func execV4MigrationSteps(ctx context.Context, tx *sql.Tx) error {
 		v4BeadTableDDL,
 		`INSERT INTO beads (` + v4BeadColumns + `) SELECT ` + v4BeadColumns + ` FROM beads_v4_rebuild_old`,
 		`DROP TABLE beads_v4_rebuild_old`,
-		v3ViewsDDL,
+		protocol.BeadQueueViewsDDL,
 		v4BeadsFTSTriggersDDL,
 		`INSERT INTO beads_fts(beads_fts) VALUES('rebuild')`,
 	}

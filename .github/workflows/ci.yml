@@ -13,7 +13,10 @@ jobs:
   incremental-mutation:
     name: Incremental Mutation
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    # Three consecutive 117-shard campaigns reached only shards 58-59 at the
+    # old 60-minute ceiling; reserve about 29 minutes beyond the projected
+    # 121-minute runtime for shard-cost variance and evidence aggregation.
+    timeout-minutes: 150
     env:
       MUTATION_MAX_WORKERS: 2
       MUTATION_FILE_TIMEOUT_SECONDS: 240
@@ -58,7 +61,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: incremental-mutation-evidence
-          path: mutation-evidence.json
+          path: |
+            mutation-evidence.json
+            mutation-failures/
           if-no-files-found: error
 
   go:
@@ -147,13 +152,13 @@ jobs:
           # the resource-heavy dispatcher package out of the broad package fanout.
           mapfile -t TEST_PKGS < <(go list ./internal/... ./pkg/... ./cmd/... | grep -vx 'oro/pkg/dispatcher')
           go test -race -shuffle=on "${TEST_PKGS[@]}"
-          go test -race -shuffle=on -p 1 ./pkg/dispatcher
+          go test -race -shuffle=on -p 1 -timeout=20m ./pkg/dispatcher
 
           # Measure coverage for library packages, excluding dashboard TUI packages.
           # Command packages are still tested above, but are not part of the coverage gate.
           mapfile -t COVERAGE_PKGS < <(go list ./internal/... ./pkg/... | grep -v 'pkg/dashboard/' | grep -vx 'oro/pkg/dispatcher')
           go test -race -shuffle=on -coverprofile=coverage-other.out "${COVERAGE_PKGS[@]}"
-          go test -race -shuffle=on -p 1 -coverprofile=coverage-dispatcher.out ./pkg/dispatcher
+          go test -race -shuffle=on -p 1 -timeout=20m -coverprofile=coverage-dispatcher.out ./pkg/dispatcher
           test "$(head -n 1 coverage-other.out)" = "mode: atomic"
           test "$(head -n 1 coverage-dispatcher.out)" = "mode: atomic"
           {

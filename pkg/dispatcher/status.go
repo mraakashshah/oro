@@ -73,6 +73,7 @@ func (d *Dispatcher) statusQueueBeads(ctx context.Context, readyBeads []protocol
 	if len(readyBeads) == 0 {
 		return readyBeads
 	}
+	readyBeads = d.filterReviewCheckpointBlockedBeads(ctx, readyBeads)
 	queueBeads := make([]protocol.Bead, 0, len(readyBeads))
 	for _, bead := range readyBeads {
 		if strings.EqualFold(bead.Type, "epic") {
@@ -229,6 +230,7 @@ func (d *Dispatcher) buildStatusJSONWithStorage(ctx context.Context, storageHeal
 
 	// Fetch ready beads to determine which attempt counts are valid.
 	readyBeads, err := d.beads.Ready(ctx)
+	d.recordAssignmentObservation("ready", err)
 	if err != nil {
 		readyBeads = nil // Continue with empty ready list on error.
 	}
@@ -297,6 +299,7 @@ func (d *Dispatcher) buildStatusJSONWithStorage(ctx context.Context, storageHeal
 	assignmentFrozenByQuarantine := d.assignmentFrozenByQuarantine
 	blockingRecoveryQuarantines := d.blockingRecoveryQuarantines
 	assignmentFreezeReason := d.assignmentFreezeReason
+	assignmentObservationErrors := d.assignmentObservationErrorsLocked()
 	d.mu.Unlock()
 
 	health := d.evaluateFactoryHealth(ctx, now, factoryHealthInput{
@@ -316,6 +319,7 @@ func (d *Dispatcher) buildStatusJSONWithStorage(ctx context.Context, storageHeal
 		assignmentFreezeReason:       assignmentFreezeReason,
 		progressTimeoutSecs:          progressTimeoutSecs,
 		heartbeatTimeoutSecs:         heartbeatTimeoutSecs,
+		assignmentObservationErrors:  assignmentObservationErrors,
 		storage:                      storageHealth,
 	})
 	resp.EpicBranchBlocksOpen = health.Metrics.EpicBranchBlocksOpen
