@@ -554,9 +554,12 @@ func TestOpsAuthoritativeSurvivorMutationReviewContexts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create checkpoint: %v", err)
 	}
-	got := d.reviewContextForOpsRun(ctx, OpsRunRecord{BeadID: checkpoint.BeadID, WorkerID: "fallback"})
-	if got.worktree != checkpoint.Worktree || got.targetBranch != checkpoint.TargetBranch || got.assignmentID != 72 {
-		t.Fatalf("checkpoint context = %+v", got)
+	got, checkpointSnapshot := opsAuthoritativeReviewContextSnapshot(
+		ctx, t, d, OpsRunRecord{BeadID: checkpoint.BeadID, WorkerID: "fallback"},
+	)
+	if got.worktree != checkpoint.Worktree || got.targetBranch != checkpoint.TargetBranch || got.assignmentID != 72 ||
+		checkpointSnapshot != checkpoint.Worktree {
+		t.Fatalf("checkpoint context = %+v, worktree snapshot = %q", got, checkpointSnapshot)
 	}
 
 	d.mu.Lock()
@@ -606,7 +609,7 @@ func opsAuthoritativeReviewContextSnapshot(
 	reviewCtx := d.reviewContextForOpsRun(ctx, record)
 
 	if !d.mu.TryLock() {
-		// The isolated fallback path has returned and has no competing mutex user.
+		// The isolated review-context path has returned and has no competing mutex user.
 		// Release a mutant-retained lock so test cleanup cannot hang.
 		d.mu.Unlock()
 		t.Fatal("reviewContextForOpsRun returned while retaining the dispatcher mutex")
