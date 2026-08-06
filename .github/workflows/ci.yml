@@ -13,9 +13,10 @@ jobs:
   incremental-mutation:
     name: Incremental Mutation
     runs-on: ubuntu-latest
-    # 24 files at two workers and 240 seconds per file require up to 48
-    # minutes; reserve 12 more for checkout, cache restore, and aggregation.
-    timeout-minutes: 60
+    # Three consecutive 117-shard campaigns reached only shards 58-59 at the
+    # old 60-minute ceiling; reserve about 29 minutes beyond the projected
+    # 121-minute runtime for shard-cost variance and evidence aggregation.
+    timeout-minutes: 150
     env:
       MUTATION_MAX_WORKERS: 2
       MUTATION_FILE_TIMEOUT_SECONDS: 240
