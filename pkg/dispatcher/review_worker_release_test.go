@@ -31,24 +31,155 @@ func TestReviewReleaseCauseValues(t *testing.T) {
 }
 
 func TestReleaseCheckpointOwnedWorkerProductionPath(t *testing.T) {
-	d, _, _, _, _, _ := newTestDispatcher(t)
-	checkpointID, assignmentID, worker := seedCheckpointOwnedEdgeWorker(
-		t, d, "production-path", ReviewCheckpointStateReviewRunning, "active",
-	)
-	drainCheckpointReleaseWakes(d)
+	t.Run("valid worker releases", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+		checkpointID, assignmentID, worker := seedCheckpointOwnedEdgeWorker(
+			t, d, "production-path", ReviewCheckpointStateReviewRunning, "active",
+		)
+		drainCheckpointReleaseWakes(d)
 
-	released, err := d.releaseCheckpointOwnedWorker(
-		context.Background(), worker, ReviewReleaseCauseConnectionLost,
-	)
-	if err != nil || !released {
-		t.Fatalf("release checkpoint-owned worker = (%t, %v), want (true, nil)", released, err)
+		result := make(chan struct {
+			released bool
+			err      error
+		}, 1)
+		go func() {
+			released, err := d.releaseCheckpointOwnedWorker(
+				context.Background(), worker, ReviewReleaseCauseConnectionLost,
+			)
+			result <- struct {
+				released bool
+				err      error
+			}{released: released, err: err}
+		}()
+		var released bool
+		var err error
+		select {
+		case got := <-result:
+			released, err = got.released, got.err
+		case <-time.After(500 * time.Millisecond):
+			t.Fatal("release checkpoint-owned worker did not return; dispatcher mutex may remain locked")
+		}
+		if err != nil || !released {
+			t.Fatalf("release checkpoint-owned worker = (%t, %v), want (true, nil)", released, err)
+		}
+		assertCheckpointOwnedEdgeReleased(t, d, checkpointID, assignmentID, ReviewCheckpointStateReviewRunning)
+		if got := trackedReleaseWorker(d, worker.id); got != nil {
+			t.Fatalf("released production-path worker remains tracked: %p", got)
+		}
+		assertCheckpointReleaseEvent(t, d, worker.beadID, worker.id, ReviewReleaseCauseConnectionLost)
+		assertOneCheckpointReleaseWake(t, d)
+	})
+
+	t.Run("nil worker is rejected", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+		if released, err := d.releaseCheckpointOwnedWorker(context.Background(), nil, ReviewReleaseCauseConnectionLost); err != nil || released {
+			t.Fatalf("nil release = (%t, %v), want (false, nil)", released, err)
+		}
+	})
+
+	for _, tt := range []struct {
+		name      string
+		configure func(*Dispatcher, *trackedWorker) *trackedWorker
+	}{
+		{name: "missing worker", configure: func(d *Dispatcher, worker *trackedWorker) *trackedWorker {
+			delete(d.workers, worker.id)
+			return worker
+		}},
+		{name: "stale worker", configure: func(d *Dispatcher, worker *trackedWorker) *trackedWorker {
+			stale := &trackedWorker{id: worker.id, conn: worker.conn, state: worker.state, beadID: worker.beadID}
+			d.workers[worker.id] = worker
+			return stale
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			d, live := newCheckpointWorkerReleaseFixture(t, "production-"+tt.name)
+			expected := tt.configure(d, live)
+			if released, err := d.releaseCheckpointOwnedWorker(context.Background(), expected, ReviewReleaseCauseConnectionLost); err != nil || released {
+				t.Fatalf("rejected release = (%t, %v), want (false, nil)", released, err)
+			}
+			if !d.mu.TryLock() {
+				t.Fatal("dispatcher mutex remained locked after rejected production release")
+			}
+			d.mu.Unlock()
+		})
 	}
-	assertCheckpointOwnedEdgeReleased(t, d, checkpointID, assignmentID, ReviewCheckpointStateReviewRunning)
-	if got := trackedReleaseWorker(d, worker.id); got != nil {
-		t.Fatalf("released production-path worker remains tracked: %p", got)
+}
+
+func TestReleaseCheckpointOwnedWorkerUsingUnlocksAllPaths(t *testing.T) {
+	assertMutexReusable := func(t *testing.T, d *Dispatcher) {
+		t.Helper()
+		if !d.mu.TryLock() {
+			t.Fatal("dispatcher mutex remained locked after release wrapper returned")
+		}
+		d.mu.Unlock()
 	}
-	assertCheckpointReleaseEvent(t, d, worker.beadID, worker.id, ReviewReleaseCauseConnectionLost)
-	assertOneCheckpointReleaseWake(t, d)
+
+	t.Run("valid worker unlocks before durable release", func(t *testing.T) {
+		d, expected := newCheckpointWorkerReleaseFixture(t, "using-unlock-valid")
+		var storeCalls atomic.Int32
+		result := make(chan struct {
+			released bool
+			err      error
+		}, 1)
+		go func() {
+			released, err := d.releaseCheckpointOwnedWorkerUsing(
+				context.Background(), expected, ReviewReleaseCauseConnectionLost,
+				func(context.Context, string, string) (bool, error) {
+					storeCalls.Add(1)
+					return false, nil
+				},
+			)
+			result <- struct {
+				released bool
+				err      error
+			}{released: released, err: err}
+		}()
+
+		select {
+		case got := <-result:
+			if got.err != nil || got.released {
+				t.Fatalf("release = (%t, %v), want (false, nil)", got.released, got.err)
+			}
+		case <-time.After(500 * time.Millisecond):
+			t.Fatal("valid release did not reach durable callback; dispatcher mutex may remain locked")
+		}
+		if storeCalls.Load() != 1 {
+			t.Fatalf("durable release calls = %d, want 1", storeCalls.Load())
+		}
+		assertMutexReusable(t, d)
+	})
+
+	for _, tt := range []struct {
+		name      string
+		expected  func(*trackedWorker) *trackedWorker
+		configure func(*Dispatcher, *trackedWorker)
+	}{
+		{name: "nil worker", expected: func(*trackedWorker) *trackedWorker { return nil }, configure: func(*Dispatcher, *trackedWorker) {}},
+		{name: "missing worker", expected: func(worker *trackedWorker) *trackedWorker { return worker }, configure: func(d *Dispatcher, worker *trackedWorker) { delete(d.workers, worker.id) }},
+		{name: "stale worker", expected: func(worker *trackedWorker) *trackedWorker { return worker }, configure: func(d *Dispatcher, worker *trackedWorker) {
+			d.workers[worker.id] = &trackedWorker{id: worker.id, conn: worker.conn, state: protocol.WorkerReviewing, beadID: worker.beadID}
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			d, live := newCheckpointWorkerReleaseFixture(t, "using-unlock-"+tt.name)
+			tt.configure(d, live)
+			var storeCalls atomic.Int32
+			released, err := d.releaseCheckpointOwnedWorkerUsing(
+				context.Background(), tt.expected(live), ReviewReleaseCauseConnectionLost,
+				func(context.Context, string, string) (bool, error) {
+					storeCalls.Add(1)
+					return true, nil
+				},
+			)
+			if err != nil || released {
+				t.Fatalf("rejected release = (%t, %v), want (false, nil)", released, err)
+			}
+			if storeCalls.Load() != 0 {
+				t.Fatalf("rejected release reached Store %d times", storeCalls.Load())
+			}
+			assertMutexReusable(t, d)
+		})
+	}
 }
 
 func TestCheckpointWorkerReleaseLeaseAdmission(t *testing.T) {
@@ -125,6 +256,160 @@ func TestCheckpointWorkerReleaseLeaseAdmission(t *testing.T) {
 				t.Fatalf("worker drain/token = (%v, %d), want channel and %d", worker.reviewMessagesDrained, worker.reviewMessagesDrainToken, lease.token)
 			}
 			lease.abort()
+		})
+	}
+}
+
+func TestAcquireCheckpointWorkerReleaseAdmission(t *testing.T) {
+	t.Run("nil expected", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+		lease, acquired := d.acquireCheckpointWorkerRelease(nil, nil)
+		if acquired || lease != nil {
+			t.Fatalf("nil admission = (%#v, %t), want (nil, false)", lease, acquired)
+		}
+		if !d.mu.TryLock() {
+			t.Fatal("dispatcher mutex locked after nil admission")
+		}
+		d.mu.Unlock()
+	})
+
+	t.Run("eligible expected", func(t *testing.T) {
+		d, expected := newCheckpointWorkerReleaseFixture(t, "acquire-wrapper")
+		lease, acquired := d.acquireCheckpointWorkerRelease(expected, expected.conn)
+		if !acquired || lease == nil || lease.expected != expected {
+			t.Fatalf("eligible admission = (%#v, %t), want lease for %p", lease, acquired, expected)
+		}
+		lease.abort()
+	})
+}
+
+func TestCheckpointWorkerReleaseLeaseCurrentMatrix(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Dispatcher, *trackedWorker, *checkpointWorkerReleaseLease)
+		want   bool
+	}{
+		{name: "current", want: true, mutate: func(*Dispatcher, *trackedWorker, *checkpointWorkerReleaseLease) {}},
+		{name: "missing worker", mutate: func(d *Dispatcher, worker *trackedWorker, _ *checkpointWorkerReleaseLease) {
+			delete(d.workers, worker.id)
+		}},
+		{name: "stale pointer", mutate: func(d *Dispatcher, worker *trackedWorker, _ *checkpointWorkerReleaseLease) {
+			d.workers[worker.id] = &trackedWorker{id: worker.id, conn: worker.conn, state: worker.state, beadID: worker.beadID, reviewReleaseToken: worker.reviewReleaseToken}
+		}},
+		{name: "wrong token", mutate: func(_ *Dispatcher, worker *trackedWorker, _ *checkpointWorkerReleaseLease) {
+			worker.reviewReleaseToken++
+		}},
+		{name: "connection drift", mutate: func(_ *Dispatcher, worker *trackedWorker, _ *checkpointWorkerReleaseLease) {
+			worker.conn = newMockConn()
+		}},
+		{name: "state drift", mutate: func(_ *Dispatcher, worker *trackedWorker, _ *checkpointWorkerReleaseLease) {
+			worker.state = protocol.WorkerBusy
+		}},
+		{name: "captured non-reviewing state", mutate: func(_ *Dispatcher, worker *trackedWorker, lease *checkpointWorkerReleaseLease) {
+			worker.state = protocol.WorkerBusy
+			lease.state = protocol.WorkerBusy
+		}},
+		{name: "bead drift", mutate: func(_ *Dispatcher, worker *trackedWorker, _ *checkpointWorkerReleaseLease) { worker.beadID += "-other" }},
+		{name: "assignment drift", mutate: func(_ *Dispatcher, worker *trackedWorker, _ *checkpointWorkerReleaseLease) { worker.assignmentID++ }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, worker, lease := newCheckpointWorkerReleaseLeaseFixture(t, "current-"+tt.name)
+			tt.mutate(d, worker, lease)
+			if got := lease.current(); got != tt.want {
+				t.Fatalf("current() = %t, want %t", got, tt.want)
+			}
+			if !d.mu.TryLock() {
+				t.Fatal("dispatcher mutex remained locked after current check")
+			}
+			d.mu.Unlock()
+		})
+	}
+}
+
+func TestCheckpointWorkerReleaseAbortOwnershipMatrix(t *testing.T) {
+	t.Run("owned token and drain are cleared", func(t *testing.T) {
+		d, worker, lease := newCheckpointWorkerReleaseLeaseFixture(t, "abort-owned")
+		worker.reviewMessagesDrained = make(chan struct{})
+		worker.reviewMessagesDrainToken = lease.token
+		lease.abort()
+		if worker.reviewReleaseToken != 0 || worker.reviewMessagesDrained != nil || worker.reviewMessagesDrainToken != 0 {
+			t.Fatalf("owned abort retained token/drain = %d/%v/%d", worker.reviewReleaseToken, worker.reviewMessagesDrained, worker.reviewMessagesDrainToken)
+		}
+		if !d.mu.TryLock() {
+			t.Fatal("dispatcher mutex remained locked after abort")
+		}
+		d.mu.Unlock()
+	})
+
+	for _, tt := range []struct {
+		name   string
+		mutate func(*Dispatcher, *trackedWorker, *checkpointWorkerReleaseLease) *trackedWorker
+	}{
+		{name: "stale replacement", mutate: func(d *Dispatcher, worker *trackedWorker, lease *checkpointWorkerReleaseLease) *trackedWorker {
+			replacement := &trackedWorker{id: worker.id, conn: worker.conn, state: worker.state, beadID: worker.beadID, reviewReleaseToken: lease.token, reviewMessagesDrainToken: lease.token, reviewMessagesDrained: make(chan struct{})}
+			d.workers[worker.id] = replacement
+			return replacement
+		}},
+		{name: "changed token", mutate: func(_ *Dispatcher, worker *trackedWorker, lease *checkpointWorkerReleaseLease) *trackedWorker {
+			worker.reviewReleaseToken = lease.token + 1
+			worker.reviewMessagesDrainToken = lease.token
+			worker.reviewMessagesDrained = make(chan struct{})
+			return worker
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			d, worker, lease := newCheckpointWorkerReleaseLeaseFixture(t, "abort-"+tt.name)
+			preserved := tt.mutate(d, worker, lease)
+			wantToken, wantDrain, wantDrainToken := preserved.reviewReleaseToken, preserved.reviewMessagesDrained, preserved.reviewMessagesDrainToken
+			lease.abort()
+			if preserved.reviewReleaseToken != wantToken || preserved.reviewMessagesDrained != wantDrain || preserved.reviewMessagesDrainToken != wantDrainToken {
+				t.Fatalf("unowned abort changed token/drain = %d/%v/%d, want %d/%v/%d", preserved.reviewReleaseToken, preserved.reviewMessagesDrained, preserved.reviewMessagesDrainToken, wantToken, wantDrain, wantDrainToken)
+			}
+		})
+	}
+}
+
+func TestCheckpointWorkerReleaseFinalizeDurableMatrix(t *testing.T) {
+	t.Run("exact lease invokes callback and deletes worker", func(t *testing.T) {
+		d, worker, lease := newCheckpointWorkerReleaseLeaseFixture(t, "finalize-exact")
+		calls := 0
+		lease.finalizeDurable(func(got *checkpointWorkerReleaseLease) {
+			calls++
+			if got != lease {
+				t.Fatalf("finalize callback lease = %p, want %p", got, lease)
+			}
+		})
+		if calls != 1 || d.workers[worker.id] != nil {
+			t.Fatalf("exact finalize = calls %d worker %p, want 1/nil", calls, d.workers[worker.id])
+		}
+	})
+
+	for _, tt := range []struct {
+		name      string
+		mutate    func(*Dispatcher, *trackedWorker, *checkpointWorkerReleaseLease)
+		wantToken uint64
+	}{
+		{name: "stale pointer", wantToken: 91, mutate: func(d *Dispatcher, worker *trackedWorker, _ *checkpointWorkerReleaseLease) {
+			d.workers[worker.id] = &trackedWorker{id: worker.id, conn: worker.conn, state: worker.state, beadID: worker.beadID, reviewReleaseToken: 91}
+		}},
+		{name: "wrong token", wantToken: 92, mutate: func(_ *Dispatcher, worker *trackedWorker, _ *checkpointWorkerReleaseLease) {
+			worker.reviewReleaseToken = 92
+		}},
+		{name: "connection drift", wantToken: 0, mutate: func(_ *Dispatcher, worker *trackedWorker, _ *checkpointWorkerReleaseLease) {
+			worker.conn = newMockConn()
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			d, worker, lease := newCheckpointWorkerReleaseLeaseFixture(t, "finalize-"+tt.name)
+			tt.mutate(d, worker, lease)
+			tracked := d.workers[worker.id]
+			calls := 0
+			lease.finalizeDurable(func(*checkpointWorkerReleaseLease) { calls++ })
+			if calls != 0 || d.workers[worker.id] != tracked || tracked.reviewReleaseToken != tt.wantToken {
+				t.Fatalf("guarded finalize = calls %d worker %p token %d, want 0/%p/%d", calls, d.workers[worker.id], tracked.reviewReleaseToken, tracked, tt.wantToken)
+			}
 		})
 	}
 }
@@ -485,7 +770,13 @@ func TestCheckpointWorkerReleaseFenceTokenCannotBeClearedBySecondRelease(t *test
 			})
 		firstDone <- struct{}{}
 	}()
-	<-storeStarted
+	select {
+	case <-storeStarted:
+	case <-firstDone:
+		t.Fatal("first release returned before reaching Store")
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("first release did not reach Store")
+	}
 
 	var secondCalls atomic.Int32
 	if released, err := d.releaseCheckpointOwnedWorkerGenerationUsing(ctx, expected, observedConn, ReviewReleaseCauseKilled,
@@ -506,12 +797,74 @@ func TestCheckpointWorkerReleaseFenceTokenCannotBeClearedBySecondRelease(t *test
 	}
 
 	close(releaseStore)
-	<-firstDone
+	select {
+	case <-firstDone:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("first release did not return after Store resumed")
+	}
 	d.mu.Lock()
 	token = expected.reviewReleaseToken
 	d.mu.Unlock()
 	if token != 0 {
 		t.Fatalf("token after owner abort = %d, want 0", token)
+	}
+}
+
+func TestFinishReviewWorkerMessageDrainMatrix(t *testing.T) {
+	tests := []struct {
+		name          string
+		worker        *trackedWorker
+		wantInFlight  int
+		wantDrain     bool
+		wantDrainOpen bool
+		wantDrainTok  uint64
+	}{
+		{name: "nil worker"},
+		{name: "zero in flight", worker: &trackedWorker{reviewMessagesInFlight: 0, reviewReleaseToken: 7}, wantInFlight: 0},
+		{name: "two in flight", worker: &trackedWorker{reviewMessagesInFlight: 2, reviewReleaseToken: 7, reviewMessagesDrainToken: 7, reviewMessagesDrained: make(chan struct{})}, wantInFlight: 1, wantDrain: true, wantDrainOpen: true, wantDrainTok: 7},
+		{name: "release token absent", worker: &trackedWorker{reviewMessagesInFlight: 1, reviewReleaseToken: 0, reviewMessagesDrainToken: 7, reviewMessagesDrained: make(chan struct{})}, wantInFlight: 0, wantDrain: true, wantDrainOpen: true, wantDrainTok: 7},
+		{name: "drain token mismatch", worker: &trackedWorker{reviewMessagesInFlight: 1, reviewReleaseToken: 7, reviewMessagesDrainToken: 8, reviewMessagesDrained: make(chan struct{})}, wantInFlight: 0, wantDrain: true, wantDrainOpen: true, wantDrainTok: 8},
+		{name: "nil drain", worker: &trackedWorker{reviewMessagesInFlight: 1, reviewReleaseToken: 7, reviewMessagesDrainToken: 7}, wantInFlight: 0, wantDrainTok: 7},
+		{name: "owned final message closes drain", worker: &trackedWorker{reviewMessagesInFlight: 1, reviewReleaseToken: 7, reviewMessagesDrainToken: 7, reviewMessagesDrained: make(chan struct{})}, wantInFlight: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, _, _, _, _, _ := newTestDispatcher(t)
+			originalDrain := (<-chan struct{})(nil)
+			if tt.worker != nil {
+				originalDrain = tt.worker.reviewMessagesDrained
+			}
+			d.finishReviewWorkerMessage(tt.worker)
+			if tt.worker == nil {
+				return
+			}
+			if tt.worker.reviewMessagesInFlight != tt.wantInFlight {
+				t.Fatalf("in-flight messages = %d, want %d", tt.worker.reviewMessagesInFlight, tt.wantInFlight)
+			}
+			if (tt.worker.reviewMessagesDrained != nil) != tt.wantDrain {
+				t.Fatalf("drain present = %t, want %t", tt.worker.reviewMessagesDrained != nil, tt.wantDrain)
+			}
+			if tt.worker.reviewMessagesDrainToken != tt.wantDrainTok {
+				t.Fatalf("drain token = %d, want %d", tt.worker.reviewMessagesDrainToken, tt.wantDrainTok)
+			}
+			if originalDrain != nil {
+				select {
+				case <-originalDrain:
+					if tt.wantDrainOpen {
+						t.Fatal("message drain closed before the owned final message")
+					}
+				default:
+					if !tt.wantDrainOpen {
+						t.Fatal("owned final message did not close its drain")
+					}
+				}
+			}
+			if !d.mu.TryLock() {
+				t.Fatal("dispatcher mutex remained locked after finishing message")
+			}
+			d.mu.Unlock()
+		})
 	}
 }
 
@@ -562,6 +915,31 @@ func TestCheckpointWorkerReleaseWaitsForAllInFlightMessages(t *testing.T) {
 	close(releaseStore)
 	if err := <-done; err != nil {
 		t.Fatalf("drained release: %v", err)
+	}
+}
+
+func TestCheckpointWorkerReleaseWaitCurrentFence(t *testing.T) {
+	d, expected := newCheckpointWorkerReleaseFixture(t, "wait-current-fence")
+	lease, ok := d.acquireCheckpointWorkerRelease(expected, expected.conn)
+	if !ok {
+		t.Fatal("release lease rejected")
+	}
+	d.mu.Lock()
+	expected.state = protocol.WorkerBusy
+	d.mu.Unlock()
+
+	ready, err := lease.waitForMessages(context.Background())
+	if err != nil || ready {
+		t.Fatalf("wait after state change = (%t, %v), want (false, nil)", ready, err)
+	}
+	d.mu.Lock()
+	token := expected.reviewReleaseToken
+	d.mu.Unlock()
+	if token != 0 {
+		t.Fatalf("stale wait retained token %d", token)
+	}
+	if got := trackedReleaseWorker(d, expected.id); got != expected {
+		t.Fatalf("stale wait changed worker: got %p, want %p", got, expected)
 	}
 }
 
@@ -748,6 +1126,395 @@ func TestReviewReleaseTokenFencesDirectReviewTransitions(t *testing.T) {
 	})
 }
 
+func TestDirectReviewTransitionAdmissionMatrix(t *testing.T) {
+	t.Run("dependency claim", func(t *testing.T) {
+		tests := []struct {
+			name      string
+			mutate    func(*trackedWorker)
+			beadID    string
+			wantClaim bool
+			wantState protocol.WorkerState
+		}{
+			{name: "valid", wantClaim: true, wantState: protocol.WorkerReserved},
+			{name: "wrong bead", beadID: "other", wantState: protocol.WorkerReviewing},
+			{name: "wrong state", mutate: func(w *trackedWorker) { w.state = protocol.WorkerBusy }, wantState: protocol.WorkerBusy},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				d, worker := newCheckpointWorkerReleaseFixture(t, "dependency-matrix")
+				worker.assignmentID = 101
+				if tt.mutate != nil {
+					tt.mutate(worker)
+				}
+				beadID := worker.beadID
+				if tt.beadID != "" {
+					beadID = tt.beadID
+				}
+				assignmentID, claimed := d.claimReviewDependencyCheck(worker.id, beadID)
+				if claimed != tt.wantClaim {
+					t.Fatalf("claimed = %t, want %t", claimed, tt.wantClaim)
+				}
+				if tt.wantClaim && assignmentID != worker.assignmentID {
+					t.Fatalf("assignment ID = %d, want %d", assignmentID, worker.assignmentID)
+				}
+				if worker.state != tt.wantState {
+					t.Fatalf("state = %q, want %q", worker.state, tt.wantState)
+				}
+			})
+		}
+	})
+
+	t.Run("blocked assignment claim", func(t *testing.T) {
+		tests := []struct {
+			name         string
+			mutate       func(*trackedWorker)
+			beadID       string
+			assignmentID int64
+			wantClaim    bool
+			wantState    protocol.WorkerState
+		}{
+			{name: "valid", assignmentID: 102, wantClaim: true, wantState: protocol.WorkerReserved},
+			{name: "wrong bead", beadID: "other", assignmentID: 102, wantState: protocol.WorkerReviewing},
+			{name: "wrong state", mutate: func(w *trackedWorker) { w.state = protocol.WorkerBusy }, assignmentID: 102, wantState: protocol.WorkerBusy},
+			{name: "wrong assignment", assignmentID: 999, wantState: protocol.WorkerReviewing},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				d, worker := newCheckpointWorkerReleaseFixture(t, "blocked-matrix")
+				worker.assignmentID = 102
+				if tt.mutate != nil {
+					tt.mutate(worker)
+				}
+				beadID := worker.beadID
+				if tt.beadID != "" {
+					beadID = tt.beadID
+				}
+				assignmentID, claimed := d.claimBlockedReviewAssignment(worker.id, beadID, tt.assignmentID)
+				if claimed != tt.wantClaim {
+					t.Fatalf("claimed = %t, want %t", claimed, tt.wantClaim)
+				}
+				if tt.wantClaim && assignmentID != worker.assignmentID {
+					t.Fatalf("assignment ID = %d, want %d", assignmentID, worker.assignmentID)
+				}
+				if worker.state != tt.wantState {
+					t.Fatalf("state = %q, want %q", worker.state, tt.wantState)
+				}
+			})
+		}
+	})
+
+	t.Run("reviewing worker match", func(t *testing.T) {
+		tests := []struct {
+			name   string
+			mutate func(*Dispatcher, *trackedWorker)
+			beadID string
+			want   bool
+		}{
+			{name: "valid", want: true},
+			{name: "wrong bead", beadID: "other"},
+			{name: "wrong state", mutate: func(_ *Dispatcher, w *trackedWorker) { w.state = protocol.WorkerBusy }},
+			{name: "nil worker", mutate: func(d *Dispatcher, w *trackedWorker) { d.workers[w.id] = nil }},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				d, worker := newCheckpointWorkerReleaseFixture(t, "match-matrix")
+				if tt.mutate != nil {
+					d.mu.Lock()
+					tt.mutate(d, worker)
+					d.mu.Unlock()
+				}
+				beadID := worker.beadID
+				if tt.beadID != "" {
+					beadID = tt.beadID
+				}
+				if got := d.reviewingWorkerMatches(worker.id, beadID); got != tt.want {
+					t.Fatalf("matched = %t, want %t", got, tt.want)
+				}
+			})
+		}
+	})
+}
+
+func TestWithReservationRevalidatesAfterUnlockedIO(t *testing.T) {
+	t.Run("invokes unlock hook and assignment", func(t *testing.T) {
+		d, worker := newCheckpointWorkerReleaseFixture(t, "reservation-valid")
+		worker.state = protocol.WorkerReserved
+		hookCalled := false
+		assigned := false
+		d.testUnlockHook = func() { hookCalled = true }
+
+		if ok := d.withReservation(worker.id, func() string { return "memory" }, func(got *trackedWorker, memory string) bool {
+			assigned = got == worker && memory == "memory"
+			return assigned
+		}); !ok {
+			t.Fatal("valid reservation was rejected")
+		}
+		if !hookCalled || !assigned {
+			t.Fatalf("hook/assignment = %t/%t, want true/true", hookCalled, assigned)
+		}
+	})
+
+	t.Run("rejects state changed during IO", func(t *testing.T) {
+		d, worker := newCheckpointWorkerReleaseFixture(t, "reservation-invalid")
+		worker.state = protocol.WorkerReserved
+		assigned := false
+
+		if ok := d.withReservation(worker.id, func() string {
+			d.mu.Lock()
+			worker.state = protocol.WorkerBusy
+			d.mu.Unlock()
+			return "memory"
+		}, func(*trackedWorker, string) bool {
+			assigned = true
+			return true
+		}); ok {
+			t.Fatal("invalidated reservation was accepted")
+		}
+		if assigned {
+			t.Fatal("assignment callback ran after reservation invalidation")
+		}
+	})
+}
+
+func TestSendPreReviewGitDirtyFeedbackRevalidatesAfterPayloadBuild(t *testing.T) {
+	t.Run("valid worker receives feedback", func(t *testing.T) {
+		d, worker := newCheckpointWorkerReleaseFixture(t, "dirty-valid")
+		conn := worker.conn.(*mockConn)
+		done := make(chan struct{}, 1)
+		go func() {
+			d.sendPreReviewGitDirtyFeedback(context.Background(), worker.id, "dirty")
+			done <- struct{}{}
+		}()
+		waitForDispatcherOperationWithin(t, d, done, 500*time.Millisecond,
+			"valid dirty-feedback send did not return")
+		if worker.state != protocol.WorkerBusy {
+			t.Fatalf("state = %q, want %q", worker.state, protocol.WorkerBusy)
+		}
+		msg, ok := firstWrittenMsg(conn)
+		if !ok || msg.Type != protocol.MsgAssign || msg.Assign == nil || msg.Assign.Feedback != "dirty" {
+			t.Fatalf("feedback message = %#v, want dirty ASSIGN", msg)
+		}
+		assertDispatcherMutexAvailableWithin(t, d, 100*time.Millisecond)
+	})
+
+	t.Run("missing worker", func(t *testing.T) {
+		d, _, _, _, _, _ := newTestDispatcher(t)
+		d.sendPreReviewGitDirtyFeedback(context.Background(), "missing-dirty-worker", "dirty")
+		assertDispatcherMutexAvailableWithin(t, d, 100*time.Millisecond)
+	})
+
+	t.Run("release token rejects and unlocks", func(t *testing.T) {
+		d, beads, _, _, _, _ := newTestDispatcher(t)
+		worker := &trackedWorker{
+			id: "dirty-token-worker", beadID: "dirty-token-bead", worktree: t.TempDir(),
+			state: protocol.WorkerReviewing, conn: newMockConn(), reviewReleaseToken: 1,
+		}
+		d.mu.Lock()
+		d.workers[worker.id] = worker
+		d.mu.Unlock()
+		var showCalls atomic.Int32
+		beads.showFn = func(context.Context, string) (*protocol.BeadDetail, error) {
+			showCalls.Add(1)
+			return &protocol.BeadDetail{ID: worker.beadID}, nil
+		}
+		worker.reviewReleaseToken = 1
+		d.sendPreReviewGitDirtyFeedback(context.Background(), worker.id, "dirty")
+		if got := showCalls.Load(); got != 0 {
+			t.Fatalf("release-fenced feedback built %d payloads, want 0", got)
+		}
+		assertDispatcherMutexAvailableWithin(t, d, 100*time.Millisecond)
+	})
+
+	for _, tt := range []struct {
+		name   string
+		mutate func(*Dispatcher, *trackedWorker)
+	}{
+		{name: "worker removed", mutate: func(d *Dispatcher, w *trackedWorker) { delete(d.workers, w.id) }},
+		{name: "state changed", mutate: func(_ *Dispatcher, w *trackedWorker) { w.state = protocol.WorkerBusy }},
+		{name: "release token changed", mutate: func(_ *Dispatcher, w *trackedWorker) { w.reviewReleaseToken = 2 }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			d, beads, _, _, _, _ := newTestDispatcher(t)
+			worker := &trackedWorker{
+				id: "dirty-revalidate-" + tt.name, beadID: "dirty-revalidate-bead", worktree: t.TempDir(),
+				state: protocol.WorkerReviewing, conn: newMockConn(),
+			}
+			d.mu.Lock()
+			d.workers[worker.id] = worker
+			d.mu.Unlock()
+
+			showStarted := make(chan struct{})
+			releaseShow := make(chan struct{})
+			var firstShow atomic.Bool
+			beads.showFn = func(context.Context, string) (*protocol.BeadDetail, error) {
+				if firstShow.CompareAndSwap(false, true) {
+					close(showStarted)
+					<-releaseShow
+				}
+				return &protocol.BeadDetail{ID: worker.beadID, Title: "dirty"}, nil
+			}
+
+			done := make(chan struct{}, 1)
+			go func() {
+				d.sendPreReviewGitDirtyFeedback(context.Background(), worker.id, "dirty")
+				done <- struct{}{}
+			}()
+			select {
+			case <-showStarted:
+			case <-time.After(500 * time.Millisecond):
+				t.Fatal("payload build did not reach bead lookup")
+			}
+
+			mutated := make(chan struct{}, 1)
+			go func() {
+				d.mu.Lock()
+				tt.mutate(d, worker)
+				d.mu.Unlock()
+				mutated <- struct{}{}
+			}()
+			select {
+			case <-mutated:
+			case <-time.After(100 * time.Millisecond):
+				// Payload construction is blocked and these fixtures start no
+				// background dispatcher work, so the send goroutine is the sole
+				// possible owner. Release a mutant-retained first-phase lock.
+				d.mu.Unlock()
+				<-mutated
+				close(releaseShow)
+				<-done
+				t.Fatal("dirty-feedback payload build retained the dispatcher mutex")
+			}
+			close(releaseShow)
+			select {
+			case <-done:
+			case <-time.After(500 * time.Millisecond):
+				t.Fatal("dirty-feedback revalidation did not return")
+			}
+
+			conn := worker.conn.(*mockConn)
+			conn.mu.Lock()
+			writes := len(conn.written)
+			conn.mu.Unlock()
+			if writes != 0 {
+				t.Fatalf("stale dirty feedback wrote %d messages, want 0", writes)
+			}
+			switch tt.name {
+			case "worker removed":
+				if got := d.workers[worker.id]; got != nil {
+					t.Fatalf("removed worker was restored: %p", got)
+				}
+			case "state changed":
+				if worker.state != protocol.WorkerBusy {
+					t.Fatalf("changed state = %q, want %q", worker.state, protocol.WorkerBusy)
+				}
+			case "release token changed":
+				if worker.state != protocol.WorkerReserved || worker.reviewReleaseToken != 2 {
+					t.Fatalf("release-owned worker = state %q token %d, want Reserved/2",
+						worker.state, worker.reviewReleaseToken)
+				}
+			}
+		})
+	}
+}
+
+func TestReplayReconnectEventsSyntheticReadyMatrix(t *testing.T) {
+	for _, tt := range []struct {
+		name             string
+		canonical        bool
+		alreadyReviewing bool
+		bufferReady      bool
+		wantReviewSpawns int
+	}{
+		{name: "canonical synthesizes ready", canonical: true, wantReviewSpawns: 1},
+		{name: "noncanonical does not synthesize", wantReviewSpawns: 0},
+		{name: "already reviewing does not synthesize", canonical: true, alreadyReviewing: true, wantReviewSpawns: 0},
+		{name: "buffered canonical ready remains exactly once", canonical: true, bufferReady: true, wantReviewSpawns: 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			d, beads, _, _, _, spawner := newTestDispatcher(t)
+			const (
+				workerID = "replay-matrix-worker"
+				beadID   = "replay-matrix-bead"
+			)
+			worktree := t.TempDir()
+			assignmentID := insertActiveAssignment(t, d, beadID, workerID, worktree)
+			beads.shown[beadID] = &protocol.BeadDetail{ID: beadID, Title: "Replay matrix"}
+			worker := &trackedWorker{
+				id: workerID, beadID: beadID, assignmentID: assignmentID, worktree: worktree,
+				targetBranch: "main", state: protocol.WorkerBusy, conn: newMockConn(),
+			}
+			d.mu.Lock()
+			d.workers[workerID] = worker
+			d.mu.Unlock()
+			ready := protocol.ReadyForReviewPayload{WorkerID: workerID, BeadID: beadID}
+			var events []protocol.Message
+			if tt.bufferReady {
+				events = []protocol.Message{{Type: protocol.MsgReadyForReview, ReadyForReview: &ready}}
+			}
+
+			d.replayReconnectEvents(context.Background(), workerID, events,
+				tt.canonical, tt.alreadyReviewing, ready)
+			waitFor(t, func() bool { return spawner.SpawnCount() >= tt.wantReviewSpawns }, time.Second)
+			if got := spawner.SpawnCount(); got != tt.wantReviewSpawns {
+				t.Fatalf("review spawn count = %d, want %d", got, tt.wantReviewSpawns)
+			}
+			wantState := protocol.WorkerBusy
+			if tt.wantReviewSpawns == 1 {
+				wantState = protocol.WorkerReviewing
+			}
+			if worker.state != wantState {
+				t.Fatalf("worker state = %q, want %q", worker.state, wantState)
+			}
+		})
+	}
+}
+
+func TestReviewContextWorkerIdentityMatrix(t *testing.T) {
+	t.Run("exact worker captures identity and enters review", func(t *testing.T) {
+		d, worker := newCheckpointWorkerReleaseFixture(t, "ops-context-exact")
+		worker.state = protocol.WorkerBusy
+		worker.worktree = "/tmp/ops-context-exact"
+		worker.targetBranch = "epic/ops-context"
+		worker.assignmentID = 211
+		d.mu.Lock()
+		got := d.reviewContextFromWorkerLocked(OpsRunRecord{WorkerID: worker.id, BeadID: worker.beadID})
+		d.mu.Unlock()
+		want := reviewOpsRunContext{
+			worktree: worker.worktree, targetBranch: worker.targetBranch,
+			workerID: worker.id, assignmentID: worker.assignmentID,
+		}
+		if got != want || worker.state != protocol.WorkerReviewing {
+			t.Fatalf("context/state = %#v/%q, want %#v/%q", got, worker.state, want, protocol.WorkerReviewing)
+		}
+	})
+
+	t.Run("wrong bead does not capture requested worker", func(t *testing.T) {
+		d, worker := newCheckpointWorkerReleaseFixture(t, "ops-context-wrong-bead")
+		worker.state = protocol.WorkerBusy
+		worker.worktree = "/tmp/ops-context-wrong-bead"
+		d.mu.Lock()
+		got := d.reviewContextFromWorkerLocked(OpsRunRecord{WorkerID: worker.id, BeadID: "other-bead"})
+		d.mu.Unlock()
+		if got != (reviewOpsRunContext{}) || worker.state != protocol.WorkerBusy {
+			t.Fatalf("wrong-bead context/state = %#v/%q, want empty/Busy", got, worker.state)
+		}
+	})
+
+	t.Run("any worker preserves paired assignment", func(t *testing.T) {
+		d, worker := newCheckpointWorkerReleaseFixture(t, "ops-context-any")
+		worker.worktree = "/tmp/ops-context-any"
+		worker.targetBranch = "epic/ops-context-any"
+		worker.assignmentID = 212
+		d.mu.Lock()
+		got := d.reviewContextFromAnyWorkerLocked(worker.beadID)
+		d.mu.Unlock()
+		if got.workerID != worker.id || got.assignmentID != worker.assignmentID ||
+			got.worktree != worker.worktree || got.targetBranch != worker.targetBranch {
+			t.Fatalf("any-worker context = %#v, want paired identity for %s/%d", got, worker.id, worker.assignmentID)
+		}
+	})
+}
+
 func TestCheckpointWorkerReleaseContextCancelClearsOwnedDrain(t *testing.T) {
 	d, expected := newCheckpointWorkerReleaseFixture(t, "message-cancel")
 	slot, ok := d.beginReviewWorkerMessage(expected.id, expected.conn)
@@ -851,6 +1618,106 @@ func TestCheckpointWorkerReleaseShutdownAbortsBeforeStore(t *testing.T) {
 	}
 }
 
+func TestCheckpointWorkerReleaseRunLeaseFailureAndStaleMatrix(t *testing.T) {
+	t.Run("Store true with error aborts durable commit", func(t *testing.T) {
+		d, expected := newCheckpointWorkerReleaseFixture(t, "store-true-error")
+		lease, ok := d.acquireCheckpointWorkerRelease(expected, expected.conn)
+		if !ok {
+			t.Fatal("release lease rejected")
+		}
+		storeErr := errors.New("store failed after reporting release")
+		actionCalled := false
+
+		released, err := d.runCheckpointWorkerReleaseLease(
+			context.Background(), lease, ReviewReleaseCauseConnectionLost,
+			func(context.Context, string, string) (bool, error) { return true, storeErr },
+			func(*checkpointWorkerReleaseLease) error {
+				actionCalled = true
+				return nil
+			}, nil,
+		)
+		if !released || !errors.Is(err, storeErr) {
+			t.Fatalf("release = (%t, %v), want (true, %v)", released, err, storeErr)
+		}
+		if actionCalled {
+			t.Fatal("action ran after Store error")
+		}
+		if got := trackedReleaseWorker(d, expected.id); got != expected {
+			t.Fatalf("Store error changed worker: got %p, want %p", got, expected)
+		}
+		d.mu.Lock()
+		token := expected.reviewReleaseToken
+		d.mu.Unlock()
+		if token != 0 {
+			t.Fatalf("Store error retained token %d", token)
+		}
+		assertCheckpointReleaseEventCount(t, d, 0)
+		assertNoCheckpointReleaseWake(t, d)
+	})
+
+	t.Run("Store rejection aborts fence", func(t *testing.T) {
+		d, expected := newCheckpointWorkerReleaseFixture(t, "store-rejected")
+		lease, ok := d.acquireCheckpointWorkerRelease(expected, expected.conn)
+		if !ok {
+			t.Fatal("release lease rejected")
+		}
+
+		released, err := d.runCheckpointWorkerReleaseLease(
+			context.Background(), lease, ReviewReleaseCauseConnectionLost,
+			func(context.Context, string, string) (bool, error) { return false, nil },
+			nil, nil,
+		)
+		if err != nil || released {
+			t.Fatalf("release = (%t, %v), want (false, nil)", released, err)
+		}
+		if got := trackedReleaseWorker(d, expected.id); got != expected {
+			t.Fatalf("Store rejection changed worker: got %p, want %p", got, expected)
+		}
+		d.mu.Lock()
+		token := expected.reviewReleaseToken
+		d.mu.Unlock()
+		if token != 0 {
+			t.Fatalf("Store rejection retained token %d", token)
+		}
+		assertCheckpointReleaseEventCount(t, d, 0)
+		assertNoCheckpointReleaseWake(t, d)
+	})
+
+	t.Run("stale lease skips postcommit action", func(t *testing.T) {
+		d, expected := newCheckpointWorkerReleaseFixture(t, "stale-postcommit")
+		lease, ok := d.acquireCheckpointWorkerRelease(expected, expected.conn)
+		if !ok {
+			t.Fatal("release lease rejected")
+		}
+		actionCalled := false
+
+		released, err := d.runCheckpointWorkerReleaseLease(
+			context.Background(), lease, ReviewReleaseCauseRestarted,
+			func(context.Context, string, string) (bool, error) {
+				d.mu.Lock()
+				expected.state = protocol.WorkerBusy
+				d.mu.Unlock()
+				return true, nil
+			},
+			func(*checkpointWorkerReleaseLease) error {
+				actionCalled = true
+				return nil
+			}, nil,
+		)
+		if err != nil || !released {
+			t.Fatalf("release = (%t, %v), want (true, nil)", released, err)
+		}
+		if actionCalled {
+			t.Fatal("postcommit action ran for stale lease")
+		}
+		if got := trackedReleaseWorker(d, expected.id); got != nil {
+			t.Fatalf("durable stale release left worker tracked: %p", got)
+		}
+		assertCheckpointReleaseEvent(t, d, expected.beadID, expected.id, ReviewReleaseCauseRestarted)
+		assertOneCheckpointReleaseWake(t, d)
+	})
+}
+
 func TestCheckpointWorkerReleasePanicCleanup(t *testing.T) {
 	t.Run("precommit Store panic aborts fence", func(t *testing.T) {
 		d, expected := newCheckpointWorkerReleaseFixture(t, "store-panic")
@@ -919,6 +1786,27 @@ func newCheckpointWorkerReleaseFixture(t *testing.T, suffix string) (*Dispatcher
 	d.mu.Unlock()
 	drainCheckpointReleaseWakes(d)
 	return d, worker
+}
+
+func newCheckpointWorkerReleaseLeaseFixture(
+	t *testing.T,
+	suffix string,
+) (*Dispatcher, *trackedWorker, *checkpointWorkerReleaseLease) {
+	t.Helper()
+	d, worker := newCheckpointWorkerReleaseFixture(t, suffix)
+	worker.assignmentID = 71
+	worker.reviewReleaseToken = 73
+	lease := &checkpointWorkerReleaseLease{
+		d:            d,
+		expected:     worker,
+		observedConn: worker.conn,
+		token:        worker.reviewReleaseToken,
+		workerID:     worker.id,
+		beadID:       worker.beadID,
+		assignmentID: worker.assignmentID,
+		state:        worker.state,
+	}
+	return d, worker, lease
 }
 
 func trackedReleaseWorker(d *Dispatcher, workerID string) *trackedWorker {
