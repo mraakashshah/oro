@@ -621,6 +621,23 @@ func TestCLIMonitorRestartUsesDetachedStartHandoff(t *testing.T) {
 		t.Fatalf("mark hook fixture current: %v", err)
 	}
 	configureMutationOwnerGit(t, tmpDir)
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("locate git fixture: %v", err)
+	}
+	toolsDir := filepath.Join(tmpDir, "tools")
+	if err := os.MkdirAll(toolsDir, 0o750); err != nil {
+		t.Fatalf("create tool fixture directory: %v", err)
+	}
+	if err := os.Symlink(gitPath, filepath.Join(toolsDir, "git")); err != nil {
+		t.Fatalf("link git fixture: %v", err)
+	}
+	for _, tool := range []string{"claude", "tmux"} {
+		if err := os.WriteFile(filepath.Join(toolsDir, tool), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+			t.Fatalf("write %s fixture: %v", tool, err)
+		}
+	}
+	t.Setenv("PATH", toolsDir)
 
 	previousRunFullStart := runFullStartFn
 	t.Cleanup(func() { runFullStartFn = previousRunFullStart })
