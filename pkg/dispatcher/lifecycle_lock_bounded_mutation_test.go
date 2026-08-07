@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"testing"
 	"time"
+
+	"oro/pkg/protocol"
 )
 
 func TestRestartCheckpointOwnedWorkerUsingBoundedMutation(t *testing.T) {
@@ -40,6 +42,20 @@ func TestRestartCheckpointOwnedWorkerUsingBoundedMutation(t *testing.T) {
 		t.Fatalf("restart result = (%q, %v), want non-empty success", got.message, got.err)
 	}
 	assertDispatcherMutexAvailableWithin(t, d, 250*time.Millisecond)
+}
+
+func TestRestartCheckpointOwnedWorkerUsingMutationCoverage(t *testing.T) {
+	d, worker := newCheckpointWorkerReleaseFixture(t, "restart-using-coverage")
+	worker.managed = false
+	d.procMgr = nil
+
+	message, err := d.restartCheckpointOwnedWorkerUsing(
+		context.Background(), worker, worker.conn,
+		func(context.Context, string, string) (bool, error) { return true, nil },
+	)
+	if err != nil || message == "" {
+		t.Fatalf("restart result = (%q, %v), want non-empty success", message, err)
+	}
 }
 
 func TestReleaseReviewWorkerAfterSendFailureUsingBoundedMutation(t *testing.T) {
@@ -106,6 +122,19 @@ func TestReleaseReviewWorkerAfterSendFailureUsingBoundedMutation(t *testing.T) {
 	})
 }
 
+func TestReleaseReviewWorkerAfterSendFailureUsingMutationCoverage(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	worker := &trackedWorker{state: protocol.WorkerIdle}
+	d.mu.Lock()
+	attempted, released, pending, err := d.releaseReviewWorkerAfterSendFailureUsing(
+		worker, nil, func(context.Context, string, string) (bool, error) { return false, nil },
+	)
+	d.mu.Unlock()
+	if attempted || released || pending || err != nil {
+		t.Fatalf("idle release result = (%t, %t, %t, %v), want no attempt", attempted, released, pending, err)
+	}
+}
+
 func TestRegisterWorkerWithProtocolReleasesMutexBoundedMutation(t *testing.T) {
 	const childEnv = "ORO_TEST_REGISTER_WORKER_WITH_PROTOCOL_BOUNDED"
 	if os.Getenv(childEnv) != "1" {
@@ -119,6 +148,13 @@ func TestRegisterWorkerWithProtocolReleasesMutexBoundedMutation(t *testing.T) {
 		t.Fatal("registerWorkerWithProtocol rejected an idle worker")
 	}
 	assertDispatcherMutexAvailableWithin(t, d, 250*time.Millisecond)
+}
+
+func TestRegisterWorkerWithProtocolMutationCoverage(t *testing.T) {
+	d, _, _, _, _, _ := newTestDispatcher(t)
+	if accepted := d.registerWorkerWithProtocol("register-worker-coverage", newMockConn(), false); !accepted {
+		t.Fatal("registerWorkerWithProtocol rejected an idle worker")
+	}
 }
 
 type lifecycleRestartMutationResult struct {

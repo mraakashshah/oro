@@ -487,7 +487,7 @@ review_worker_lifecycle_mutation_test_pattern() {
 		printf '^(TestCheckpointWorkerReleaseFenceRejectsReconnectAndMessages|TestHandleMessageFromConnectionRoutesAcceptedMessage)$'
 		;;
 	'pkg/dispatcher/worker_pool.go:^(registerWorkerWithProtocol)$')
-		printf '^TestRegisterWorkerWithProtocolReleasesMutexBoundedMutation$'
+		printf '^(TestRegisterWorkerWithProtocolMutationCoverage|TestRegisterWorkerWithProtocolReleasesMutexBoundedMutation)$'
 		;;
 	'pkg/dispatcher/worker_pool.go:^(upsertWorker)$')
 		printf '^TestCheckpointWorkerReleaseFenceRejectsReconnectAndMessages$'
@@ -506,7 +506,7 @@ review_worker_lifecycle_mutation_test_pattern() {
 		printf '^(TestReviewWorkerDirectivesDurablyReleaseCheckpoint|TestReviewWorkerRestartActionErrorsStillFinalizeDurableRelease|TestReviewWorkerRestartFenceSpansStoreKillAndSpawn)$'
 		;;
 	'pkg/dispatcher/worker_directives.go:^(restartCheckpointOwnedWorkerUsing)$')
-		printf '^TestRestartCheckpointOwnedWorkerUsingBoundedMutation$'
+		printf '^(TestRestartCheckpointOwnedWorkerUsingBoundedMutation|TestRestartCheckpointOwnedWorkerUsingMutationCoverage)$'
 		;;
 	'pkg/dispatcher/worker_pool.go:^(registerWorker)$')
 		printf '^TestSpawnFor_StopCleanupBeforeReconnectPreservesShutdownState$'
@@ -516,7 +516,7 @@ review_worker_lifecycle_mutation_test_pattern() {
 		printf '^(TestReviewSendFailureDefersReleaseUntilCurrentMessageExits|TestReviewWorkerSendFailureDurablyReleasesBeforeFallback|TestReviewWorkerSendFailurePreservesSamePointerReconnect|TestReviewWorkerSendFailureReleaseFailurePreservesMemory|TestReviewWorkerSendFailureStaleGenerationPreservesReplacement|TestReviewWorkerSynchronousSendReleasePanicRestoresCallerLock)$'
 		;;
 	'pkg/dispatcher/worker_pool.go:^(releaseReviewWorkerAfterSendFailureUsing)$')
-		printf '^TestReleaseReviewWorkerAfterSendFailureUsingBoundedMutation$'
+		printf '^(TestReleaseReviewWorkerAfterSendFailureUsingBoundedMutation|TestReleaseReviewWorkerAfterSendFailureUsingMutationCoverage)$'
 		;;
 	'pkg/dispatcher/worker_pool.go:^(removeDeadWorkersLocked)$')
 		printf '^TestCheckHeartbeats_RemovesDeadBusyWorker$'
@@ -1113,6 +1113,7 @@ run_mutation_shard() {
 	local result="$result_dir/$index.json"
 	local mutation_exit=0
 	local mutation_test_file=""
+	local authoritative_cache_warm_timeout=""
 	mutation_test_file=$(authoritative_mutation_test_file "$file" "$match")
 	if [[ -z "$mutation_test_file" ]]; then
 		mutation_test_file=$(escalation_mutation_test_file "$file" "$match")
@@ -1155,6 +1156,9 @@ run_mutation_shard() {
 	if [[ -z "$match" ]]; then
 		write_shard_no_mutants "$result" "$index" "$file" "$match" "$test_pattern"
 		return
+	fi
+	if [[ "$test_pattern" == *AuthoritativeSurvivorMutation* ]]; then
+		authoritative_cache_warm_timeout=120
 	fi
 	mkdir -p "$checkout" "$shard_root/logs" "$shard_root/tmp/$index"
 	if ! reset_mutation_cache_slot "$shard_root" "$cache_slot"; then
@@ -1270,6 +1274,7 @@ run_mutation_shard() {
 				MUTATION_EXEC_TIMEOUT="$exec_timeout" \
 				MUTATION_TEST_TIMEOUT_MARGIN_SECONDS=5 \
 				MUTATION_PARALLEL_WORKERS=2 \
+				MUTATION_WORKER_CACHE_WARM_TIMEOUT_SECONDS="$authoritative_cache_warm_timeout" \
 				MUTATION_BASE_SHARD_TIMEOUT_SECONDS="$file_timeout" \
 				MUTATION_MAX_SHARD_TIMEOUT_SECONDS="$file_timeout" \
 				MUTATION_FAILURE_EVIDENCE_DIR="$mutation_failure_evidence_root/$index" \

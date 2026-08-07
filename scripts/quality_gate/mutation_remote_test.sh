@@ -764,6 +764,13 @@ TestMutationOwnerMappingsCoexist() {
 		pkg/storage/dev_schedule.go '^(reconcileInterruptedWeeklyDevCacheSweep)$')
 	[[ "$got" == '^TestWeeklyDevCacheSweepMutationReconciliationBoundaries$' ]] ||
 		fail "coexisting weekly sweep resolver selected $got"
+	got=$(review_worker_lifecycle_pattern_for \
+		pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocol)$')
+	[[ "$got" == '^(TestRegisterWorkerWithProtocolMutationCoverage|TestRegisterWorkerWithProtocolReleasesMutexBoundedMutation)$' ]] ||
+		fail "coexisting review lifecycle resolver selected $got"
+	got=$(cmd_mutation_pattern_for cmd/oro/cmd_start.go '^(buildArgs)$')
+	[[ "$got" == '^(TestDetachedStartForwardsBaseBranchToDaemon|TestJanitorStartPlumbing|TestStartProgressTimeoutFlag|TestStartReviewTimeoutFlagsAreDistinct)$' ]] ||
+		fail "coexisting cmd resolver selected $got"
 
 	got=$(assignment_admission_pattern_for pkg/dispatcher/assignment.go '^(beginAssignmentAdmission)$')
 	[[ -z "$got" ]] || fail "assignment admission resolver accepted wrong source: $got"
@@ -782,6 +789,10 @@ TestMutationOwnerMappingsCoexist() {
 	got=$(startup_maintenance_pattern_for pkg/storage/dev_schedule.go \
 		'^(reconcileInterruptedWeeklyDevCacheSweep|runWeeklyDevCacheProviders)$')
 	[[ -z "$got" ]] || fail "weekly sweep resolver accepted a grouped function union: $got"
+	got=$(review_worker_lifecycle_pattern_for cmd/oro/cmd_start.go '^(buildArgs)$')
+	[[ -z "$got" ]] || fail "review lifecycle resolver accepted cmd source: $got"
+	got=$(cmd_mutation_pattern_for pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocol)$')
+	[[ -z "$got" ]] || fail "cmd resolver accepted dispatcher source: $got"
 }
 
 review_worker_lifecycle_mapping_cases() {
@@ -827,11 +838,11 @@ pkg/dispatcher/worker_directives.go	applyRestartWorker	^(TestApplyRestartWorkerA
 pkg/dispatcher/worker_directives.go	killCheckpointOwnedWorker	^(TestReviewWorkerDirectiveReleaseFailureDoesNotFallBack|TestReviewWorkerDirectivesDurablyReleaseCheckpoint)$
 pkg/dispatcher/worker_directives.go	killCheckpointOwnedWorkerUsing	^(TestReviewWorkerDirectiveReleaseFailureDoesNotFallBack|TestReviewWorkerDirectivesDurablyReleaseCheckpoint)$
 pkg/dispatcher/worker_directives.go	restartCheckpointOwnedWorker	^(TestReviewWorkerDirectivesDurablyReleaseCheckpoint|TestReviewWorkerRestartActionErrorsStillFinalizeDurableRelease|TestReviewWorkerRestartFenceSpansStoreKillAndSpawn)$
-pkg/dispatcher/worker_directives.go	restartCheckpointOwnedWorkerUsing	^TestRestartCheckpointOwnedWorkerUsingBoundedMutation$
+pkg/dispatcher/worker_directives.go	restartCheckpointOwnedWorkerUsing	^(TestRestartCheckpointOwnedWorkerUsingBoundedMutation|TestRestartCheckpointOwnedWorkerUsingMutationCoverage)$
 pkg/dispatcher/worker_pool.go	registerWorker	^TestSpawnFor_StopCleanupBeforeReconnectPreservesShutdownState$
-pkg/dispatcher/worker_pool.go	registerWorkerWithProtocol	^TestRegisterWorkerWithProtocolReleasesMutexBoundedMutation$
+pkg/dispatcher/worker_pool.go	registerWorkerWithProtocol	^(TestRegisterWorkerWithProtocolMutationCoverage|TestRegisterWorkerWithProtocolReleasesMutexBoundedMutation)$
 pkg/dispatcher/worker_pool.go	releaseReviewWorkerAfterSendFailure	^(TestReviewSendFailureDefersReleaseUntilCurrentMessageExits|TestReviewWorkerSendFailureDurablyReleasesBeforeFallback|TestReviewWorkerSendFailurePreservesSamePointerReconnect|TestReviewWorkerSendFailureReleaseFailurePreservesMemory|TestReviewWorkerSendFailureStaleGenerationPreservesReplacement|TestReviewWorkerSynchronousSendReleasePanicRestoresCallerLock)$
-pkg/dispatcher/worker_pool.go	releaseReviewWorkerAfterSendFailureUsing	^TestReleaseReviewWorkerAfterSendFailureUsingBoundedMutation$
+pkg/dispatcher/worker_pool.go	releaseReviewWorkerAfterSendFailureUsing	^(TestReleaseReviewWorkerAfterSendFailureUsingBoundedMutation|TestReleaseReviewWorkerAfterSendFailureUsingMutationCoverage)$
 pkg/dispatcher/worker_pool.go	removeDeadWorkersLocked	^TestCheckHeartbeats_RemovesDeadBusyWorker$
 pkg/dispatcher/worker_pool.go	removeStoppedSpawnForWorkersLocked	^TestSpawnFor_StoppedWorkerHeartbeatTimeoutDoesNotEscalateCrash$
 pkg/dispatcher/worker_pool.go	removeStuckWorkersLocked	^TestCheckHeartbeats_DetectsStuckWorker$
@@ -883,6 +894,70 @@ TestReviewWorkerLifecycleMutationCoverage() {
 			END { exit !covered }
 		' <<<"$report" || fail "$file $function lifecycle owner has zero production coverage"
 	done < <(review_worker_lifecycle_mapping_cases)
+}
+
+TestReviewWorkerLifecycleMutationExecutionScopes() {
+	local coverage coverage_root expected expected_count file function got report
+	coverage_root=$(mktemp -d)
+	# shellcheck disable=SC2064 # Bind the function-local path before the RETURN trap runs.
+	trap "rm -rf '$coverage_root'" RETURN
+	while IFS=$'\t' read -r file function expected expected_count; do
+		got=$(review_worker_lifecycle_pattern_for "$file" "^($function)$")
+		[[ "$got" == "$expected" ]] ||
+			fail "$file $function execution scope = $got, want $expected"
+		[[ "$(go test -list "$expected" ./pkg/dispatcher | grep -Ec '^Test')" = "$expected_count" ]] ||
+			fail "$file $function execution scope must select exactly $expected_count real tests"
+		coverage="$coverage_root/$function.out"
+		timeout 60 go test -vet=off -count=1 -timeout 55s -coverprofile="$coverage" \
+			-run "$expected" ./pkg/dispatcher >/dev/null
+		report=$(go tool cover -func="$coverage")
+		awk -v target="$function" '
+			$2 == target || $2 ~ ("[.]" target "$") {
+				value = $3
+				gsub(/%/, "", value)
+				if (value + 0 > 0) covered = 1
+			}
+			END { exit !covered }
+		' <<<"$report" || fail "$file $function execution scope has zero in-process production coverage"
+	done <<'EOF'
+pkg/dispatcher/worker_directives.go	restartCheckpointOwnedWorkerUsing	^(TestRestartCheckpointOwnedWorkerUsingBoundedMutation|TestRestartCheckpointOwnedWorkerUsingMutationCoverage)$	2
+pkg/dispatcher/worker_pool.go	registerWorkerWithProtocol	^(TestRegisterWorkerWithProtocolMutationCoverage|TestRegisterWorkerWithProtocolReleasesMutexBoundedMutation)$	2
+pkg/dispatcher/worker_pool.go	releaseReviewWorkerAfterSendFailureUsing	^(TestReleaseReviewWorkerAfterSendFailureUsingBoundedMutation|TestReleaseReviewWorkerAfterSendFailureUsingMutationCoverage)$	2
+EOF
+}
+
+TestReviewContextMutationExecutionScope() {
+	local evidence fixture got pattern test_file
+	pattern='^(TestOpsAuthoritativeSurvivorMutationReviewContexts|TestReviewContextWorkerIdentityMatrix|TestReviewReleaseTokenFencesDirectReviewTransitions)$'
+	got=$(review_worker_lifecycle_pattern_for \
+		pkg/dispatcher/ops_runs.go '^(reviewContextFromAnyWorkerLocked)$')
+	[[ "$got" == "$pattern" ]] ||
+		fail "reviewContextFromAnyWorkerLocked owner = $got, want $pattern"
+	[[ "$(go test -list "$pattern" ./pkg/dispatcher | grep -Ec '^Test')" = 3 ]] ||
+		fail 'reviewContextFromAnyWorkerLocked owner must select exactly three real tests'
+	test_file=$(authoritative_test_file_for \
+		pkg/dispatcher/ops_runs.go '^(reviewContextFromAnyWorkerLocked)$')
+	[[ -z "$test_file" ]] ||
+		fail "reviewContextFromAnyWorkerLocked declared full-package owners but executes only $test_file"
+
+	fixture=$(mktemp -d)
+	# shellcheck disable=SC2064 # Bind the function-local path before the RETURN trap runs.
+	trap "rm -rf '$fixture'" RETURN
+	evidence=$(run_targeted_fixture "$fixture" targeted pass 0 false authoritative-ops-any-worker)
+	jq -e --arg pattern "$pattern" '
+		(.shards | length) == 1 and
+		.shards[0].file == "pkg/dispatcher/ops_runs.go" and
+		.shards[0].match == "^(reviewContextFromAnyWorkerLocked)$" and
+		.shards[0].test_pattern == $pattern and
+		.shards[0].conclusion == "completed" and
+		.shards[0].exit_code == 0 and .shards[0].score == 1 and
+		.shards[0].passed == 2 and .shards[0].failed == 0 and .shards[0].total == 2' \
+		"$evidence" >/dev/null ||
+		fail 'reviewContextFromAnyWorkerLocked evidence lost its exact owner scope'
+	! grep -q '^MUTATION_TEST_FILE=' "$fixture/mutation-args.txt" ||
+		fail 'reviewContextFromAnyWorkerLocked mutation execution narrowed away declared owners'
+	grep -Fxq 'WORKER_CACHE_WARM_TIMEOUT=120' "$fixture/mutation-args.txt" ||
+		fail 'reviewContextFromAnyWorkerLocked isolated worker caches were not prewarmed'
 }
 
 TestEscalationSurvivorMutationCoverage() {
@@ -1328,6 +1403,13 @@ new_targeted_fixture() {
 		function_name=reviewContextForOpsRun
 		test_names=(TestOpsAuthoritativeSurvivorMutationReviewContexts)
 		;;
+	authoritative-ops-any-worker)
+		package_name=dispatcher
+		source_file=pkg/dispatcher/ops_runs.go
+		test_file=pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
+		function_name=reviewContextFromAnyWorkerLocked
+		test_names=(TestOpsAuthoritativeSurvivorMutationReviewContexts)
+		;;
 	authoritative-health)
 		package_name=dispatcher
 		source_file=pkg/dispatcher/health.go
@@ -1450,6 +1532,10 @@ new_targeted_fixture() {
 		printf 'package dispatcher\n\nfunc TestAuthoritativeUnselected() {}\n' \
 			>"$fixture/pkg/dispatcher/authoritative_unselected_test.go"
 		case "$target" in
+		authoritative-ops-any-worker)
+			printf 'package dispatcher\n\nfunc TestReviewContextWorkerIdentityMatrix() {}\nfunc TestReviewReleaseTokenFencesDirectReviewTransitions() {}\n' \
+				>"$fixture/pkg/dispatcher/review_worker_release_test.go"
+			;;
 		authoritative-ops-conflict)
 			printf 'package dispatcher\n\nfunc TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex() {}\n' \
 				>"$fixture/pkg/dispatcher/bounded_mutation_test.go"
@@ -1491,6 +1577,9 @@ new_targeted_fixture() {
 	authoritative-*)
 		git -C "$fixture" add pkg/dispatcher/authoritative_unselected_test.go
 		case "$target" in
+		authoritative-ops-any-worker)
+			git -C "$fixture" add pkg/dispatcher/review_worker_release_test.go
+			;;
 		authoritative-ops-conflict | authoritative-health-conflict)
 			git -C "$fixture" add pkg/dispatcher/bounded_mutation_test.go
 			;;
@@ -1818,6 +1907,7 @@ if [[ "$1" = test ]]; then
 		*TestReviewIntegrationRecoveryMutationFinalize*) printf 'TestReviewIntegrationRecoveryMutationFinalize\n' ;;
 		*TestEscalationSurvivorMutation*) printf 'TestEscalationSurvivorMutationRouting\n' ;;
 		*TestAssignmentAuthoritativeSurvivorMutation*) printf 'TestAssignmentAuthoritativeSurvivorMutationInsertFailureDecision\n' ;;
+		*TestReviewContextWorkerIdentityMatrix*) printf 'TestOpsAuthoritativeSurvivorMutationReviewContexts\nTestReviewContextWorkerIdentityMatrix\nTestReviewReleaseTokenFencesDirectReviewTransitions\n' ;;
 		*TestOpsAuthoritativeSurvivorMutation*) printf 'TestOpsAuthoritativeSurvivorMutationResolveContracts\nTestOpsAuthoritativeSurvivorMutationReviewContexts\nTestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex\n' ;;
 		*TestHealthAuthoritativeSurvivorMutation*) printf 'TestHealthAuthoritativeSurvivorMutationApplyContracts\nTestApplyHealthReturnsAndReleasesDispatcherMutex\n' ;;
 		*TestReviewCheckpointAuthoritativeSurvivorMutation*) printf 'TestReviewCheckpointAuthoritativeSurvivorMutationTransitionFailureContracts\nTestReviewCheckpointAuthoritativeSurvivorMutationIdentityValidation\nTestReviewCheckpointMutationIntegrationDurability\nTestReviewCheckpointMutationLegacyBinding\n' ;;
@@ -1873,6 +1963,7 @@ if [[ "$1" = tool && "$2" = cover ]]; then
 	printf 'pkg/dispatcher/health.go:3: recordAssignmentObservation 100.0%%\n'
 	printf 'pkg/dispatcher/ops_runs.go:1: reviewContextForOpsRun 100.0%%\n'
 	printf 'pkg/dispatcher/ops_runs.go:2: applyOpsResolve 100.0%%\n'
+	printf 'pkg/dispatcher/ops_runs.go:3: reviewContextFromAnyWorkerLocked 100.0%%\n'
 	printf 'pkg/dispatcher/review_checkpoint_store.go:1: LoadOwningForBead 100.0%%\n'
 	printf 'pkg/dispatcher/review_checkpoint_store.go:2: AdvanceIntegrationStep 100.0%%\n'
 	printf 'pkg/dispatcher/review_checkpoint_store.go:3: BlockIntegration 100.0%%\n'
@@ -3661,6 +3752,8 @@ TestStrictIncrementalMutation() {
 	TestStartupMaintenanceMutationSharding
 	TestReviewWorkerLifecycleMutationMapping
 	TestReviewWorkerLifecycleMutationCoverage
+	TestReviewWorkerLifecycleMutationExecutionScopes
+	TestReviewContextMutationExecutionScope
 	TestCmdMutationSharding
 
 	TestIncrementalMutationArtifactRetention "$tmp/workflow-artifact"
@@ -3751,6 +3844,12 @@ main() {
 		;;
 	TestReviewWorkerLifecycleMutationCoverage)
 		TestReviewWorkerLifecycleMutationCoverage
+		;;
+	TestReviewWorkerLifecycleMutationExecutionScopes)
+		TestReviewWorkerLifecycleMutationExecutionScopes
+		;;
+	TestReviewContextMutationExecutionScope)
+		TestReviewContextMutationExecutionScope
 		;;
 	TestCmdMutationSharding)
 		TestCmdMutationSharding
