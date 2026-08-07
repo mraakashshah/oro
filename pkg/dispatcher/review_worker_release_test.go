@@ -1439,9 +1439,10 @@ func TestReplayReconnectEventsSyntheticReadyMatrix(t *testing.T) {
 			worktree := t.TempDir()
 			assignmentID := insertActiveAssignment(t, d, beadID, workerID, worktree)
 			beads.shown[beadID] = &protocol.BeadDetail{ID: beadID, Title: "Replay matrix"}
+			conn := newMockConn()
 			worker := &trackedWorker{
 				id: workerID, beadID: beadID, assignmentID: assignmentID, worktree: worktree,
-				targetBranch: "main", state: protocol.WorkerBusy, conn: newMockConn(),
+				targetBranch: "main", state: protocol.WorkerBusy, conn: conn,
 			}
 			d.mu.Lock()
 			d.workers[workerID] = worker
@@ -1458,12 +1459,24 @@ func TestReplayReconnectEventsSyntheticReadyMatrix(t *testing.T) {
 			if got := spawner.SpawnCount(); got != tt.wantReviewSpawns {
 				t.Fatalf("review spawn count = %d, want %d", got, tt.wantReviewSpawns)
 			}
+			if tt.wantReviewSpawns == 1 {
+				waitFor(t, func() bool {
+					conn.mu.Lock()
+					wroteReviewResult := len(conn.written) > 0
+					conn.mu.Unlock()
+					d.mu.Lock()
+					reviewDrained := worker.reviewMessagesInFlight == 0
+					d.mu.Unlock()
+					return wroteReviewResult && reviewDrained
+				}, time.Second)
+			}
 			wantState := protocol.WorkerBusy
 			if tt.wantReviewSpawns == 1 {
 				wantState = protocol.WorkerReviewing
 			}
-			if worker.state != wantState {
-				t.Fatalf("worker state = %q, want %q", worker.state, wantState)
+			state, _, ok := d.WorkerInfo(workerID)
+			if !ok || state != wantState {
+				t.Fatalf("worker state = %q (present %t), want %q", state, ok, wantState)
 			}
 		})
 	}
