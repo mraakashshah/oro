@@ -3,6 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -10,6 +13,7 @@ import (
 	"time"
 
 	"oro/pkg/factoryhealth"
+	"oro/pkg/protocol"
 )
 
 type fakeMonitorRunner struct {
@@ -588,6 +592,82 @@ func TestMonitorRestartDoesNotStartWithMaxBelowTarget(t *testing.T) {
 
 	if got := strings.Join(runner.calls, ","); got != "scale,restart-daemon:3:3" {
 		t.Fatalf("calls = %v, want restart max raised to target", runner.calls)
+	}
+}
+
+func TestCLIMonitorRestartUsesDetachedStartHandoff(t *testing.T) {
+	tmpDir := t.TempDir()
+	socketPath := filepath.Join(os.TempDir(), fmt.Sprintf("oro-monitor-%d-%d.sock", os.Getpid(), time.Now().UnixNano()))
+	t.Cleanup(func() { _ = os.Remove(socketPath) })
+	t.Setenv("ORO_HOME", tmpDir)
+	t.Setenv("ORO_PROJECT", "oro")
+	t.Setenv("ORO_PID_PATH", filepath.Join(tmpDir, "oro.pid"))
+	t.Setenv("ORO_SOCKET_PATH", socketPath)
+	t.Setenv("ORO_BEADSOURCE_MODE", "sqlite")
+
+	hookPath := filepath.Join(tmpDir, "hooks", "oro-search-hook")
+	if err := os.MkdirAll(filepath.Dir(hookPath), 0o750); err != nil {
+		t.Fatalf("create hook directory: %v", err)
+	}
+	if err := os.WriteFile(hookPath, []byte("test hook\n"), 0o700); err != nil {
+		t.Fatalf("write hook fixture: %v", err)
+	}
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(hookPath, future, future); err != nil {
+		t.Fatalf("mark hook fixture current: %v", err)
+	}
+
+	previousRunFullStart := runFullStartFn
+	t.Cleanup(func() { runFullStartFn = previousRunFullStart })
+	var capturedArgs []string
+	var capturedDetach bool
+	runFullStartFn = func(_ io.Writer, workers, maxWorkers int, _, _ string, spawner DaemonSpawner, _ CmdRunner, _ func(int) error, _ time.Duration, _ func(time.Duration), _ time.Duration, detach bool) error {
+		execSpawner, ok := spawner.(*ExecDaemonSpawner)
+		if !ok {
+			t.Fatalf("monitor restart spawner = %T, want *ExecDaemonSpawner", spawner)
+		}
+		capturedArgs = execSpawner.buildArgs(workers, maxWorkers)
+		capturedDetach = detach
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	received := make(chan protocol.DirectivePayload, 1)
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		runMockDispatcher(ctx, t, socketPath, received)
+	}()
+	waitForSocket(t, socketPath, time.Second)
+
+	if err := (&cliMonitorRunner{}).RestartDaemon(ctx, 3, 5); err != nil {
+		t.Fatalf("RestartDaemon: %v", err)
+	}
+	if !capturedDetach {
+		t.Fatal("monitor restart did not use detached start handoff")
+	}
+	if got := strings.Join(capturedArgs, " "); !strings.Contains(got, "--workers 3 --max-workers 5") {
+		t.Fatalf("monitor restart daemon args = %q, want worker target 3/5", got)
+	}
+	for _, arg := range capturedArgs {
+		if strings.HasPrefix(arg, "--base-branch=") {
+			t.Fatalf("monitor restart emitted unexpected base branch argument %q", arg)
+		}
+	}
+
+	select {
+	case directive := <-received:
+		if directive.Op != "restart-daemon" || directive.Source != "monitor" {
+			t.Fatalf("monitor restart directive = %+v", directive)
+		}
+	case <-ctx.Done():
+		t.Fatal("monitor restart directive was not received")
+	}
+	select {
+	case <-serverDone:
+	case <-ctx.Done():
+		t.Fatal("monitor restart mock dispatcher did not stop")
 	}
 }
 

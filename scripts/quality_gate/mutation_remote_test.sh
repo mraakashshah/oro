@@ -209,6 +209,37 @@ startup_maintenance_pattern_for() {
 	bash -c "$function_source"$'\n''startup_maintenance_mutation_test_pattern "$1" "$2"' _ "$file" "$match" || true
 }
 
+cmd_mutation_pattern_for() {
+	local file="$1"
+	local match="$2"
+	local function_source
+	function_source=$(awk '
+		/^cmd_mutation_test_pattern\(\)/ { copying = 1 }
+		copying { print }
+		copying && /^}/ { exit }
+	' "$runner")
+	if [[ -z "$function_source" ]]; then
+		fail 'mutation runner omitted cmd owner mapping'
+		return 1
+	fi
+	bash -c "$function_source"$'\n''cmd_mutation_test_pattern "$1" "$2"' _ "$file" "$match" || true
+}
+
+function_sharded_for() {
+	local file="$1"
+	local function_source
+	function_source=$(awk '
+		/^function_sharded_mutation_target\(\)/ { copying = 1 }
+		copying { print }
+		copying && /^}/ { exit }
+	' "$runner")
+	if [[ -z "$function_source" ]]; then
+		fail 'mutation runner omitted function-sharded target classifier'
+		return 1
+	fi
+	bash -c "$function_source"$'\n''function_sharded_mutation_target "$1"' _ "$file"
+}
+
 TestStartupMaintenanceMutationMapping() {
 	local cmd_pattern got listed coverage_root report function names pattern cardinality
 	cmd_pattern='^(TestDaemonChildEnvMarksTmuxManagedDaemon|TestStartModesPropagateOracleRuntimeIdentity|TestStartupReadinessCoversDevCacheSweep)$'
@@ -320,6 +351,53 @@ TestStartupMaintenanceMutationSharding() {
 		fail 'weekly sweep functions must split into seven exact owner shards'
 	[[ "$(wc -l <"$fixture/startup-maintenance/mutation-args.txt" | tr -d ' ')" == 7 ]] ||
 		fail 'each weekly sweep function must run exactly once'
+}
+
+TestCmdMutationSharding() {
+	local coverage_root function got listed monitor_pattern report start_pattern
+	start_pattern='^(TestDetachedStartForwardsBaseBranchToDaemon|TestStartBaseBranchFlag)$'
+	monitor_pattern='^TestCLIMonitorRestartUsesDetachedStartHandoff$'
+
+	for function in buildArgs newStartCmd startFreshSwarm; do
+		got=$(cmd_mutation_pattern_for cmd/oro/cmd_start.go "^(${function})$")
+		[[ "$got" == "$start_pattern" ]] ||
+			fail "$function cmd mutation owner = $got, want $start_pattern"
+	done
+	got=$(cmd_mutation_pattern_for cmd/oro/cmd_monitor.go '^(RestartDaemon)$')
+	[[ "$got" == "$monitor_pattern" ]] ||
+		fail "RestartDaemon cmd mutation owner = $got, want $monitor_pattern"
+
+	for function in cmd/oro/cmd_start.go cmd/oro/cmd_monitor.go pkg/dispatcher/assignment.go pkg/storage/dev_schedule.go; do
+		function_sharded_for "$function" || fail "$function must retain per-function mutation sharding"
+	done
+	if function_sharded_for cmd/oro/cmd_status.go; then
+		fail 'unrelated cmd source must preserve whole-package fallback'
+	fi
+	got=$(cmd_mutation_pattern_for cmd/oro/cmd_start.go '^(unmappedStartFunction)$')
+	[[ -z "$got" ]] || fail "unmapped start function unexpectedly selected $got"
+	got=$(cmd_mutation_pattern_for cmd/oro/cmd_monitor.go '^(unmappedMonitorFunction)$')
+	[[ -z "$got" ]] || fail "unmapped monitor function unexpectedly selected $got"
+
+	listed=$(go test -list "$start_pattern" ./cmd/oro)
+	[[ "$(grep -Ec '^Test' <<<"$listed")" == 2 ]] ||
+		fail 'start owner must select exactly two real tests'
+	listed=$(go test -list "$monitor_pattern" ./cmd/oro)
+	[[ "$(grep -Ec '^Test' <<<"$listed")" == 1 ]] ||
+		fail 'monitor owner must select exactly one real test'
+
+	coverage_root=$(mktemp -d)
+	# shellcheck disable=SC2064 # expand the function-local path before the RETURN trap runs.
+	trap "rm -rf '$coverage_root'" RETURN
+	go test -vet=off -count=1 -coverprofile="$coverage_root/start.out" -run "$start_pattern" ./cmd/oro >/dev/null
+	report=$(go tool cover -func="$coverage_root/start.out")
+	for function in buildArgs newStartCmd startFreshSwarm; do
+		awk -v target="$function" '$2 == target && $3 + 0 > 0 { found = 1 } END { exit !found }' <<<"$report" ||
+			fail "$function cmd mutation owner has zero production coverage"
+	done
+	go test -vet=off -count=1 -coverprofile="$coverage_root/monitor.out" -run "$monitor_pattern" ./cmd/oro >/dev/null
+	report=$(go tool cover -func="$coverage_root/monitor.out")
+	awk '$2 == "RestartDaemon" && $3 + 0 > 0 { found = 1 } END { exit !found }' <<<"$report" ||
+		fail 'RestartDaemon cmd mutation owner has zero production coverage'
 }
 
 TestAuthoritativeMutationMapping() {
@@ -3354,6 +3432,7 @@ TestStrictIncrementalMutation() {
 	TestMutationOwnerMappingsCoexist
 	TestStartupMaintenanceMutationMapping
 	TestStartupMaintenanceMutationSharding
+	TestCmdMutationSharding
 
 	TestIncrementalMutationArtifactRetention "$tmp/workflow-artifact"
 	cp "$tmp/workflow-artifact/incremental-mutation.yml" "$tmp/incremental-mutation.yml"
@@ -3437,6 +3516,9 @@ main() {
 		;;
 	TestStartupMaintenanceMutationSharding)
 		TestStartupMaintenanceMutationSharding
+		;;
+	TestCmdMutationSharding)
+		TestCmdMutationSharding
 		;;
 	TestReviewIntegrationRecoveryMutationCoverage)
 		TestReviewIntegrationRecoveryMutationCoverage
