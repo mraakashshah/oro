@@ -412,6 +412,136 @@ func TestWeeklyDevCacheSweepReconciliationLeavesLaterPauseEpochUnchanged(t *test
 	}
 }
 
+func TestWeeklyDevCacheSweepReconcilesCurrentPairPastLegacyOrphan(t *testing.T) {
+	const legacySweepID = "weekly-dev-cache-20260729T182753.669427000Z-go"
+
+	seedLegacyOrphan := func(ctx context.Context, t *testing.T, fixture *interruptedWeeklySweepFixture) {
+		t.Helper()
+		if _, err := fixture.catalog.DB().ExecContext(ctx, `
+INSERT INTO sweeps (id, provider_id, started_at, status)
+VALUES (?, ?, ?, 'running')`, legacySweepID, fixture.provider.ID, fixture.now.Add(-8*24*time.Hour).Format(time.RFC3339Nano)); err != nil {
+			t.Fatalf("seed legacy orphan sweep: %v", err)
+		}
+	}
+	loadSweep := func(ctx context.Context, t *testing.T, catalog *storage.Catalog, sweepID string) (string, sql.NullString, int) {
+		t.Helper()
+		var status string
+		var finishedAt sql.NullString
+		if err := catalog.DB().QueryRowContext(ctx, `SELECT status, finished_at FROM sweeps WHERE id=?`, sweepID).Scan(&status, &finishedAt); err != nil {
+			t.Fatalf("load sweep %s: %v", sweepID, err)
+		}
+		var evidenceCount int
+		if err := catalog.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM evidence WHERE sweep_id=?`, sweepID).Scan(&evidenceCount); err != nil {
+			t.Fatalf("count evidence for %s: %v", sweepID, err)
+		}
+		return status, finishedAt, evidenceCount
+	}
+
+	t.Run("reconciles unique current pair and diagnoses legacy orphan", func(t *testing.T) {
+		ctx := context.Background()
+		fixture := newInterruptedWeeklySweepFixture(ctx, t)
+		seedLegacyOrphan(ctx, t, fixture)
+		calls := 0
+		request := fixture.request(t, &calls)
+		request.GlobalDrain.Protocol = storage.NewPauseEpochProtocol(fixture.catalog, func(int) (storage.ProcessIdentity, error) {
+			return storage.ProcessIdentity{}, errors.New("process exited")
+		})
+
+		if _, err := storage.RunWeeklyDevCacheSweep(ctx, request); err == nil {
+			t.Fatal("legacy orphan diagnostic = nil, want explicit diagnostic after reconciling current pair")
+		} else if !strings.Contains(err.Error(), legacySweepID) || !strings.Contains(err.Error(), "matched 0 pause epochs") {
+			t.Fatalf("legacy orphan diagnostic = %v, want sweep id and zero-match count", err)
+		}
+		if calls != 0 {
+			t.Fatalf("provider calls after legacy diagnostic = %d, want 0", calls)
+		}
+
+		status, finishedAt, evidenceCount := loadSweep(ctx, t, fixture.catalog, fixture.sweepID)
+		if status != "failed" || !finishedAt.Valid || evidenceCount != 1 {
+			t.Fatalf("current sweep after reconciliation = status:%q finished:%v evidence:%d, want failed/non-null/1", status, finishedAt.Valid, evidenceCount)
+		}
+		var evidencePayload string
+		if err := fixture.catalog.DB().QueryRowContext(ctx, `SELECT payload FROM evidence WHERE sweep_id=?`, fixture.sweepID).Scan(&evidencePayload); err != nil {
+			t.Fatalf("load current sweep evidence: %v", err)
+		}
+		if !strings.Contains(evidencePayload, "interrupted startup cleanup") {
+			t.Fatalf("current sweep evidence = %q, want interrupted cleanup diagnosis", evidencePayload)
+		}
+		pause, err := fixture.catalog.PauseEpoch(ctx, fixture.pauseEpoch)
+		if err != nil {
+			t.Fatalf("load reconciled current pause: %v", err)
+		}
+		if pause.State != storage.Open {
+			t.Fatalf("current pause state = %q, want %q", pause.State, storage.Open)
+		}
+		legacyStatus, legacyFinishedAt, legacyEvidence := loadSweep(ctx, t, fixture.catalog, legacySweepID)
+		if legacyStatus != "running" || legacyFinishedAt.Valid || legacyEvidence != 0 {
+			t.Fatalf("legacy sweep after current reconciliation = status:%q finished:%v evidence:%d, want running/null/0", legacyStatus, legacyFinishedAt.Valid, legacyEvidence)
+		}
+
+		if _, err := storage.RunWeeklyDevCacheSweep(ctx, request); err == nil {
+			t.Fatal("repeat legacy orphan diagnostic = nil, want explicit diagnostic")
+		} else if !strings.Contains(err.Error(), legacySweepID) || !strings.Contains(err.Error(), "matched 0 pause epochs") {
+			t.Fatalf("repeat legacy orphan diagnostic = %v, want sweep id and zero-match count", err)
+		}
+		status, finishedAt, evidenceCount = loadSweep(ctx, t, fixture.catalog, fixture.sweepID)
+		if status != "failed" || !finishedAt.Valid || evidenceCount != 1 {
+			t.Fatalf("current sweep after repeat = status:%q finished:%v evidence:%d, want failed/non-null/1", status, finishedAt.Valid, evidenceCount)
+		}
+		legacyStatus, legacyFinishedAt, legacyEvidence = loadSweep(ctx, t, fixture.catalog, legacySweepID)
+		if legacyStatus != "running" || legacyFinishedAt.Valid || legacyEvidence != 0 {
+			t.Fatalf("legacy sweep after repeat = status:%q finished:%v evidence:%d, want running/null/0", legacyStatus, legacyFinishedAt.Valid, legacyEvidence)
+		}
+	})
+
+	t.Run("ambiguous current pair remains atomic", func(t *testing.T) {
+		ctx := context.Background()
+		fixture := newInterruptedWeeklySweepFixture(ctx, t)
+		seedLegacyOrphan(ctx, t, fixture)
+		if err := fixture.catalog.RecordPauseEpoch(ctx, storage.PauseEpoch{
+			Epoch: 8, State: storage.PauseRequested, CreatedAt: fixture.now.Add(-time.Hour),
+		}); err != nil {
+			t.Fatalf("seed ambiguous current pause: %v", err)
+		}
+		calls := 0
+		request := fixture.request(t, &calls)
+		request.GlobalDrain.Protocol = storage.NewPauseEpochProtocol(fixture.catalog, func(int) (storage.ProcessIdentity, error) {
+			return storage.ProcessIdentity{}, errors.New("process exited")
+		})
+
+		if _, err := storage.RunWeeklyDevCacheSweep(ctx, request); err == nil {
+			t.Fatal("ambiguous current correlation error = nil, want blocked reconciliation")
+		} else if !strings.Contains(err.Error(), fixture.sweepID) || !strings.Contains(err.Error(), "matched 2 pause epochs") {
+			t.Fatalf("ambiguous current correlation error = %v, want current sweep id and two-match count", err)
+		}
+		if calls != 0 {
+			t.Fatalf("provider calls after ambiguous current correlation = %d, want 0", calls)
+		}
+		for _, sweepID := range []string{legacySweepID, fixture.sweepID} {
+			status, finishedAt, evidenceCount := loadSweep(ctx, t, fixture.catalog, sweepID)
+			if status != "running" || finishedAt.Valid || evidenceCount != 0 {
+				t.Fatalf("sweep %s after ambiguous correlation = status:%q finished:%v evidence:%d, want running/null/0", sweepID, status, finishedAt.Valid, evidenceCount)
+			}
+		}
+		for _, epoch := range []int64{fixture.pauseEpoch, 8} {
+			pause, err := fixture.catalog.PauseEpoch(ctx, epoch)
+			if err != nil {
+				t.Fatalf("load pause %d after ambiguous correlation: %v", epoch, err)
+			}
+			if pause.State != storage.PauseRequested {
+				t.Fatalf("pause %d after ambiguous correlation = %q, want %q", epoch, pause.State, storage.PauseRequested)
+			}
+		}
+		var gotDue string
+		if err := fixture.catalog.DB().QueryRowContext(ctx, `SELECT due_at FROM weekly_dev_cache_schedule WHERE id='weekly-dev-cache'`).Scan(&gotDue); err != nil {
+			t.Fatalf("load due time after ambiguous correlation: %v", err)
+		}
+		if gotDue != fixture.nextDue.Format(time.RFC3339Nano) {
+			t.Fatalf("due time after ambiguous correlation = %q, want unchanged %q", gotDue, fixture.nextDue.Format(time.RFC3339Nano))
+		}
+	})
+}
+
 func TestWeeklyDevCacheSweepReconciliationRequiresUniquePauseCorrelation(t *testing.T) {
 	for _, test := range []struct {
 		name string

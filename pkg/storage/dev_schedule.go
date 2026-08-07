@@ -26,6 +26,7 @@ const DevCacheSweepSizeThreshold int64 = 24 << 30 // 24 GiB
 const weeklyDevCacheScheduleID = "weekly-dev-cache"
 
 var errUnsafeInterruptedWeeklySweepCorrelation = errors.New("unsafe interrupted weekly dev cache sweep correlation")
+var errRetainedUnmatchedInterruptedWeeklySweep = errors.New("unmatched interrupted weekly dev cache sweep retained")
 
 // DevCacheMaintenanceRunner runs one provider maintenance operation.
 type DevCacheMaintenanceRunner func(context.Context, ProviderMaintenance) (MaintenanceEvidence, error)
@@ -141,12 +142,12 @@ func reconcileInterruptedWeeklyDevCacheSweep(ctx context.Context, catalog *Catal
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	sweeps, err := interruptedWeeklyDevCacheSweeps(ctx, tx)
-	if err != nil {
-		return err
+	sweeps, diagnosisErr := interruptedWeeklyDevCacheSweeps(ctx, tx)
+	if diagnosisErr != nil && !errors.Is(diagnosisErr, errRetainedUnmatchedInterruptedWeeklySweep) {
+		return diagnosisErr
 	}
 	if len(sweeps) == 0 {
-		return nil
+		return diagnosisErr
 	}
 
 	live, err := interruptedSweepHasLiveController(ctx, tx, protocol.inspect)
@@ -173,7 +174,7 @@ func reconcileInterruptedWeeklyDevCacheSweep(ctx context.Context, catalog *Catal
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit interrupted weekly dev cache reconciliation: %w", err)
 	}
-	return nil
+	return diagnosisErr
 }
 
 func failInterruptedWeeklyDevCacheSweeps(ctx context.Context, tx *sql.Tx, sweeps []interruptedWeeklySweep, reconciledAt time.Time) error {
@@ -266,12 +267,17 @@ GROUP BY sweeps.id, sweeps.provider_id`, PauseRequested)
 	}
 	defer func() { _ = rows.Close() }()
 	var sweeps []interruptedWeeklySweep
+	var diagnostics []error
 	for rows.Next() {
 		var sweep interruptedWeeklySweep
 		var matches int
 		var pauseEpoch sql.NullInt64
 		if err := rows.Scan(&sweep.id, &sweep.providerID, &matches, &pauseEpoch); err != nil {
 			return nil, fmt.Errorf("scan interrupted weekly dev cache sweep: %w", err)
+		}
+		if matches == 0 {
+			diagnostics = append(diagnostics, fmt.Errorf("%w: sweep %s matched 0 pause epochs: %w", errUnsafeInterruptedWeeklySweepCorrelation, sweep.id, errRetainedUnmatchedInterruptedWeeklySweep))
+			continue
 		}
 		if matches != 1 || !pauseEpoch.Valid {
 			return nil, fmt.Errorf("%w: sweep %s matched %d pause epochs", errUnsafeInterruptedWeeklySweepCorrelation, sweep.id, matches)
@@ -282,7 +288,7 @@ GROUP BY sweeps.id, sweeps.provider_id`, PauseRequested)
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate interrupted weekly dev cache sweeps: %w", err)
 	}
-	return sweeps, nil
+	return sweeps, errors.Join(diagnostics...)
 }
 
 // devCacheOverSizeThreshold reports whether any provider's cache has reached
