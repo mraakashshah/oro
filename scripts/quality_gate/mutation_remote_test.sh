@@ -355,7 +355,7 @@ TestStartupMaintenanceMutationSharding() {
 
 TestCmdMutationSharding() {
 	local cardinality coverage_root function got listed monitor_pattern pattern report
-	monitor_pattern='^TestCLIMonitorRestartUsesDetachedStartHandoff$'
+	monitor_pattern='^(TestCLIMonitorRestartErrorBoundaries|TestCLIMonitorRestartUsesDetachedStartHandoff)$'
 
 	coverage_root=$(mktemp -d)
 	# shellcheck disable=SC2064 # expand the function-local path before the RETURN trap runs.
@@ -391,8 +391,8 @@ EOF
 	[[ -z "$got" ]] || fail "unmapped monitor function unexpectedly selected $got"
 
 	listed=$(go test -list "$monitor_pattern" ./cmd/oro)
-	[[ "$(grep -Ec '^Test' <<<"$listed")" == 1 ]] ||
-		fail 'monitor owner must select exactly one real test'
+	[[ "$(grep -Ec '^Test' <<<"$listed")" == 2 ]] ||
+		fail 'monitor owner must select exactly two real tests'
 
 	go test -vet=off -count=1 -coverprofile="$coverage_root/monitor.out" -run "$monitor_pattern" ./cmd/oro >/dev/null
 	report=$(go tool cover -func="$coverage_root/monitor.out")

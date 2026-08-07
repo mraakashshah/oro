@@ -515,7 +515,7 @@ cmd_mutation_test_pattern() {
 		printf '^TestDetachedStartForwardsBaseBranchToDaemon$'
 		;;
 	'cmd/oro/cmd_monitor.go:^(RestartDaemon)$')
-		printf '^TestCLIMonitorRestartUsesDetachedStartHandoff$'
+		printf '^(TestCLIMonitorRestartErrorBoundaries|TestCLIMonitorRestartUsesDetachedStartHandoff)$'
 		;;
 	esac
 }

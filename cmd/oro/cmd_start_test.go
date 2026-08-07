@@ -1387,6 +1387,7 @@ func opsReviewTimeoutFromDispatcher(t *testing.T, d *dispatcher.Dispatcher) time
 
 func TestStartManualIntegrationDaemonHandoffForwardsFlagAndConfig(t *testing.T) {
 	tmpDir := t.TempDir()
+	configureMutationOwnerGit(t, tmpDir)
 	pidPath := filepath.Join(tmpDir, "oro.pid")
 	socketPath := filepath.Join(tmpDir, "oro.sock")
 	dbPath := filepath.Join(tmpDir, "state.db")
@@ -1655,6 +1656,7 @@ func TestStartWiresReviewPatternPaths(t *testing.T) {
 }
 
 func TestStartWebEnabledByDefault(t *testing.T) {
+	configureMutationOwnerGit(t, t.TempDir())
 	tests := []struct {
 		name string
 		args []string
