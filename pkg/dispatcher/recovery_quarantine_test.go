@@ -1189,7 +1189,7 @@ VALUES ('oro-human-owned', 'agent/oro-human-owned', 'unsafe_stale_branch', 'oper
 	}
 	d.mu.Unlock()
 
-	d.tryAssign(ctx)
+	tryAssignAndWait(t, d, ctx)
 
 	beadSrc.mu.Lock()
 	readyStatus := beadSrc.updated["oro-ready"]

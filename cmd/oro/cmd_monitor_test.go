@@ -1,8 +1,15 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -10,6 +17,7 @@ import (
 	"time"
 
 	"oro/pkg/factoryhealth"
+	"oro/pkg/protocol"
 )
 
 type fakeMonitorRunner struct {
@@ -589,6 +597,293 @@ func TestMonitorRestartDoesNotStartWithMaxBelowTarget(t *testing.T) {
 	if got := strings.Join(runner.calls, ","); got != "scale,restart-daemon:3:3" {
 		t.Fatalf("calls = %v, want restart max raised to target", runner.calls)
 	}
+}
+
+func TestCLIMonitorRestartUsesDetachedStartHandoff(t *testing.T) {
+	tmpDir := t.TempDir()
+	socketPath := filepath.Join(os.TempDir(), fmt.Sprintf("oro-monitor-%d-%d.sock", os.Getpid(), time.Now().UnixNano()))
+	t.Cleanup(func() { _ = os.Remove(socketPath) })
+	t.Setenv("ORO_HOME", tmpDir)
+	t.Setenv("ORO_PROJECT", "oro")
+	t.Setenv("ORO_PID_PATH", filepath.Join(tmpDir, "oro.pid"))
+	t.Setenv("ORO_SOCKET_PATH", socketPath)
+	t.Setenv("ORO_BEADSOURCE_MODE", "sqlite")
+
+	hookPath := filepath.Join(tmpDir, "hooks", "oro-search-hook")
+	if err := os.MkdirAll(filepath.Dir(hookPath), 0o750); err != nil {
+		t.Fatalf("create hook directory: %v", err)
+	}
+	if err := os.WriteFile(hookPath, []byte("test hook\n"), 0o700); err != nil {
+		t.Fatalf("write hook fixture: %v", err)
+	}
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(hookPath, future, future); err != nil {
+		t.Fatalf("mark hook fixture current: %v", err)
+	}
+	configureMutationOwnerGit(t, tmpDir)
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("locate git fixture: %v", err)
+	}
+	toolsDir := filepath.Join(tmpDir, "tools")
+	if err := os.MkdirAll(toolsDir, 0o750); err != nil {
+		t.Fatalf("create tool fixture directory: %v", err)
+	}
+	if err := os.Symlink(gitPath, filepath.Join(toolsDir, "git")); err != nil {
+		t.Fatalf("link git fixture: %v", err)
+	}
+	for _, tool := range []string{"claude", "tmux"} {
+		if err := os.WriteFile(filepath.Join(toolsDir, tool), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+			t.Fatalf("write %s fixture: %v", tool, err)
+		}
+	}
+	t.Setenv("PATH", toolsDir)
+
+	previousRunFullStart := runFullStartFn
+	t.Cleanup(func() { runFullStartFn = previousRunFullStart })
+	var capturedArgs []string
+	var capturedDetach bool
+	runFullStartFn = func(_ io.Writer, workers, maxWorkers int, _, _ string, spawner DaemonSpawner, _ CmdRunner, _ func(int) error, _ time.Duration, _ func(time.Duration), _ time.Duration, detach bool) error {
+		execSpawner, ok := spawner.(*ExecDaemonSpawner)
+		if !ok {
+			t.Fatalf("monitor restart spawner = %T, want *ExecDaemonSpawner", spawner)
+		}
+		capturedArgs = execSpawner.buildArgs(workers, maxWorkers)
+		capturedDetach = detach
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	received := make(chan protocol.DirectivePayload, 1)
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		runMockDispatcher(ctx, t, socketPath, received)
+	}()
+	waitForSocket(t, socketPath, time.Second)
+
+	if err := (&cliMonitorRunner{}).RestartDaemon(ctx, 3, 5); err != nil {
+		t.Fatalf("RestartDaemon: %v", err)
+	}
+	if !capturedDetach {
+		t.Fatal("monitor restart did not use detached start handoff")
+	}
+	if got := strings.Join(capturedArgs, " "); !strings.Contains(got, "--workers 3 --max-workers 5") {
+		t.Fatalf("monitor restart daemon args = %q, want worker target 3/5", got)
+	}
+	for _, arg := range capturedArgs {
+		if strings.HasPrefix(arg, "--base-branch=") {
+			t.Fatalf("monitor restart emitted unexpected base branch argument %q", arg)
+		}
+	}
+
+	select {
+	case directive := <-received:
+		if directive.Op != "restart-daemon" || directive.Source != "monitor" {
+			t.Fatalf("monitor restart directive = %+v", directive)
+		}
+	case <-ctx.Done():
+		t.Fatal("monitor restart directive was not received")
+	}
+	select {
+	case <-serverDone:
+	case <-ctx.Done():
+		t.Fatal("monitor restart mock dispatcher did not stop")
+	}
+}
+
+func TestCLIMonitorRestartErrorBoundaries(t *testing.T) {
+	shortSocketPath := func(t *testing.T) string {
+		t.Helper()
+		path := filepath.Join(os.TempDir(), fmt.Sprintf("oro-monitor-boundary-%d-%d.sock", os.Getpid(), time.Now().UnixNano()))
+		t.Cleanup(func() { _ = os.Remove(path) })
+		return path
+	}
+	setPaths := func(t *testing.T, tmpDir, socketPath string) string {
+		t.Helper()
+		pidPath := filepath.Join(tmpDir, "oro.pid")
+		t.Setenv("ORO_HOME", tmpDir)
+		t.Setenv("ORO_PROJECT", "oro")
+		t.Setenv("ORO_PID_PATH", pidPath)
+		t.Setenv("ORO_SOCKET_PATH", socketPath)
+		t.Setenv("ORO_BEADSOURCE_MODE", "sqlite")
+		return pidPath
+	}
+
+	t.Run("directive error is returned", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		setPaths(t, tmpDir, filepath.Join(tmpDir, "missing.sock"))
+		t.Setenv("PATH", tmpDir)
+
+		err := (&cliMonitorRunner{}).RestartDaemon(context.Background(), 1, 1)
+		if err == nil || !strings.Contains(err.Error(), "connect to dispatcher") {
+			t.Fatalf("RestartDaemon error = %v, want directive connection error", err)
+		}
+	})
+
+	t.Run("daemon stop timeout is returned", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		socketPath := shortSocketPath(t)
+		pidPath := setPaths(t, tmpDir, socketPath)
+		t.Setenv("PATH", tmpDir)
+		if err := WritePIDFile(pidPath, os.Getpid()); err != nil {
+			t.Fatalf("write live PID fixture: %v", err)
+		}
+
+		serverCtx, stopServer := context.WithCancel(context.Background())
+		received := make(chan protocol.DirectivePayload, 16)
+		serverDone := make(chan struct{})
+		go func() {
+			defer close(serverDone)
+			runMockDispatcherWithMaxWorkers(serverCtx, t, socketPath, received)
+		}()
+		waitForSocket(t, socketPath, time.Second)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+		err := (&cliMonitorRunner{}).RestartDaemon(ctx, 1, 1)
+		cancel()
+		stopServer()
+		<-serverDone
+		if err == nil || !strings.Contains(err.Error(), "wait for daemon stop") {
+			t.Fatalf("RestartDaemon error = %v, want daemon-stop timeout", err)
+		}
+	})
+
+	t.Run("preflight error is returned", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		socketPath := shortSocketPath(t)
+		setPaths(t, tmpDir, socketPath)
+		t.Setenv("PATH", tmpDir)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		received := make(chan protocol.DirectivePayload, 1)
+		serverDone := make(chan struct{})
+		go func() {
+			defer close(serverDone)
+			runMockDispatcher(ctx, t, socketPath, received)
+		}()
+		waitForSocket(t, socketPath, time.Second)
+
+		err := (&cliMonitorRunner{}).RestartDaemon(ctx, 1, 1)
+		<-serverDone
+		if err == nil || !strings.Contains(err.Error(), "preflight checks failed") {
+			t.Fatalf("RestartDaemon error = %v, want preflight error", err)
+		}
+	})
+
+	t.Run("already running skips fresh start", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		socketPath := shortSocketPath(t)
+		setPaths(t, tmpDir, socketPath)
+
+		previousRunFullStart := runFullStartFn
+		t.Cleanup(func() { runFullStartFn = previousRunFullStart })
+		freshStartCalled := false
+		runFullStartFn = func(_ io.Writer, _, _ int, _, _ string, _ DaemonSpawner, _ CmdRunner, _ func(int) error, _ time.Duration, _ func(time.Duration), _ time.Duration, _ bool) error {
+			freshStartCalled = true
+			return fmt.Errorf("unexpected fresh start")
+		}
+
+		serverCtx, stopServer := context.WithCancel(context.Background())
+		received := make(chan protocol.DirectivePayload, 1)
+		serverDone := make(chan struct{})
+		go func() {
+			defer close(serverDone)
+			runMockMonitorRestartTransition(serverCtx, t, socketPath, received)
+		}()
+		waitForSocket(t, socketPath, time.Second)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := (&cliMonitorRunner{}).RestartDaemon(ctx, 1, 1); err != nil {
+			t.Fatalf("RestartDaemon: %v", err)
+		}
+		stopServer()
+		<-serverDone
+		select {
+		case directive := <-received:
+			if directive.Op != "restart-daemon" {
+				t.Fatalf("monitor restart directive = %+v", directive)
+			}
+		default:
+			t.Fatal("monitor restart directive was not received")
+		}
+		if freshStartCalled {
+			t.Fatal("RestartDaemon started a fresh swarm after observing a live daemon")
+		}
+	})
+}
+
+func runMockMonitorRestartTransition(ctx context.Context, t *testing.T, socketPath string, received chan<- protocol.DirectivePayload) {
+	t.Helper()
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Errorf("monitor transition mock listen: %v", err)
+		return
+	}
+	defer listener.Close()
+	defer os.Remove(socketPath)
+	go func() {
+		<-ctx.Done()
+		_ = listener.Close()
+	}()
+
+	statusReplies := 0
+	for {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		scanner := bufio.NewScanner(conn)
+		if !scanner.Scan() {
+			_ = conn.Close()
+			continue
+		}
+		var message protocol.Message
+		if err := json.Unmarshal(scanner.Bytes(), &message); err != nil {
+			t.Errorf("monitor transition mock unmarshal: %v", err)
+			_ = conn.Close()
+			continue
+		}
+		if message.Directive == nil {
+			t.Errorf("monitor transition mock received no directive")
+			_ = conn.Close()
+			continue
+		}
+
+		directive := *message.Directive
+		detail := fmt.Sprintf("applied %s", directive.Op)
+		if directive.Op == "status" {
+			statusReplies++
+			pid := 1 << 30
+			if statusReplies > 1 {
+				pid = os.Getpid()
+			}
+			encoded, _ := json.Marshal(struct {
+				PID int `json:"pid"`
+			}{PID: pid})
+			detail = string(encoded)
+		} else {
+			received <- directive
+		}
+		ack, _ := json.Marshal(protocol.Message{
+			Type: protocol.MsgACK,
+			ACK:  &protocol.ACKPayload{OK: true, Detail: detail},
+		})
+		_, _ = conn.Write(append(ack, '\n'))
+		_ = conn.Close()
+	}
+}
+
+func configureMutationOwnerGit(t *testing.T, tmpDir string) {
+	t.Helper()
+	gitDir := filepath.Join(tmpDir, "git")
+	if output, err := exec.Command("git", "init", "--bare", gitDir).CombinedOutput(); err != nil {
+		t.Fatalf("initialize mutation owner git fixture: %v\n%s", err, output)
+	}
+	t.Setenv("GIT_DIR", gitDir)
 }
 
 func TestMonitorActRefusesMutationWhenRecoveryQuarantineOpen(t *testing.T) {
