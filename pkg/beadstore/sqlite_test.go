@@ -1534,6 +1534,28 @@ func TestParityDependencyAndStatusAPIs(t *testing.T) {
 }
 
 func TestSQLiteRemoveDependencyNoOpDoesNotEmitEvent(t *testing.T) {
+	t.Run("multiple typed edges emit one transition event", func(t *testing.T) {
+		ctx := context.Background()
+		store := newTestSQLiteStore(t)
+		mustCreate(t, store, CreateParams{ID: "oro-dependent", Title: "dependent"})
+		mustCreate(t, store, CreateParams{ID: "oro-blocker", Title: "blocker"})
+		for _, depType := range []string{"blocks", "conditional-blocks"} {
+			if err := store.AddDependency(ctx, "oro-dependent", "oro-blocker", depType); err != nil {
+				t.Fatalf("AddDependency type %q: %v", depType, err)
+			}
+		}
+
+		if err := store.RemoveDependency(ctx, "oro-dependent", "oro-blocker"); err != nil {
+			t.Fatalf("RemoveDependency: %v", err)
+		}
+		if got := beadDepsCount(t, store.db); got != 0 {
+			t.Fatalf("dependency count after multi-type removal = %d, want 0", got)
+		}
+		if got := eventCount(t, store.db, "bead_dependency_removed"); got != 1 {
+			t.Fatalf("removal event count after multi-type removal = %d, want 1", got)
+		}
+	})
+
 	t.Run("repeated removal emits one transition event", func(t *testing.T) {
 		ctx := context.Background()
 		store := newTestSQLiteStore(t)

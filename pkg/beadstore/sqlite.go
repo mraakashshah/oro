@@ -565,7 +565,7 @@ func (s *SQLiteStore) RemoveDependency(ctx context.Context, beadID, dependsOnID 
 	if err != nil {
 		return fmt.Errorf("beadstore: count dependency removal %s -> %s: %w", beadID, dependsOnID, err)
 	}
-	if changed == 1 {
+	if changed > 0 {
 		if err := insertEvent(ctx, tx, "bead_dependency_removed", beadID, map[string]any{
 			"depends_on_id": dependsOnID,
 		}); err != nil {
