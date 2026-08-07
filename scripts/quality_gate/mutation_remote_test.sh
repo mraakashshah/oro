@@ -259,7 +259,7 @@ function_sharded_for() {
 TestP0DurabilityMutationMapping() {
 	local cardinality coverage coverage_root file function got listed package pattern report
 	local dispatcher_pattern='^TestTryAssignBatchP0MutationOwner$'
-	local beadstore_pattern='^(TestParityDependencyAndStatusAPIs|TestSQLiteRemoveDependencyNoOpDoesNotEmitEvent|TestSQLiteStoreDependencyRoundTrip)$'
+	local beadstore_pattern='^(TestParityDependencyAndStatusAPIs|TestSQLiteRemoveDependencyNoOpDoesNotEmitEvent|TestSQLiteRemoveDependencyPropagatesTransactionFailures|TestSQLiteStoreDependencyRoundTrip)$'
 
 	coverage_root=$(mktemp -d)
 	# shellcheck disable=SC2064 # expand the function-local path before the RETURN trap runs.
@@ -286,7 +286,7 @@ TestP0DurabilityMutationMapping() {
 	done <<EOF
 pkg/dispatcher/scheduling.go	tryAssignBatch	./pkg/dispatcher	$dispatcher_pattern	1
 pkg/dispatcher/scheduling.go	scopeRecoveryQuarantineAssignments	./pkg/dispatcher	$dispatcher_pattern	1
-pkg/beadstore/sqlite.go	RemoveDependency	./pkg/beadstore	$beadstore_pattern	3
+pkg/beadstore/sqlite.go	RemoveDependency	./pkg/beadstore	$beadstore_pattern	4
 EOF
 
 	got=$(p0_durability_pattern_for pkg/dispatcher/other.go '^(tryAssignBatch)$')

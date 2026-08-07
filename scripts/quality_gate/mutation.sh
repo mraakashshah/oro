@@ -479,7 +479,7 @@ p0_durability_mutation_test_pattern() {
 		printf '^TestTryAssignBatchP0MutationOwner$'
 		;;
 	'pkg/beadstore/sqlite.go:^(RemoveDependency)$')
-		printf '^(TestParityDependencyAndStatusAPIs|TestSQLiteRemoveDependencyNoOpDoesNotEmitEvent|TestSQLiteStoreDependencyRoundTrip)$'
+		printf '^(TestParityDependencyAndStatusAPIs|TestSQLiteRemoveDependencyNoOpDoesNotEmitEvent|TestSQLiteRemoveDependencyPropagatesTransactionFailures|TestSQLiteStoreDependencyRoundTrip)$'
 		;;
 	esac
 }
