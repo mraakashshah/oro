@@ -486,8 +486,10 @@ review_worker_lifecycle_mutation_test_pattern() {
 	'pkg/dispatcher/startup_recovery.go:^(handleMessageFromConnection)$')
 		printf '^(TestCheckpointWorkerReleaseFenceRejectsReconnectAndMessages|TestHandleMessageFromConnectionRoutesAcceptedMessage)$'
 		;;
-	'pkg/dispatcher/worker_pool.go:^(registerWorkerWithProtocol)$' | \
-		'pkg/dispatcher/worker_pool.go:^(upsertWorker)$')
+	'pkg/dispatcher/worker_pool.go:^(registerWorkerWithProtocol)$')
+		printf '^TestRegisterWorkerWithProtocolReleasesMutexBoundedMutation$'
+		;;
+	'pkg/dispatcher/worker_pool.go:^(upsertWorker)$')
 		printf '^TestCheckpointWorkerReleaseFenceRejectsReconnectAndMessages$'
 		;;
 	'pkg/dispatcher/worker_directives.go:^(applyKillWorker)$')
@@ -500,17 +502,21 @@ review_worker_lifecycle_mutation_test_pattern() {
 		'pkg/dispatcher/worker_directives.go:^(killCheckpointOwnedWorkerUsing)$')
 		printf '^(TestReviewWorkerDirectiveReleaseFailureDoesNotFallBack|TestReviewWorkerDirectivesDurablyReleaseCheckpoint)$'
 		;;
-	'pkg/dispatcher/worker_directives.go:^(restartCheckpointOwnedWorker)$' | \
-		'pkg/dispatcher/worker_directives.go:^(restartCheckpointOwnedWorkerUsing)$')
+	'pkg/dispatcher/worker_directives.go:^(restartCheckpointOwnedWorker)$')
 		printf '^(TestReviewWorkerDirectivesDurablyReleaseCheckpoint|TestReviewWorkerRestartActionErrorsStillFinalizeDurableRelease|TestReviewWorkerRestartFenceSpansStoreKillAndSpawn)$'
+		;;
+	'pkg/dispatcher/worker_directives.go:^(restartCheckpointOwnedWorkerUsing)$')
+		printf '^TestRestartCheckpointOwnedWorkerUsingBoundedMutation$'
 		;;
 	'pkg/dispatcher/worker_pool.go:^(registerWorker)$')
 		printf '^TestSpawnFor_StopCleanupBeforeReconnectPreservesShutdownState$'
 		;;
 	'pkg/dispatcher/worker_pool.go:^(releaseReviewWorkerAfterSendFailure)$' | \
-		'pkg/dispatcher/worker_pool.go:^(releaseReviewWorkerAfterSendFailureUsing)$' | \
 		'pkg/dispatcher/worker_pool.go:^(sendToWorker)$')
 		printf '^(TestReviewSendFailureDefersReleaseUntilCurrentMessageExits|TestReviewWorkerSendFailureDurablyReleasesBeforeFallback|TestReviewWorkerSendFailurePreservesSamePointerReconnect|TestReviewWorkerSendFailureReleaseFailurePreservesMemory|TestReviewWorkerSendFailureStaleGenerationPreservesReplacement|TestReviewWorkerSynchronousSendReleasePanicRestoresCallerLock)$'
+		;;
+	'pkg/dispatcher/worker_pool.go:^(releaseReviewWorkerAfterSendFailureUsing)$')
+		printf '^TestReleaseReviewWorkerAfterSendFailureUsingBoundedMutation$'
 		;;
 	'pkg/dispatcher/worker_pool.go:^(removeDeadWorkersLocked)$')
 		printf '^TestCheckHeartbeats_RemovesDeadBusyWorker$'
@@ -1055,7 +1061,10 @@ heavy_parallel_mutation_shard() {
 		'pkg/dispatcher/review_worker_release.go:^(acquireCheckpointWorkerReleaseLocked)$' | \
 		'pkg/dispatcher/review_worker_release.go:^(runCheckpointWorkerReleaseLease)$' | \
 		'pkg/dispatcher/worker_directives.go:^(applyKillWorker)$' | \
-		'pkg/dispatcher/worker_directives.go:^(applyRestartWorker)$')
+		'pkg/dispatcher/worker_directives.go:^(applyRestartWorker)$' | \
+		'pkg/dispatcher/worker_directives.go:^(restartCheckpointOwnedWorkerUsing)$' | \
+		'pkg/dispatcher/worker_pool.go:^(registerWorkerWithProtocol)$' | \
+		'pkg/dispatcher/worker_pool.go:^(releaseReviewWorkerAfterSendFailureUsing)$')
 		return 0
 		;;
 	esac
