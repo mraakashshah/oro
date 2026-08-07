@@ -383,18 +383,11 @@ func (d *Dispatcher) tryAssignBatch(ctx context.Context) []<-chan struct{} {
 	}
 
 	beads := d.filterAssignable(ctx, allBeads)
-	if redeployable, blocked := d.recoveryQuarantineAssignmentScope(ctx); blocked {
+	scoped, blocked := d.scopeRecoveryQuarantineAssignments(ctx, beads)
+	if blocked {
 		return nil
-	} else if len(redeployable) > 0 {
-		scoped := filterBeadsByID(beads, redeployable)
-		if len(beads) > 0 && len(scoped) == 0 {
-			const reason = "recovery_quarantine_no_ready_redeployable"
-			d.setRecoveryAssignmentFreeze(true, len(redeployable), reason)
-			d.logRecoveryAssignmentBlocked(ctx, len(redeployable), reason)
-			return nil
-		}
-		beads = scoped
 	}
+	beads = scoped
 
 	plan, pbSnapshot, focusVersion := d.buildSchedulingPlan(ctx, beads)
 	beads = plan.beads()
@@ -441,6 +434,22 @@ func filterBeadsByID(beads []protocol.Bead, ids map[string]bool) []protocol.Bead
 		}
 	}
 	return filtered
+}
+
+func (d *Dispatcher) scopeRecoveryQuarantineAssignments(ctx context.Context, beads []protocol.Bead) ([]protocol.Bead, bool) {
+	redeployable, blocked := d.recoveryQuarantineAssignmentScope(ctx)
+	if blocked || len(redeployable) == 0 {
+		return beads, blocked
+	}
+
+	scoped := filterBeadsByID(beads, redeployable)
+	if len(beads) > 0 && len(scoped) == 0 {
+		const reason = "recovery_quarantine_no_ready_redeployable"
+		d.setRecoveryAssignmentFreeze(true, len(redeployable), reason)
+		d.logRecoveryAssignmentBlocked(ctx, len(redeployable), reason)
+		return nil, true
+	}
+	return scoped, false
 }
 
 // recoveryQuarantineAssignmentScope preserves the recovery safety interlock:
