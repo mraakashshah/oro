@@ -40,7 +40,10 @@ type ExecDaemonSpawner struct {
 	ProgressTimeout    time.Duration
 	OpsReviewTimeout   time.Duration
 	ReviewStallTimeout time.Duration
-	// BaseBranch names the writable local integration branch forwarded to the daemon.
+	BaseRef            string
+	TargetBranch       string
+	// BaseBranch is the legacy single-branch handoff. New callers should set
+	// BaseRef and TargetBranch separately.
 	BaseBranch        string
 	ManualIntegration bool
 	MutationTesting   bool
@@ -56,6 +59,57 @@ type cleanlinessStartConfig struct {
 	JanitorTopK          int
 	JanitorEnabled       bool
 	AuditEnabled         bool
+}
+
+type startBranchConfig struct {
+	BaseRef      string
+	TargetBranch string
+}
+
+func resolveStartBranchConfig(ctx context.Context, baseRef, targetBranch, legacyBaseBranch string) (startBranchConfig, error) {
+	branches := startBranchConfig{
+		BaseRef:      strings.TrimSpace(baseRef),
+		TargetBranch: strings.TrimSpace(targetBranch),
+	}
+	legacyBaseBranch = strings.TrimSpace(legacyBaseBranch)
+	if branches.TargetBranch == "" {
+		branches.TargetBranch = legacyBaseBranch
+	}
+	if branches.TargetBranch == "" {
+		branches.TargetBranch = "main"
+	}
+	if branches.BaseRef == "" {
+		branches.BaseRef = legacyBaseBranch
+	}
+	if branches.BaseRef == "" {
+		branches.BaseRef = branches.TargetBranch
+	}
+	if startTargetIsRemoteTrackingRef(ctx, branches.TargetBranch) {
+		return startBranchConfig{}, fmt.Errorf("target branch %q is remote-tracking; choose an explicit writable local branch", branches.TargetBranch)
+	}
+	return branches, nil
+}
+
+func startTargetIsRemoteTrackingRef(ctx context.Context, targetBranch string) bool {
+	targetBranch = strings.TrimSpace(targetBranch)
+	if strings.HasPrefix(targetBranch, "refs/remotes/") {
+		return true
+	}
+	remote, _, ok := strings.Cut(targetBranch, "/")
+	if !ok || remote == "" {
+		return false
+	}
+	cmd := exec.CommandContext(ctx, "git", "remote")
+	output, err := cmd.Output()
+	if err != nil {
+		return remote == "origin"
+	}
+	for _, name := range strings.Fields(string(output)) {
+		if remote == name {
+			return true
+		}
+	}
+	return false
 }
 
 func defaultCleanlinessStartConfig() cleanlinessStartConfig {
@@ -92,7 +146,16 @@ func (e *ExecDaemonSpawner) buildArgs(workers, maxWorkers int) []string {
 	if e.ReviewStallTimeout > 0 {
 		args = append(args, "--review-stall-timeout="+e.ReviewStallTimeout.String())
 	}
-	if baseBranch := strings.TrimSpace(e.BaseBranch); baseBranch != "" {
+	baseRef := strings.TrimSpace(e.BaseRef)
+	targetBranch := strings.TrimSpace(e.TargetBranch)
+	if baseRef != "" || targetBranch != "" {
+		if baseRef != "" {
+			args = append(args, "--base-ref="+baseRef)
+		}
+		if targetBranch != "" {
+			args = append(args, "--target-branch="+targetBranch)
+		}
+	} else if baseBranch := strings.TrimSpace(e.BaseBranch); baseBranch != "" {
 		args = append(args, "--base-branch="+baseBranch)
 	}
 	if e.ManualIntegration {
@@ -886,6 +949,8 @@ func newStartCmd() *cobra.Command {
 		reviewStallTimeout time.Duration
 		manualIntegration  bool
 		baseBranch         string
+		baseRef            string
+		targetBranch       string
 		mutationTesting    bool
 		webEnabled         bool
 		noWeb              bool
@@ -897,6 +962,10 @@ func newStartCmd() *cobra.Command {
 		Use:   "start",
 		Short: "Launch the Oro swarm (tmux session + dispatcher)",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			branches, err := resolveStartBranchConfig(cmd.Context(), baseRef, targetBranch, baseBranch)
+			if err != nil {
+				return err
+			}
 			if err := verifyStartCommandRemoteCapabilities(cmd.Context()); err != nil {
 				return err
 			}
@@ -915,7 +984,7 @@ func newStartCmd() *cobra.Command {
 			if daemonOnly {
 				return runDaemonOnlyFn(cmd, pidPath, workers, maxWorkers, progressTimeout, opsReviewTimeout, reviewStallTimeout, manualIntegration, baseBranch, mutationTesting, webEnabled, webAddr, cleanliness)
 			}
-			return startFreshSwarm(cmd.OutOrStdout(), workers, maxWorkers, model, detach, progressTimeout, opsReviewTimeout, reviewStallTimeout, manualIntegration, baseBranch, mutationTesting, webEnabled, webAddr, cleanliness)
+			return startFreshSwarmWithBranches(cmd.OutOrStdout(), workers, maxWorkers, model, detach, progressTimeout, opsReviewTimeout, reviewStallTimeout, manualIntegration, branches, mutationTesting, webEnabled, webAddr, cleanliness)
 		},
 	}
 
@@ -930,7 +999,9 @@ func newStartCmd() *cobra.Command {
 	cmd.Flags().DurationVar(&reviewStallTimeout, "review-timeout", 0, "deprecated alias for --review-stall-timeout")
 	_ = cmd.Flags().MarkHidden("review-timeout")
 	cmd.Flags().BoolVar(&manualIntegration, "manual-integration", false, "leave completed worker branches for manual review instead of auto-merging")
-	cmd.Flags().StringVar(&baseBranch, "base-branch", "", "writable local integration branch for worktree creation and merges (default: main)")
+	cmd.Flags().StringVar(&baseBranch, "base-branch", "", "legacy writable local integration branch used for both assignment base and merge target")
+	cmd.Flags().StringVar(&baseRef, "base-ref", "", "immutable assignment base ref or commit (default: target branch)")
+	cmd.Flags().StringVar(&targetBranch, "target-branch", "", "writable local integration branch for merges (default: main)")
 	cmd.Flags().BoolVar(&mutationTesting, "mutation-testing", false, "run mutation-testing tiers in dispatcher quality gates (off by default)")
 	registerWebStartFlags(cmd, &webEnabled, &noWeb, &webAddr)
 	registerCleanlinessStartFlags(cmd, &cleanliness)
@@ -962,22 +1033,41 @@ func registerCleanlinessStartFlags(cmd *cobra.Command, cleanliness *cleanlinessS
 
 // startFreshSwarm sets up project env vars and launches the full swarm (daemon + tmux).
 func startFreshSwarm(w io.Writer, workers, maxWorkers int, model string, detach bool, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration, manualIntegration bool, baseBranch string, mutationTesting, webEnabled bool, webAddr string, cleanliness cleanlinessStartConfig) error {
+	return startFreshSwarmWithSpawner(w, workers, maxWorkers, model, detach, &ExecDaemonSpawner{
+		ProgressTimeout:    progressTimeout,
+		OpsReviewTimeout:   opsReviewTimeout,
+		ReviewStallTimeout: reviewStallTimeout,
+		BaseBranch:         baseBranch,
+		ManualIntegration:  manualIntegration,
+		MutationTesting:    mutationTesting,
+		WebEnabled:         webEnabled,
+		WebAddr:            webAddr,
+		Cleanliness:        cleanliness,
+	})
+}
+
+func startFreshSwarmWithBranches(w io.Writer, workers, maxWorkers int, model string, detach bool, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration, manualIntegration bool, branches startBranchConfig, mutationTesting, webEnabled bool, webAddr string, cleanliness cleanlinessStartConfig) error {
+	return startFreshSwarmWithSpawner(w, workers, maxWorkers, model, detach, &ExecDaemonSpawner{
+		ProgressTimeout:    progressTimeout,
+		OpsReviewTimeout:   opsReviewTimeout,
+		ReviewStallTimeout: reviewStallTimeout,
+		BaseRef:            branches.BaseRef,
+		TargetBranch:       branches.TargetBranch,
+		ManualIntegration:  manualIntegration,
+		MutationTesting:    mutationTesting,
+		WebEnabled:         webEnabled,
+		WebAddr:            webAddr,
+		Cleanliness:        cleanliness,
+	})
+}
+
+func startFreshSwarmWithSpawner(w io.Writer, workers, maxWorkers int, model string, detach bool, spawner *ExecDaemonSpawner) error {
 	return withRuntimeProjectEnv(currentRepoRoot(), func(runtimeEnv runtimeProjectEnv) error {
 		if err := requireNativeProductionBeadSourceMode("oro start"); err != nil {
 			return err
 		}
 		return runFullStartFn(w, workers, maxWorkers, model, runtimeEnv.Project,
-			&ExecDaemonSpawner{
-				ProgressTimeout:    progressTimeout,
-				OpsReviewTimeout:   opsReviewTimeout,
-				ReviewStallTimeout: reviewStallTimeout,
-				BaseBranch:         baseBranch,
-				ManualIntegration:  manualIntegration,
-				MutationTesting:    mutationTesting,
-				WebEnabled:         webEnabled,
-				WebAddr:            webAddr,
-				Cleanliness:        cleanliness,
-			},
+			spawner,
 			&ExecRunner{},
 			func(pid int) error { return syscall.Kill(pid, syscall.SIGTERM) },
 			socketPollTimeout, nil, 0, isDetached(detach),
@@ -1017,6 +1107,17 @@ func cleanStaleWorkerLogs(oroHome string, maxAge time.Duration) { //nolint:unpar
 
 // runDaemonOnly runs the dispatcher in the foreground (used for testing/CI).
 func runDaemonOnly(cmd *cobra.Command, pidPath string, workers, maxWorkers int, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration, manualIntegration bool, baseBranch string, mutationTesting, webEnabled bool, webAddr string, cleanliness cleanlinessStartConfig) error {
+	baseRef, targetBranch := "", ""
+	if flag := cmd.Flags().Lookup("base-ref"); flag != nil {
+		baseRef, _ = cmd.Flags().GetString("base-ref")
+	}
+	if flag := cmd.Flags().Lookup("target-branch"); flag != nil {
+		targetBranch, _ = cmd.Flags().GetString("target-branch")
+	}
+	branches, err := resolveStartBranchConfig(cmd.Context(), baseRef, targetBranch, baseBranch)
+	if err != nil {
+		return err
+	}
 	return withRuntimeProjectEnv(currentRepoRoot(), func(_ runtimeProjectEnv) error {
 		fmt.Fprintf(cmd.OutOrStdout(), "starting dispatcher (PID %d, workers=%d)\n", os.Getpid(), workers)
 		if err := WritePIDFile(pidPath, os.Getpid()); err != nil {
@@ -1032,7 +1133,7 @@ func runDaemonOnly(cmd *cobra.Command, pidPath string, workers, maxWorkers int, 
 		// Build dispatcher first so we can wire its shutdown authorization flag
 		// into the signal handler. This makes the daemon immune to raw SIGTERM
 		// until the "shutdown" directive authorizes it.
-		d, db, err := buildDispatcherWithReviewTimeoutsAndCleanliness(workers, maxWorkers, progressTimeout, opsReviewTimeout, reviewStallTimeout, manualIntegration, baseBranch, mutationTesting, webEnabled, webAddr, cleanliness)
+		d, db, err := buildDispatcherWithReviewTimeoutsAndCleanlinessForBranches(workers, maxWorkers, progressTimeout, opsReviewTimeout, reviewStallTimeout, manualIntegration, branches, mutationTesting, webEnabled, webAddr, cleanliness)
 		if err != nil {
 			return fmt.Errorf("build dispatcher: %w", err)
 		}
@@ -1095,7 +1196,15 @@ func buildCodeIndex(ctx context.Context, repoRoot, dbPath string) error {
 // The initial target and auto-scale ceiling both start at one worker for
 // callers that do not need timeout controls.
 func buildDispatcher(baseBranch string, webEnabled bool, webAddr string) (*dispatcher.Dispatcher, *sql.DB, error) {
-	return buildDispatcherWithReviewTimeoutsAndCleanliness(1, 1, 0, 0, 0, false, baseBranch, false, webEnabled, webAddr, defaultCleanlinessStartConfig())
+	branches, err := resolveStartBranchConfig(context.Background(), "", "", baseBranch)
+	if err != nil {
+		return nil, nil, err
+	}
+	return buildDispatcherWithBranches(branches, webEnabled, webAddr)
+}
+
+func buildDispatcherWithBranches(branches startBranchConfig, webEnabled bool, webAddr string) (*dispatcher.Dispatcher, *sql.DB, error) {
+	return buildDispatcherWithReviewTimeoutsAndCleanlinessForBranches(1, 1, 0, 0, 0, false, branches, false, webEnabled, webAddr, defaultCleanlinessStartConfig())
 }
 
 // buildDispatcherWithReviewTimeouts constructs a Dispatcher with separate
@@ -1105,6 +1214,14 @@ func buildDispatcherWithReviewTimeouts(initialWorkers, maxWorkers int, progressT
 }
 
 func buildDispatcherWithReviewTimeoutsAndCleanliness(initialWorkers, maxWorkers int, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration, manualIntegration bool, baseBranch string, mutationTesting, webEnabled bool, webAddr string, cleanliness cleanlinessStartConfig) (*dispatcher.Dispatcher, *sql.DB, error) { //nolint:funlen // factory initialization
+	branches, err := resolveStartBranchConfig(context.Background(), "", "", baseBranch)
+	if err != nil {
+		return nil, nil, err
+	}
+	return buildDispatcherWithReviewTimeoutsAndCleanlinessForBranches(initialWorkers, maxWorkers, progressTimeout, opsReviewTimeout, reviewStallTimeout, manualIntegration, branches, mutationTesting, webEnabled, webAddr, cleanliness)
+}
+
+func buildDispatcherWithReviewTimeoutsAndCleanlinessForBranches(initialWorkers, maxWorkers int, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration, manualIntegration bool, branches startBranchConfig, mutationTesting, webEnabled bool, webAddr string, cleanliness cleanlinessStartConfig) (*dispatcher.Dispatcher, *sql.DB, error) { //nolint:funlen // factory initialization
 	repoRoot, err := os.Getwd()
 	if err != nil {
 		return nil, nil, fmt.Errorf("get working dir: %w", err)
@@ -1196,7 +1313,9 @@ func buildDispatcherWithReviewTimeoutsAndCleanliness(initialWorkers, maxWorkers 
 		WorkerProgram:           resolveWorkerProgramPath(repoRoot),
 		ReviewPatterns:          resolveReviewPatternsPath(repoRoot),
 		ReviewPatternCandidates: resolveReviewPatternCandidatesPath(repoRoot),
-		DefaultBranch:           baseBranch,
+		BaseRef:                 branches.BaseRef,
+		TargetBranch:            branches.TargetBranch,
+		DefaultBranch:           branches.TargetBranch,
 		DreamInterval:           10,
 		JanitorInterval:         cleanliness.JanitorInterval,
 		JanitorIdleThreshold:    cleanliness.JanitorIdleThreshold,

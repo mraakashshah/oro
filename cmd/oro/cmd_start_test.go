@@ -1545,6 +1545,101 @@ func TestDetachedStartForwardsBaseBranchToDaemon(t *testing.T) {
 	}
 }
 
+func TestStartSeparatesAssignmentBaseRefFromWritableTarget(t *testing.T) {
+	t.Run("flags and daemon arguments remain distinct", func(t *testing.T) {
+		cmd := newStartCmd()
+		if err := cmd.ParseFlags([]string{
+			"--base-ref=origin/main",
+			"--target-branch=integration/factory-main",
+		}); err != nil {
+			t.Fatalf("parse start branch flags: %v", err)
+		}
+		baseRef, err := cmd.Flags().GetString("base-ref")
+		if err != nil {
+			t.Fatalf("read base-ref: %v", err)
+		}
+		targetBranch, err := cmd.Flags().GetString("target-branch")
+		if err != nil {
+			t.Fatalf("read target-branch: %v", err)
+		}
+		if baseRef != "origin/main" || targetBranch != "integration/factory-main" {
+			t.Fatalf("parsed branches = %q/%q, want immutable origin/main and writable integration/factory-main", baseRef, targetBranch)
+		}
+
+		args := (&ExecDaemonSpawner{BaseRef: baseRef, TargetBranch: targetBranch}).buildArgs(2, 2)
+		for _, want := range []string{"--base-ref=origin/main", "--target-branch=integration/factory-main"} {
+			count := 0
+			for _, arg := range args {
+				if arg == want {
+					count++
+				}
+			}
+			if count != 1 {
+				t.Fatalf("daemon args contain %q %d times, want exactly once: %q", want, count, args)
+			}
+		}
+	})
+
+	t.Run("dispatcher config carries both identities", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv("ORO_HOME", filepath.Join(tmpDir, ".oro"))
+		t.Setenv("ORO_PROJECT", "")
+		t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
+
+		d, db, err := buildDispatcherWithBranches(startBranchConfig{
+			BaseRef:      "origin/main",
+			TargetBranch: "integration/factory-main",
+		}, false, "")
+		if err != nil {
+			t.Fatalf("build dispatcher with distinct branches: %v", err)
+		}
+		defer func() { _ = db.Close() }()
+
+		cfg := d.GetConfig()
+		if cfg.BaseRef != "origin/main" || cfg.TargetBranch != "integration/factory-main" {
+			t.Fatalf("dispatcher branches = %q/%q, want origin/main and integration/factory-main", cfg.BaseRef, cfg.TargetBranch)
+		}
+		if cfg.DefaultBranch != cfg.TargetBranch {
+			t.Fatalf("compatibility DefaultBranch = %q, want writable target %q", cfg.DefaultBranch, cfg.TargetBranch)
+		}
+	})
+
+	t.Run("compatibility defaults preserve writable local behavior", func(t *testing.T) {
+		legacy, err := resolveStartBranchConfig(context.Background(), "", "", "release/local")
+		if err != nil {
+			t.Fatalf("resolve legacy branch: %v", err)
+		}
+		if legacy.BaseRef != "release/local" || legacy.TargetBranch != "release/local" {
+			t.Fatalf("legacy branches = %+v, want release/local for both roles", legacy)
+		}
+
+		baseOnly, err := resolveStartBranchConfig(context.Background(), "origin/main", "", "")
+		if err != nil {
+			t.Fatalf("resolve base-only branches: %v", err)
+		}
+		if baseOnly.BaseRef != "origin/main" || baseOnly.TargetBranch != "main" {
+			t.Fatalf("base-only branches = %+v, want origin/main base and main target", baseOnly)
+		}
+	})
+
+	t.Run("remote tracking target fails without ref mutation", func(t *testing.T) {
+		repo := t.TempDir()
+		runGitTestCommand(t, "", "init", repo)
+		runGitTestCommand(t, repo, "remote", "add", "origin", filepath.Join(t.TempDir(), "upstream.git"))
+		withChdir(t, repo, func() {
+			before := runGitTestCommand(t, repo, "for-each-ref", "--format=%(refname) %(objectname)")
+			_, err := resolveStartBranchConfig(context.Background(), "origin/main", "origin/main", "")
+			if err == nil || !strings.Contains(err.Error(), "writable local") {
+				t.Fatalf("remote target error = %v, want writable-local rejection", err)
+			}
+			after := runGitTestCommand(t, repo, "for-each-ref", "--format=%(refname) %(objectname)")
+			if after != before {
+				t.Fatalf("branch validation mutated refs: before %q, after %q", before, after)
+			}
+		})
+	})
+}
+
 func TestNewStartCmdMutationBoundaries(t *testing.T) {
 	t.Run("registers the complete start surface", func(t *testing.T) {
 		cmd := newStartCmd()
