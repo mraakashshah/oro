@@ -88,11 +88,11 @@ func TestTryAssignBatchP0MutationOwner(t *testing.T) {
 		t.Fatalf("empty recovery scope = (%v, %t), want (nil, false)", scoped, blocked)
 	}
 
-	const behaviorPattern = "^(TestRedeployableQuarantineWithoutReadyBeadReportsAssignmentFreeze|TestTryAssignAllowsFreshWorkWhenRecoveryQuarantineIsHumanOwned|TestTryAssignBlocksFreshWorkWhenRecoveryQuarantineOpen|TestTryAssignNotFrozenByEmptySafeQuarantine)$"
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	const behaviorPattern = "^(TestTryAssignAndWaitObservesSetupCompletion|TestTryAssign_DeadSocketRemovesWorker|TestTryAssign_EscalatesDependencyCycle|TestReadyObservationFailureBlocksAssignmentAndDegradesHealthAndStatus|TestCheckpointObservationFailureBlocksAssignmentAndDegradesHealthAndStatus|TestGracefulShutdownApprovalKeepsWorkerOutOfAssignmentPool|TestSpawnFor_StalePendingTargetDoesNotReserveBeadForever|TestAutoScaleDisabledWhenMaxWorkersZero|TestScaleUpDoesNotDuplicateAssignment|TestTryAssign_NoBeadsReady|TestTryAssignBatchReturnsHandlePerLaunchedSetup|TestRedeployableQuarantineWithoutReadyBeadReportsAssignmentFreeze|TestTryAssignAllowsFreshWorkWhenRecoveryQuarantineIsHumanOwned|TestTryAssignBlocksFreshWorkWhenRecoveryQuarantineOpen|TestTryAssignNotFrozenByEmptySafeQuarantine)$"
+	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, os.Args[0], //nolint:gosec // test helper re-executes this binary with fixed arguments
-		"-test.run="+behaviorPattern, "-test.count=1", "-test.timeout=4s")
+		"-test.run="+behaviorPattern, "-test.count=1", "-test.timeout=7s")
 	output, err := cmd.CombinedOutput()
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		t.Fatalf("tryAssignBatch P0 behavior retained the dispatcher mutex past its bounded subprocess deadline: %s", output)
