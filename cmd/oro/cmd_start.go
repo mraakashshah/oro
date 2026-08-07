@@ -260,9 +260,12 @@ func withEnvValue(env []string, name, value string) []string {
 	return append(out, prefix+value)
 }
 
-// socketPollTimeout is the maximum time to wait for the dispatcher socket.
-// 15s allows for DB migrations, code indexing, and schema init on first run.
-const socketPollTimeout = 15 * time.Second
+// socketPollTimeout covers the boot-path cache sweep plus a bounded margin for
+// DB migrations, code indexing, and schema initialization before the socket opens.
+const (
+	startupReadinessMargin = 5 * time.Second
+	socketPollTimeout      = startupDevCacheSweepBudget + startupReadinessMargin
+)
 
 // socketPollInterval is how often to check for the socket file.
 const socketPollInterval = 50 * time.Millisecond

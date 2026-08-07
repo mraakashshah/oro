@@ -17,12 +17,14 @@ import (
 
 // fakeSpawner records calls to SpawnDaemon for testing.
 type fakeSpawner struct {
-	called     bool
-	pidPath    string
-	workers    int
-	returnPID  int
-	returnErr  error
-	socketPath string // create socket file after "spawn" to simulate daemon coming up
+	called      bool
+	pidPath     string
+	workers     int
+	returnPID   int
+	returnErr   error
+	socketPath  string // create socket file after "spawn" to simulate daemon coming up
+	socketDelay time.Duration
+	socketDone  chan error
 }
 
 func (f *fakeSpawner) SpawnDaemon(pidPath string, workers, _ int) (pid int, err error) {
@@ -36,39 +38,79 @@ func (f *fakeSpawner) SpawnDaemon(pidPath string, workers, _ int) (pid int, err 
 	if err := WritePIDFile(pidPath, f.returnPID); err != nil {
 		return 0, err
 	}
-	if f.socketPath != "" {
-		// Start a real UDS listener so pollForSocket and sendStartDirective
-		// can connect. Accept multiple connections: pollForSocket does a
-		// connect-check first, then sendStartDirective sends the directive.
-		ln, listenErr := net.Listen("unix", f.socketPath)
-		if listenErr != nil {
-			return 0, listenErr
-		}
+	if f.socketPath == "" {
+		return f.returnPID, nil
+	}
+	if f.socketDelay > 0 {
 		go func() {
-			defer ln.Close()
-			for {
-				conn, err := ln.Accept()
-				if err != nil {
-					return // listener closed
-				}
-				go func(c net.Conn) {
-					defer c.Close()
-					scanner := bufio.NewScanner(c)
-					if scanner.Scan() {
-						ack := protocol.Message{
-							Type: protocol.MsgACK,
-							ACK:  &protocol.ACKPayload{OK: true, Detail: "started"},
-						}
-						data, _ := json.Marshal(ack)
-						data = append(data, '\n')
-						_, _ = c.Write(data)
-					}
-					// If no data read (connect-check), just close.
-				}(conn)
+			time.Sleep(f.socketDelay)
+			err := f.listenOnSocketUntilDirective()
+			if f.socketDone != nil {
+				f.socketDone <- err
+				close(f.socketDone)
 			}
 		}()
+		return f.returnPID, nil
 	}
+	// Start a real UDS listener so pollForSocket and sendStartDirective
+	// can connect. Accept multiple connections: pollForSocket does a
+	// connect-check first, then sendStartDirective sends the directive.
+	ln, listenErr := net.Listen("unix", f.socketPath)
+	if listenErr != nil {
+		return 0, listenErr
+	}
+	go func() {
+		defer ln.Close()
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return // listener closed
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				scanner := bufio.NewScanner(c)
+				if scanner.Scan() {
+					ack := protocol.Message{
+						Type: protocol.MsgACK,
+						ACK:  &protocol.ACKPayload{OK: true, Detail: "started"},
+					}
+					data, _ := json.Marshal(ack)
+					data = append(data, '\n')
+					_, _ = c.Write(data)
+				}
+				// If no data read (connect-check), just close.
+			}(conn)
+		}
+	}()
 	return f.returnPID, nil
+}
+
+func (f *fakeSpawner) listenOnSocketUntilDirective() error {
+	ln, listenErr := net.Listen("unix", f.socketPath)
+	if listenErr != nil {
+		return listenErr
+	}
+	defer ln.Close()
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return err
+		}
+		scanner := bufio.NewScanner(conn)
+		if !scanner.Scan() {
+			_ = conn.Close()
+			continue
+		}
+		ack := protocol.Message{
+			Type: protocol.MsgACK,
+			ACK:  &protocol.ACKPayload{OK: true, Detail: "started"},
+		}
+		data, _ := json.Marshal(ack)
+		data = append(data, '\n')
+		_, writeErr := conn.Write(data)
+		_ = conn.Close()
+		return writeErr
+	}
 }
 
 func TestFullStart(t *testing.T) {

@@ -193,6 +193,135 @@ authoritative_test_file_for() {
 	bash -c "$function_source"$'\n''authoritative_mutation_test_file "$1" "$2"' _ "$file" "$match" || true
 }
 
+startup_maintenance_pattern_for() {
+	local file="$1"
+	local match="$2"
+	local function_source
+	function_source=$(awk '
+		/^startup_maintenance_mutation_test_pattern\(\)/ { copying = 1 }
+		copying { print }
+		copying && /^}/ { exit }
+	' "$runner")
+	if [[ -z "$function_source" ]]; then
+		fail 'mutation runner omitted startup-maintenance owner mapping'
+		return 1
+	fi
+	bash -c "$function_source"$'\n''startup_maintenance_mutation_test_pattern "$1" "$2"' _ "$file" "$match" || true
+}
+
+TestStartupMaintenanceMutationMapping() {
+	local cmd_pattern got listed coverage_root report function names pattern cardinality
+	cmd_pattern='^(TestDaemonChildEnvMarksTmuxManagedDaemon|TestStartModesPropagateOracleRuntimeIdentity|TestStartupReadinessCoversDevCacheSweep)$'
+
+	got=$(startup_maintenance_pattern_for cmd/oro/cmd_start.go '^(withEnvValue)$')
+	[[ "$got" == "$cmd_pattern" ]] ||
+		fail "startup readiness mutation owner = $got, want $cmd_pattern"
+
+	while IFS=$'\t' read -r function pattern cardinality; do
+		got=$(startup_maintenance_pattern_for pkg/storage/dev_schedule.go "^(${function})$")
+		[[ "$got" == "$pattern" ]] ||
+			fail "$function weekly sweep mutation owner = $got, want $pattern"
+		names=$(sed -e 's/^\^(//' -e 's/)\$$//' <<<"$pattern" | tr '|' '\n')
+		[[ "$(wc -l <<<"$names" | tr -d ' ')" == "$cardinality" &&
+		"$(sort -u <<<"$names" | wc -l | tr -d ' ')" == "$cardinality" ]] ||
+			fail "$function owner must contain exactly $cardinality unique named tests"
+		listed=$(go test -list "$pattern" ./pkg/storage)
+		[[ "$(grep -Ec '^Test' <<<"$listed")" == "$cardinality" ]] ||
+			fail "$function owner must select exactly $cardinality real tests"
+	done <<'EOF'
+RunWeeklyDevCacheSweep	^(TestDevCacheSweepTriggersOnSizeThreshold|TestWeeklyDevCacheDueAndCatchup|TestWeeklyDevCacheSweepMutationRejectsInvalidRequest|TestWeeklyDevCacheSweepMutationRunBoundaries)$	4
+failInterruptedWeeklyDevCacheSweeps	^(TestWeeklyDevCacheSweepMutationRejectsMissingSweepCAS|TestWeeklyDevCacheSweepReconcilesInterruptedRun|TestWeeklyDevCacheSweepReconciliationRollsBackOnEvidenceCollision)$	3
+interruptedSweepHasLiveController	^(TestWeeklyDevCacheSweepMutationReportsControllerQueryFailure|TestWeeklyDevCacheSweepReconciliationFailsClosedForLiveOwnership)$	2
+interruptedWeeklyDevCacheSweeps	^(TestWeeklyDevCacheSweepMutationReportsSweepQueryFailure|TestWeeklyDevCacheSweepReconcilesInterruptedRun|TestWeeklyDevCacheSweepReconciliationRequiresUniquePauseCorrelation)$	3
+openInterruptedWeeklyDevCachePauses	^(TestWeeklyDevCacheSweepMutationRejectsMissingPauseCAS|TestWeeklyDevCacheSweepReconcilesInterruptedRun|TestWeeklyDevCacheSweepReconciliationLeavesLaterPauseEpochUnchanged)$	3
+reconcileInterruptedWeeklyDevCacheSweep	^TestWeeklyDevCacheSweepMutationReconciliationBoundaries$	1
+runWeeklyDevCacheProviders	^(TestWeeklyDevCacheDueAndCatchup|TestWeeklyDevCacheSweepMutationSkipsIneligibleProviders|TestWeeklyDevCacheSweepMutationUsesDefaultProviderRunner)$	3
+EOF
+
+	got=$(startup_maintenance_pattern_for cmd/oro/other.go '^(withEnvValue)$')
+	[[ -z "$got" ]] || fail "startup owner accepted wrong source: $got"
+	got=$(startup_maintenance_pattern_for cmd/oro/cmd_start.go '^(unmappedStartupFunction)$')
+	[[ -z "$got" ]] || fail "startup owner accepted unmapped function: $got"
+	got=$(startup_maintenance_pattern_for pkg/storage/other.go '^(RunWeeklyDevCacheSweep)$')
+	[[ -z "$got" ]] || fail "weekly sweep owner accepted wrong source: $got"
+	got=$(startup_maintenance_pattern_for pkg/storage/dev_schedule.go '^(unmappedWeeklySweepFunction)$')
+	[[ -z "$got" ]] || fail "weekly sweep owner accepted unmapped function: $got"
+
+	names=$(sed -e 's/^\^(//' -e 's/)\$$//' <<<"$cmd_pattern" | tr '|' '\n')
+	[[ "$(wc -l <<<"$names" | tr -d ' ')" == 3 && "$(sort -u <<<"$names" | wc -l | tr -d ' ')" == 3 ]] ||
+		fail 'startup owner must contain exactly three unique named tests'
+	listed=$(go test -list "$cmd_pattern" ./cmd/oro)
+	[[ "$(grep -Ec '^Test' <<<"$listed")" == 3 ]] ||
+		fail 'startup owner must select exactly three real tests'
+
+	coverage_root=$(mktemp -d)
+	# shellcheck disable=SC2064 # expand the function-local path before the RETURN trap runs.
+	trap "rm -rf '$coverage_root'" RETURN
+	go test -vet=off -count=1 -coverprofile="$coverage_root/cmd.out" -run "$cmd_pattern" ./cmd/oro >/dev/null
+	report=$(go tool cover -func="$coverage_root/cmd.out")
+	awk '$2 == "withEnvValue" && $3 + 0 > 0 { found = 1 } END { exit !found }' <<<"$report" ||
+		fail 'startup owner has zero withEnvValue production coverage'
+
+	while IFS=$'\t' read -r function pattern cardinality; do
+		go test -vet=off -count=1 -coverprofile="$coverage_root/storage.out" -run "$pattern" ./pkg/storage >/dev/null
+		report=$(go tool cover -func="$coverage_root/storage.out")
+		awk -v target="$function" '
+			$2 == target || $2 ~ ("[.]" target "$") {
+				value = $3
+				gsub(/%/, "", value)
+				if (value + 0 > 0) found = 1
+			}
+			END { exit !found }
+		' <<<"$report" || fail "$function weekly sweep owner has zero production coverage"
+	done <<'EOF'
+RunWeeklyDevCacheSweep	^(TestDevCacheSweepTriggersOnSizeThreshold|TestWeeklyDevCacheDueAndCatchup|TestWeeklyDevCacheSweepMutationRejectsInvalidRequest|TestWeeklyDevCacheSweepMutationRunBoundaries)$	4
+failInterruptedWeeklyDevCacheSweeps	^(TestWeeklyDevCacheSweepMutationRejectsMissingSweepCAS|TestWeeklyDevCacheSweepReconcilesInterruptedRun|TestWeeklyDevCacheSweepReconciliationRollsBackOnEvidenceCollision)$	3
+interruptedSweepHasLiveController	^(TestWeeklyDevCacheSweepMutationReportsControllerQueryFailure|TestWeeklyDevCacheSweepReconciliationFailsClosedForLiveOwnership)$	2
+interruptedWeeklyDevCacheSweeps	^(TestWeeklyDevCacheSweepMutationReportsSweepQueryFailure|TestWeeklyDevCacheSweepReconcilesInterruptedRun|TestWeeklyDevCacheSweepReconciliationRequiresUniquePauseCorrelation)$	3
+openInterruptedWeeklyDevCachePauses	^(TestWeeklyDevCacheSweepMutationRejectsMissingPauseCAS|TestWeeklyDevCacheSweepReconcilesInterruptedRun|TestWeeklyDevCacheSweepReconciliationLeavesLaterPauseEpochUnchanged)$	3
+reconcileInterruptedWeeklyDevCacheSweep	^TestWeeklyDevCacheSweepMutationReconciliationBoundaries$	1
+runWeeklyDevCacheProviders	^(TestWeeklyDevCacheDueAndCatchup|TestWeeklyDevCacheSweepMutationSkipsIneligibleProviders|TestWeeklyDevCacheSweepMutationUsesDefaultProviderRunner)$	3
+EOF
+}
+
+TestStartupMaintenanceMutationSharding() {
+	local evidence fixture
+	fixture=$(mktemp -d)
+	# shellcheck disable=SC2064 # expand the function-local path before the RETURN trap runs.
+	trap "rm -rf '$fixture'" RETURN
+	evidence=$(run_startup_maintenance_function_fixture "$fixture/startup-maintenance")
+	jq -e '
+		[.shards[].file] == [
+			"pkg/storage/dev_schedule.go", "pkg/storage/dev_schedule.go",
+			"pkg/storage/dev_schedule.go", "pkg/storage/dev_schedule.go",
+			"pkg/storage/dev_schedule.go", "pkg/storage/dev_schedule.go",
+			"pkg/storage/dev_schedule.go"
+		] and
+		[.shards[].match] == [
+			"^(RunWeeklyDevCacheSweep)$",
+			"^(failInterruptedWeeklyDevCacheSweeps)$",
+			"^(interruptedSweepHasLiveController)$",
+			"^(interruptedWeeklyDevCacheSweeps)$",
+			"^(openInterruptedWeeklyDevCachePauses)$",
+			"^(reconcileInterruptedWeeklyDevCacheSweep)$",
+			"^(runWeeklyDevCacheProviders)$"
+		] and
+		[.shards[].test_pattern] == [
+			"^(TestDevCacheSweepTriggersOnSizeThreshold|TestWeeklyDevCacheDueAndCatchup|TestWeeklyDevCacheSweepMutationRejectsInvalidRequest|TestWeeklyDevCacheSweepMutationRunBoundaries)$",
+			"^(TestWeeklyDevCacheSweepMutationRejectsMissingSweepCAS|TestWeeklyDevCacheSweepReconcilesInterruptedRun|TestWeeklyDevCacheSweepReconciliationRollsBackOnEvidenceCollision)$",
+			"^(TestWeeklyDevCacheSweepMutationReportsControllerQueryFailure|TestWeeklyDevCacheSweepReconciliationFailsClosedForLiveOwnership)$",
+			"^(TestWeeklyDevCacheSweepMutationReportsSweepQueryFailure|TestWeeklyDevCacheSweepReconcilesInterruptedRun|TestWeeklyDevCacheSweepReconciliationRequiresUniquePauseCorrelation)$",
+			"^(TestWeeklyDevCacheSweepMutationRejectsMissingPauseCAS|TestWeeklyDevCacheSweepReconcilesInterruptedRun|TestWeeklyDevCacheSweepReconciliationLeavesLaterPauseEpochUnchanged)$",
+			"^TestWeeklyDevCacheSweepMutationReconciliationBoundaries$",
+			"^(TestWeeklyDevCacheDueAndCatchup|TestWeeklyDevCacheSweepMutationSkipsIneligibleProviders|TestWeeklyDevCacheSweepMutationUsesDefaultProviderRunner)$"
+		] and
+		([.shards[].match] | unique | length) == 7 and .score == 1 and .total == 7' \
+		"$evidence" >/dev/null ||
+		fail 'weekly sweep functions must split into seven exact owner shards'
+	[[ "$(wc -l <"$fixture/startup-maintenance/mutation-args.txt" | tr -d ' ')" == 7 ]] ||
+		fail 'each weekly sweep function must run exactly once'
+}
+
 TestAuthoritativeMutationMapping() {
 	local expected_file expected_pattern file function got
 	while IFS=$'\t' read -r file function expected_pattern expected_file; do
@@ -537,6 +666,10 @@ TestMutationOwnerMappingsCoexist() {
 		pkg/dispatcher/escalation.go '^(escalateWithOneShot)$')
 	[[ "$got" == '^TestEscalationSurvivorMutation' ]] ||
 		fail "coexisting escalation resolver selected $got"
+	got=$(startup_maintenance_pattern_for \
+		pkg/storage/dev_schedule.go '^(reconcileInterruptedWeeklyDevCacheSweep)$')
+	[[ "$got" == '^TestWeeklyDevCacheSweepMutationReconciliationBoundaries$' ]] ||
+		fail "coexisting weekly sweep resolver selected $got"
 
 	got=$(assignment_admission_pattern_for pkg/dispatcher/assignment.go '^(beginAssignmentAdmission)$')
 	[[ -z "$got" ]] || fail "assignment admission resolver accepted wrong source: $got"
@@ -552,6 +685,9 @@ TestMutationOwnerMappingsCoexist() {
 	got=$(review_integration_recovery_pattern_for \
 		pkg/dispatcher/review_integration_recovery.go '^(unmappedIntegrationRecoveryFunction)$')
 	[[ -z "$got" ]] || fail "integration-recovery resolver accepted unmapped function: $got"
+	got=$(startup_maintenance_pattern_for pkg/storage/dev_schedule.go \
+		'^(reconcileInterruptedWeeklyDevCacheSweep|runWeeklyDevCacheProviders)$')
+	[[ -z "$got" ]] || fail "weekly sweep resolver accepted a grouped function union: $got"
 }
 
 TestEscalationSurvivorMutationCoverage() {
@@ -1338,6 +1474,62 @@ new_function_history_fixture() {
 	printf '%s\n%s\n' "$base" "$head"
 }
 
+write_startup_maintenance_function_fixture() {
+	local path="$1"
+	local value="$2"
+	shift 2
+	{
+		printf 'package storage\n\n'
+		local function
+		for function in "$@"; do
+			printf 'func %s() bool { return %s }\n' "$function" "$value"
+		done
+	} >"$path"
+}
+
+new_startup_maintenance_function_fixture() {
+	local fixture="$1"
+	local base head test_name
+	local -a functions=(
+		RunWeeklyDevCacheSweep
+		failInterruptedWeeklyDevCacheSweeps
+		interruptedSweepHasLiveController
+		interruptedWeeklyDevCacheSweeps
+		openInterruptedWeeklyDevCachePauses
+		reconcileInterruptedWeeklyDevCacheSweep
+		runWeeklyDevCacheProviders
+	)
+	local -a tests=(
+		TestDevCacheSweepTriggersOnSizeThreshold
+		TestWeeklyDevCacheDueAndCatchup
+		TestWeeklyDevCacheSweepMutationNoSweepReleasesTransaction
+		TestWeeklyDevCacheSweepMutationReconciliationBoundaries
+		TestWeeklyDevCacheSweepReconcilesInterruptedRun
+		TestWeeklyDevCacheSweepReconciliationRollsBackOnEvidenceCollision
+		TestWeeklyDevCacheSweepReconciliationFailsClosedForLiveOwnership
+		TestWeeklyDevCacheSweepReconciliationLeavesLaterPauseEpochUnchanged
+		TestWeeklyDevCacheSweepReconciliationRequiresUniquePauseCorrelation
+	)
+	mkdir -p "$fixture/bin" "$fixture/pkg/storage"
+	git -C "$fixture" init -q
+	git -C "$fixture" config user.email mutation@example.test
+	git -C "$fixture" config user.name mutation-test
+	printf 'module mutation.test/startup-maintenance\n\ngo 1.25\n' >"$fixture/go.mod"
+	write_startup_maintenance_function_fixture "$fixture/pkg/storage/dev_schedule.go" false "${functions[@]}"
+	printf 'package storage\n' >"$fixture/pkg/storage/dev_schedule_test.go"
+	for test_name in "${tests[@]}"; do
+		printf '\nfunc %s() {}\n' "$test_name" >>"$fixture/pkg/storage/dev_schedule_test.go"
+	done
+	git -C "$fixture" add go.mod pkg/storage
+	git -C "$fixture" commit -qm base
+	base=$(git -C "$fixture" rev-parse HEAD)
+	write_startup_maintenance_function_fixture "$fixture/pkg/storage/dev_schedule.go" true "${functions[@]}"
+	git -C "$fixture" add pkg/storage/dev_schedule.go
+	git -C "$fixture" commit -qm head
+	head=$(git -C "$fixture" rev-parse HEAD)
+	printf '%s\n%s\n' "$base" "$head"
+}
+
 write_fake_go() {
 	local path="$1"
 	cat >"$path" <<'EOF'
@@ -1377,6 +1569,14 @@ if [[ "$1" = test ]]; then
 	done
 	if [[ "$MUTATION_FIXTURE" != targeted-list-miss ]]; then
 		case "$*" in
+		*TestDevCacheSweepTriggersOnSizeThreshold*) printf 'TestDevCacheSweepTriggersOnSizeThreshold\nTestWeeklyDevCacheDueAndCatchup\n' ;;
+		*TestWeeklyDevCacheSweepReconciliationRollsBackOnEvidenceCollision*) printf 'TestWeeklyDevCacheSweepReconcilesInterruptedRun\nTestWeeklyDevCacheSweepReconciliationRollsBackOnEvidenceCollision\n' ;;
+		*TestWeeklyDevCacheSweepReconciliationRequiresUniquePauseCorrelation*) printf 'TestWeeklyDevCacheSweepReconcilesInterruptedRun\nTestWeeklyDevCacheSweepReconciliationRequiresUniquePauseCorrelation\n' ;;
+		*TestWeeklyDevCacheSweepReconciliationLeavesLaterPauseEpochUnchanged*) printf 'TestWeeklyDevCacheSweepReconcilesInterruptedRun\nTestWeeklyDevCacheSweepReconciliationLeavesLaterPauseEpochUnchanged\n' ;;
+		*TestWeeklyDevCacheSweepReconciliationFailsClosedForLiveOwnership*) printf 'TestWeeklyDevCacheSweepReconciliationFailsClosedForLiveOwnership\n' ;;
+		*TestWeeklyDevCacheSweepMutationNoSweepReleasesTransaction*) printf 'TestWeeklyDevCacheSweepMutationNoSweepReleasesTransaction\n' ;;
+		*TestWeeklyDevCacheSweepMutationReconciliationBoundaries*) printf 'TestWeeklyDevCacheSweepMutationReconciliationBoundaries\n' ;;
+		*TestWeeklyDevCacheDueAndCatchup*) printf 'TestWeeklyDevCacheDueAndCatchup\n' ;;
 		*TestInstallAgentBranchGuard*) printf 'TestInstallAgentBranchGuard\n' ;;
 		*TestHookPathsWouldLeak*) printf 'TestHookPathsWouldLeak\nTestHookPathsWouldLeak_NonTmpdirSandboxRoot\nTestHookPathsWouldLeak_NonstandardGoTempRoot\nTestInstallCodexHookConfigRefusesLeakyHooks\n' ;;
 		*TestAdvanceAssignedGeneralIdleConsumesReportedClaimAfterAsyncRelease*) printf 'TestAdvanceAssignedGeneralIdleConsumesReportedClaimAfterAsyncRelease\n' ;;
@@ -1599,6 +1799,36 @@ run_function_history_fixture() {
 	fi
 	jq -e --arg status "$expected_status" '.conclusion == $status' "$evidence" >/dev/null ||
 		fail "$outcome did not preserve its expected conclusion"
+	printf '%s\n' "$evidence"
+}
+
+run_startup_maintenance_function_fixture() {
+	local fixture="$1"
+	local base head evidence status args_trace list_trace
+	mapfile -t refs < <(new_startup_maintenance_function_fixture "$fixture")
+	base=${refs[0]}
+	head=${refs[1]}
+	evidence="$fixture/mutation-evidence.json"
+	args_trace="$fixture/mutation-args.txt"
+	list_trace="$fixture/mutation-list.txt"
+	write_fake_go "$fixture/bin/go"
+
+	set +e
+	(
+		cd "$fixture"
+		PATH="$fixture/bin:$PATH" MUTATION_FIXTURE=targeted \
+			MUTATION_ARGS_TRACE="$args_trace" MUTATION_LIST_TRACE="$list_trace" \
+			bash "$runner" --base "$base" --head "$head" --evidence "$evidence" \
+			>"$fixture/runner.log" 2>&1
+	)
+	status=$?
+	set -e
+	if [[ "$status" != 0 ]]; then
+		cat "$fixture/runner.log" >&2
+		fail "startup maintenance function fixture exit = $status, want 0"
+	fi
+	jq -e '.conclusion == "pass"' "$evidence" >/dev/null ||
+		fail 'startup maintenance function fixture did not pass'
 	printf '%s\n' "$evidence"
 }
 
@@ -3122,6 +3352,8 @@ TestStrictIncrementalMutation() {
 	TestAuthoritativeTouchedFunctionRouting "$tmp/authoritative-touched"
 	TestEscalationTouchedFunctionRouting "$tmp/escalation-touched"
 	TestMutationOwnerMappingsCoexist
+	TestStartupMaintenanceMutationMapping
+	TestStartupMaintenanceMutationSharding
 
 	TestIncrementalMutationArtifactRetention "$tmp/workflow-artifact"
 	cp "$tmp/workflow-artifact/incremental-mutation.yml" "$tmp/incremental-mutation.yml"
@@ -3199,6 +3431,12 @@ main() {
 		;;
 	TestMutationOwnerMappingsCoexist)
 		TestMutationOwnerMappingsCoexist
+		;;
+	TestStartupMaintenanceMutationMapping)
+		TestStartupMaintenanceMutationMapping
+		;;
+	TestStartupMaintenanceMutationSharding)
+		TestStartupMaintenanceMutationSharding
 		;;
 	TestReviewIntegrationRecoveryMutationCoverage)
 		TestReviewIntegrationRecoveryMutationCoverage
