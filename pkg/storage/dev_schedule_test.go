@@ -2,9 +2,12 @@ package storage_test
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -163,5 +166,224 @@ SELECT COUNT(*) FROM evidence WHERE kind = 'weekly_dev_cache_provider' AND paylo
 	}
 	if failedEvidence != 1 {
 		t.Fatalf("failed provider evidence count = %d, want 1", failedEvidence)
+	}
+}
+
+func TestWeeklyDevCacheSweepReconcilesInterruptedRun(t *testing.T) {
+	ctx := context.Background()
+	fixture := newInterruptedWeeklySweepFixture(t, ctx)
+	calls := 0
+	request := fixture.request(t, &calls)
+	request.GlobalDrain.Protocol = storage.NewPauseEpochProtocol(fixture.catalog, func(int) (storage.ProcessIdentity, error) {
+		return storage.ProcessIdentity{}, errors.New("process exited")
+	})
+
+	result, err := storage.RunWeeklyDevCacheSweep(ctx, request)
+	if err != nil {
+		t.Fatalf("reconcile interrupted weekly sweep: %v", err)
+	}
+	if result.Ran || calls != 0 || !result.NextDue.Equal(fixture.nextDue) {
+		t.Fatalf("result = %+v, provider calls = %d; want reconciliation without rerunning before %s", result, calls, fixture.nextDue)
+	}
+
+	var status string
+	var finishedAt sql.NullString
+	if err := fixture.catalog.DB().QueryRowContext(ctx, `SELECT status, finished_at FROM sweeps WHERE id=?`, fixture.sweepID).Scan(&status, &finishedAt); err != nil {
+		t.Fatalf("load reconciled sweep: %v", err)
+	}
+	if status != "failed" || !finishedAt.Valid {
+		t.Fatalf("reconciled sweep status/finished_at = %q/%q, want failed/non-null", status, finishedAt.String)
+	}
+	var evidenceCount int
+	var evidencePayload string
+	if err := fixture.catalog.DB().QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(MAX(payload), '') FROM evidence WHERE sweep_id=?`, fixture.sweepID).Scan(&evidenceCount, &evidencePayload); err != nil {
+		t.Fatalf("load interrupted evidence: %v", err)
+	}
+	if evidenceCount != 1 || !strings.Contains(evidencePayload, "interrupted") {
+		t.Fatalf("interrupted evidence count/payload = %d/%q, want one durable interrupted record", evidenceCount, evidencePayload)
+	}
+	var pauseState string
+	if err := fixture.catalog.DB().QueryRowContext(ctx, `SELECT state FROM runtime_pause_epochs WHERE epoch=?`, fixture.pauseEpoch).Scan(&pauseState); err != nil {
+		t.Fatalf("load reconciled pause epoch: %v", err)
+	}
+	if pauseState != string(storage.Open) {
+		t.Fatalf("reconciled pause state = %q, want %q", pauseState, storage.Open)
+	}
+	var unrelatedStatus string
+	if err := fixture.catalog.DB().QueryRowContext(ctx, `SELECT status FROM sweeps WHERE id=?`, fixture.unrelatedSweepID).Scan(&unrelatedStatus); err != nil {
+		t.Fatalf("load unrelated sweep: %v", err)
+	}
+	if unrelatedStatus != "running" {
+		t.Fatalf("unrelated sweep status = %q, want running", unrelatedStatus)
+	}
+
+	second, err := storage.RunWeeklyDevCacheSweep(ctx, request)
+	if err != nil {
+		t.Fatalf("repeat interrupted reconciliation: %v", err)
+	}
+	if second.Ran || calls != 0 || !second.NextDue.Equal(fixture.nextDue) {
+		t.Fatalf("repeat result = %+v, provider calls = %d; want idempotent no-op", second, calls)
+	}
+	if err := fixture.catalog.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM evidence WHERE sweep_id=?`, fixture.sweepID).Scan(&evidenceCount); err != nil {
+		t.Fatalf("count repeated evidence: %v", err)
+	}
+	if evidenceCount != 1 {
+		t.Fatalf("evidence count after repeat = %d, want exactly 1", evidenceCount)
+	}
+}
+
+func TestWeeklyDevCacheSweepReconciliationFailsClosedForLiveOwnership(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		seedOwnership  func(context.Context, *testing.T, *interruptedWeeklySweepFixture)
+		inspectProcess storage.ProcessInspector
+	}{
+		{
+			name: "matching live controller",
+			seedOwnership: func(ctx context.Context, t *testing.T, fixture *interruptedWeeklySweepFixture) {
+				t.Helper()
+				controller := interruptedSweepController(fixture.now)
+				if err := fixture.catalog.UpsertController(ctx, controller); err != nil {
+					t.Fatalf("seed live controller: %v", err)
+				}
+			},
+			inspectProcess: func(pid int) (storage.ProcessIdentity, error) {
+				controller := interruptedSweepController(time.Time{})
+				if pid != controller.PID {
+					return storage.ProcessIdentity{}, errors.New("unexpected process")
+				}
+				return controller.Identity, nil
+			},
+		},
+		{
+			name: "active lease",
+			seedOwnership: func(ctx context.Context, t *testing.T, fixture *interruptedWeeklySweepFixture) {
+				t.Helper()
+				if _, err := fixture.catalog.AcquireLease(ctx, storage.LeaseRequest{
+					ID: "active", Namespace: "repo/worktree", ControllerID: "controller", OwnerID: "owner", PID: 202,
+					ProcessStart: fixture.now.Add(-time.Hour), AcquiredAt: fixture.now, HeartbeatAt: fixture.now,
+				}); err != nil {
+					t.Fatalf("seed active lease: %v", err)
+				}
+			},
+			inspectProcess: func(int) (storage.ProcessIdentity, error) {
+				return storage.ProcessIdentity{}, errors.New("process exited")
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			fixture := newInterruptedWeeklySweepFixture(t, ctx)
+			test.seedOwnership(ctx, t, fixture)
+			calls := 0
+			request := fixture.request(t, &calls)
+			request.GlobalDrain.Protocol = storage.NewPauseEpochProtocol(fixture.catalog, test.inspectProcess)
+
+			result, err := storage.RunWeeklyDevCacheSweep(ctx, request)
+			if err != nil {
+				t.Fatalf("run ownership-protected reconciliation: %v", err)
+			}
+			if result.Ran || calls != 0 || !result.NextDue.Equal(fixture.nextDue) {
+				t.Fatalf("result = %+v, calls = %d; want schedule-preserving no-op", result, calls)
+			}
+			var status string
+			var finishedAt sql.NullString
+			if err := fixture.catalog.DB().QueryRowContext(ctx, `SELECT status, finished_at FROM sweeps WHERE id=?`, fixture.sweepID).Scan(&status, &finishedAt); err != nil {
+				t.Fatalf("load protected sweep: %v", err)
+			}
+			if status != "running" || finishedAt.Valid {
+				t.Fatalf("protected sweep status/finished_at = %q/%q, want running/null", status, finishedAt.String)
+			}
+			var pauseState string
+			if err := fixture.catalog.DB().QueryRowContext(ctx, `SELECT state FROM runtime_pause_epochs WHERE epoch=?`, fixture.pauseEpoch).Scan(&pauseState); err != nil {
+				t.Fatalf("load protected pause: %v", err)
+			}
+			if pauseState != string(storage.PauseRequested) {
+				t.Fatalf("protected pause state = %q, want %q", pauseState, storage.PauseRequested)
+			}
+			var evidenceCount int
+			if err := fixture.catalog.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM evidence WHERE sweep_id=?`, fixture.sweepID).Scan(&evidenceCount); err != nil {
+				t.Fatalf("count protected evidence: %v", err)
+			}
+			if evidenceCount != 0 {
+				t.Fatalf("protected evidence count = %d, want 0", evidenceCount)
+			}
+		})
+	}
+}
+
+type interruptedWeeklySweepFixture struct {
+	catalog          *storage.Catalog
+	now, nextDue     time.Time
+	pauseEpoch       int64
+	sweepID          string
+	unrelatedSweepID string
+	provider         storage.CacheProvider
+}
+
+func newInterruptedWeeklySweepFixture(t *testing.T, ctx context.Context) *interruptedWeeklySweepFixture {
+	t.Helper()
+	now := time.Date(2026, time.August, 6, 12, 0, 0, 0, time.UTC)
+	nextDue := now.Add(storage.WeeklyDevCacheSweepInterval)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "catalog.db")
+	catalog, err := storage.OpenCatalog(ctx, path)
+	if err != nil {
+		t.Fatalf("open seed catalog: %v", err)
+	}
+	provider := storage.CacheProvider{
+		ID: "probe", Variables: []string{"PROBE_CACHE"}, DefaultPath: t.TempDir,
+		Scope: storage.UserScope, Concurrency: storage.Serialized, Ownership: storage.ToolNative,
+		Cleaner: storage.CleanerDescriptor{Executable: "probe", Trusted: true},
+	}
+	sweepID := "weekly-dev-cache-20260806T110000.000000000Z-probe"
+	unrelatedSweepID := "manual-sweep"
+	statements := []struct {
+		query string
+		args  []any
+	}{
+		{`INSERT INTO weekly_dev_cache_schedule (id, due_at, updated_at) VALUES ('weekly-dev-cache', ?, ?)`, []any{nextDue.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)}},
+		{`INSERT INTO providers (id, created_at, updated_at) VALUES (?, ?, ?)`, []any{provider.ID, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)}},
+		{`INSERT INTO sweeps (id, provider_id, started_at, status) VALUES (?, ?, ?, 'running')`, []any{sweepID, provider.ID, now.Add(-time.Hour).Format(time.RFC3339Nano)}},
+		{`INSERT INTO sweeps (id, provider_id, started_at, status) VALUES (?, ?, ?, 'running')`, []any{unrelatedSweepID, provider.ID, now.Add(-time.Hour).Format(time.RFC3339Nano)}},
+		{`INSERT INTO runtime_pause_epochs (epoch, state, created_at) VALUES (7, 'pause_requested', ?)`, []any{now.Add(-time.Hour).Format(time.RFC3339Nano)}},
+	}
+	for _, statement := range statements {
+		if _, err := catalog.DB().ExecContext(ctx, statement.query, statement.args...); err != nil {
+			_ = catalog.Close()
+			t.Fatalf("seed interrupted sweep: %v", err)
+		}
+	}
+	if err := catalog.Close(); err != nil {
+		t.Fatalf("close seed catalog: %v", err)
+	}
+	catalog, err = storage.OpenCatalog(ctx, path)
+	if err != nil {
+		t.Fatalf("reopen interrupted catalog: %v", err)
+	}
+	t.Cleanup(func() { _ = catalog.Close() })
+	return &interruptedWeeklySweepFixture{
+		catalog: catalog, now: now, nextDue: nextDue, pauseEpoch: 7,
+		sweepID: sweepID, unrelatedSweepID: unrelatedSweepID, provider: provider,
+	}
+}
+
+func (fixture *interruptedWeeklySweepFixture) request(t *testing.T, calls *int) storage.WeeklyDevCacheSweepRequest {
+	t.Helper()
+	return storage.WeeklyDevCacheSweepRequest{
+		Catalog: fixture.catalog, LockPath: filepath.Join(t.TempDir(), "maintenance.lock"),
+		Now: func() time.Time { return fixture.now }, Providers: []storage.CacheProvider{fixture.provider}, SizeThreshold: -1,
+		Run: func(context.Context, storage.ProviderMaintenance) (storage.MaintenanceEvidence, error) {
+			*calls++
+			return storage.MaintenanceEvidence{ProviderID: fixture.provider.ID}, nil
+		},
+	}
+}
+
+func interruptedSweepController(now time.Time) storage.Controller {
+	return storage.Controller{
+		ID: "controller", OwnerID: "owner", PID: 101, ProcessStart: now.Add(-time.Hour), HeartbeatAt: now,
+		Identity:      storage.ProcessIdentity{PID: 101, StartMarker: "start-controller", Executable: "oro", ProcessGroup: 101},
+		ObservedEpoch: 7,
 	}
 }

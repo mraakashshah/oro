@@ -83,6 +83,9 @@ func RunWeeklyDevCacheSweep(ctx context.Context, request WeeklyDevCacheSweepRequ
 	defer func() { _ = lock.Close() }()
 
 	now := weeklySweepNow(request.Now)
+	if err := reconcileInterruptedWeeklyDevCacheSweep(ctx, request.Catalog, request.GlobalDrain.Protocol, now); err != nil {
+		return WeeklyDevCacheSweepResult{}, err
+	}
 	interval := weeklySweepInterval(request.Interval)
 	due, err := loadWeeklyDevCacheDue(ctx, request.Catalog, now)
 	if err != nil {
@@ -116,6 +119,140 @@ func RunWeeklyDevCacheSweep(ctx context.Context, request WeeklyDevCacheSweepRequ
 		}
 	}
 	return WeeklyDevCacheSweepResult{Ran: true, NextDue: nextDue}, errors.Join(runErrs...)
+}
+
+type interruptedWeeklySweep struct {
+	id, providerID string
+}
+
+func reconcileInterruptedWeeklyDevCacheSweep(ctx context.Context, catalog *Catalog, protocol *PauseEpochProtocol, reconciledAt time.Time) error {
+	if protocol == nil {
+		protocol = NewPauseEpochProtocol(catalog, nil)
+	}
+	tx, err := catalog.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin interrupted weekly dev cache reconciliation: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var epoch int64
+	var pauseState PauseState
+	if err := tx.QueryRowContext(ctx, `SELECT epoch, state FROM runtime_pause_epochs ORDER BY epoch DESC LIMIT 1`).Scan(&epoch, &pauseState); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("load interrupted weekly dev cache pause: %w", err)
+	}
+	if pauseState != PauseRequested {
+		return nil
+	}
+
+	live, err := interruptedSweepHasLiveController(ctx, tx, protocol.inspect)
+	if err != nil {
+		return err
+	}
+	if live {
+		return nil
+	}
+	var activeLeases int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM runtime_leases WHERE released_at IS NULL`).Scan(&activeLeases); err != nil {
+		return fmt.Errorf("count interrupted weekly dev cache leases: %w", err)
+	}
+	if activeLeases != 0 {
+		return nil
+	}
+
+	sweeps, err := interruptedWeeklyDevCacheSweeps(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if len(sweeps) == 0 {
+		return nil
+	}
+	payload := func(providerID string) ([]byte, error) {
+		return json.Marshal(struct {
+			ProviderID string `json:"provider_id"`
+			Status     string `json:"status"`
+			Reason     string `json:"reason"`
+		}{ProviderID: providerID, Status: "failed", Reason: "interrupted startup cleanup"})
+	}
+	for _, sweep := range sweeps {
+		result, err := tx.ExecContext(ctx, `UPDATE sweeps SET finished_at=?, status='failed' WHERE id=? AND status='running' AND finished_at IS NULL`, formatTime(reconciledAt), sweep.id)
+		if err != nil {
+			return fmt.Errorf("fail interrupted weekly dev cache sweep %s: %w", sweep.id, err)
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("inspect interrupted weekly dev cache sweep %s update: %w", sweep.id, err)
+		}
+		if changed != 1 {
+			return fmt.Errorf("fail interrupted weekly dev cache sweep %s: changed %d rows", sweep.id, changed)
+		}
+		evidence, err := payload(sweep.providerID)
+		if err != nil {
+			return fmt.Errorf("encode interrupted weekly dev cache sweep %s evidence: %w", sweep.id, err)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO evidence (id, sweep_id, kind, payload, created_at) VALUES (?, ?, 'weekly_dev_cache_provider', ?, ?) ON CONFLICT(id) DO NOTHING`, sweep.id+"-evidence", sweep.id, string(evidence), formatTime(reconciledAt)); err != nil {
+			return fmt.Errorf("record interrupted weekly dev cache sweep %s evidence: %w", sweep.id, err)
+		}
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE runtime_pause_epochs SET state=? WHERE epoch=? AND state=?`, Open, epoch, PauseRequested)
+	if err != nil {
+		return fmt.Errorf("open interrupted weekly dev cache pause %d: %w", epoch, err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("inspect interrupted weekly dev cache pause %d update: %w", epoch, err)
+	}
+	if changed != 1 {
+		return fmt.Errorf("open interrupted weekly dev cache pause %d: changed %d rows", epoch, changed)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit interrupted weekly dev cache reconciliation: %w", err)
+	}
+	return nil
+}
+
+func interruptedSweepHasLiveController(ctx context.Context, tx *sql.Tx, inspect ProcessInspector) (bool, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT pid, identity_start, executable, process_group FROM runtime_controllers`)
+	if err != nil {
+		return false, fmt.Errorf("list interrupted weekly dev cache controllers: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var identity ProcessIdentity
+		if err := rows.Scan(&identity.PID, &identity.StartMarker, &identity.Executable, &identity.ProcessGroup); err != nil {
+			return false, fmt.Errorf("scan interrupted weekly dev cache controller: %w", err)
+		}
+		actual, err := inspect(identity.PID)
+		if err == nil && identity.Matches(actual) {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate interrupted weekly dev cache controllers: %w", err)
+	}
+	return false, nil
+}
+
+func interruptedWeeklyDevCacheSweeps(ctx context.Context, tx *sql.Tx) ([]interruptedWeeklySweep, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id, provider_id FROM sweeps WHERE id LIKE 'weekly-dev-cache-%' AND status='running' AND finished_at IS NULL`)
+	if err != nil {
+		return nil, fmt.Errorf("list interrupted weekly dev cache sweeps: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var sweeps []interruptedWeeklySweep
+	for rows.Next() {
+		var sweep interruptedWeeklySweep
+		if err := rows.Scan(&sweep.id, &sweep.providerID); err != nil {
+			return nil, fmt.Errorf("scan interrupted weekly dev cache sweep: %w", err)
+		}
+		sweeps = append(sweeps, sweep)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate interrupted weekly dev cache sweeps: %w", err)
+	}
+	return sweeps, nil
 }
 
 // devCacheOverSizeThreshold reports whether any provider's cache has reached
