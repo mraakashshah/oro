@@ -386,7 +386,14 @@ func (d *Dispatcher) tryAssignBatch(ctx context.Context) []<-chan struct{} {
 	if redeployable, blocked := d.recoveryQuarantineAssignmentScope(ctx); blocked {
 		return nil
 	} else if len(redeployable) > 0 {
-		beads = filterBeadsByID(beads, redeployable)
+		scoped := filterBeadsByID(beads, redeployable)
+		if len(beads) > 0 && len(scoped) == 0 {
+			const reason = "recovery_quarantine_no_ready_redeployable"
+			d.setRecoveryAssignmentFreeze(true, len(redeployable), reason)
+			d.logRecoveryAssignmentBlocked(ctx, len(redeployable), reason)
+			return nil
+		}
+		beads = scoped
 	}
 
 	plan, pbSnapshot, focusVersion := d.buildSchedulingPlan(ctx, beads)

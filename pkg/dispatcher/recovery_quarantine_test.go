@@ -1203,6 +1203,144 @@ VALUES ('oro-human-owned', 'agent/oro-human-owned', 'unsafe_stale_branch', 'oper
 	}
 }
 
+func TestRedeployableQuarantineWithoutReadyBeadReportsAssignmentFreeze(t *testing.T) {
+	const (
+		recoveryBeadID = "oro-preserved-recovery"
+		freshBeadID    = "oro-fresh-ready"
+		worktree       = "/tmp/worktree-oro-preserved-recovery"
+		freezeReason   = "recovery_quarantine_no_ready_redeployable"
+	)
+
+	newFixture := func(t *testing.T, recoveryReady bool) (*Dispatcher, *fakeBeadStore) {
+		t.Helper()
+		d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
+		ctx := t.Context()
+
+		ready := []protocol.Bead{{
+			ID: freshBeadID, Title: "fresh ready work", Status: "open", Priority: 1, Type: "task",
+		}}
+		recoveryStatus := "blocked"
+		if recoveryReady {
+			recoveryStatus = "open"
+			ready = append([]protocol.Bead{{
+				ID: recoveryBeadID, Title: "preserved recovery work", Status: "open", Priority: 0, Type: "task",
+			}}, ready...)
+		}
+		beadSrc.SetBeads(ready)
+		beadSrc.mu.Lock()
+		beadSrc.shown[recoveryBeadID] = &protocol.BeadDetail{
+			ID: recoveryBeadID, Title: "preserved recovery work", Status: recoveryStatus, Type: "task",
+			AcceptanceCriteria: "Test: preserved recovery | Cmd: true | Assert: pass",
+		}
+		beadSrc.shown[freshBeadID] = &protocol.BeadDetail{
+			ID: freshBeadID, Title: "fresh ready work", Status: "open", Type: "task",
+			AcceptanceCriteria: "Test: fresh work | Cmd: true | Assert: pass",
+		}
+		beadSrc.mu.Unlock()
+
+		if _, err := d.db.ExecContext(ctx, `
+INSERT INTO recovery_quarantines (bead_id, worker_id, worktree, branch, reason, details, status)
+VALUES (?, 'disconnected-worker', ?, ?, 'stale_active_assignment', 'preserved clean attempt', 'open')`,
+			recoveryBeadID, worktree, protocol.BranchPrefix+recoveryBeadID); err != nil {
+			t.Fatalf("insert recovery quarantine: %v", err)
+		}
+
+		wtMgr.existsFn = func(_ context.Context, path string) bool { return path == worktree }
+		wtMgr.currentBranchFn = func(_ context.Context, path string) (string, error) {
+			if path != worktree {
+				return "", fmt.Errorf("unexpected worktree %q", path)
+			}
+			return protocol.BranchPrefix + recoveryBeadID, nil
+		}
+		wtMgr.prepareReuseFn = func(_ context.Context, path, branch, base string) (bool, error) {
+			if path != worktree || branch != protocol.BranchPrefix+recoveryBeadID || base != "main" {
+				t.Fatalf("reuse preparation = path %q branch %q base %q", path, branch, base)
+			}
+			return false, nil
+		}
+		d.shutdownRunner = &mockCommandRunner{callFn: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name == "git" && strings.Join(args, " ") == "-C "+worktree+" status --porcelain" {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("unexpected command: %s %s", name, strings.Join(args, " "))
+		}}
+
+		conn := newMockConn()
+		d.mu.Lock()
+		d.state = StateRunning
+		d.workers["fresh-worker"] = &trackedWorker{
+			id: "fresh-worker", conn: conn, state: protocol.WorkerIdle, encoder: json.NewEncoder(conn),
+		}
+		d.worktreeByBead[recoveryBeadID] = worktree
+		d.mu.Unlock()
+		return d, beadSrc
+	}
+
+	t.Run("empty ready intersection is an observable freeze", func(t *testing.T) {
+		d, beadSrc := newFixture(t, false)
+		tryAssignAndWait(t, d, t.Context())
+
+		beadSrc.mu.Lock()
+		freshStatus := beadSrc.updated[freshBeadID]
+		recoveryStatus := beadSrc.updated[recoveryBeadID]
+		beadSrc.mu.Unlock()
+		if freshStatus == "in_progress" || recoveryStatus == "in_progress" {
+			t.Fatalf("assignment statuses = fresh %q recovery %q, want neither assigned", freshStatus, recoveryStatus)
+		}
+
+		var status statusResponse
+		if err := json.Unmarshal([]byte(d.buildStatusJSON()), &status); err != nil {
+			t.Fatalf("unmarshal status JSON: %v", err)
+		}
+		if !status.AssignmentFrozenByQuarantine || status.BlockingRecoveryQuarantines != 1 || status.AssignmentFreezeReason != freezeReason {
+			t.Fatalf("status freeze = frozen %t blocking %d reason %q, want true/1/%q",
+				status.AssignmentFrozenByQuarantine, status.BlockingRecoveryQuarantines, status.AssignmentFreezeReason, freezeReason)
+		}
+		if status.Health == nil || !status.Health.Metrics.AssignmentFrozenByQuarantine ||
+			status.Health.Metrics.BlockingRecoveryQuarantines != 1 ||
+			status.Health.Metrics.AssignmentFreezeReason != freezeReason {
+			t.Fatalf("health freeze metrics = %+v, want true/1/%q", status.Health, freezeReason)
+		}
+		if !hasHealthFinding(*status.Health, factoryhealth.FindingAssignmentFrozenByQuarantine) {
+			t.Fatalf("health missing assignment freeze finding: %+v", status.Health.Findings)
+		}
+
+		var quarantineStatus, quarantineWorktree, quarantineBranch string
+		if err := d.db.QueryRowContext(t.Context(), `
+SELECT status, worktree, branch FROM recovery_quarantines WHERE bead_id=?`, recoveryBeadID).
+			Scan(&quarantineStatus, &quarantineWorktree, &quarantineBranch); err != nil {
+			t.Fatalf("query preserved quarantine: %v", err)
+		}
+		if quarantineStatus != "open" || quarantineWorktree != worktree || quarantineBranch != protocol.BranchPrefix+recoveryBeadID {
+			t.Fatalf("preserved quarantine = status %q worktree %q branch %q", quarantineStatus, quarantineWorktree, quarantineBranch)
+		}
+	})
+
+	t.Run("ready intersection preserves scoped redeploy", func(t *testing.T) {
+		d, beadSrc := newFixture(t, true)
+		tryAssignAndWait(t, d, t.Context())
+
+		state, assigned, ok := d.WorkerInfo("fresh-worker")
+		if !ok || state != protocol.WorkerBusy || assigned != recoveryBeadID {
+			t.Fatalf("worker assignment = exists %t state %q bead %q, want busy on %q", ok, state, assigned, recoveryBeadID)
+		}
+		beadSrc.mu.Lock()
+		freshStatus := beadSrc.updated[freshBeadID]
+		beadSrc.mu.Unlock()
+		if freshStatus == "in_progress" {
+			t.Fatal("fresh work bypassed scoped preserved recovery assignment")
+		}
+		d.mu.Lock()
+		frozen := d.assignmentFrozenByQuarantine
+		blocking := d.blockingRecoveryQuarantines
+		reason := d.assignmentFreezeReason
+		d.mu.Unlock()
+		if frozen || blocking != 0 || reason != "" {
+			t.Fatalf("successful scoped redeploy retained freeze = frozen %t blocking %d reason %q", frozen, blocking, reason)
+		}
+	})
+}
+
 func TestPreservedWorktreeAutoRedeploysFreshWorker(t *testing.T) {
 	d, beadSrc, wtMgr, _, _, _ := newTestDispatcher(t)
 	ctx := context.Background()
