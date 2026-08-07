@@ -1533,6 +1533,100 @@ func TestParityDependencyAndStatusAPIs(t *testing.T) {
 	}
 }
 
+func TestSQLiteRemoveDependencyNoOpDoesNotEmitEvent(t *testing.T) {
+	t.Run("repeated removal emits one transition event", func(t *testing.T) {
+		ctx := context.Background()
+		store := newTestSQLiteStore(t)
+		mustCreate(t, store, CreateParams{ID: "oro-dependent", Title: "dependent"})
+		mustCreate(t, store, CreateParams{ID: "oro-blocker", Title: "blocker"})
+		if err := store.AddDependency(ctx, "oro-dependent", "oro-blocker", "blocks"); err != nil {
+			t.Fatalf("AddDependency: %v", err)
+		}
+
+		if err := store.RemoveDependency(ctx, "oro-dependent", "oro-blocker"); err != nil {
+			t.Fatalf("first RemoveDependency: %v", err)
+		}
+		if got := beadDepsCount(t, store.db); got != 0 {
+			t.Fatalf("dependency count after first removal = %d, want 0", got)
+		}
+		if got := eventCount(t, store.db, "bead_dependency_removed"); got != 1 {
+			t.Fatalf("removal event count after first removal = %d, want 1", got)
+		}
+		var payloadJSON string
+		if err := store.db.QueryRowContext(ctx, `
+SELECT payload FROM events
+WHERE type='bead_dependency_removed' AND bead_id='oro-dependent'`).Scan(&payloadJSON); err != nil {
+			t.Fatalf("query removal event payload: %v", err)
+		}
+		var payload struct {
+			DependsOnID string `json:"depends_on_id"`
+		}
+		if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+			t.Fatalf("unmarshal removal event payload: %v", err)
+		}
+		if payload.DependsOnID != "oro-blocker" {
+			t.Fatalf("removal event depends_on_id = %q, want oro-blocker", payload.DependsOnID)
+		}
+
+		const repeatedRemovals = 100
+		errs := make(chan error, repeatedRemovals)
+		var wg sync.WaitGroup
+		for range repeatedRemovals {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				errs <- store.RemoveDependency(ctx, "oro-dependent", "oro-blocker")
+			}()
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			if err != nil {
+				t.Fatalf("repeated RemoveDependency: %v", err)
+			}
+		}
+		if got := beadDepsCount(t, store.db); got != 0 {
+			t.Fatalf("dependency count after repeated removal = %d, want 0", got)
+		}
+		if got := eventCount(t, store.db, "bead_dependency_removed"); got != 1 {
+			t.Fatalf("removal event count after repeated removal = %d, want 1", got)
+		}
+		if err := store.RemoveDependency(ctx, "oro-missing", "oro-blocker"); !isBeadNotFound(err) {
+			t.Fatalf("RemoveDependency missing dependent error = %v, want BeadNotFoundError", err)
+		}
+		if got := eventCount(t, store.db, "bead_dependency_removed"); got != 1 {
+			t.Fatalf("removal event count after missing dependent = %d, want 1", got)
+		}
+	})
+
+	t.Run("event failure rolls back edge removal", func(t *testing.T) {
+		ctx := context.Background()
+		store := newTestSQLiteStore(t)
+		mustCreate(t, store, CreateParams{ID: "oro-dependent", Title: "dependent"})
+		mustCreate(t, store, CreateParams{ID: "oro-blocker", Title: "blocker"})
+		if err := store.AddDependency(ctx, "oro-dependent", "oro-blocker", "blocks"); err != nil {
+			t.Fatalf("AddDependency: %v", err)
+		}
+		mustExec(t, store.db, `
+CREATE TRIGGER fail_dependency_removed_event
+BEFORE INSERT ON events
+WHEN NEW.type='bead_dependency_removed'
+BEGIN
+    SELECT RAISE(FAIL, 'forced dependency removal event failure');
+END`)
+
+		if err := store.RemoveDependency(ctx, "oro-dependent", "oro-blocker"); err == nil {
+			t.Fatal("RemoveDependency with rejected event succeeded, want error")
+		}
+		if got := beadDepsCount(t, store.db); got != 1 {
+			t.Fatalf("dependency count after event failure = %d, want 1", got)
+		}
+		if got := eventCount(t, store.db, "bead_dependency_removed"); got != 0 {
+			t.Fatalf("removal event count after event failure = %d, want 0", got)
+		}
+	})
+}
+
 func TestParityUpdateValidatesStatusTransitions(t *testing.T) {
 	validStatuses := []string{"in_progress", "blocked", "closed", "open"}
 	invalidStatuses := []string{"ready", "deferred", ""}
