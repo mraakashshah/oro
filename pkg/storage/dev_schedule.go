@@ -149,17 +149,7 @@ func reconcileInterruptedWeeklyDevCacheSweep(ctx context.Context, catalog *Catal
 		return diagnosisErr
 	}
 	if len(sweeps) == 0 {
-		if diagnosisErr == nil {
-			return nil
-		}
-		var pauseRequested int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM runtime_pause_epochs WHERE state=?`, PauseRequested).Scan(&pauseRequested); err != nil {
-			return fmt.Errorf("count unmatched interrupted weekly dev cache sweep pauses: %w", err)
-		}
-		if pauseRequested == 0 {
-			return nil
-		}
-		return diagnosisErr
+		return unmatchedInterruptedWeeklySweepDiagnosis(ctx, tx, diagnosisErr)
 	}
 
 	live, err := interruptedSweepHasLiveController(ctx, tx, protocol.inspect)
@@ -187,6 +177,20 @@ func reconcileInterruptedWeeklyDevCacheSweep(ctx context.Context, catalog *Catal
 		return fmt.Errorf("commit interrupted weekly dev cache reconciliation: %w", err)
 	}
 	return nil
+}
+
+func unmatchedInterruptedWeeklySweepDiagnosis(ctx context.Context, tx *sql.Tx, diagnosisErr error) error {
+	if diagnosisErr == nil {
+		return nil
+	}
+	var pauseRequested int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM runtime_pause_epochs WHERE state=?`, PauseRequested).Scan(&pauseRequested); err != nil {
+		return fmt.Errorf("count unmatched interrupted weekly dev cache sweep pauses: %w", err)
+	}
+	if pauseRequested == 0 {
+		return nil
+	}
+	return diagnosisErr
 }
 
 func failInterruptedWeeklyDevCacheSweeps(ctx context.Context, tx *sql.Tx, sweeps []interruptedWeeklySweep, reconciledAt time.Time) error {
