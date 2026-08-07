@@ -1640,6 +1640,123 @@ func TestStartSeparatesAssignmentBaseRefFromWritableTarget(t *testing.T) {
 	})
 }
 
+func TestSplitBranchCmdMutationOwner(t *testing.T) {
+	t.Run("flag bindings remain distinct", func(t *testing.T) {
+		var (
+			workers, maxWorkers                        int
+			daemonOnly, detach                         bool
+			model                                      string
+			progressTimeout, opsTimeout, reviewTimeout time.Duration
+			manualIntegration                          bool
+			baseBranch, baseRef, targetBranch          string
+			mutationTesting, webEnabled, noWeb         bool
+			webAddr                                    string
+			cleanliness                                = defaultCleanlinessStartConfig()
+		)
+		cmd := &cobra.Command{}
+		registerStartCommandFlags(
+			cmd, &workers, &maxWorkers, &daemonOnly, &detach, &model,
+			&progressTimeout, &opsTimeout, &reviewTimeout,
+			&manualIntegration, &baseBranch, &baseRef, &targetBranch,
+			&mutationTesting, &webEnabled, &noWeb, &webAddr, &cleanliness,
+		)
+
+		if workers != 2 || maxWorkers != 0 || model != "balanced" || !webEnabled {
+			t.Fatalf("registered defaults workers/max/model/web = %d/%d/%q/%t", workers, maxWorkers, model, webEnabled)
+		}
+		if alias := cmd.Flags().Lookup("review-timeout"); alias == nil || !alias.Hidden {
+			t.Fatalf("review-timeout alias = %+v, want hidden", alias)
+		}
+		if err := cmd.ParseFlags([]string{
+			"--workers=4", "--base-ref=origin/main", "--target-branch=release",
+			"--review-timeout=3m", "--no-web",
+		}); err != nil {
+			t.Fatalf("parse registered flags: %v", err)
+		}
+		if workers != 4 || baseRef != "origin/main" || targetBranch != "release" || reviewTimeout != 3*time.Minute || !noWeb {
+			t.Fatalf("parsed bindings workers/base/target/review/no-web = %d/%q/%q/%v/%t", workers, baseRef, targetBranch, reviewTimeout, noWeb)
+		}
+	})
+
+	t.Run("branch resolution rejects remote targets before side effects", func(t *testing.T) {
+		branches, err := resolveStartBranchConfig(context.Background(), " origin/main ", " main ", "legacy")
+		if err != nil {
+			t.Fatalf("resolve distinct branch roles: %v", err)
+		}
+		if branches != (startBranchConfig{BaseRef: "origin/main", TargetBranch: "main"}) {
+			t.Fatalf("resolved branches = %+v", branches)
+		}
+		if !startTargetIsRemoteTrackingRef(context.Background(), " refs/remotes/upstream/main ") {
+			t.Fatal("refs/remotes target was not rejected")
+		}
+		if startTargetIsRemoteTrackingRef(context.Background(), "release") {
+			t.Fatal("local release target was classified as remote")
+		}
+
+		_, _, err = buildDispatcherWithReviewTimeoutsAndCleanliness(
+			1, 1, 0, 0, 0, false, "refs/remotes/origin/main", false, false, "", defaultCleanlinessStartConfig(),
+		)
+		if err == nil || err.Error() != `target branch "refs/remotes/origin/main" is remote-tracking; choose an explicit writable local branch` {
+			t.Fatalf("legacy remote target error = %v", err)
+		}
+
+		cmd := &cobra.Command{}
+		cmd.Flags().String("base-ref", "", "")
+		cmd.Flags().String("target-branch", "", "")
+		if err := cmd.Flags().Set("base-ref", "origin/main"); err != nil {
+			t.Fatalf("set base ref: %v", err)
+		}
+		if err := cmd.Flags().Set("target-branch", "refs/remotes/origin/main"); err != nil {
+			t.Fatalf("set target branch: %v", err)
+		}
+		pidPath := filepath.Join(t.TempDir(), "oro.pid")
+		err = runDaemonOnly(cmd, pidPath, 1, 1, 0, 0, 0, false, "", false, false, "", defaultCleanlinessStartConfig())
+		if err == nil || !strings.Contains(err.Error(), "remote-tracking") {
+			t.Fatalf("daemon remote target error = %v", err)
+		}
+		if _, statErr := os.Stat(pidPath); !os.IsNotExist(statErr) {
+			t.Fatalf("remote target reached PID lifecycle: %v", statErr)
+		}
+	})
+
+	t.Run("inner dispatcher builder fails before initialization", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		t.Setenv("ORO_PROJECT", "")
+		t.Setenv("ORO_BEADSOURCE_MODE", "cli")
+		_, _, err := buildDispatcherWithReviewTimeoutsAndCleanlinessForBranches(
+			1, 1, 0, 0, 0, false,
+			startBranchConfig{BaseRef: "origin/main", TargetBranch: "main"},
+			false, false, "", defaultCleanlinessStartConfig(),
+		)
+		if err == nil || !strings.Contains(err.Error(), "requires native sqlite beadstore") {
+			t.Fatalf("non-native builder error = %v", err)
+		}
+	})
+
+	t.Run("fresh start uses injected handoff", func(t *testing.T) {
+		t.Setenv("ORO_HOME", t.TempDir())
+		t.Setenv("ORO_PROJECT", "mutation-owner")
+		t.Setenv("ORO_BEADSOURCE_MODE", "sqlite")
+		previousRunFullStart := runFullStartFn
+		t.Cleanup(func() { runFullStartFn = previousRunFullStart })
+
+		spawner := &ExecDaemonSpawner{BaseRef: "origin/main", TargetBranch: "main"}
+		called := false
+		runFullStartFn = func(_ io.Writer, workers, maxWorkers int, model, project string, gotSpawner DaemonSpawner, _ CmdRunner, _ func(int) error, _ time.Duration, _ func(time.Duration), _ time.Duration, detach bool) error {
+			called = true
+			if workers != 2 || maxWorkers != 5 || model != "deep" || project != "mutation-owner" || gotSpawner != spawner || !detach {
+				t.Fatalf("fresh handoff workers/max/model/project/spawner/detach = %d/%d/%q/%q/%T/%t", workers, maxWorkers, model, project, gotSpawner, detach)
+			}
+			return fmt.Errorf("bounded owner handoff")
+		}
+
+		err := startFreshSwarmWithSpawner(io.Discard, 2, 5, "deep", true, spawner)
+		if err == nil || err.Error() != "bounded owner handoff" || !called {
+			t.Fatalf("fresh start result called/error = %t/%v", called, err)
+		}
+	})
+}
+
 func TestNewStartCmdMutationBoundaries(t *testing.T) {
 	t.Run("registers the complete start surface", func(t *testing.T) {
 		cmd := newStartCmd()
