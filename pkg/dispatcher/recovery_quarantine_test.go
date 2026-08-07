@@ -1217,13 +1217,13 @@ func TestRedeployableQuarantineWithoutReadyBeadReportsAssignmentFreeze(t *testin
 		ctx := t.Context()
 
 		ready := []protocol.Bead{{
-			ID: freshBeadID, Title: "fresh ready work", Status: "open", Priority: 1, Type: "task",
+			ID: freshBeadID, Title: "fresh ready work", Status: "open", Priority: 0, Type: "task",
 		}}
 		recoveryStatus := "blocked"
 		if recoveryReady {
 			recoveryStatus = "open"
 			ready = append([]protocol.Bead{{
-				ID: recoveryBeadID, Title: "preserved recovery work", Status: "open", Priority: 0, Type: "task",
+				ID: recoveryBeadID, Title: "preserved recovery work", Status: "open", Priority: 1, Type: "task",
 			}}, ready...)
 		}
 		beadSrc.SetBeads(ready)
@@ -1304,6 +1304,9 @@ VALUES (?, 'disconnected-worker', ?, ?, 'stale_active_assignment', 'preserved cl
 		if !hasHealthFinding(*status.Health, factoryhealth.FindingAssignmentFrozenByQuarantine) {
 			t.Fatalf("health missing assignment freeze finding: %+v", status.Health.Findings)
 		}
+		if got := eventCount(t, d.db, "assignment_blocked_by_recovery_quarantine"); got != 1 {
+			t.Fatalf("assignment blocked events = %d, want 1", got)
+		}
 
 		var quarantineStatus, quarantineWorktree, quarantineBranch string
 		if err := d.db.QueryRowContext(t.Context(), `
@@ -1337,6 +1340,14 @@ SELECT status, worktree, branch FROM recovery_quarantines WHERE bead_id=?`, reco
 		d.mu.Unlock()
 		if frozen || blocking != 0 || reason != "" {
 			t.Fatalf("successful scoped redeploy retained freeze = frozen %t blocking %d reason %q", frozen, blocking, reason)
+		}
+	})
+
+	t.Run("empty ready queue does not synthesize a freeze", func(t *testing.T) {
+		d, _ := newFixture(t, true)
+		scoped, blocked := d.scopeRecoveryQuarantineAssignments(t.Context(), nil)
+		if blocked || len(scoped) != 0 {
+			t.Fatalf("empty ready recovery scope = (%v, %t), want empty and unblocked", scoped, blocked)
 		}
 	})
 }

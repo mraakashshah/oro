@@ -88,7 +88,7 @@ func TestTryAssignBatchP0MutationOwner(t *testing.T) {
 		t.Fatalf("empty recovery scope = (%v, %t), want (nil, false)", scoped, blocked)
 	}
 
-	const behaviorPattern = "^(TestTryAssignAndWaitObservesSetupCompletion|TestTryAssign_DeadSocketRemovesWorker|TestTryAssign_EscalatesDependencyCycle|TestReadyObservationFailureBlocksAssignmentAndDegradesHealthAndStatus|TestCheckpointObservationFailureBlocksAssignmentAndDegradesHealthAndStatus|TestGracefulShutdownApprovalKeepsWorkerOutOfAssignmentPool|TestSpawnFor_StalePendingTargetDoesNotReserveBeadForever|TestAutoScaleDisabledWhenMaxWorkersZero|TestScaleUpDoesNotDuplicateAssignment|TestTryAssign_NoBeadsReady|TestTryAssignBatchReturnsHandlePerLaunchedSetup|TestRedeployableQuarantineWithoutReadyBeadReportsAssignmentFreeze|TestTryAssignAllowsFreshWorkWhenRecoveryQuarantineIsHumanOwned|TestTryAssignBlocksFreshWorkWhenRecoveryQuarantineOpen|TestTryAssignNotFrozenByEmptySafeQuarantine)$"
+	const behaviorPattern = "^(TestTryAssignAndWaitObservesSetupCompletion|TestTryAssign_DeadSocketRemovesWorker|TestTryAssign_EscalatesDependencyCycle|TestReadyObservationFailureBlocksAssignmentAndDegradesHealthAndStatus|TestCheckpointObservationFailureBlocksAssignmentAndDegradesHealthAndStatus|TestDispatcherStoragePauseStopsAdmissions|TestGracefulShutdownApprovalKeepsWorkerOutOfAssignmentPool|TestSpawnFor_StalePendingTargetDoesNotReserveBeadForever|TestAutoScaleDisabledWhenMaxWorkersZero|TestAutoScaleOnQueueDepth|TestScaleUpDoesNotDuplicateAssignment|TestTryAssign_NoBeadsReady|TestTryAssignBatchReturnsHandlePerLaunchedSetup|TestTryAssignBatchExcludesBusyAndDrainingWorkers|TestTryAssign_UnassignableEpicUnitDoesNotBlockNextEpic|TestRedeployableQuarantineWithoutReadyBeadReportsAssignmentFreeze|TestTryAssignAllowsFreshWorkWhenRecoveryQuarantineIsHumanOwned|TestTryAssignBlocksFreshWorkWhenRecoveryQuarantineOpen|TestTryAssignNotFrozenByEmptySafeQuarantine)$"
 	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, os.Args[0], //nolint:gosec // test helper re-executes this binary with fixed arguments
@@ -99,6 +99,33 @@ func TestTryAssignBatchP0MutationOwner(t *testing.T) {
 	}
 	if err != nil {
 		t.Fatalf("tryAssignBatch P0 behavior failed in bounded subprocess: %v\n%s", err, output)
+	}
+}
+
+func TestTryAssignBatchExcludesBusyAndDrainingWorkers(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		state protocol.WorkerState
+		drain bool
+	}{
+		{name: "busy", state: protocol.WorkerBusy},
+		{name: "draining", state: protocol.WorkerIdle, drain: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, beadSrc, workers := setupTryAssignSchedulingTest(t, 1)
+			seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "oro-ineligible-worker", Priority: 0})
+			beadSrc.SetBeads([]protocol.Bead{{ID: "oro-ineligible-worker", Priority: 0}})
+
+			d.mu.Lock()
+			for _, worker := range d.workers {
+				worker.state = tc.state
+				worker.drainAfterAssignment = tc.drain
+			}
+			d.mu.Unlock()
+
+			waitForSetup(t, d.tryAssignBatch(t.Context()))
+			assertMockWorkerAssignCount(t, workers, 0)
+		})
 	}
 }
 
