@@ -79,6 +79,29 @@ func TestDispatcherOperationWatchdogReleasesRetainedMutexForCleanup(t *testing.T
 	}
 }
 
+func TestTryAssignBatchP0MutationOwner(t *testing.T) {
+	d := &Dispatcher{}
+	if handles := d.tryAssignBatch(t.Context()); handles != nil {
+		t.Fatalf("stopped dispatcher assignment handles = %d, want nil", len(handles))
+	}
+	if scoped, blocked := d.scopeRecoveryQuarantineAssignments(t.Context(), nil); blocked || scoped != nil {
+		t.Fatalf("empty recovery scope = (%v, %t), want (nil, false)", scoped, blocked)
+	}
+
+	const behaviorPattern = "^(TestRedeployableQuarantineWithoutReadyBeadReportsAssignmentFreeze|TestTryAssignAllowsFreshWorkWhenRecoveryQuarantineIsHumanOwned|TestTryAssignBlocksFreshWorkWhenRecoveryQuarantineOpen|TestTryAssignNotFrozenByEmptySafeQuarantine)$"
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], //nolint:gosec // test helper re-executes this binary with fixed arguments
+		"-test.run="+behaviorPattern, "-test.count=1", "-test.timeout=4s")
+	output, err := cmd.CombinedOutput()
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		t.Fatalf("tryAssignBatch P0 behavior retained the dispatcher mutex past its bounded subprocess deadline: %s", output)
+	}
+	if err != nil {
+		t.Fatalf("tryAssignBatch P0 behavior failed in bounded subprocess: %v\n%s", err, output)
+	}
+}
+
 func TestSpawnEscalationOneShotReturnsAfterReadingWorktree(t *testing.T) {
 	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
 	const beadID = "mutation-bounded-escalation"

@@ -476,7 +476,7 @@ p0_durability_mutation_test_pattern() {
 	case "$file:$match" in
 	'pkg/dispatcher/scheduling.go:^(tryAssignBatch)$' | \
 		'pkg/dispatcher/scheduling.go:^(scopeRecoveryQuarantineAssignments)$')
-		printf '^(TestRedeployableQuarantineWithoutReadyBeadReportsAssignmentFreeze|TestTryAssignAllowsFreshWorkWhenRecoveryQuarantineIsHumanOwned|TestTryAssignBlocksFreshWorkWhenRecoveryQuarantineOpen|TestTryAssignNotFrozenByEmptySafeQuarantine)$'
+		printf '^TestTryAssignBatchP0MutationOwner$'
 		;;
 	'pkg/beadstore/sqlite.go:^(RemoveDependency)$')
 		printf '^(TestParityDependencyAndStatusAPIs|TestSQLiteRemoveDependencyNoOpDoesNotEmitEvent|TestSQLiteStoreDependencyRoundTrip)$'

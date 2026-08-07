@@ -258,7 +258,7 @@ function_sharded_for() {
 
 TestP0DurabilityMutationMapping() {
 	local cardinality coverage coverage_root file function got listed package pattern report
-	local dispatcher_pattern='^(TestRedeployableQuarantineWithoutReadyBeadReportsAssignmentFreeze|TestTryAssignAllowsFreshWorkWhenRecoveryQuarantineIsHumanOwned|TestTryAssignBlocksFreshWorkWhenRecoveryQuarantineOpen|TestTryAssignNotFrozenByEmptySafeQuarantine)$'
+	local dispatcher_pattern='^TestTryAssignBatchP0MutationOwner$'
 	local beadstore_pattern='^(TestParityDependencyAndStatusAPIs|TestSQLiteRemoveDependencyNoOpDoesNotEmitEvent|TestSQLiteStoreDependencyRoundTrip)$'
 
 	coverage_root=$(mktemp -d)
@@ -284,8 +284,8 @@ TestP0DurabilityMutationMapping() {
 			END { exit !found }
 		' <<<"$report" || fail "$file $function owner has zero production coverage"
 	done <<EOF
-pkg/dispatcher/scheduling.go	tryAssignBatch	./pkg/dispatcher	$dispatcher_pattern	4
-pkg/dispatcher/scheduling.go	scopeRecoveryQuarantineAssignments	./pkg/dispatcher	$dispatcher_pattern	4
+pkg/dispatcher/scheduling.go	tryAssignBatch	./pkg/dispatcher	$dispatcher_pattern	1
+pkg/dispatcher/scheduling.go	scopeRecoveryQuarantineAssignments	./pkg/dispatcher	$dispatcher_pattern	1
 pkg/beadstore/sqlite.go	RemoveDependency	./pkg/beadstore	$beadstore_pattern	3
 EOF
 
@@ -297,6 +297,11 @@ EOF
 	[[ -z "$got" ]] || fail "P0 beadstore owner accepted wrong source: $got"
 	got=$(p0_durability_pattern_for pkg/beadstore/sqlite.go '^(unmappedSQLiteFunction)$')
 	[[ -z "$got" ]] || fail "P0 beadstore owner accepted wrong function: $got"
+	[[ "$dispatcher_pattern" != *TestRedeployableQuarantineWithoutReadyBeadReportsAssignmentFreeze* &&
+		"$dispatcher_pattern" != *TestTryAssignAllowsFreshWorkWhenRecoveryQuarantineIsHumanOwned* &&
+		"$dispatcher_pattern" != *TestTryAssignBlocksFreshWorkWhenRecoveryQuarantineOpen* &&
+		"$dispatcher_pattern" != *TestTryAssignNotFrozenByEmptySafeQuarantine* ]] ||
+		fail 'P0 scheduling owner must not run mutex-sensitive behavioral tests directly'
 
 	got=$(startup_maintenance_pattern_for pkg/storage/dev_schedule.go '^(reconcileInterruptedWeeklyDevCacheSweep)$')
 	[[ "$got" == '^TestWeeklyDevCacheSweepMutationReconciliationBoundaries$' ]] ||
