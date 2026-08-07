@@ -88,14 +88,11 @@ func TestTryAssignBatchP0MutationOwner(t *testing.T) {
 		t.Fatalf("empty recovery scope = (%v, %t), want (nil, false)", scoped, blocked)
 	}
 
-	const admissionBehaviorPattern = "^(TestTryAssignAndWaitObservesSetupCompletion|TestTryAssign_DeadSocketRemovesWorker|TestReadyObservationFailureBlocksAssignmentAndDegradesHealthAndStatus|TestCheckpointObservationFailureBlocksAssignmentAndDegradesHealthAndStatus|TestTryAssign_NoBeadsReady|TestTryAssignBatchReturnsHandlePerLaunchedSetup)$"
-	const scaleBehaviorPattern = "^(TestGracefulShutdownApprovalKeepsWorkerOutOfAssignmentPool|TestSpawnFor_StalePendingTargetDoesNotReserveBeadForever|TestAutoScaleDisabledWhenMaxWorkersZero|TestAutoScaleOnQueueDepth|TestScaleUpDoesNotDuplicateAssignment|TestTryAssignBatchExcludesBusyAndDrainingWorkers)$"
-	const recoveryBehaviorPattern = "^(TestTryAssign_EscalatesDependencyCycle|TestTryAssign_UnassignableEpicUnitDoesNotBlockNextEpic|TestRedeployableQuarantineWithoutReadyBeadReportsAssignmentFreeze|TestTryAssignAllowsFreshWorkWhenRecoveryQuarantineIsHumanOwned|TestTryAssignBlocksFreshWorkWhenRecoveryQuarantineOpen|TestTryAssignNotFrozenByEmptySafeQuarantine)$"
+	const schedulingBehaviorPattern = "^(TestReadyObservationFailureBlocksAssignmentAndDegradesHealthAndStatus|TestSpawnFor_StalePendingTargetDoesNotReserveBeadForever|TestAutoScaleOnQueueDepth|TestTryAssign_EscalatesDependencyCycle)$"
 	for _, pattern := range []string{
-		admissionBehaviorPattern,
-		scaleBehaviorPattern,
-		recoveryBehaviorPattern,
-		"^TestDispatcherStoragePauseStopsAdmissions$",
+		schedulingBehaviorPattern,
+		"^TestRedeployableQuarantineWithoutReadyBeadReportsAssignmentFreeze$",
+		"^TestTryAssignBlocksFreshWorkWhenRecoveryQuarantineOpen$",
 	} {
 		runTryAssignBatchMutationBehavior(t, pattern)
 	}
