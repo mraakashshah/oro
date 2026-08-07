@@ -470,6 +470,20 @@ escalation_mutation_test_file() {
 	esac
 }
 
+p0_durability_mutation_test_pattern() {
+	local file="$1"
+	local match="$2"
+	case "$file:$match" in
+	'pkg/dispatcher/scheduling.go:^(tryAssignBatch)$' | \
+		'pkg/dispatcher/scheduling.go:^(scopeRecoveryQuarantineAssignments)$')
+		printf '^(TestRedeployableQuarantineWithoutReadyBeadReportsAssignmentFreeze|TestTryAssignAllowsFreshWorkWhenRecoveryQuarantineIsHumanOwned|TestTryAssignBlocksFreshWorkWhenRecoveryQuarantineOpen|TestTryAssignNotFrozenByEmptySafeQuarantine)$'
+		;;
+	'pkg/beadstore/sqlite.go:^(RemoveDependency)$')
+		printf '^(TestParityDependencyAndStatusAPIs|TestSQLiteRemoveDependencyNoOpDoesNotEmitEvent|TestSQLiteStoreDependencyRoundTrip)$'
+		;;
+	esac
+}
+
 startup_maintenance_mutation_test_pattern() {
 	local file="$1"
 	local match="$2"
@@ -523,7 +537,8 @@ cmd_mutation_test_pattern() {
 function_sharded_mutation_target() {
 	local file="$1"
 	[[ "$file" == pkg/dispatcher/*.go || "$file" == pkg/storage/dev_schedule.go ||
-		"$file" == cmd/oro/cmd_start.go || "$file" == cmd/oro/cmd_monitor.go ]]
+		"$file" == cmd/oro/cmd_start.go || "$file" == cmd/oro/cmd_monitor.go ||
+		"$file" == pkg/beadstore/sqlite.go ]]
 }
 
 authoritative_mutation_test_pattern() {
@@ -838,7 +853,12 @@ targeted_test_pattern() {
 	local head="$2"
 	local file="$3"
 	local match="$4"
-	local assignment_admission_pattern assignment_bc_pattern authoritative_pattern cmd_pattern escalation_survivor_pattern review_checkpoint_pattern review_integration_recovery_pattern startup_maintenance_pattern
+	local assignment_admission_pattern assignment_bc_pattern authoritative_pattern cmd_pattern escalation_survivor_pattern p0_durability_pattern review_checkpoint_pattern review_integration_recovery_pattern startup_maintenance_pattern
+	p0_durability_pattern=$(p0_durability_mutation_test_pattern "$file" "$match")
+	if [[ -n "$p0_durability_pattern" ]]; then
+		printf '%s' "$p0_durability_pattern"
+		return
+	fi
 	startup_maintenance_pattern=$(startup_maintenance_mutation_test_pattern "$file" "$match")
 	if [[ -n "$startup_maintenance_pattern" ]]; then
 		printf '%s' "$startup_maintenance_pattern"
