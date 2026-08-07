@@ -88,17 +88,24 @@ func TestTryAssignBatchP0MutationOwner(t *testing.T) {
 		t.Fatalf("empty recovery scope = (%v, %t), want (nil, false)", scoped, blocked)
 	}
 
-	const behaviorPattern = "^(TestTryAssignAndWaitObservesSetupCompletion|TestTryAssign_DeadSocketRemovesWorker|TestTryAssign_EscalatesDependencyCycle|TestReadyObservationFailureBlocksAssignmentAndDegradesHealthAndStatus|TestCheckpointObservationFailureBlocksAssignmentAndDegradesHealthAndStatus|TestDispatcherStoragePauseStopsAdmissions|TestGracefulShutdownApprovalKeepsWorkerOutOfAssignmentPool|TestSpawnFor_StalePendingTargetDoesNotReserveBeadForever|TestAutoScaleDisabledWhenMaxWorkersZero|TestAutoScaleOnQueueDepth|TestScaleUpDoesNotDuplicateAssignment|TestTryAssign_NoBeadsReady|TestTryAssignBatchReturnsHandlePerLaunchedSetup|TestTryAssignBatchExcludesBusyAndDrainingWorkers|TestTryAssign_UnassignableEpicUnitDoesNotBlockNextEpic|TestRedeployableQuarantineWithoutReadyBeadReportsAssignmentFreeze|TestTryAssignAllowsFreshWorkWhenRecoveryQuarantineIsHumanOwned|TestTryAssignBlocksFreshWorkWhenRecoveryQuarantineOpen|TestTryAssignNotFrozenByEmptySafeQuarantine)$"
+	const schedulingBehaviorPattern = "^(TestTryAssignAndWaitObservesSetupCompletion|TestTryAssign_DeadSocketRemovesWorker|TestTryAssign_EscalatesDependencyCycle|TestReadyObservationFailureBlocksAssignmentAndDegradesHealthAndStatus|TestCheckpointObservationFailureBlocksAssignmentAndDegradesHealthAndStatus|TestGracefulShutdownApprovalKeepsWorkerOutOfAssignmentPool|TestSpawnFor_StalePendingTargetDoesNotReserveBeadForever|TestAutoScaleDisabledWhenMaxWorkersZero|TestAutoScaleOnQueueDepth|TestScaleUpDoesNotDuplicateAssignment|TestTryAssign_NoBeadsReady|TestTryAssignBatchReturnsHandlePerLaunchedSetup|TestTryAssignBatchExcludesBusyAndDrainingWorkers|TestTryAssign_UnassignableEpicUnitDoesNotBlockNextEpic|TestRedeployableQuarantineWithoutReadyBeadReportsAssignmentFreeze|TestTryAssignAllowsFreshWorkWhenRecoveryQuarantineIsHumanOwned|TestTryAssignBlocksFreshWorkWhenRecoveryQuarantineOpen|TestTryAssignNotFrozenByEmptySafeQuarantine)$"
+	for _, pattern := range []string{schedulingBehaviorPattern, "^TestDispatcherStoragePauseStopsAdmissions$"} {
+		runTryAssignBatchMutationBehavior(t, pattern)
+	}
+}
+
+func runTryAssignBatchMutationBehavior(t *testing.T, pattern string) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, os.Args[0], //nolint:gosec // test helper re-executes this binary with fixed arguments
-		"-test.run="+behaviorPattern, "-test.count=1", "-test.timeout=7s")
+		"-test.run="+pattern, "-test.count=1", "-test.parallel=1", "-test.timeout=7s")
 	output, err := cmd.CombinedOutput()
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		t.Fatalf("tryAssignBatch P0 behavior retained the dispatcher mutex past its bounded subprocess deadline: %s", output)
+		t.Fatalf("tryAssignBatch P0 behavior %q retained the dispatcher mutex past its bounded subprocess deadline: %s", pattern, output)
 	}
 	if err != nil {
-		t.Fatalf("tryAssignBatch P0 behavior failed in bounded subprocess: %v\n%s", err, output)
+		t.Fatalf("tryAssignBatch P0 behavior %q failed in bounded subprocess: %v\n%s", pattern, err, output)
 	}
 }
 
