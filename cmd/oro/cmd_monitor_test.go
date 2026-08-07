@@ -1,16 +1,18 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -757,32 +759,7 @@ func TestCLIMonitorRestartErrorBoundaries(t *testing.T) {
 	t.Run("already running skips fresh start", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		socketPath := shortSocketPath(t)
-		pidPath := setPaths(t, tmpDir, socketPath)
-		if err := syscall.Mkfifo(pidPath, 0o600); err != nil {
-			t.Fatalf("create sequenced PID fixture: %v", err)
-		}
-
-		pidWritesDone := make(chan error, 1)
-		go func() {
-			for _, pid := range []int{1 << 30, os.Getpid()} {
-				file, err := os.OpenFile(pidPath, os.O_WRONLY, 0)
-				if err != nil {
-					pidWritesDone <- err
-					return
-				}
-				_, writeErr := fmt.Fprintln(file, pid)
-				closeErr := file.Close()
-				if writeErr != nil {
-					pidWritesDone <- writeErr
-					return
-				}
-				if closeErr != nil {
-					pidWritesDone <- closeErr
-					return
-				}
-			}
-			pidWritesDone <- nil
-		}()
+		setPaths(t, tmpDir, socketPath)
 
 		previousRunFullStart := runFullStartFn
 		t.Cleanup(func() { runFullStartFn = previousRunFullStart })
@@ -792,27 +769,95 @@ func TestCLIMonitorRestartErrorBoundaries(t *testing.T) {
 			return fmt.Errorf("unexpected fresh start")
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
+		serverCtx, stopServer := context.WithCancel(context.Background())
 		received := make(chan protocol.DirectivePayload, 1)
 		serverDone := make(chan struct{})
 		go func() {
 			defer close(serverDone)
-			runMockDispatcher(ctx, t, socketPath, received)
+			runMockMonitorRestartTransition(serverCtx, t, socketPath, received)
 		}()
 		waitForSocket(t, socketPath, time.Second)
 
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
 		if err := (&cliMonitorRunner{}).RestartDaemon(ctx, 1, 1); err != nil {
 			t.Fatalf("RestartDaemon: %v", err)
 		}
+		stopServer()
 		<-serverDone
-		if err := <-pidWritesDone; err != nil {
-			t.Fatalf("sequence PID fixture writes: %v", err)
+		select {
+		case directive := <-received:
+			if directive.Op != "restart-daemon" {
+				t.Fatalf("monitor restart directive = %+v", directive)
+			}
+		default:
+			t.Fatal("monitor restart directive was not received")
 		}
 		if freshStartCalled {
 			t.Fatal("RestartDaemon started a fresh swarm after observing a live daemon")
 		}
 	})
+}
+
+func runMockMonitorRestartTransition(ctx context.Context, t *testing.T, socketPath string, received chan<- protocol.DirectivePayload) {
+	t.Helper()
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Errorf("monitor transition mock listen: %v", err)
+		return
+	}
+	defer listener.Close()
+	defer os.Remove(socketPath)
+	go func() {
+		<-ctx.Done()
+		_ = listener.Close()
+	}()
+
+	statusReplies := 0
+	for {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		scanner := bufio.NewScanner(conn)
+		if !scanner.Scan() {
+			_ = conn.Close()
+			continue
+		}
+		var message protocol.Message
+		if err := json.Unmarshal(scanner.Bytes(), &message); err != nil {
+			t.Errorf("monitor transition mock unmarshal: %v", err)
+			_ = conn.Close()
+			continue
+		}
+		if message.Directive == nil {
+			t.Errorf("monitor transition mock received no directive")
+			_ = conn.Close()
+			continue
+		}
+
+		directive := *message.Directive
+		detail := fmt.Sprintf("applied %s", directive.Op)
+		if directive.Op == "status" {
+			statusReplies++
+			pid := 1 << 30
+			if statusReplies > 1 {
+				pid = os.Getpid()
+			}
+			encoded, _ := json.Marshal(struct {
+				PID int `json:"pid"`
+			}{PID: pid})
+			detail = string(encoded)
+		} else {
+			received <- directive
+		}
+		ack, _ := json.Marshal(protocol.Message{
+			Type: protocol.MsgACK,
+			ACK:  &protocol.ACKPayload{OK: true, Detail: detail},
+		})
+		_, _ = conn.Write(append(ack, '\n'))
+		_ = conn.Close()
+	}
 }
 
 func configureMutationOwnerGit(t *testing.T, tmpDir string) {
