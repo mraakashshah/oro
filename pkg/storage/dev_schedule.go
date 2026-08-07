@@ -25,8 +25,10 @@ const DevCacheSweepSizeThreshold int64 = 24 << 30 // 24 GiB
 
 const weeklyDevCacheScheduleID = "weekly-dev-cache"
 
-var errUnsafeInterruptedWeeklySweepCorrelation = errors.New("unsafe interrupted weekly dev cache sweep correlation")
-var errRetainedUnmatchedInterruptedWeeklySweep = errors.New("unmatched interrupted weekly dev cache sweep retained")
+var (
+	errUnsafeInterruptedWeeklySweepCorrelation = errors.New("unsafe interrupted weekly dev cache sweep correlation")
+	errRetainedUnmatchedInterruptedWeeklySweep = errors.New("unmatched interrupted weekly dev cache sweep retained")
+)
 
 // DevCacheMaintenanceRunner runs one provider maintenance operation.
 type DevCacheMaintenanceRunner func(context.Context, ProviderMaintenance) (MaintenanceEvidence, error)
