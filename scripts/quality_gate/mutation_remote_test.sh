@@ -225,6 +225,22 @@ cmd_mutation_pattern_for() {
 	bash -c "$function_source"$'\n''cmd_mutation_test_pattern "$1" "$2"' _ "$file" "$match" || true
 }
 
+p0_durability_pattern_for() {
+	local file="$1"
+	local match="$2"
+	local function_source
+	function_source=$(awk '
+		/^p0_durability_mutation_test_pattern\(\)/ { copying = 1 }
+		copying { print }
+		copying && /^}/ { exit }
+	' "$runner")
+	if [[ -z "$function_source" ]]; then
+		fail 'mutation runner omitted P0 durability owner mapping'
+		return 1
+	fi
+	bash -c "$function_source"$'\n''p0_durability_mutation_test_pattern "$1" "$2"' _ "$file" "$match" || true
+}
+
 function_sharded_for() {
 	local file="$1"
 	local function_source
@@ -238,6 +254,61 @@ function_sharded_for() {
 		return 1
 	fi
 	bash -c "$function_source"$'\n''function_sharded_mutation_target "$1"' _ "$file"
+}
+
+TestP0DurabilityMutationMapping() {
+	local cardinality coverage coverage_root file function got listed package pattern report
+	local dispatcher_pattern='^TestTryAssignBatchP0MutationOwner$'
+	local beadstore_pattern='^(TestParityDependencyAndStatusAPIs|TestSQLiteRemoveDependencyNoOpDoesNotEmitEvent|TestSQLiteRemoveDependencyPropagatesTransactionFailures|TestSQLiteStoreDependencyRoundTrip)$'
+
+	coverage_root=$(mktemp -d)
+	# shellcheck disable=SC2064 # expand the function-local path before the RETURN trap runs.
+	trap "rm -rf '$coverage_root'" RETURN
+	while IFS=$'\t' read -r file function package pattern cardinality; do
+		got=$(p0_durability_pattern_for "$file" "^(${function})$")
+		[[ "$got" == "$pattern" ]] ||
+			fail "$file $function P0 mutation owner = $got, want $pattern"
+		function_sharded_for "$file" || fail "$file must use per-function mutation sharding"
+		listed=$(go test -list "$pattern" "$package")
+		[[ "$(grep -Ec '^Test' <<<"$listed")" == "$cardinality" ]] ||
+			fail "$file $function owner must select exactly $cardinality real tests"
+		coverage="$coverage_root/${function}.out"
+		timeout 60 go test -vet=off -count=1 -timeout 55s -coverprofile="$coverage" -run "$pattern" "$package" >/dev/null
+		report=$(go tool cover -func="$coverage")
+		awk -v target="$function" '
+			$2 == target || $2 ~ ("[.]" target "$") {
+				value = $3
+				gsub(/%/, "", value)
+				if (value + 0 > 0) found = 1
+			}
+			END { exit !found }
+		' <<<"$report" || fail "$file $function owner has zero production coverage"
+	done <<EOF
+pkg/dispatcher/scheduling.go	tryAssignBatch	./pkg/dispatcher	$dispatcher_pattern	1
+pkg/dispatcher/scheduling.go	scopeRecoveryQuarantineAssignments	./pkg/dispatcher	$dispatcher_pattern	1
+pkg/beadstore/sqlite.go	RemoveDependency	./pkg/beadstore	$beadstore_pattern	4
+EOF
+
+	got=$(p0_durability_pattern_for pkg/dispatcher/other.go '^(tryAssignBatch)$')
+	[[ -z "$got" ]] || fail "P0 dispatcher owner accepted wrong source: $got"
+	got=$(p0_durability_pattern_for pkg/dispatcher/scheduling.go '^(unmappedSchedulingFunction)$')
+	[[ -z "$got" ]] || fail "P0 dispatcher owner accepted wrong function: $got"
+	got=$(p0_durability_pattern_for pkg/beadstore/other.go '^(RemoveDependency)$')
+	[[ -z "$got" ]] || fail "P0 beadstore owner accepted wrong source: $got"
+	got=$(p0_durability_pattern_for pkg/beadstore/sqlite.go '^(unmappedSQLiteFunction)$')
+	[[ -z "$got" ]] || fail "P0 beadstore owner accepted wrong function: $got"
+	[[ "$dispatcher_pattern" != *TestRedeployableQuarantineWithoutReadyBeadReportsAssignmentFreeze* &&
+		"$dispatcher_pattern" != *TestTryAssignAllowsFreshWorkWhenRecoveryQuarantineIsHumanOwned* &&
+		"$dispatcher_pattern" != *TestTryAssignBlocksFreshWorkWhenRecoveryQuarantineOpen* &&
+		"$dispatcher_pattern" != *TestTryAssignNotFrozenByEmptySafeQuarantine* ]] ||
+		fail 'P0 scheduling owner must not run mutex-sensitive behavioral tests directly'
+
+	got=$(startup_maintenance_pattern_for pkg/storage/dev_schedule.go '^(reconcileInterruptedWeeklyDevCacheSweep)$')
+	[[ "$got" == '^TestWeeklyDevCacheSweepMutationReconciliationBoundaries$' ]] ||
+		fail "P0 mapping changed dev_schedule owner: $got"
+	got=$(cmd_mutation_pattern_for cmd/oro/cmd_start.go '^(startFreshSwarm)$')
+	[[ "$got" == '^TestDetachedStartForwardsBaseBranchToDaemon$' ]] ||
+		fail "P0 mapping changed cmd owner: $got"
 }
 
 TestStartupMaintenanceMutationMapping() {
@@ -3432,6 +3503,7 @@ TestStrictIncrementalMutation() {
 	TestAuthoritativeTouchedFunctionRouting "$tmp/authoritative-touched"
 	TestEscalationTouchedFunctionRouting "$tmp/escalation-touched"
 	TestMutationOwnerMappingsCoexist
+	TestP0DurabilityMutationMapping
 	TestStartupMaintenanceMutationMapping
 	TestStartupMaintenanceMutationSharding
 	TestCmdMutationSharding
@@ -3512,6 +3584,9 @@ main() {
 		;;
 	TestMutationOwnerMappingsCoexist)
 		TestMutationOwnerMappingsCoexist
+		;;
+	TestP0DurabilityMutationMapping)
+		TestP0DurabilityMutationMapping
 		;;
 	TestStartupMaintenanceMutationMapping)
 		TestStartupMaintenanceMutationMapping
