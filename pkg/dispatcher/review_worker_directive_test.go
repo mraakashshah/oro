@@ -30,7 +30,6 @@ func TestReviewWorkerDirectivesDurablyReleaseCheckpoint(t *testing.T) {
 			drainCheckpointReleaseWakes(d)
 
 			detail, err := tc.apply(d, worker.id)
-
 			if err != nil {
 				t.Fatalf("%s review worker: %v", tc.name, err)
 			}
