@@ -174,9 +174,20 @@ func (c *Config) withDefaults() Config {
 // durations, non-negative counts, and compatible feature flags. Call this
 // AFTER withDefaults().
 func (c Config) validate() error {
+	if err := c.validateBranchConfig(); err != nil {
+		return err
+	}
+	return c.validateOperationalConfig()
+}
+
+func (c Config) validateBranchConfig() error {
 	if strings.HasPrefix(c.TargetBranch, "refs/remotes/") || strings.HasPrefix(c.TargetBranch, "origin/") {
 		return fmt.Errorf("TargetBranch must name a writable local branch, got remote-tracking ref %q", c.TargetBranch)
 	}
+	return nil
+}
+
+func (c Config) validateOperationalConfig() error {
 	if c.MaxWorkers < 0 {
 		return fmt.Errorf("MaxWorkers must be non-negative, got %d", c.MaxWorkers)
 	}

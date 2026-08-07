@@ -988,25 +988,45 @@ func newStartCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().IntVarP(&workers, "workers", "w", 2, "number of workers to spawn initially")
-	cmd.Flags().IntVar(&maxWorkers, "max-workers", 0, "maximum worker ceiling for auto-scale (default: same as --workers)")
-	cmd.Flags().BoolVarP(&daemonOnly, "daemon-only", "d", false, "start dispatcher without tmux/sessions (for CI or testing)")
-	cmd.Flags().StringVar(&model, "model", "balanced", "routing tier (fast/balanced/deep/background) or provider-native model for manager session")
-	cmd.Flags().BoolVarP(&detach, "detach", "D", false, "start in detached mode (don't attach to tmux session)")
-	cmd.Flags().DurationVar(&progressTimeout, "progress-timeout", 0, "max time without worker progress before STUCK_WORKER (default 10m)")
-	cmd.Flags().DurationVar(&opsReviewTimeout, "ops-review-timeout", 0, "max time for ops review subprocess (default 35m)")
-	cmd.Flags().DurationVar(&reviewStallTimeout, "review-stall-timeout", 0, "max time a reviewing worker can stall before STUCK_WORKER (default 15m)")
-	cmd.Flags().DurationVar(&reviewStallTimeout, "review-timeout", 0, "deprecated alias for --review-stall-timeout")
-	_ = cmd.Flags().MarkHidden("review-timeout")
-	cmd.Flags().BoolVar(&manualIntegration, "manual-integration", false, "leave completed worker branches for manual review instead of auto-merging")
-	cmd.Flags().StringVar(&baseBranch, "base-branch", "", "legacy writable local integration branch used for both assignment base and merge target")
-	cmd.Flags().StringVar(&baseRef, "base-ref", "", "immutable assignment base ref or commit (default: target branch)")
-	cmd.Flags().StringVar(&targetBranch, "target-branch", "", "writable local integration branch for merges (default: main)")
-	cmd.Flags().BoolVar(&mutationTesting, "mutation-testing", false, "run mutation-testing tiers in dispatcher quality gates (off by default)")
-	registerWebStartFlags(cmd, &webEnabled, &noWeb, &webAddr)
-	registerCleanlinessStartFlags(cmd, &cleanliness)
+	registerStartCommandFlags(
+		cmd, &workers, &maxWorkers, &daemonOnly, &detach, &model,
+		&progressTimeout, &opsReviewTimeout, &reviewStallTimeout,
+		&manualIntegration, &baseBranch, &baseRef, &targetBranch,
+		&mutationTesting, &webEnabled, &noWeb, &webAddr, &cleanliness,
+	)
 
 	return cmd
+}
+
+func registerStartCommandFlags(
+	cmd *cobra.Command,
+	workers, maxWorkers *int,
+	daemonOnly, detach *bool,
+	model *string,
+	progressTimeout, opsReviewTimeout, reviewStallTimeout *time.Duration,
+	manualIntegration *bool,
+	baseBranch, baseRef, targetBranch *string,
+	mutationTesting, webEnabled, noWeb *bool,
+	webAddr *string,
+	cleanliness *cleanlinessStartConfig,
+) {
+	cmd.Flags().IntVarP(workers, "workers", "w", 2, "number of workers to spawn initially")
+	cmd.Flags().IntVar(maxWorkers, "max-workers", 0, "maximum worker ceiling for auto-scale (default: same as --workers)")
+	cmd.Flags().BoolVarP(daemonOnly, "daemon-only", "d", false, "start dispatcher without tmux/sessions (for CI or testing)")
+	cmd.Flags().StringVar(model, "model", "balanced", "routing tier (fast/balanced/deep/background) or provider-native model for manager session")
+	cmd.Flags().BoolVarP(detach, "detach", "D", false, "start in detached mode (don't attach to tmux session)")
+	cmd.Flags().DurationVar(progressTimeout, "progress-timeout", 0, "max time without worker progress before STUCK_WORKER (default 10m)")
+	cmd.Flags().DurationVar(opsReviewTimeout, "ops-review-timeout", 0, "max time for ops review subprocess (default 35m)")
+	cmd.Flags().DurationVar(reviewStallTimeout, "review-stall-timeout", 0, "max time a reviewing worker can stall before STUCK_WORKER (default 15m)")
+	cmd.Flags().DurationVar(reviewStallTimeout, "review-timeout", 0, "deprecated alias for --review-stall-timeout")
+	_ = cmd.Flags().MarkHidden("review-timeout")
+	cmd.Flags().BoolVar(manualIntegration, "manual-integration", false, "leave completed worker branches for manual review instead of auto-merging")
+	cmd.Flags().StringVar(baseBranch, "base-branch", "", "legacy writable local integration branch used for both assignment base and merge target")
+	cmd.Flags().StringVar(baseRef, "base-ref", "", "immutable assignment base ref or commit (default: target branch)")
+	cmd.Flags().StringVar(targetBranch, "target-branch", "", "writable local integration branch for merges (default: main)")
+	cmd.Flags().BoolVar(mutationTesting, "mutation-testing", false, "run mutation-testing tiers in dispatcher quality gates (off by default)")
+	registerWebStartFlags(cmd, webEnabled, noWeb, webAddr)
+	registerCleanlinessStartFlags(cmd, cleanliness)
 }
 
 func resolvedMaxWorkers(workers, maxWorkers int) int {
