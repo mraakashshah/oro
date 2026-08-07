@@ -501,9 +501,29 @@ startup_maintenance_mutation_test_pattern() {
 	esac
 }
 
+cmd_mutation_test_pattern() {
+	local file="$1"
+	local match="$2"
+	case "$file:$match" in
+	'cmd/oro/cmd_start.go:^(buildArgs)$')
+		printf '^(TestDetachedStartForwardsBaseBranchToDaemon|TestJanitorStartPlumbing|TestStartProgressTimeoutFlag|TestStartReviewTimeoutFlagsAreDistinct)$'
+		;;
+	'cmd/oro/cmd_start.go:^(newStartCmd)$')
+		printf '^(TestNewStartCmdMutationBoundaries|TestStartRejectsGitHubPolicyBeforeDispatcherMutation)$'
+		;;
+	'cmd/oro/cmd_start.go:^(startFreshSwarm)$')
+		printf '^TestDetachedStartForwardsBaseBranchToDaemon$'
+		;;
+	'cmd/oro/cmd_monitor.go:^(RestartDaemon)$')
+		printf '^(TestCLIMonitorRestartErrorBoundaries|TestCLIMonitorRestartUsesDetachedStartHandoff)$'
+		;;
+	esac
+}
+
 function_sharded_mutation_target() {
 	local file="$1"
-	[[ "$file" == pkg/dispatcher/*.go || "$file" == pkg/storage/dev_schedule.go ]]
+	[[ "$file" == pkg/dispatcher/*.go || "$file" == pkg/storage/dev_schedule.go ||
+		"$file" == cmd/oro/cmd_start.go || "$file" == cmd/oro/cmd_monitor.go ]]
 }
 
 authoritative_mutation_test_pattern() {
@@ -818,10 +838,15 @@ targeted_test_pattern() {
 	local head="$2"
 	local file="$3"
 	local match="$4"
-	local assignment_admission_pattern assignment_bc_pattern authoritative_pattern escalation_survivor_pattern review_checkpoint_pattern review_integration_recovery_pattern startup_maintenance_pattern
+	local assignment_admission_pattern assignment_bc_pattern authoritative_pattern cmd_pattern escalation_survivor_pattern review_checkpoint_pattern review_integration_recovery_pattern startup_maintenance_pattern
 	startup_maintenance_pattern=$(startup_maintenance_mutation_test_pattern "$file" "$match")
 	if [[ -n "$startup_maintenance_pattern" ]]; then
 		printf '%s' "$startup_maintenance_pattern"
+		return
+	fi
+	cmd_pattern=$(cmd_mutation_test_pattern "$file" "$match")
+	if [[ -n "$cmd_pattern" ]]; then
+		printf '%s' "$cmd_pattern"
 		return
 	fi
 	authoritative_pattern=$(authoritative_mutation_test_pattern "$file" "$match")

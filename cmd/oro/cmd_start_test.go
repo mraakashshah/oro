@@ -1387,6 +1387,7 @@ func opsReviewTimeoutFromDispatcher(t *testing.T, d *dispatcher.Dispatcher) time
 
 func TestStartManualIntegrationDaemonHandoffForwardsFlagAndConfig(t *testing.T) {
 	tmpDir := t.TempDir()
+	configureMutationOwnerGit(t, tmpDir)
 	pidPath := filepath.Join(tmpDir, "oro.pid")
 	socketPath := filepath.Join(tmpDir, "oro.sock")
 	dbPath := filepath.Join(tmpDir, "state.db")
@@ -1474,11 +1475,262 @@ func TestStartManualIntegrationDaemonHandoffForwardsFlagAndConfig(t *testing.T) 
 	}
 }
 
+func TestDetachedStartForwardsBaseBranchToDaemon(t *testing.T) {
+	t.Setenv("ORO_HOME", t.TempDir())
+	t.Setenv("ORO_PROJECT", "oro")
+	previousRunFullStart := runFullStartFn
+	t.Cleanup(func() { runFullStartFn = previousRunFullStart })
+
+	var args []string
+	runFullStartFn = func(_ io.Writer, workers, maxWorkers int, _, _ string, spawner DaemonSpawner, _ CmdRunner, _ func(int) error, _ time.Duration, _ func(time.Duration), _ time.Duration, _ bool) error {
+		execSpawner, ok := spawner.(*ExecDaemonSpawner)
+		if !ok {
+			t.Fatalf("detached start spawner = %T, want *ExecDaemonSpawner", spawner)
+		}
+		args = execSpawner.buildArgs(workers, maxWorkers)
+		return nil
+	}
+	if err := startFreshSwarm(io.Discard, 2, 2, "balanced", true, 0, 0, 0, false, "integration/factory-main-test", false, false, "", defaultCleanlinessStartConfig()); err != nil {
+		t.Fatalf("startFreshSwarm: %v", err)
+	}
+
+	want := "--base-branch=integration/factory-main-test"
+	count := 0
+	for _, arg := range args {
+		if arg == want {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("daemon args contain %q %d times, want exactly once: %q", want, count, args)
+	}
+
+	emptyArgs := (&ExecDaemonSpawner{}).buildArgs(2, 2)
+	for _, arg := range emptyArgs {
+		if strings.HasPrefix(arg, "--base-branch=") {
+			t.Fatalf("empty base branch emitted child argument %q in %q", arg, emptyArgs)
+		}
+	}
+
+	t.Setenv("ORO_BEADSOURCE_MODE", "cli")
+	if err := startFreshSwarm(io.Discard, 2, 2, "balanced", true, 0, 0, 0, false, "", false, false, "", defaultCleanlinessStartConfig()); err == nil || !strings.Contains(err.Error(), "native sqlite beadstore") {
+		t.Fatalf("legacy startFreshSwarm error = %v, want native sqlite rejection", err)
+	}
+
+	cmd := newStartCmd()
+	if err := cmd.ParseFlags([]string{"--workers=3", "--max-workers=5", "--model=deep", "--detach", "--base-branch=integration/factory-main-test"}); err != nil {
+		t.Fatalf("parse detached start handoff flags: %v", err)
+	}
+	for name, want := range map[string]int{"workers": 3, "max-workers": 5} {
+		got, err := cmd.Flags().GetInt(name)
+		if err != nil {
+			t.Fatalf("read %s flag: %v", name, err)
+		}
+		if got != want {
+			t.Fatalf("%s flag = %d, want %d", name, got, want)
+		}
+	}
+	for name, want := range map[string]string{"model": "deep", "base-branch": "integration/factory-main-test"} {
+		got, err := cmd.Flags().GetString(name)
+		if err != nil {
+			t.Fatalf("read %s flag: %v", name, err)
+		}
+		if got != want {
+			t.Fatalf("%s flag = %q, want %q", name, got, want)
+		}
+	}
+	detach, err := cmd.Flags().GetBool("detach")
+	if err != nil || !detach {
+		t.Fatalf("detach flag = %t, err=%v, want true", detach, err)
+	}
+}
+
+func TestNewStartCmdMutationBoundaries(t *testing.T) {
+	t.Run("registers the complete start surface", func(t *testing.T) {
+		cmd := newStartCmd()
+		for _, name := range []string{
+			"workers", "max-workers", "daemon-only", "model", "detach",
+			"progress-timeout", "ops-review-timeout", "review-stall-timeout", "review-timeout",
+			"manual-integration", "base-branch", "mutation-testing",
+			"web", "no-web", "web-addr",
+			"janitor-interval", "janitor-idle-threshold", "audit-every-n-janitors",
+			"janitor-top-k", "janitor-enabled", "audit-enabled",
+		} {
+			if cmd.Flags().Lookup(name) == nil {
+				t.Fatalf("newStartCmd omitted --%s", name)
+			}
+		}
+		if alias := cmd.Flags().Lookup("review-timeout"); alias == nil || !alias.Hidden {
+			t.Fatalf("deprecated --review-timeout alias = %+v, want hidden flag", alias)
+		}
+	})
+
+	t.Run("returns preflight errors before handoff", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv("PATH", tmpDir)
+		t.Setenv("ORO_HOME", tmpDir)
+		t.Setenv("ORO_PID_PATH", filepath.Join(tmpDir, "oro.pid"))
+		t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "missing.sock"))
+
+		cmd := newStartCmd()
+		cmd.SetArgs([]string{"--detach"})
+		err := cmd.Execute()
+		if err == nil || !strings.Contains(err.Error(), "required tool") {
+			t.Fatalf("start error = %v, want preflight tool error", err)
+		}
+	})
+
+	t.Run("returns reconnect result for a live daemon", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		pidPath := filepath.Join(tmpDir, "oro.pid")
+		t.Setenv("ORO_HOME", tmpDir)
+		t.Setenv("ORO_PROJECT", "mutation-owner")
+		t.Setenv("ORO_PID_PATH", pidPath)
+		t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "missing.sock"))
+		if err := WritePIDFile(pidPath, os.Getpid()); err != nil {
+			t.Fatalf("write live PID fixture: %v", err)
+		}
+
+		previousRunDaemonOnly := runDaemonOnlyFn
+		t.Cleanup(func() { runDaemonOnlyFn = previousRunDaemonOnly })
+		handoffCalled := false
+		runDaemonOnlyFn = func(_ *cobra.Command, _ string, _, _ int, _, _, _ time.Duration, _ bool, _ string, _ bool, _ bool, _ string, _ cleanlinessStartConfig) error {
+			handoffCalled = true
+			return fmt.Errorf("unexpected daemon handoff")
+		}
+
+		cmd := newStartCmd()
+		cmd.SetArgs([]string{"--daemon-only"})
+		err := cmd.Execute()
+		if err == nil || !strings.Contains(err.Error(), "connect to dispatcher") {
+			t.Fatalf("start error = %v, want reconnect error", err)
+		}
+		if handoffCalled {
+			t.Fatal("start continued into daemon handoff after reconnect")
+		}
+	})
+
+	t.Run("routes daemon and fresh starts through bounded handoffs", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		projectRoot := filepath.Join(tmpDir, "project")
+		oroDir := filepath.Join(projectRoot, ".oro")
+		if err := os.MkdirAll(oroDir, 0o750); err != nil {
+			t.Fatalf("create project config directory: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(oroDir, "config.yaml"), []byte("project: mutation-owner\n"), 0o600); err != nil {
+			t.Fatalf("write project config: %v", err)
+		}
+
+		oroHome := filepath.Join(tmpDir, "oro-home")
+		hookPath := filepath.Join(oroHome, "hooks", "oro-search-hook")
+		if err := os.MkdirAll(filepath.Dir(hookPath), 0o750); err != nil {
+			t.Fatalf("create hook directory: %v", err)
+		}
+		if err := os.WriteFile(hookPath, []byte("test hook\n"), 0o700); err != nil {
+			t.Fatalf("write hook fixture: %v", err)
+		}
+		future := time.Now().Add(time.Hour)
+		if err := os.Chtimes(hookPath, future, future); err != nil {
+			t.Fatalf("mark hook fixture current: %v", err)
+		}
+
+		configureMutationOwnerGit(t, tmpDir)
+		gitPath, err := exec.LookPath("git")
+		if err != nil {
+			t.Fatalf("locate git fixture: %v", err)
+		}
+		toolsDir := filepath.Join(tmpDir, "tools")
+		if err := os.MkdirAll(toolsDir, 0o750); err != nil {
+			t.Fatalf("create tool fixture directory: %v", err)
+		}
+		if err := os.Symlink(gitPath, filepath.Join(toolsDir, "git")); err != nil {
+			t.Fatalf("link git fixture: %v", err)
+		}
+		for _, tool := range []string{"claude", "tmux"} {
+			if err := os.WriteFile(filepath.Join(toolsDir, tool), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+				t.Fatalf("write %s fixture: %v", tool, err)
+			}
+		}
+
+		t.Setenv("PATH", toolsDir)
+		t.Setenv("ORO_HOME", oroHome)
+		t.Setenv("ORO_PROJECT", "mutation-owner")
+		t.Setenv("ORO_PID_PATH", filepath.Join(tmpDir, "oro.pid"))
+		t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
+		t.Setenv("ORO_DB_PATH", filepath.Join(tmpDir, "state.db"))
+		t.Setenv("ORO_BEADSOURCE_MODE", "sqlite")
+		t.Setenv(daemonSkipPreflightEnv, "1")
+
+		previousRunDaemonOnly := runDaemonOnlyFn
+		previousRunFullStart := runFullStartFn
+		t.Cleanup(func() {
+			runDaemonOnlyFn = previousRunDaemonOnly
+			runFullStartFn = previousRunFullStart
+		})
+
+		daemonCalls := 0
+		fullCalls := 0
+		var daemonWorkers, daemonMaxWorkers int
+		var daemonWeb bool
+		var fullWorkers, fullMaxWorkers int
+		var fullModel string
+		var fullDetach bool
+		runDaemonOnlyFn = func(_ *cobra.Command, _ string, workers, maxWorkers int, _, _, _ time.Duration, _ bool, _ string, _ bool, webEnabled bool, _ string, _ cleanlinessStartConfig) error {
+			daemonCalls++
+			daemonWorkers = workers
+			daemonMaxWorkers = maxWorkers
+			daemonWeb = webEnabled
+			return nil
+		}
+		runFullStartFn = func(_ io.Writer, workers, maxWorkers int, model, _ string, _ DaemonSpawner, _ CmdRunner, _ func(int) error, _ time.Duration, _ func(time.Duration), _ time.Duration, detach bool) error {
+			fullCalls++
+			fullWorkers = workers
+			fullMaxWorkers = maxWorkers
+			fullModel = model
+			fullDetach = detach
+			return nil
+		}
+
+		withChdir(t, projectRoot, func() {
+			daemonCmd := newStartCmd()
+			daemonCmd.SetArgs([]string{"--daemon-only", "--workers=3", "--web", "--no-web"})
+			if err := daemonCmd.Execute(); err != nil {
+				t.Fatalf("daemon-only start: %v", err)
+			}
+			if daemonCalls != 1 || fullCalls != 0 {
+				t.Fatalf("daemon/full handoffs = %d/%d, want 1/0", daemonCalls, fullCalls)
+			}
+			if daemonWorkers != 3 || daemonMaxWorkers != 3 || daemonWeb {
+				t.Fatalf("daemon handoff workers/max/web = %d/%d/%t, want 3/3/false", daemonWorkers, daemonMaxWorkers, daemonWeb)
+			}
+
+			freshCmd := newStartCmd()
+			freshCmd.SetArgs([]string{"--workers=2", "--max-workers=5", "--model=deep", "--detach"})
+			if err := freshCmd.Execute(); err != nil {
+				t.Fatalf("fresh start: %v", err)
+			}
+		})
+		if daemonCalls != 1 || fullCalls != 1 {
+			t.Fatalf("final daemon/full handoffs = %d/%d, want 1/1", daemonCalls, fullCalls)
+		}
+		if fullWorkers != 2 || fullMaxWorkers != 5 || fullModel != "deep" || !fullDetach {
+			t.Fatalf("fresh handoff workers/max/model/detach = %d/%d/%q/%t", fullWorkers, fullMaxWorkers, fullModel, fullDetach)
+		}
+	})
+}
+
 // TestStartBaseBranchFlag verifies that the --base-branch flag exists on the
 // start command and that its value flows into Config.DefaultBranch via buildDispatcher.
 func TestStartBaseBranchFlag(t *testing.T) {
 	t.Run("flag exists and parses value", func(t *testing.T) {
 		cmd := newStartCmd()
+		flag := cmd.Flags().Lookup("base-branch")
+		if flag == nil {
+			t.Fatal("base-branch flag is missing")
+		}
+		if !strings.Contains(flag.Usage, "writable local integration branch") {
+			t.Fatalf("base-branch usage = %q, want writable local integration branch scope", flag.Usage)
+		}
 		if err := cmd.ParseFlags([]string{"--base-branch=develop"}); err != nil {
 			t.Fatalf("ParseFlags: %v", err)
 		}
@@ -1578,6 +1830,7 @@ func TestStartWiresReviewPatternPaths(t *testing.T) {
 }
 
 func TestStartWebEnabledByDefault(t *testing.T) {
+	configureMutationOwnerGit(t, t.TempDir())
 	tests := []struct {
 		name string
 		args []string
