@@ -312,6 +312,120 @@ func TestWeeklyDevCacheSweepReconciliationFailsClosedForLiveOwnership(t *testing
 	}
 }
 
+func TestWeeklyDevCacheSweepReconciliationLeavesLaterPauseEpochUnchanged(t *testing.T) {
+	ctx := context.Background()
+	fixture := newInterruptedWeeklySweepFixture(t, ctx)
+	const laterEpoch = 8
+	if err := fixture.catalog.RecordPauseEpoch(ctx, storage.PauseEpoch{
+		Epoch: laterEpoch, State: storage.PauseRequested, CreatedAt: fixture.now,
+	}); err != nil {
+		t.Fatalf("seed later operator pause: %v", err)
+	}
+	calls := 0
+	request := fixture.request(t, &calls)
+	request.GlobalDrain.Protocol = storage.NewPauseEpochProtocol(fixture.catalog, func(int) (storage.ProcessIdentity, error) {
+		return storage.ProcessIdentity{}, errors.New("process exited")
+	})
+
+	result, err := storage.RunWeeklyDevCacheSweep(ctx, request)
+	if err != nil {
+		t.Fatalf("reconcile with later operator pause: %v", err)
+	}
+	if result.Ran || calls != 0 || !result.NextDue.Equal(fixture.nextDue) {
+		t.Fatalf("result = %+v, calls = %d; want schedule-preserving reconciliation", result, calls)
+	}
+	operatorPause, err := fixture.catalog.PauseEpoch(ctx, laterEpoch)
+	if err != nil {
+		t.Fatalf("load later operator pause: %v", err)
+	}
+	if operatorPause.State != storage.PauseRequested {
+		t.Fatalf("later operator pause state = %q, want unchanged %q", operatorPause.State, storage.PauseRequested)
+	}
+	cleanupPause, err := fixture.catalog.PauseEpoch(ctx, fixture.pauseEpoch)
+	if err != nil {
+		t.Fatalf("load cleanup pause: %v", err)
+	}
+	if cleanupPause.State != storage.Open {
+		t.Fatalf("cleanup pause state = %q, want %q", cleanupPause.State, storage.Open)
+	}
+	var status string
+	if err := fixture.catalog.DB().QueryRowContext(ctx, `SELECT status FROM sweeps WHERE id=?`, fixture.sweepID).Scan(&status); err != nil {
+		t.Fatalf("load correlated interrupted sweep: %v", err)
+	}
+	if status != "failed" {
+		t.Fatalf("correlated interrupted sweep status = %q, want failed", status)
+	}
+}
+
+func TestWeeklyDevCacheSweepReconciliationRequiresUniquePauseCorrelation(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		seed func(context.Context, *testing.T, *interruptedWeeklySweepFixture)
+	}{
+		{
+			name: "missing correlation",
+			seed: func(ctx context.Context, t *testing.T, fixture *interruptedWeeklySweepFixture) {
+				t.Helper()
+				if _, err := fixture.catalog.DB().ExecContext(ctx, `UPDATE runtime_pause_epochs SET created_at=? WHERE epoch=?`, fixture.now.Add(-2*time.Hour).Format(time.RFC3339Nano), fixture.pauseEpoch); err != nil {
+					t.Fatalf("break cleanup pause correlation: %v", err)
+				}
+			},
+		},
+		{
+			name: "ambiguous correlation",
+			seed: func(ctx context.Context, t *testing.T, fixture *interruptedWeeklySweepFixture) {
+				t.Helper()
+				if err := fixture.catalog.RecordPauseEpoch(ctx, storage.PauseEpoch{
+					Epoch: 6, State: storage.PauseRequested, CreatedAt: fixture.now.Add(-time.Hour),
+				}); err != nil {
+					t.Fatalf("seed ambiguous cleanup pause: %v", err)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			fixture := newInterruptedWeeklySweepFixture(t, ctx)
+			test.seed(ctx, t, fixture)
+			calls := 0
+			request := fixture.request(t, &calls)
+			request.GlobalDrain.Protocol = storage.NewPauseEpochProtocol(fixture.catalog, func(int) (storage.ProcessIdentity, error) {
+				return storage.ProcessIdentity{}, errors.New("process exited")
+			})
+
+			result, err := storage.RunWeeklyDevCacheSweep(ctx, request)
+			if err != nil {
+				t.Fatalf("run uncorrelated reconciliation: %v", err)
+			}
+			if result.Ran || calls != 0 || !result.NextDue.Equal(fixture.nextDue) {
+				t.Fatalf("result = %+v, calls = %d; want schedule-preserving no-op", result, calls)
+			}
+			var status string
+			var finishedAt sql.NullString
+			if err := fixture.catalog.DB().QueryRowContext(ctx, `SELECT status, finished_at FROM sweeps WHERE id=?`, fixture.sweepID).Scan(&status, &finishedAt); err != nil {
+				t.Fatalf("load uncorrelated sweep: %v", err)
+			}
+			if status != "running" || finishedAt.Valid {
+				t.Fatalf("uncorrelated sweep status/finished_at = %q/%q, want running/null", status, finishedAt.String)
+			}
+			var evidenceCount int
+			if err := fixture.catalog.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM evidence WHERE sweep_id=?`, fixture.sweepID).Scan(&evidenceCount); err != nil {
+				t.Fatalf("count uncorrelated evidence: %v", err)
+			}
+			if evidenceCount != 0 {
+				t.Fatalf("uncorrelated evidence count = %d, want 0", evidenceCount)
+			}
+			pause, err := fixture.catalog.PauseEpoch(ctx, fixture.pauseEpoch)
+			if err != nil {
+				t.Fatalf("load uncorrelated pause: %v", err)
+			}
+			if pause.State != storage.PauseRequested {
+				t.Fatalf("uncorrelated pause state = %q, want unchanged %q", pause.State, storage.PauseRequested)
+			}
+		})
+	}
+}
+
 type interruptedWeeklySweepFixture struct {
 	catalog          *storage.Catalog
 	now, nextDue     time.Time
