@@ -171,7 +171,7 @@ SELECT COUNT(*) FROM evidence WHERE kind = 'weekly_dev_cache_provider' AND paylo
 
 func TestWeeklyDevCacheSweepReconcilesInterruptedRun(t *testing.T) {
 	ctx := context.Background()
-	fixture := newInterruptedWeeklySweepFixture(t, ctx)
+	fixture := newInterruptedWeeklySweepFixture(ctx, t)
 	calls := 0
 	request := fixture.request(t, &calls)
 	request.GlobalDrain.Protocol = storage.NewPauseEpochProtocol(fixture.catalog, func(int) (storage.ProcessIdentity, error) {
@@ -234,7 +234,7 @@ func TestWeeklyDevCacheSweepReconcilesInterruptedRun(t *testing.T) {
 
 func TestWeeklyDevCacheSweepReconciliationRollsBackOnEvidenceCollision(t *testing.T) {
 	ctx := context.Background()
-	fixture := newInterruptedWeeklySweepFixture(t, ctx)
+	fixture := newInterruptedWeeklySweepFixture(ctx, t)
 	collisionID := fixture.sweepID + "-evidence"
 	collisionPayload := `{"owner":"unrelated"}`
 	if _, err := fixture.catalog.DB().ExecContext(ctx, `
@@ -328,7 +328,7 @@ func TestWeeklyDevCacheSweepReconciliationFailsClosedForLiveOwnership(t *testing
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ctx := context.Background()
-			fixture := newInterruptedWeeklySweepFixture(t, ctx)
+			fixture := newInterruptedWeeklySweepFixture(ctx, t)
 			test.seedOwnership(ctx, t, fixture)
 			calls := 0
 			request := fixture.request(t, &calls)
@@ -369,7 +369,7 @@ func TestWeeklyDevCacheSweepReconciliationFailsClosedForLiveOwnership(t *testing
 
 func TestWeeklyDevCacheSweepReconciliationLeavesLaterPauseEpochUnchanged(t *testing.T) {
 	ctx := context.Background()
-	fixture := newInterruptedWeeklySweepFixture(t, ctx)
+	fixture := newInterruptedWeeklySweepFixture(ctx, t)
 	const laterEpoch = 8
 	if err := fixture.catalog.RecordPauseEpoch(ctx, storage.PauseEpoch{
 		Epoch: laterEpoch, State: storage.PauseRequested, CreatedAt: fixture.now,
@@ -440,7 +440,7 @@ func TestWeeklyDevCacheSweepReconciliationRequiresUniquePauseCorrelation(t *test
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ctx := context.Background()
-			fixture := newInterruptedWeeklySweepFixture(t, ctx)
+			fixture := newInterruptedWeeklySweepFixture(ctx, t)
 			test.seed(ctx, t, fixture)
 			blockedDue := fixture.now.Add(-time.Hour)
 			if _, err := fixture.catalog.DB().ExecContext(ctx, `UPDATE weekly_dev_cache_schedule SET due_at=? WHERE id='weekly-dev-cache'`, blockedDue.Format(time.RFC3339Nano)); err != nil {
@@ -531,7 +531,7 @@ type interruptedWeeklySweepFixture struct {
 	provider         storage.CacheProvider
 }
 
-func newInterruptedWeeklySweepFixture(t *testing.T, ctx context.Context) *interruptedWeeklySweepFixture {
+func newInterruptedWeeklySweepFixture(ctx context.Context, t *testing.T) *interruptedWeeklySweepFixture {
 	t.Helper()
 	now := time.Date(2026, time.August, 6, 12, 0, 0, 0, time.UTC)
 	nextDue := now.Add(storage.WeeklyDevCacheSweepInterval)

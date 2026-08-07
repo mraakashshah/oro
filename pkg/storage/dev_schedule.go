@@ -107,20 +107,23 @@ func RunWeeklyDevCacheSweep(ctx context.Context, request WeeklyDevCacheSweepRequ
 		return WeeklyDevCacheSweepResult{}, err
 	}
 
-	runner := request.Run
+	return WeeklyDevCacheSweepResult{Ran: true, NextDue: nextDue}, runWeeklyDevCacheProviders(ctx, request.Catalog, request.Providers, now, request.Run)
+}
+
+func runWeeklyDevCacheProviders(ctx context.Context, catalog *Catalog, providers []CacheProvider, now time.Time, runner DevCacheMaintenanceRunner) error {
 	if runner == nil {
 		runner = RunProviderMaintenance
 	}
 	var runErrs []error
-	for _, provider := range request.Providers {
+	for _, provider := range providers {
 		if provider.Concurrency == NoMaintenance || !provider.Cleaner.present() {
 			continue
 		}
-		if err := recordWeeklyDevCacheProvider(ctx, request.Catalog, provider, now, runner); err != nil {
+		if err := recordWeeklyDevCacheProvider(ctx, catalog, provider, now, runner); err != nil {
 			runErrs = append(runErrs, err)
 		}
 	}
-	return WeeklyDevCacheSweepResult{Ran: true, NextDue: nextDue}, errors.Join(runErrs...)
+	return errors.Join(runErrs...)
 }
 
 type interruptedWeeklySweep struct {
@@ -161,6 +164,19 @@ func reconcileInterruptedWeeklyDevCacheSweep(ctx context.Context, catalog *Catal
 		return nil
 	}
 
+	if err := failInterruptedWeeklyDevCacheSweeps(ctx, tx, sweeps, reconciledAt); err != nil {
+		return err
+	}
+	if err := openInterruptedWeeklyDevCachePauses(ctx, tx, sweeps); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit interrupted weekly dev cache reconciliation: %w", err)
+	}
+	return nil
+}
+
+func failInterruptedWeeklyDevCacheSweeps(ctx context.Context, tx *sql.Tx, sweeps []interruptedWeeklySweep, reconciledAt time.Time) error {
 	payload := func(providerID string) ([]byte, error) {
 		return json.Marshal(struct {
 			ProviderID string `json:"provider_id"`
@@ -188,6 +204,10 @@ func reconcileInterruptedWeeklyDevCacheSweep(ctx context.Context, catalog *Catal
 			return fmt.Errorf("record interrupted weekly dev cache sweep %s evidence: %w", sweep.id, err)
 		}
 	}
+	return nil
+}
+
+func openInterruptedWeeklyDevCachePauses(ctx context.Context, tx *sql.Tx, sweeps []interruptedWeeklySweep) error {
 	pauseEpochs := make(map[int64]struct{})
 	for _, sweep := range sweeps {
 		pauseEpochs[sweep.pauseEpoch] = struct{}{}
@@ -204,9 +224,6 @@ func reconcileInterruptedWeeklyDevCacheSweep(ctx context.Context, catalog *Catal
 		if changed != 1 {
 			return fmt.Errorf("open interrupted weekly dev cache pause %d: changed %d rows", epoch, changed)
 		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit interrupted weekly dev cache reconciliation: %w", err)
 	}
 	return nil
 }
