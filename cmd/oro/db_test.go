@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"oro/pkg/dbutil"
 	"oro/pkg/protocol"
@@ -201,6 +203,201 @@ func TestOpenStateDBIdempotent(t *testing.T) {
 	if err := db2.QueryRow("SELECT COUNT(*) FROM events").Scan(&count); err != nil {
 		t.Fatalf("query events after idempotent open: %v", err)
 	}
+}
+
+func TestOpenStateDBConcurrentSchemaSetupIsIdempotent(t *testing.T) {
+	const openerCount = 4
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	seed, err := openStateDBWithV4Migration(dbPath)
+	if err != nil {
+		t.Fatalf("seed current state DB: %v", err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatalf("close current state DB: %v", err)
+	}
+	// Complete post-v4 startup repairs before measuring current-schema opens.
+	warmed, err := openStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("warm current state DB schema: %v", err)
+	}
+	if err := warmed.Close(); err != nil {
+		t.Fatalf("close warmed state DB: %v", err)
+	}
+
+	locker, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open schema locker: %v", err)
+	}
+	defer func() { _ = locker.Close() }()
+	lockConn, err := locker.Conn(ctx)
+	if err != nil {
+		t.Fatalf("reserve schema locker connection: %v", err)
+	}
+	defer func() { _ = lockConn.Close() }()
+	if _, err := lockConn.ExecContext(ctx, `PRAGMA journal_mode=DELETE`); err != nil {
+		t.Fatalf("set rollback journal mode: %v", err)
+	}
+	if _, err := lockConn.ExecContext(ctx, `BEGIN EXCLUSIVE`); err != nil {
+		t.Fatalf("hold exclusive schema lock: %v", err)
+	}
+	locked := true
+	defer func() {
+		if locked {
+			_, _ = lockConn.ExecContext(ctx, `ROLLBACK`)
+		}
+	}()
+
+	var schemaVersionBefore int
+	if err := lockConn.QueryRowContext(ctx, `PRAGMA schema_version`).Scan(&schemaVersionBefore); err != nil {
+		t.Fatalf("query schema version before concurrent opens: %v", err)
+	}
+	viewsBefore := dbTestQueueViewDefinitions(ctx, t, lockConn)
+	if len(viewsBefore) != 3 {
+		t.Fatalf("canonical queue view count = %d, want 3", len(viewsBefore))
+	}
+
+	type openResult struct {
+		db  *sql.DB
+		err error
+	}
+	results := make(chan openResult, openerCount)
+	for range openerCount {
+		go func() {
+			db, openErr := openStateDB(dbPath)
+			results <- openResult{db: db, err: openErr}
+		}()
+	}
+	time.Sleep(100 * time.Millisecond)
+	if _, err := lockConn.ExecContext(ctx, `COMMIT`); err != nil {
+		t.Fatalf("release exclusive schema lock: %v", err)
+	}
+	locked = false
+
+	for range openerCount {
+		select {
+		case result := <-results:
+			if result.err != nil {
+				t.Errorf("concurrent openStateDB: %v", result.err)
+				continue
+			}
+			if err := result.db.Close(); err != nil {
+				t.Errorf("close concurrent state DB: %v", err)
+			}
+		case <-time.After(6 * time.Second):
+			t.Fatal("timed out waiting for concurrent openStateDB")
+		}
+	}
+
+	var schemaVersionAfter int
+	if err := lockConn.QueryRowContext(ctx, `PRAGMA schema_version`).Scan(&schemaVersionAfter); err != nil {
+		t.Fatalf("query schema version after concurrent opens: %v", err)
+	}
+	if schemaVersionAfter != schemaVersionBefore {
+		t.Errorf("schema_version after concurrent opens = %d, want unchanged %d", schemaVersionAfter, schemaVersionBefore)
+	}
+	viewsAfter := dbTestQueueViewDefinitions(ctx, t, lockConn)
+	if !reflect.DeepEqual(viewsAfter, viewsBefore) {
+		t.Errorf("queue view definitions changed after concurrent opens\nbefore: %#v\n after: %#v", viewsBefore, viewsAfter)
+	}
+}
+
+func TestOpenStateDBRepairsStaleQueueViews(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	db, err := openStateDBWithV4Migration(dbPath)
+	if err != nil {
+		t.Fatalf("seed current state DB: %v", err)
+	}
+	canonical := dbTestQueueViewDefinitions(ctx, t, db)
+	if len(canonical) != 3 {
+		t.Fatalf("canonical queue view count = %d, want 3", len(canonical))
+	}
+	if _, err := db.ExecContext(ctx, `
+DROP VIEW beads_ready;
+DROP VIEW beads_blocked;
+DROP VIEW review_checkpoints_blocking_assignment;
+CREATE VIEW review_checkpoints_blocking_assignment AS
+SELECT id, bead_id FROM review_checkpoints WHERE state = 'review_running';
+CREATE VIEW beads_ready AS SELECT b.* FROM beads b WHERE 0;
+CREATE VIEW beads_blocked AS SELECT b.* FROM beads b WHERE 0;`); err != nil {
+		t.Fatalf("install stale queue views: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close stale state DB: %v", err)
+	}
+
+	const openerCount = 4
+	type openResult struct {
+		db  *sql.DB
+		err error
+	}
+	start := make(chan struct{})
+	results := make(chan openResult, openerCount)
+	for range openerCount {
+		go func() {
+			<-start
+			opened, openErr := openStateDB(dbPath)
+			results <- openResult{db: opened, err: openErr}
+		}()
+	}
+	close(start)
+	for range openerCount {
+		select {
+		case result := <-results:
+			if result.err != nil {
+				t.Errorf("concurrent stale queue view repair: %v", result.err)
+				continue
+			}
+			if err := result.db.Close(); err != nil {
+				t.Errorf("close repaired state DB: %v", err)
+			}
+		case <-time.After(6 * time.Second):
+			t.Fatal("timed out waiting for concurrent stale queue view repair")
+		}
+	}
+
+	db, err = openDB(dbPath)
+	if err != nil {
+		t.Fatalf("inspect repaired queue views: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	repaired := dbTestQueueViewDefinitions(ctx, t, db)
+	if !reflect.DeepEqual(repaired, canonical) {
+		t.Errorf("repaired queue views are not canonical\nwant: %#v\n got: %#v", canonical, repaired)
+	}
+}
+
+type dbTestQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func dbTestQueueViewDefinitions(ctx context.Context, t *testing.T, db dbTestQueryer) map[string]string {
+	t.Helper()
+	rows, err := db.QueryContext(ctx, `
+SELECT name, sql
+FROM sqlite_schema
+WHERE type = 'view'
+  AND name IN ('beads_ready', 'beads_blocked', 'review_checkpoints_blocking_assignment')
+ORDER BY name`)
+	if err != nil {
+		t.Fatalf("query queue view definitions: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	definitions := make(map[string]string)
+	for rows.Next() {
+		var name, definition string
+		if err := rows.Scan(&name, &definition); err != nil {
+			t.Fatalf("scan queue view definition: %v", err)
+		}
+		definitions[name] = definition
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate queue view definitions: %v", err)
+	}
+	return definitions
 }
 
 func TestOpenStateDBPreV4PreservesReviewCheckpointReadyExclusion(t *testing.T) {
