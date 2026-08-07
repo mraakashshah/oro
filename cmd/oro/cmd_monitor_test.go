@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -616,6 +617,11 @@ func TestCLIMonitorRestartUsesDetachedStartHandoff(t *testing.T) {
 	if err := os.Chtimes(hookPath, future, future); err != nil {
 		t.Fatalf("mark hook fixture current: %v", err)
 	}
+	gitDir := filepath.Join(tmpDir, "git")
+	if output, err := exec.Command("git", "init", "--bare", gitDir).CombinedOutput(); err != nil {
+		t.Fatalf("initialize monitor restart git fixture: %v\n%s", err, output)
+	}
+	t.Setenv("GIT_DIR", gitDir)
 
 	previousRunFullStart := runFullStartFn
 	t.Cleanup(func() { runFullStartFn = previousRunFullStart })

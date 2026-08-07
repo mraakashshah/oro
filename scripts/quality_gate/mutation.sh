@@ -505,10 +505,14 @@ cmd_mutation_test_pattern() {
 	local file="$1"
 	local match="$2"
 	case "$file:$match" in
-	'cmd/oro/cmd_start.go:^(buildArgs)$' | \
-		'cmd/oro/cmd_start.go:^(newStartCmd)$' | \
-		'cmd/oro/cmd_start.go:^(startFreshSwarm)$')
-		printf '^(TestDetachedStartForwardsBaseBranchToDaemon|TestStartBaseBranchFlag)$'
+	'cmd/oro/cmd_start.go:^(buildArgs)$')
+		printf '^(TestDetachedStartForwardsBaseBranchToDaemon|TestJanitorStartPlumbing|TestStartProgressTimeoutFlag|TestStartReviewTimeoutFlagsAreDistinct)$'
+		;;
+	'cmd/oro/cmd_start.go:^(newStartCmd)$')
+		printf '^(TestDetachedStartForwardsBaseBranchToDaemon|TestJanitorStartPlumbing|TestStartBaseBranchFlag|TestStartManualIntegrationDaemonHandoffForwardsFlagAndConfig|TestStartMutationTestingFlag|TestStartProgressTimeoutFlag|TestStartRejectsGitHubPolicyBeforeDispatcherMutation|TestStartRejectsRepoLocalOroShadow|TestStartRejectsRemoteCapabilityDriftBeforeLaunch|TestStartReviewTimeoutFlagsAreDistinct|TestStartWebEnabledByDefault|TestStartWebFlags)$'
+		;;
+	'cmd/oro/cmd_start.go:^(startFreshSwarm)$')
+		printf '^TestDetachedStartForwardsBaseBranchToDaemon$'
 		;;
 	'cmd/oro/cmd_monitor.go:^(RestartDaemon)$')
 		printf '^TestCLIMonitorRestartUsesDetachedStartHandoff$'

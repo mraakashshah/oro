@@ -1510,6 +1510,38 @@ func TestDetachedStartForwardsBaseBranchToDaemon(t *testing.T) {
 			t.Fatalf("empty base branch emitted child argument %q in %q", arg, emptyArgs)
 		}
 	}
+
+	t.Setenv("ORO_BEADSOURCE_MODE", "cli")
+	if err := startFreshSwarm(io.Discard, 2, 2, "balanced", true, 0, 0, 0, false, "", false, false, "", defaultCleanlinessStartConfig()); err == nil || !strings.Contains(err.Error(), "native sqlite beadstore") {
+		t.Fatalf("legacy startFreshSwarm error = %v, want native sqlite rejection", err)
+	}
+
+	cmd := newStartCmd()
+	if err := cmd.ParseFlags([]string{"--workers=3", "--max-workers=5", "--model=deep", "--detach", "--base-branch=integration/factory-main-test"}); err != nil {
+		t.Fatalf("parse detached start handoff flags: %v", err)
+	}
+	for name, want := range map[string]int{"workers": 3, "max-workers": 5} {
+		got, err := cmd.Flags().GetInt(name)
+		if err != nil {
+			t.Fatalf("read %s flag: %v", name, err)
+		}
+		if got != want {
+			t.Fatalf("%s flag = %d, want %d", name, got, want)
+		}
+	}
+	for name, want := range map[string]string{"model": "deep", "base-branch": "integration/factory-main-test"} {
+		got, err := cmd.Flags().GetString(name)
+		if err != nil {
+			t.Fatalf("read %s flag: %v", name, err)
+		}
+		if got != want {
+			t.Fatalf("%s flag = %q, want %q", name, got, want)
+		}
+	}
+	detach, err := cmd.Flags().GetBool("detach")
+	if err != nil || !detach {
+		t.Fatalf("detach flag = %t, err=%v, want true", detach, err)
+	}
 }
 
 // TestStartBaseBranchFlag verifies that the --base-branch flag exists on the

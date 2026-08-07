@@ -354,15 +354,27 @@ TestStartupMaintenanceMutationSharding() {
 }
 
 TestCmdMutationSharding() {
-	local coverage_root function got listed monitor_pattern report start_pattern
-	start_pattern='^(TestDetachedStartForwardsBaseBranchToDaemon|TestStartBaseBranchFlag)$'
+	local cardinality coverage_root function got listed monitor_pattern pattern report
 	monitor_pattern='^TestCLIMonitorRestartUsesDetachedStartHandoff$'
 
-	for function in buildArgs newStartCmd startFreshSwarm; do
+	coverage_root=$(mktemp -d)
+	# shellcheck disable=SC2064 # expand the function-local path before the RETURN trap runs.
+	trap "rm -rf '$coverage_root'" RETURN
+	while IFS=$'\t' read -r function pattern cardinality; do
 		got=$(cmd_mutation_pattern_for cmd/oro/cmd_start.go "^(${function})$")
-		[[ "$got" == "$start_pattern" ]] ||
-			fail "$function cmd mutation owner = $got, want $start_pattern"
-	done
+		[[ "$got" == "$pattern" ]] || fail "$function cmd mutation owner = $got, want $pattern"
+		listed=$(go test -list "$pattern" ./cmd/oro)
+		[[ "$(grep -Ec '^Test' <<<"$listed")" == "$cardinality" ]] ||
+			fail "$function owner must select exactly $cardinality real tests"
+		go test -vet=off -count=1 -coverprofile="$coverage_root/$function.out" -run "$pattern" ./cmd/oro >/dev/null
+		report=$(go tool cover -func="$coverage_root/$function.out")
+		awk -v target="$function" '$2 == target && $3 + 0 > 0 { found = 1 } END { exit !found }' <<<"$report" ||
+			fail "$function cmd mutation owner has zero production coverage"
+	done <<'EOF'
+buildArgs	^(TestDetachedStartForwardsBaseBranchToDaemon|TestJanitorStartPlumbing|TestStartProgressTimeoutFlag|TestStartReviewTimeoutFlagsAreDistinct)$	4
+newStartCmd	^(TestDetachedStartForwardsBaseBranchToDaemon|TestJanitorStartPlumbing|TestStartBaseBranchFlag|TestStartManualIntegrationDaemonHandoffForwardsFlagAndConfig|TestStartMutationTestingFlag|TestStartProgressTimeoutFlag|TestStartRejectsGitHubPolicyBeforeDispatcherMutation|TestStartRejectsRepoLocalOroShadow|TestStartRejectsRemoteCapabilityDriftBeforeLaunch|TestStartReviewTimeoutFlagsAreDistinct|TestStartWebEnabledByDefault|TestStartWebFlags)$	12
+startFreshSwarm	^TestDetachedStartForwardsBaseBranchToDaemon$	1
+EOF
 	got=$(cmd_mutation_pattern_for cmd/oro/cmd_monitor.go '^(RestartDaemon)$')
 	[[ "$got" == "$monitor_pattern" ]] ||
 		fail "RestartDaemon cmd mutation owner = $got, want $monitor_pattern"
@@ -378,22 +390,10 @@ TestCmdMutationSharding() {
 	got=$(cmd_mutation_pattern_for cmd/oro/cmd_monitor.go '^(unmappedMonitorFunction)$')
 	[[ -z "$got" ]] || fail "unmapped monitor function unexpectedly selected $got"
 
-	listed=$(go test -list "$start_pattern" ./cmd/oro)
-	[[ "$(grep -Ec '^Test' <<<"$listed")" == 2 ]] ||
-		fail 'start owner must select exactly two real tests'
 	listed=$(go test -list "$monitor_pattern" ./cmd/oro)
 	[[ "$(grep -Ec '^Test' <<<"$listed")" == 1 ]] ||
 		fail 'monitor owner must select exactly one real test'
 
-	coverage_root=$(mktemp -d)
-	# shellcheck disable=SC2064 # expand the function-local path before the RETURN trap runs.
-	trap "rm -rf '$coverage_root'" RETURN
-	go test -vet=off -count=1 -coverprofile="$coverage_root/start.out" -run "$start_pattern" ./cmd/oro >/dev/null
-	report=$(go tool cover -func="$coverage_root/start.out")
-	for function in buildArgs newStartCmd startFreshSwarm; do
-		awk -v target="$function" '$2 == target && $3 + 0 > 0 { found = 1 } END { exit !found }' <<<"$report" ||
-			fail "$function cmd mutation owner has zero production coverage"
-	done
 	go test -vet=off -count=1 -coverprofile="$coverage_root/monitor.out" -run "$monitor_pattern" ./cmd/oro >/dev/null
 	report=$(go tool cover -func="$coverage_root/monitor.out")
 	awk '$2 == "RestartDaemon" && $3 + 0 > 0 { found = 1 } END { exit !found }' <<<"$report" ||
