@@ -3,6 +3,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -456,6 +457,13 @@ func TestWeeklyDevCacheSweepMutationRunBoundaries(t *testing.T) {
 		catalog := newCatalog(t)
 		now := time.Date(2026, time.August, 6, 12, 0, 0, 0, time.UTC)
 		due := now.Add(-25 * time.Hour)
+		controller := Controller{
+			ID: "controller", OwnerID: "owner", PID: 101, ProcessStart: due, HeartbeatAt: now,
+			Identity: ProcessIdentity{PID: 101, StartMarker: "start-controller", Executable: "oro", ProcessGroup: 101},
+		}
+		if err := catalog.UpsertController(ctx, controller); err != nil {
+			t.Fatalf("seed drain controller: %v", err)
+		}
 		if _, err := catalog.DB().ExecContext(ctx, `
 INSERT INTO weekly_dev_cache_schedule (id, due_at, updated_at) VALUES (?, ?, ?)`,
 			weeklyDevCacheScheduleID, formatTime(due), formatTime(due)); err != nil {
@@ -469,11 +477,71 @@ VALUES ('active', 'repo/worktree', 'controller', 'owner', 404, ?, ?, ?)`,
 		}
 		request := requestFor(t, catalog, now)
 		request.GlobalDrain.PollInterval = time.Millisecond
-		drainCtx, cancel := context.WithTimeout(ctx, 25*time.Millisecond)
+		drainCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
-		result, err := RunWeeklyDevCacheSweep(drainCtx, request)
-		if err == nil || !strings.Contains(err.Error(), "wait for overdue dev cleanup drain") {
-			t.Fatalf("overdue drain result = %+v/%v, want bounded drain error", result, err)
+		inspections := 0
+		request.GlobalDrain.Protocol = NewPauseEpochProtocol(catalog, func(int) (ProcessIdentity, error) {
+			inspections++
+			cancel()
+			return controller.Identity, nil
+		})
+		type sweepOutcome struct {
+			result WeeklyDevCacheSweepResult
+			err    error
+		}
+		outcomes := make(chan sweepOutcome, 1)
+		go func() {
+			result, err := RunWeeklyDevCacheSweep(drainCtx, request)
+			outcomes <- sweepOutcome{result: result, err: err}
+		}()
+		var outcome sweepOutcome
+		select {
+		case outcome = <-outcomes:
+		case <-time.After(250 * time.Millisecond):
+			t.Fatal("overdue drain did not return after deterministic cancellation")
+		}
+		if !errors.Is(outcome.err, context.Canceled) ||
+			!strings.Contains(outcome.err.Error(), "overdue dev cleanup") ||
+			outcome.result != (WeeklyDevCacheSweepResult{}) {
+			t.Fatalf("overdue drain result = %+v/%v, want zero result with overdue-cleanup context cancellation", outcome.result, outcome.err)
+		}
+		if inspections != 1 {
+			t.Fatalf("drain controller inspections = %d, want 1", inspections)
+		}
+
+		var gotDue string
+		if err := catalog.DB().QueryRowContext(ctx, `SELECT due_at FROM weekly_dev_cache_schedule WHERE id=?`, weeklyDevCacheScheduleID).Scan(&gotDue); err != nil {
+			t.Fatalf("load due time after canceled drain: %v", err)
+		}
+		if gotDue != formatTime(due) {
+			t.Fatalf("due time after canceled drain = %q, want unchanged %q", gotDue, formatTime(due))
+		}
+		for table, want := range map[string]int{
+			"providers": 0,
+			"sweeps":    0,
+			"evidence":  0,
+		} {
+			var count int
+			if err := catalog.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table).Scan(&count); err != nil {
+				t.Fatalf("count %s after canceled drain: %v", table, err)
+			}
+			if count != want {
+				t.Fatalf("%s count after canceled drain = %d, want %d", table, count, want)
+			}
+		}
+		var pauseCount int
+		if err := catalog.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM runtime_pause_epochs`).Scan(&pauseCount); err != nil {
+			t.Fatalf("count pauses after canceled drain: %v", err)
+		}
+		if pauseCount != 1 {
+			t.Fatalf("pause count after canceled drain = %d, want one required request", pauseCount)
+		}
+		pause, err := catalog.PauseEpoch(ctx, 1)
+		if err != nil {
+			t.Fatalf("load requested pause after canceled drain: %v", err)
+		}
+		if pause.State != PauseRequested {
+			t.Fatalf("pause state after canceled drain = %q, want unchanged %q", pause.State, PauseRequested)
 		}
 	})
 
