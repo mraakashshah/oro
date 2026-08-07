@@ -232,6 +232,61 @@ func TestWeeklyDevCacheSweepReconcilesInterruptedRun(t *testing.T) {
 	}
 }
 
+func TestWeeklyDevCacheSweepReconciliationRollsBackOnEvidenceCollision(t *testing.T) {
+	ctx := context.Background()
+	fixture := newInterruptedWeeklySweepFixture(t, ctx)
+	collisionID := fixture.sweepID + "-evidence"
+	collisionPayload := `{"owner":"unrelated"}`
+	if _, err := fixture.catalog.DB().ExecContext(ctx, `
+INSERT INTO evidence (id, sweep_id, kind, payload, created_at)
+VALUES (?, ?, 'collision', ?, ?)`, collisionID, fixture.unrelatedSweepID, collisionPayload, fixture.now.Format(time.RFC3339Nano)); err != nil {
+		t.Fatalf("seed evidence collision: %v", err)
+	}
+	calls := 0
+	request := fixture.request(t, &calls)
+	request.GlobalDrain.Protocol = storage.NewPauseEpochProtocol(fixture.catalog, func(int) (storage.ProcessIdentity, error) {
+		return storage.ProcessIdentity{}, errors.New("process exited")
+	})
+
+	if _, err := storage.RunWeeklyDevCacheSweep(ctx, request); err == nil {
+		t.Fatal("evidence collision error = nil, want reconciliation failure")
+	} else if !strings.Contains(err.Error(), "record interrupted weekly dev cache sweep") {
+		t.Fatalf("evidence collision error = %v, want interrupted evidence failure", err)
+	}
+	if calls != 0 {
+		t.Fatalf("provider calls after evidence collision = %d, want 0", calls)
+	}
+	var status string
+	var finishedAt sql.NullString
+	if err := fixture.catalog.DB().QueryRowContext(ctx, `SELECT status, finished_at FROM sweeps WHERE id=?`, fixture.sweepID).Scan(&status, &finishedAt); err != nil {
+		t.Fatalf("load collision target sweep: %v", err)
+	}
+	if status != "running" || finishedAt.Valid {
+		t.Fatalf("collision target status/finished_at = %q/%q, want running/null rollback", status, finishedAt.String)
+	}
+	pause, err := fixture.catalog.PauseEpoch(ctx, fixture.pauseEpoch)
+	if err != nil {
+		t.Fatalf("load collision target pause: %v", err)
+	}
+	if pause.State != storage.PauseRequested {
+		t.Fatalf("collision target pause = %q, want unchanged %q", pause.State, storage.PauseRequested)
+	}
+	var targetEvidence int
+	if err := fixture.catalog.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM evidence WHERE sweep_id=? AND kind='weekly_dev_cache_provider'`, fixture.sweepID).Scan(&targetEvidence); err != nil {
+		t.Fatalf("count target evidence after collision: %v", err)
+	}
+	if targetEvidence != 0 {
+		t.Fatalf("target valid evidence count = %d, want 0", targetEvidence)
+	}
+	var collisionSweep, gotPayload string
+	if err := fixture.catalog.DB().QueryRowContext(ctx, `SELECT sweep_id, payload FROM evidence WHERE id=?`, collisionID).Scan(&collisionSweep, &gotPayload); err != nil {
+		t.Fatalf("load unrelated collision evidence: %v", err)
+	}
+	if collisionSweep != fixture.unrelatedSweepID || gotPayload != collisionPayload {
+		t.Fatalf("collision evidence = %q/%q, want unchanged %q/%q", collisionSweep, gotPayload, fixture.unrelatedSweepID, collisionPayload)
+	}
+}
+
 func TestWeeklyDevCacheSweepReconciliationFailsClosedForLiveOwnership(t *testing.T) {
 	for _, test := range []struct {
 		name           string
@@ -387,18 +442,36 @@ func TestWeeklyDevCacheSweepReconciliationRequiresUniquePauseCorrelation(t *test
 			ctx := context.Background()
 			fixture := newInterruptedWeeklySweepFixture(t, ctx)
 			test.seed(ctx, t, fixture)
+			blockedDue := fixture.now.Add(-time.Hour)
+			if _, err := fixture.catalog.DB().ExecContext(ctx, `UPDATE weekly_dev_cache_schedule SET due_at=? WHERE id='weekly-dev-cache'`, blockedDue.Format(time.RFC3339Nano)); err != nil {
+				t.Fatalf("make unsafe reconciliation schedule due: %v", err)
+			}
+			var pauseCountBefore, sweepCountBefore, evidenceCountBefore, providerCountBefore int
+			if err := fixture.catalog.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM runtime_pause_epochs`).Scan(&pauseCountBefore); err != nil {
+				t.Fatalf("count pauses before unsafe reconciliation: %v", err)
+			}
+			if err := fixture.catalog.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM sweeps`).Scan(&sweepCountBefore); err != nil {
+				t.Fatalf("count sweeps before unsafe reconciliation: %v", err)
+			}
+			if err := fixture.catalog.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM evidence`).Scan(&evidenceCountBefore); err != nil {
+				t.Fatalf("count evidence before unsafe reconciliation: %v", err)
+			}
+			if err := fixture.catalog.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM providers`).Scan(&providerCountBefore); err != nil {
+				t.Fatalf("count providers before unsafe reconciliation: %v", err)
+			}
 			calls := 0
 			request := fixture.request(t, &calls)
 			request.GlobalDrain.Protocol = storage.NewPauseEpochProtocol(fixture.catalog, func(int) (storage.ProcessIdentity, error) {
 				return storage.ProcessIdentity{}, errors.New("process exited")
 			})
 
-			result, err := storage.RunWeeklyDevCacheSweep(ctx, request)
-			if err != nil {
-				t.Fatalf("run uncorrelated reconciliation: %v", err)
+			if _, err := storage.RunWeeklyDevCacheSweep(ctx, request); err == nil {
+				t.Fatal("unsafe correlation error = nil, want blocked reconciliation")
+			} else if !strings.Contains(err.Error(), "unsafe interrupted weekly dev cache sweep correlation") {
+				t.Fatalf("unsafe correlation error = %v, want explicit unsafe-correlation failure", err)
 			}
-			if result.Ran || calls != 0 || !result.NextDue.Equal(fixture.nextDue) {
-				t.Fatalf("result = %+v, calls = %d; want schedule-preserving no-op", result, calls)
+			if calls != 0 {
+				t.Fatalf("provider calls after unsafe correlation = %d, want 0", calls)
 			}
 			var status string
 			var finishedAt sql.NullString
@@ -421,6 +494,29 @@ func TestWeeklyDevCacheSweepReconciliationRequiresUniquePauseCorrelation(t *test
 			}
 			if pause.State != storage.PauseRequested {
 				t.Fatalf("uncorrelated pause state = %q, want unchanged %q", pause.State, storage.PauseRequested)
+			}
+			var gotDue string
+			if err := fixture.catalog.DB().QueryRowContext(ctx, `SELECT due_at FROM weekly_dev_cache_schedule WHERE id='weekly-dev-cache'`).Scan(&gotDue); err != nil {
+				t.Fatalf("load due time after unsafe correlation: %v", err)
+			}
+			if gotDue != blockedDue.Format(time.RFC3339Nano) {
+				t.Fatalf("due time after unsafe correlation = %q, want unchanged %q", gotDue, blockedDue.Format(time.RFC3339Nano))
+			}
+			var pauseCountAfter, sweepCountAfter, evidenceCountAfter, providerCountAfter int
+			if err := fixture.catalog.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM runtime_pause_epochs`).Scan(&pauseCountAfter); err != nil {
+				t.Fatalf("count pauses after unsafe reconciliation: %v", err)
+			}
+			if err := fixture.catalog.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM sweeps`).Scan(&sweepCountAfter); err != nil {
+				t.Fatalf("count sweeps after unsafe reconciliation: %v", err)
+			}
+			if err := fixture.catalog.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM evidence`).Scan(&evidenceCountAfter); err != nil {
+				t.Fatalf("count evidence after unsafe reconciliation: %v", err)
+			}
+			if err := fixture.catalog.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM providers`).Scan(&providerCountAfter); err != nil {
+				t.Fatalf("count providers after unsafe reconciliation: %v", err)
+			}
+			if pauseCountAfter != pauseCountBefore || sweepCountAfter != sweepCountBefore || evidenceCountAfter != evidenceCountBefore || providerCountAfter != providerCountBefore {
+				t.Fatalf("catalog counts after unsafe correlation = pause:%d sweep:%d evidence:%d provider:%d, want unchanged %d/%d/%d/%d", pauseCountAfter, sweepCountAfter, evidenceCountAfter, providerCountAfter, pauseCountBefore, sweepCountBefore, evidenceCountBefore, providerCountBefore)
 			}
 		})
 	}

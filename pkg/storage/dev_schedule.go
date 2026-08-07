@@ -25,6 +25,8 @@ const DevCacheSweepSizeThreshold int64 = 24 << 30 // 24 GiB
 
 const weeklyDevCacheScheduleID = "weekly-dev-cache"
 
+var errUnsafeInterruptedWeeklySweepCorrelation = errors.New("unsafe interrupted weekly dev cache sweep correlation")
+
 // DevCacheMaintenanceRunner runs one provider maintenance operation.
 type DevCacheMaintenanceRunner func(context.Context, ProviderMaintenance) (MaintenanceEvidence, error)
 
@@ -136,11 +138,11 @@ func reconcileInterruptedWeeklyDevCacheSweep(ctx context.Context, catalog *Catal
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	sweeps, correlated, err := interruptedWeeklyDevCacheSweeps(ctx, tx)
+	sweeps, err := interruptedWeeklyDevCacheSweeps(ctx, tx)
 	if err != nil {
 		return err
 	}
-	if len(sweeps) == 0 || !correlated {
+	if len(sweeps) == 0 {
 		return nil
 	}
 
@@ -182,7 +184,7 @@ func reconcileInterruptedWeeklyDevCacheSweep(ctx context.Context, catalog *Catal
 		if err != nil {
 			return fmt.Errorf("encode interrupted weekly dev cache sweep %s evidence: %w", sweep.id, err)
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO evidence (id, sweep_id, kind, payload, created_at) VALUES (?, ?, 'weekly_dev_cache_provider', ?, ?) ON CONFLICT(id) DO NOTHING`, sweep.id+"-evidence", sweep.id, string(evidence), formatTime(reconciledAt)); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO evidence (id, sweep_id, kind, payload, created_at) VALUES (?, ?, 'weekly_dev_cache_provider', ?, ?)`, sweep.id+"-evidence", sweep.id, string(evidence), formatTime(reconciledAt)); err != nil {
 			return fmt.Errorf("record interrupted weekly dev cache sweep %s evidence: %w", sweep.id, err)
 		}
 	}
@@ -231,7 +233,7 @@ func interruptedSweepHasLiveController(ctx context.Context, tx *sql.Tx, inspect 
 	return false, nil
 }
 
-func interruptedWeeklyDevCacheSweeps(ctx context.Context, tx *sql.Tx) ([]interruptedWeeklySweep, bool, error) {
+func interruptedWeeklyDevCacheSweeps(ctx context.Context, tx *sql.Tx) ([]interruptedWeeklySweep, error) {
 	rows, err := tx.QueryContext(ctx, `
 SELECT sweeps.id, sweeps.provider_id, COUNT(runtime_pause_epochs.epoch), MIN(runtime_pause_epochs.epoch)
 FROM sweeps
@@ -243,7 +245,7 @@ WHERE sweeps.id LIKE 'weekly-dev-cache-%'
   AND sweeps.finished_at IS NULL
 GROUP BY sweeps.id, sweeps.provider_id`, PauseRequested)
 	if err != nil {
-		return nil, false, fmt.Errorf("list interrupted weekly dev cache sweeps: %w", err)
+		return nil, fmt.Errorf("list interrupted weekly dev cache sweeps: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	var sweeps []interruptedWeeklySweep
@@ -252,18 +254,18 @@ GROUP BY sweeps.id, sweeps.provider_id`, PauseRequested)
 		var matches int
 		var pauseEpoch sql.NullInt64
 		if err := rows.Scan(&sweep.id, &sweep.providerID, &matches, &pauseEpoch); err != nil {
-			return nil, false, fmt.Errorf("scan interrupted weekly dev cache sweep: %w", err)
+			return nil, fmt.Errorf("scan interrupted weekly dev cache sweep: %w", err)
 		}
 		if matches != 1 || !pauseEpoch.Valid {
-			return nil, false, nil
+			return nil, fmt.Errorf("%w: sweep %s matched %d pause epochs", errUnsafeInterruptedWeeklySweepCorrelation, sweep.id, matches)
 		}
 		sweep.pauseEpoch = pauseEpoch.Int64
 		sweeps = append(sweeps, sweep)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, false, fmt.Errorf("iterate interrupted weekly dev cache sweeps: %w", err)
+		return nil, fmt.Errorf("iterate interrupted weekly dev cache sweeps: %w", err)
 	}
-	return sweeps, true, nil
+	return sweeps, nil
 }
 
 // devCacheOverSizeThreshold reports whether any provider's cache has reached
