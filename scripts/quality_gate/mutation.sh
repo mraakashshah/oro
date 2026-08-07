@@ -509,7 +509,7 @@ cmd_mutation_test_pattern() {
 		printf '^(TestDetachedStartForwardsBaseBranchToDaemon|TestJanitorStartPlumbing|TestStartProgressTimeoutFlag|TestStartReviewTimeoutFlagsAreDistinct)$'
 		;;
 	'cmd/oro/cmd_start.go:^(newStartCmd)$')
-		printf '^(TestDetachedStartForwardsBaseBranchToDaemon|TestJanitorStartPlumbing|TestStartBaseBranchFlag|TestStartManualIntegrationDaemonHandoffForwardsFlagAndConfig|TestStartMutationTestingFlag|TestStartProgressTimeoutFlag|TestStartRejectsGitHubPolicyBeforeDispatcherMutation|TestStartRejectsRepoLocalOroShadow|TestStartRejectsRemoteCapabilityDriftBeforeLaunch|TestStartReviewTimeoutFlagsAreDistinct|TestStartWebEnabledByDefault|TestStartWebFlags)$'
+		printf '^(TestNewStartCmdMutationBoundaries|TestStartRejectsGitHubPolicyBeforeDispatcherMutation)$'
 		;;
 	'cmd/oro/cmd_start.go:^(startFreshSwarm)$')
 		printf '^TestDetachedStartForwardsBaseBranchToDaemon$'

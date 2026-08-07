@@ -372,9 +372,11 @@ TestCmdMutationSharding() {
 			fail "$function cmd mutation owner has zero production coverage"
 	done <<'EOF'
 buildArgs	^(TestDetachedStartForwardsBaseBranchToDaemon|TestJanitorStartPlumbing|TestStartProgressTimeoutFlag|TestStartReviewTimeoutFlagsAreDistinct)$	4
-newStartCmd	^(TestDetachedStartForwardsBaseBranchToDaemon|TestJanitorStartPlumbing|TestStartBaseBranchFlag|TestStartManualIntegrationDaemonHandoffForwardsFlagAndConfig|TestStartMutationTestingFlag|TestStartProgressTimeoutFlag|TestStartRejectsGitHubPolicyBeforeDispatcherMutation|TestStartRejectsRepoLocalOroShadow|TestStartRejectsRemoteCapabilityDriftBeforeLaunch|TestStartReviewTimeoutFlagsAreDistinct|TestStartWebEnabledByDefault|TestStartWebFlags)$	12
+newStartCmd	^(TestNewStartCmdMutationBoundaries|TestStartRejectsGitHubPolicyBeforeDispatcherMutation)$	2
 startFreshSwarm	^TestDetachedStartForwardsBaseBranchToDaemon$	1
 EOF
+	timeout 30 go test -vet=off -count=1 -run '^TestNewStartCmdMutationBoundaries$' ./cmd/oro >/dev/null ||
+		fail 'newStartCmd direct owner must finish within 30 seconds'
 	got=$(cmd_mutation_pattern_for cmd/oro/cmd_monitor.go '^(RestartDaemon)$')
 	[[ "$got" == "$monitor_pattern" ]] ||
 		fail "RestartDaemon cmd mutation owner = $got, want $monitor_pattern"
