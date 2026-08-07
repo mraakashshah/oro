@@ -437,7 +437,7 @@ VALUES (?, ?, ?, 'running')`, legacySweepID, fixture.provider.ID, fixture.now.Ad
 		return status, finishedAt, evidenceCount
 	}
 
-	t.Run("reconciles unique current pair and diagnoses legacy orphan", func(t *testing.T) {
+	t.Run("reconciles unique current pair past legacy orphan", func(t *testing.T) {
 		ctx := context.Background()
 		fixture := newInterruptedWeeklySweepFixture(ctx, t)
 		seedLegacyOrphan(ctx, t, fixture)
@@ -447,13 +447,12 @@ VALUES (?, ?, ?, 'running')`, legacySweepID, fixture.provider.ID, fixture.now.Ad
 			return storage.ProcessIdentity{}, errors.New("process exited")
 		})
 
-		if _, err := storage.RunWeeklyDevCacheSweep(ctx, request); err == nil {
-			t.Fatal("legacy orphan diagnostic = nil, want explicit diagnostic after reconciling current pair")
-		} else if !strings.Contains(err.Error(), legacySweepID) || !strings.Contains(err.Error(), "matched 0 pause epochs") {
-			t.Fatalf("legacy orphan diagnostic = %v, want sweep id and zero-match count", err)
+		first, err := storage.RunWeeklyDevCacheSweep(ctx, request)
+		if err != nil {
+			t.Fatalf("reconcile current pair past legacy orphan: %v", err)
 		}
-		if calls != 0 {
-			t.Fatalf("provider calls after legacy diagnostic = %d, want 0", calls)
+		if first.Ran || calls != 0 || !first.NextDue.Equal(fixture.nextDue) {
+			t.Fatalf("first result = %+v, provider calls = %d; want reconciliation without running before %s", first, calls, fixture.nextDue)
 		}
 
 		status, finishedAt, evidenceCount := loadSweep(ctx, t, fixture.catalog, fixture.sweepID)
@@ -479,10 +478,21 @@ VALUES (?, ?, ?, 'running')`, legacySweepID, fixture.provider.ID, fixture.now.Ad
 			t.Fatalf("legacy sweep after current reconciliation = status:%q finished:%v evidence:%d, want running/null/0", legacyStatus, legacyFinishedAt.Valid, legacyEvidence)
 		}
 
-		if _, err := storage.RunWeeklyDevCacheSweep(ctx, request); err == nil {
-			t.Fatal("repeat legacy orphan diagnostic = nil, want explicit diagnostic")
-		} else if !strings.Contains(err.Error(), legacySweepID) || !strings.Contains(err.Error(), "matched 0 pause epochs") {
-			t.Fatalf("repeat legacy orphan diagnostic = %v, want sweep id and zero-match count", err)
+		var pauseRequested int
+		if err := fixture.catalog.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM runtime_pause_epochs WHERE state='pause_requested'`).Scan(&pauseRequested); err != nil {
+			t.Fatalf("count pause-requested epochs before repeat: %v", err)
+		}
+		if pauseRequested != 0 {
+			t.Fatalf("pause-requested epochs before repeat = %d, want 0", pauseRequested)
+		}
+		request.Now = func() time.Time { return fixture.nextDue }
+		second, err := storage.RunWeeklyDevCacheSweep(ctx, request)
+		if err != nil {
+			t.Fatalf("repeat with only diagnosed legacy orphan: %v", err)
+		}
+		wantNextDue := fixture.nextDue.Add(storage.WeeklyDevCacheSweepInterval)
+		if !second.Ran || calls != 1 || !second.NextDue.Equal(wantNextDue) {
+			t.Fatalf("repeat result = %+v, provider calls = %d; want due sweep and next due %s", second, calls, wantNextDue)
 		}
 		status, finishedAt, evidenceCount = loadSweep(ctx, t, fixture.catalog, fixture.sweepID)
 		if status != "failed" || !finishedAt.Valid || evidenceCount != 1 {
