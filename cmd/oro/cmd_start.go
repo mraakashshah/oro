@@ -40,11 +40,13 @@ type ExecDaemonSpawner struct {
 	ProgressTimeout    time.Duration
 	OpsReviewTimeout   time.Duration
 	ReviewStallTimeout time.Duration
-	ManualIntegration  bool
-	MutationTesting    bool
-	WebEnabled         bool
-	WebAddr            string
-	Cleanliness        cleanlinessStartConfig
+	// BaseBranch names the writable local integration branch forwarded to the daemon.
+	BaseBranch        string
+	ManualIntegration bool
+	MutationTesting   bool
+	WebEnabled        bool
+	WebAddr           string
+	Cleanliness       cleanlinessStartConfig
 }
 
 type cleanlinessStartConfig struct {
@@ -89,6 +91,9 @@ func (e *ExecDaemonSpawner) buildArgs(workers, maxWorkers int) []string {
 	}
 	if e.ReviewStallTimeout > 0 {
 		args = append(args, "--review-stall-timeout="+e.ReviewStallTimeout.String())
+	}
+	if baseBranch := strings.TrimSpace(e.BaseBranch); baseBranch != "" {
+		args = append(args, "--base-branch="+baseBranch)
 	}
 	if e.ManualIntegration {
 		args = append(args, "--manual-integration")
@@ -275,7 +280,10 @@ const (
 	tmuxManagedDaemonEnv   = "ORO_TMUX_MANAGED_DAEMON"
 )
 
-var runDaemonOnlyFn = runDaemonOnly //nolint:gochecknoglobals // test seam for start command flag handoff
+var (
+	runDaemonOnlyFn = runDaemonOnly //nolint:gochecknoglobals // test seam for start command flag handoff
+	runFullStartFn  = runFullStart  //nolint:gochecknoglobals // test seam for detached-start flag handoff
+)
 
 func withDaemonPreflightBypass(enabled bool, fn func() error) error {
 	if !enabled {
@@ -907,7 +915,7 @@ func newStartCmd() *cobra.Command {
 			if daemonOnly {
 				return runDaemonOnlyFn(cmd, pidPath, workers, maxWorkers, progressTimeout, opsReviewTimeout, reviewStallTimeout, manualIntegration, baseBranch, mutationTesting, webEnabled, webAddr, cleanliness)
 			}
-			return startFreshSwarm(cmd.OutOrStdout(), workers, maxWorkers, model, detach, progressTimeout, opsReviewTimeout, reviewStallTimeout, manualIntegration, mutationTesting, webEnabled, webAddr, cleanliness)
+			return startFreshSwarm(cmd.OutOrStdout(), workers, maxWorkers, model, detach, progressTimeout, opsReviewTimeout, reviewStallTimeout, manualIntegration, baseBranch, mutationTesting, webEnabled, webAddr, cleanliness)
 		},
 	}
 
@@ -922,7 +930,7 @@ func newStartCmd() *cobra.Command {
 	cmd.Flags().DurationVar(&reviewStallTimeout, "review-timeout", 0, "deprecated alias for --review-stall-timeout")
 	_ = cmd.Flags().MarkHidden("review-timeout")
 	cmd.Flags().BoolVar(&manualIntegration, "manual-integration", false, "leave completed worker branches for manual review instead of auto-merging")
-	cmd.Flags().StringVar(&baseBranch, "base-branch", "", "base branch for worktree creation (default: main)")
+	cmd.Flags().StringVar(&baseBranch, "base-branch", "", "writable local integration branch for worktree creation and merges (default: main)")
 	cmd.Flags().BoolVar(&mutationTesting, "mutation-testing", false, "run mutation-testing tiers in dispatcher quality gates (off by default)")
 	registerWebStartFlags(cmd, &webEnabled, &noWeb, &webAddr)
 	registerCleanlinessStartFlags(cmd, &cleanliness)
@@ -953,16 +961,17 @@ func registerCleanlinessStartFlags(cmd *cobra.Command, cleanliness *cleanlinessS
 }
 
 // startFreshSwarm sets up project env vars and launches the full swarm (daemon + tmux).
-func startFreshSwarm(w io.Writer, workers, maxWorkers int, model string, detach bool, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration, manualIntegration, mutationTesting, webEnabled bool, webAddr string, cleanliness cleanlinessStartConfig) error {
+func startFreshSwarm(w io.Writer, workers, maxWorkers int, model string, detach bool, progressTimeout, opsReviewTimeout, reviewStallTimeout time.Duration, manualIntegration bool, baseBranch string, mutationTesting, webEnabled bool, webAddr string, cleanliness cleanlinessStartConfig) error {
 	return withRuntimeProjectEnv(currentRepoRoot(), func(runtimeEnv runtimeProjectEnv) error {
 		if err := requireNativeProductionBeadSourceMode("oro start"); err != nil {
 			return err
 		}
-		return runFullStart(w, workers, maxWorkers, model, runtimeEnv.Project,
+		return runFullStartFn(w, workers, maxWorkers, model, runtimeEnv.Project,
 			&ExecDaemonSpawner{
 				ProgressTimeout:    progressTimeout,
 				OpsReviewTimeout:   opsReviewTimeout,
 				ReviewStallTimeout: reviewStallTimeout,
+				BaseBranch:         baseBranch,
 				ManualIntegration:  manualIntegration,
 				MutationTesting:    mutationTesting,
 				WebEnabled:         webEnabled,

@@ -1474,11 +1474,56 @@ func TestStartManualIntegrationDaemonHandoffForwardsFlagAndConfig(t *testing.T) 
 	}
 }
 
+func TestDetachedStartForwardsBaseBranchToDaemon(t *testing.T) {
+	t.Setenv("ORO_HOME", t.TempDir())
+	t.Setenv("ORO_PROJECT", "oro")
+	previousRunFullStart := runFullStartFn
+	t.Cleanup(func() { runFullStartFn = previousRunFullStart })
+
+	var args []string
+	runFullStartFn = func(_ io.Writer, workers, maxWorkers int, _, _ string, spawner DaemonSpawner, _ CmdRunner, _ func(int) error, _ time.Duration, _ func(time.Duration), _ time.Duration, _ bool) error {
+		execSpawner, ok := spawner.(*ExecDaemonSpawner)
+		if !ok {
+			t.Fatalf("detached start spawner = %T, want *ExecDaemonSpawner", spawner)
+		}
+		args = execSpawner.buildArgs(workers, maxWorkers)
+		return nil
+	}
+	if err := startFreshSwarm(io.Discard, 2, 2, "balanced", true, 0, 0, 0, false, "integration/factory-main-test", false, false, "", defaultCleanlinessStartConfig()); err != nil {
+		t.Fatalf("startFreshSwarm: %v", err)
+	}
+
+	want := "--base-branch=integration/factory-main-test"
+	count := 0
+	for _, arg := range args {
+		if arg == want {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("daemon args contain %q %d times, want exactly once: %q", want, count, args)
+	}
+
+	emptyArgs := (&ExecDaemonSpawner{}).buildArgs(2, 2)
+	for _, arg := range emptyArgs {
+		if strings.HasPrefix(arg, "--base-branch=") {
+			t.Fatalf("empty base branch emitted child argument %q in %q", arg, emptyArgs)
+		}
+	}
+}
+
 // TestStartBaseBranchFlag verifies that the --base-branch flag exists on the
 // start command and that its value flows into Config.DefaultBranch via buildDispatcher.
 func TestStartBaseBranchFlag(t *testing.T) {
 	t.Run("flag exists and parses value", func(t *testing.T) {
 		cmd := newStartCmd()
+		flag := cmd.Flags().Lookup("base-branch")
+		if flag == nil {
+			t.Fatal("base-branch flag is missing")
+		}
+		if !strings.Contains(flag.Usage, "writable local integration branch") {
+			t.Fatalf("base-branch usage = %q, want writable local integration branch scope", flag.Usage)
+		}
 		if err := cmd.ParseFlags([]string{"--base-branch=develop"}); err != nil {
 			t.Fatalf("ParseFlags: %v", err)
 		}
