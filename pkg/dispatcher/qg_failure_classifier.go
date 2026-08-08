@@ -142,8 +142,13 @@ func FingerprintQGFailure(output string, opts QGFingerprintOptions) (fingerprint
 }
 
 // ClassifyQGFailure maps a QG failure record plus prior history to the
-// dispatcher policy that should handle it.
-func ClassifyQGFailure(record QGFailureRecord, history QGFailureHistory, attribution QGFailureAttribution) QGFailureClassification {
+// dispatcher policy that should handle it. Callers without exact target
+// evidence may omit attribution to preserve the conservative policy.
+func ClassifyQGFailure(record QGFailureRecord, history QGFailureHistory, attributions ...QGFailureAttribution) QGFailureClassification {
+	var attribution QGFailureAttribution
+	if len(attributions) > 0 {
+		attribution = attributions[0]
+	}
 	text := strings.ToLower(record.Output + "\n" + record.Summary)
 
 	switch {

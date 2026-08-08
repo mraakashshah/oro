@@ -195,6 +195,16 @@ func TestClassifyQGFailureTargetBaselineAttribution(t *testing.T) {
 	reviveFailure := "▶ revive                         ✗ FAIL\n" +
 		"pkg/remotegate/types_test.go:130:6: avoid package-level name `delete` (builtinShadow)"
 	fingerprint, _ := FingerprintQGFailure(reviveFailure, QGFingerprintOptions{})
+	t.Run("omitted attribution preserves conservative API", func(t *testing.T) {
+		got := ClassifyQGFailure(
+			QGFailureRecord{Fingerprint: fingerprint, Output: reviveFailure},
+			QGFailureHistory{AffectedBeads: 3},
+		)
+		if got.Class != QGFailureClassSystemic || got.Decision != QGFailureDecisionCreateOrReuseInfra {
+			t.Fatalf("ClassifyQGFailure() = class=%q decision=%q reason=%q, want systemic/create_or_reuse_infra",
+				got.Class, got.Decision, got.Reason)
+		}
+	})
 
 	tests := []struct {
 		name         string
