@@ -189,7 +189,6 @@ func TestClassifyQGFailureDecisionMatrix(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestClassifyQGFailureTargetBaselineAttribution(t *testing.T) {
@@ -282,6 +281,16 @@ func TestClassifyQGFailureTargetBaselineAttribution(t *testing.T) {
 		if _, accepted := d.acceptReadyEvidence(ctx, readyWorkerID, &ready); !accepted {
 			t.Fatal("canonical READY was not accepted")
 		}
+		if _, err := d.db.ExecContext(ctx, `
+UPDATE review_checkpoints
+SET state = ?
+WHERE head_sha = ? AND target_sha = ?`,
+			ReviewCheckpointStateIntegrated, ready.TargetSHA, ready.TargetSHA); err != nil {
+			t.Fatalf("advance accepted target checkpoint lifecycle: %v", err)
+		}
+		d.mu.Lock()
+		d.qgTargetObservations = make(map[string]qgTargetObservation)
+		d.mu.Unlock()
 
 		seedCrossBeadQGHistory(t, d, fingerprint, reviveFailure)
 

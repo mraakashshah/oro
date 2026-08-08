@@ -305,8 +305,10 @@ func (d *Dispatcher) acceptedQGTargetPassed(ctx context.Context, targetSHA strin
 	err := d.db.QueryRowContext(ctx, `
 SELECT COUNT(*)
 FROM review_checkpoints
-WHERE state = ? AND head_sha = ? AND target_sha = ?`,
-		ReviewCheckpointStateQGPassed, targetSHA, targetSHA).Scan(&matches)
+WHERE head_sha = ? AND target_sha = ?
+  AND COALESCE(qg_evidence_path, '') <> ''
+  AND COALESCE(qg_evidence_sha256, '') <> ''`,
+		targetSHA, targetSHA).Scan(&matches)
 	return err == nil && matches > 0
 }
 
