@@ -557,13 +557,20 @@ func (s *SQLiteStore) RemoveDependency(ctx context.Context, beadID, dependsOnID 
 	if err := ensureBeadExists(ctx, tx, beadID); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM bead_deps WHERE bead_id=? AND depends_on_id=?`, beadID, dependsOnID); err != nil {
+	result, err := tx.ExecContext(ctx, `DELETE FROM bead_deps WHERE bead_id=? AND depends_on_id=?`, beadID, dependsOnID)
+	if err != nil {
 		return fmt.Errorf("beadstore: remove dependency %s -> %s: %w", beadID, dependsOnID, err)
 	}
-	if err := insertEvent(ctx, tx, "bead_dependency_removed", beadID, map[string]any{
-		"depends_on_id": dependsOnID,
-	}); err != nil {
-		return err
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("beadstore: count dependency removal %s -> %s: %w", beadID, dependsOnID, err)
+	}
+	if changed > 0 {
+		if err := insertEvent(ctx, tx, "bead_dependency_removed", beadID, map[string]any{
+			"depends_on_id": dependsOnID,
+		}); err != nil {
+			return err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("beadstore: commit remove dependency %s -> %s: %w", beadID, dependsOnID, err)

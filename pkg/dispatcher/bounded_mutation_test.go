@@ -79,6 +79,67 @@ func TestDispatcherOperationWatchdogReleasesRetainedMutexForCleanup(t *testing.T
 	}
 }
 
+func TestTryAssignBatchP0MutationOwner(t *testing.T) {
+	d := &Dispatcher{}
+	if handles := d.tryAssignBatch(t.Context()); handles != nil {
+		t.Fatalf("stopped dispatcher assignment handles = %d, want nil", len(handles))
+	}
+	if scoped, blocked := d.scopeRecoveryQuarantineAssignments(t.Context(), nil); blocked || scoped != nil {
+		t.Fatalf("empty recovery scope = (%v, %t), want (nil, false)", scoped, blocked)
+	}
+
+	const schedulingBehaviorPattern = "^(TestReadyObservationFailureBlocksAssignmentAndDegradesHealthAndStatus|TestSpawnFor_StalePendingTargetDoesNotReserveBeadForever|TestAutoScaleOnQueueDepth|TestTryAssign_EscalatesDependencyCycle)$"
+	for _, pattern := range []string{
+		schedulingBehaviorPattern,
+		"^TestRedeployableQuarantineWithoutReadyBeadReportsAssignmentFreeze$",
+		"^TestTryAssignBlocksFreshWorkWhenRecoveryQuarantineOpen$",
+	} {
+		runTryAssignBatchMutationBehavior(t, pattern)
+	}
+}
+
+func runTryAssignBatchMutationBehavior(t *testing.T, pattern string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], //nolint:gosec // test helper re-executes this binary with fixed arguments
+		"-test.run="+pattern, "-test.count=1", "-test.parallel=1", "-test.timeout=7s")
+	output, err := cmd.CombinedOutput()
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		t.Fatalf("tryAssignBatch P0 behavior %q retained the dispatcher mutex past its bounded subprocess deadline: %s", pattern, output)
+	}
+	if err != nil {
+		t.Fatalf("tryAssignBatch P0 behavior %q failed in bounded subprocess: %v\n%s", pattern, err, output)
+	}
+}
+
+func TestTryAssignBatchExcludesBusyAndDrainingWorkers(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		state protocol.WorkerState
+		drain bool
+	}{
+		{name: "busy", state: protocol.WorkerBusy},
+		{name: "draining", state: protocol.WorkerIdle, drain: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, beadSrc, workers := setupTryAssignSchedulingTest(t, 1)
+			seedTryAssignBead(t, beadSrc, protocol.Bead{ID: "oro-ineligible-worker", Priority: 0})
+			beadSrc.SetBeads([]protocol.Bead{{ID: "oro-ineligible-worker", Priority: 0}})
+
+			d.mu.Lock()
+			for _, worker := range d.workers {
+				worker.state = tc.state
+				worker.drainAfterAssignment = tc.drain
+			}
+			d.mu.Unlock()
+
+			waitForSetup(t, d.tryAssignBatch(t.Context()))
+			assertMockWorkerAssignCount(t, workers, 0)
+		})
+	}
+}
+
 func TestSpawnEscalationOneShotReturnsAfterReadingWorktree(t *testing.T) {
 	d, beadSrc, _, _, _, spawnMock := newTestDispatcher(t)
 	const beadID = "mutation-bounded-escalation"
