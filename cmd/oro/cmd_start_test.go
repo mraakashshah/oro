@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -1507,9 +1508,26 @@ func TestDetachedStartForwardsBaseBranchToDaemon(t *testing.T) {
 
 	emptyArgs := (&ExecDaemonSpawner{}).buildArgs(2, 2)
 	for _, arg := range emptyArgs {
-		if strings.HasPrefix(arg, "--base-branch=") {
-			t.Fatalf("empty base branch emitted child argument %q in %q", arg, emptyArgs)
+		if strings.HasPrefix(arg, "--base-branch=") || strings.HasPrefix(arg, "--base-ref=") ||
+			strings.HasPrefix(arg, "--target-branch=") || strings.HasPrefix(arg, "--ops-review-timeout=") {
+			t.Fatalf("empty optional daemon config emitted child argument %q in %q", arg, emptyArgs)
 		}
+	}
+	for _, tc := range []struct {
+		name    string
+		spawner ExecDaemonSpawner
+		want    string
+	}{
+		{name: "base ref only", spawner: ExecDaemonSpawner{BaseRef: " origin/main "}, want: "--base-ref=origin/main"},
+		{name: "target branch only", spawner: ExecDaemonSpawner{TargetBranch: " release "}, want: "--target-branch=release"},
+		{name: "web enabled", spawner: ExecDaemonSpawner{WebEnabled: true}, want: "--web"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.spawner.buildArgs(2, 2)
+			if !slices.Contains(got, tc.want) {
+				t.Fatalf("daemon args %q do not contain %q", got, tc.want)
+			}
+		})
 	}
 
 	t.Setenv("ORO_BEADSOURCE_MODE", "cli")
@@ -1543,6 +1561,270 @@ func TestDetachedStartForwardsBaseBranchToDaemon(t *testing.T) {
 	if err != nil || !detach {
 		t.Fatalf("detach flag = %t, err=%v, want true", detach, err)
 	}
+}
+
+func TestStartSeparatesAssignmentBaseRefFromWritableTarget(t *testing.T) {
+	t.Run("flags and daemon arguments remain distinct", func(t *testing.T) {
+		cmd := newStartCmd()
+		if err := cmd.ParseFlags([]string{
+			"--base-ref=origin/main",
+			"--target-branch=integration/factory-main",
+		}); err != nil {
+			t.Fatalf("parse start branch flags: %v", err)
+		}
+		baseRef, err := cmd.Flags().GetString("base-ref")
+		if err != nil {
+			t.Fatalf("read base-ref: %v", err)
+		}
+		targetBranch, err := cmd.Flags().GetString("target-branch")
+		if err != nil {
+			t.Fatalf("read target-branch: %v", err)
+		}
+		if baseRef != "origin/main" || targetBranch != "integration/factory-main" {
+			t.Fatalf("parsed branches = %q/%q, want immutable origin/main and writable integration/factory-main", baseRef, targetBranch)
+		}
+
+		args := (&ExecDaemonSpawner{BaseRef: baseRef, TargetBranch: targetBranch}).buildArgs(2, 2)
+		for _, want := range []string{"--base-ref=origin/main", "--target-branch=integration/factory-main"} {
+			count := 0
+			for _, arg := range args {
+				if arg == want {
+					count++
+				}
+			}
+			if count != 1 {
+				t.Fatalf("daemon args contain %q %d times, want exactly once: %q", want, count, args)
+			}
+		}
+	})
+
+	t.Run("dispatcher config carries both identities", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv("ORO_HOME", filepath.Join(tmpDir, ".oro"))
+		t.Setenv("ORO_PROJECT", "")
+		t.Setenv("ORO_SOCKET_PATH", filepath.Join(tmpDir, "oro.sock"))
+
+		d, db, err := buildDispatcherWithBranches(startBranchConfig{
+			BaseRef:      "origin/main",
+			TargetBranch: "integration/factory-main",
+		}, false, "")
+		if err != nil {
+			t.Fatalf("build dispatcher with distinct branches: %v", err)
+		}
+		defer func() { _ = db.Close() }()
+
+		cfg := d.GetConfig()
+		if cfg.BaseRef != "origin/main" || cfg.TargetBranch != "integration/factory-main" {
+			t.Fatalf("dispatcher branches = %q/%q, want origin/main and integration/factory-main", cfg.BaseRef, cfg.TargetBranch)
+		}
+		if cfg.DefaultBranch != cfg.TargetBranch {
+			t.Fatalf("compatibility DefaultBranch = %q, want writable target %q", cfg.DefaultBranch, cfg.TargetBranch)
+		}
+	})
+
+	t.Run("compatibility defaults preserve writable local behavior", func(t *testing.T) {
+		legacy, err := resolveStartBranchConfig(context.Background(), "", "", "release/local")
+		if err != nil {
+			t.Fatalf("resolve legacy branch: %v", err)
+		}
+		if legacy.BaseRef != "release/local" || legacy.TargetBranch != "release/local" {
+			t.Fatalf("legacy branches = %+v, want release/local for both roles", legacy)
+		}
+
+		baseOnly, err := resolveStartBranchConfig(context.Background(), "origin/main", "", "")
+		if err != nil {
+			t.Fatalf("resolve base-only branches: %v", err)
+		}
+		if baseOnly.BaseRef != "origin/main" || baseOnly.TargetBranch != "main" {
+			t.Fatalf("base-only branches = %+v, want origin/main base and main target", baseOnly)
+		}
+	})
+
+	t.Run("remote tracking target fails without ref mutation", func(t *testing.T) {
+		repo := t.TempDir()
+		runGitTestCommand(t, "", "init", repo)
+		runGitTestCommand(t, repo, "remote", "add", "origin", filepath.Join(t.TempDir(), "upstream.git"))
+		withChdir(t, repo, func() {
+			before := runGitTestCommand(t, repo, "for-each-ref", "--format=%(refname) %(objectname)")
+			_, err := resolveStartBranchConfig(context.Background(), "origin/main", "origin/main", "")
+			if err == nil || !strings.Contains(err.Error(), "writable local") {
+				t.Fatalf("remote target error = %v, want writable-local rejection", err)
+			}
+			after := runGitTestCommand(t, repo, "for-each-ref", "--format=%(refname) %(objectname)")
+			if after != before {
+				t.Fatalf("branch validation mutated refs: before %q, after %q", before, after)
+			}
+		})
+	})
+}
+
+func TestSplitBranchCmdMutationOwner(t *testing.T) {
+	t.Run("flag bindings remain distinct", func(t *testing.T) {
+		var (
+			workers, maxWorkers                        int
+			daemonOnly, detach                         bool
+			model                                      string
+			progressTimeout, opsTimeout, reviewTimeout time.Duration
+			manualIntegration                          bool
+			baseBranch, baseRef, targetBranch          string
+			mutationTesting, webEnabled, noWeb         bool
+			webAddr                                    string
+			cleanliness                                = defaultCleanlinessStartConfig()
+		)
+		cmd := &cobra.Command{}
+		registerStartCommandFlags(
+			cmd, &workers, &maxWorkers, &daemonOnly, &detach, &model,
+			&progressTimeout, &opsTimeout, &reviewTimeout,
+			&manualIntegration, &baseBranch, &baseRef, &targetBranch,
+			&mutationTesting, &webEnabled, &noWeb, &webAddr, &cleanliness,
+		)
+
+		if workers != 2 || maxWorkers != 0 || model != "balanced" || !webEnabled {
+			t.Fatalf("registered defaults workers/max/model/web = %d/%d/%q/%t", workers, maxWorkers, model, webEnabled)
+		}
+		if alias := cmd.Flags().Lookup("review-timeout"); alias == nil || !alias.Hidden {
+			t.Fatalf("review-timeout alias = %+v, want hidden", alias)
+		}
+		if err := cmd.ParseFlags([]string{
+			"--workers=4", "--max-workers=9", "--daemon-only", "--detach",
+			"--progress-timeout=2m", "--ops-review-timeout=4m", "--review-timeout=3m",
+			"--manual-integration", "--base-branch=legacy", "--base-ref=origin/main",
+			"--target-branch=release", "--mutation-testing", "--no-web", "--janitor-interval=17",
+		}); err != nil {
+			t.Fatalf("parse registered flags: %v", err)
+		}
+		if workers != 4 || maxWorkers != 9 || !daemonOnly || !detach ||
+			progressTimeout != 2*time.Minute || opsTimeout != 4*time.Minute || reviewTimeout != 3*time.Minute ||
+			!manualIntegration || baseBranch != "legacy" || baseRef != "origin/main" ||
+			targetBranch != "release" || !mutationTesting || !noWeb || cleanliness.JanitorInterval != 17 {
+			t.Fatalf("parsed bindings workers/max/daemon/detach/timeouts/manual/branches/mutation/no-web/janitor = %d/%d/%t/%t/%v/%v/%v/%t/%q/%q/%q/%t/%t/%d",
+				workers, maxWorkers, daemonOnly, detach, progressTimeout, opsTimeout, reviewTimeout,
+				manualIntegration, baseBranch, baseRef, targetBranch, mutationTesting, noWeb, cleanliness.JanitorInterval)
+		}
+	})
+
+	t.Run("branch resolution rejects remote targets before side effects", func(t *testing.T) {
+		branches, err := resolveStartBranchConfig(context.Background(), " origin/main ", " main ", "legacy")
+		if err != nil {
+			t.Fatalf("resolve distinct branch roles: %v", err)
+		}
+		if branches != (startBranchConfig{BaseRef: "origin/main", TargetBranch: "main"}) {
+			t.Fatalf("resolved branches = %+v", branches)
+		}
+		if !startTargetIsRemoteTrackingRef(context.Background(), " refs/remotes/upstream/main ") {
+			t.Fatal("refs/remotes target was not rejected")
+		}
+		if startTargetIsRemoteTrackingRef(context.Background(), "release") {
+			t.Fatal("local release target was classified as remote")
+		}
+
+		repo := t.TempDir()
+		runGitTestCommand(t, "", "init", repo)
+		runGitTestCommand(t, repo, "remote", "add", "upstream", filepath.Join(t.TempDir(), "upstream.git"))
+		runGitTestCommand(t, repo, "remote", "add", "release", filepath.Join(t.TempDir(), "release.git"))
+		withChdir(t, repo, func() {
+			if !startTargetIsRemoteTrackingRef(context.Background(), "upstream/main") {
+				t.Fatal("configured remote target was not classified as remote")
+			}
+			if startTargetIsRemoteTrackingRef(context.Background(), "release") {
+				t.Fatal("slashless local branch was classified as configured remote")
+			}
+		})
+		withChdir(t, t.TempDir(), func() {
+			if !startTargetIsRemoteTrackingRef(context.Background(), "origin/main") {
+				t.Fatal("origin target must fail closed when git remote lookup fails")
+			}
+		})
+
+		for _, tc := range []struct {
+			name                          string
+			baseRef, target, legacy       string
+			wantBaseRef, wantTargetBranch string
+		}{
+			{name: "empty", wantBaseRef: "main", wantTargetBranch: "main"},
+			{name: "legacy", legacy: " release/local ", wantBaseRef: "release/local", wantTargetBranch: "release/local"},
+			{name: "base only", baseRef: " origin/main ", wantBaseRef: "origin/main", wantTargetBranch: "main"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				got, err := resolveStartBranchConfig(context.Background(), tc.baseRef, tc.target, tc.legacy)
+				if err != nil {
+					t.Fatalf("resolve branches: %v", err)
+				}
+				if got.BaseRef != tc.wantBaseRef || got.TargetBranch != tc.wantTargetBranch {
+					t.Fatalf("resolved branches = %+v, want base %q target %q", got, tc.wantBaseRef, tc.wantTargetBranch)
+				}
+			})
+		}
+
+		_, _, err = buildDispatcherWithReviewTimeoutsAndCleanliness(
+			1, 1, 0, 0, 0, false, "refs/remotes/origin/main", false, false, "", defaultCleanlinessStartConfig(),
+		)
+		if err == nil || err.Error() != `target branch "refs/remotes/origin/main" is remote-tracking; choose an explicit writable local branch` {
+			t.Fatalf("legacy remote target error = %v", err)
+		}
+
+		cmd := &cobra.Command{}
+		cmd.Flags().String("base-ref", "", "")
+		cmd.Flags().String("target-branch", "", "")
+		if err := cmd.Flags().Set("base-ref", "origin/main"); err != nil {
+			t.Fatalf("set base ref: %v", err)
+		}
+		if err := cmd.Flags().Set("target-branch", "refs/remotes/origin/main"); err != nil {
+			t.Fatalf("set target branch: %v", err)
+		}
+		pidPath := filepath.Join(t.TempDir(), "oro.pid")
+		err = runDaemonOnly(cmd, pidPath, 1, 1, 0, 0, 0, false, "", false, false, "", defaultCleanlinessStartConfig())
+		if err == nil || !strings.Contains(err.Error(), "remote-tracking") {
+			t.Fatalf("daemon remote target error = %v", err)
+		}
+		if _, statErr := os.Stat(pidPath); !os.IsNotExist(statErr) {
+			t.Fatalf("remote target reached PID lifecycle: %v", statErr)
+		}
+	})
+
+	t.Run("inner dispatcher builder fails before initialization", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		t.Setenv("ORO_PROJECT", "")
+		t.Setenv("ORO_BEADSOURCE_MODE", "cli")
+		_, _, err := buildDispatcherWithReviewTimeoutsAndCleanlinessForBranches(
+			1, 1, 0, 0, 0, false,
+			startBranchConfig{BaseRef: "origin/main", TargetBranch: "main"},
+			false, false, "", defaultCleanlinessStartConfig(),
+		)
+		if err == nil || !strings.Contains(err.Error(), "requires native sqlite beadstore") {
+			t.Fatalf("non-native builder error = %v", err)
+		}
+	})
+
+	t.Run("fresh start uses injected handoff", func(t *testing.T) {
+		t.Setenv("ORO_HOME", t.TempDir())
+		t.Setenv("ORO_PROJECT", "mutation-owner")
+		t.Setenv("ORO_BEADSOURCE_MODE", "sqlite")
+		previousRunFullStart := runFullStartFn
+		t.Cleanup(func() { runFullStartFn = previousRunFullStart })
+
+		spawner := &ExecDaemonSpawner{BaseRef: "origin/main", TargetBranch: "main"}
+		called := false
+		runFullStartFn = func(_ io.Writer, workers, maxWorkers int, model, project string, gotSpawner DaemonSpawner, _ CmdRunner, _ func(int) error, _ time.Duration, _ func(time.Duration), _ time.Duration, detach bool) error {
+			called = true
+			if workers != 2 || maxWorkers != 5 || model != "deep" || project != "mutation-owner" || gotSpawner != spawner || !detach {
+				t.Fatalf("fresh handoff workers/max/model/project/spawner/detach = %d/%d/%q/%q/%T/%t", workers, maxWorkers, model, project, gotSpawner, detach)
+			}
+			return fmt.Errorf("bounded owner handoff")
+		}
+
+		err := startFreshSwarmWithSpawner(io.Discard, 2, 5, "deep", true, spawner)
+		if err == nil || err.Error() != "bounded owner handoff" || !called {
+			t.Fatalf("fresh start result called/error = %t/%v", called, err)
+		}
+
+		called = false
+		t.Setenv("ORO_BEADSOURCE_MODE", "cli")
+		err = startFreshSwarmWithSpawner(io.Discard, 2, 5, "deep", true, spawner)
+		if err == nil || !strings.Contains(err.Error(), "requires native sqlite beadstore") || called {
+			t.Fatalf("non-native fresh start called/error = %t/%v, want rejection before handoff", called, err)
+		}
+	})
 }
 
 func TestNewStartCmdMutationBoundaries(t *testing.T) {

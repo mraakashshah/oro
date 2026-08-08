@@ -241,6 +241,22 @@ p0_durability_pattern_for() {
 	bash -c "$function_source"$'\n''p0_durability_mutation_test_pattern "$1" "$2"' _ "$file" "$match" || true
 }
 
+split_branch_pattern_for() {
+	local file="$1"
+	local match="$2"
+	local function_source
+	function_source=$(awk '
+		/^split_branch_mutation_test_pattern\(\)/ { copying = 1 }
+		copying { print }
+		copying && /^}/ { exit }
+	' "$runner")
+	if [[ -z "$function_source" ]]; then
+		fail 'mutation runner omitted split-branch owner mapping'
+		return 1
+	fi
+	bash -c "$function_source"$'\n''split_branch_mutation_test_pattern "$1" "$2"' _ "$file" "$match" || true
+}
+
 function_sharded_for() {
 	local file="$1"
 	local function_source
@@ -309,6 +325,113 @@ EOF
 	got=$(cmd_mutation_pattern_for cmd/oro/cmd_start.go '^(startFreshSwarm)$')
 	[[ "$got" == '^TestDetachedStartForwardsBaseBranchToDaemon$' ]] ||
 		fail "P0 mapping changed cmd owner: $got"
+}
+
+TestSplitBranchMutationOwners() {
+	local cardinality coverage coverage_root file function got listed package pattern report
+	local cmd_pattern='^TestSplitBranchCmdMutationOwner$'
+	local config_pattern='^TestSplitBranchConfigMutationOwner$'
+
+	coverage_root=$(mktemp -d)
+	# shellcheck disable=SC2064 # expand the function-local path before the RETURN trap runs.
+	trap "rm -rf '$coverage_root'" RETURN
+	while IFS=$'\t' read -r file function package pattern cardinality; do
+		got=$(split_branch_pattern_for "$file" "^(${function})$")
+		[[ "$got" == "$pattern" ]] ||
+			fail "$file $function split-branch owner = $got, want $pattern"
+		function_sharded_for "$file" || fail "$file must use per-function mutation sharding"
+		listed=$(go test -list "$pattern" "$package")
+		[[ "$(grep -Ec '^Test' <<<"$listed")" == "$cardinality" ]] ||
+			fail "$file $function owner must select exactly $cardinality real test"
+		coverage="$coverage_root/${function}.out"
+		timeout 60 go test -vet=off -count=1 -timeout 55s -coverprofile="$coverage" -run "$pattern" "$package" >/dev/null
+		report=$(go tool cover -func="$coverage")
+		awk -v target="$function" '
+			$2 == target || $2 ~ ("[.]" target "$") {
+				value = $3
+				gsub(/%/, "", value)
+				if (value + 0 > 0) found = 1
+			}
+			END { exit !found }
+		' <<<"$report" || fail "$file $function owner has zero production coverage"
+	done <<EOF
+cmd/oro/cmd_start.go	buildDispatcherWithReviewTimeoutsAndCleanliness	./cmd/oro	$cmd_pattern	1
+cmd/oro/cmd_start.go	buildDispatcherWithReviewTimeoutsAndCleanlinessForBranches	./cmd/oro	$cmd_pattern	1
+cmd/oro/cmd_start.go	registerStartCommandFlags	./cmd/oro	$cmd_pattern	1
+cmd/oro/cmd_start.go	resolveStartBranchConfig	./cmd/oro	$cmd_pattern	1
+cmd/oro/cmd_start.go	runDaemonOnly	./cmd/oro	$cmd_pattern	1
+cmd/oro/cmd_start.go	startFreshSwarmWithSpawner	./cmd/oro	$cmd_pattern	1
+cmd/oro/cmd_start.go	startTargetIsRemoteTrackingRef	./cmd/oro	$cmd_pattern	1
+pkg/dispatcher/config.go	validateBranchConfig	./pkg/dispatcher	$config_pattern	1
+pkg/dispatcher/config.go	validateOperationalConfig	./pkg/dispatcher	$config_pattern	1
+pkg/dispatcher/config.go	withDefaults	./pkg/dispatcher	$config_pattern	1
+EOF
+
+	while IFS=$'\t' read -r file function; do
+		got=$(split_branch_pattern_for "$file" "^(${function})$")
+		[[ -z "$got" ]] || fail "$file $function must remain an explicit no-site unit: $got"
+	done <<'EOF'
+cmd/oro/cmd_start.go	buildDispatcherWithBranches
+cmd/oro/cmd_start.go	startFreshSwarm
+cmd/oro/cmd_start.go	startFreshSwarmWithBranches
+EOF
+
+	got=$(split_branch_pattern_for cmd/oro/other.go '^(resolveStartBranchConfig)$')
+	[[ -z "$got" ]] || fail "split-branch owner accepted wrong command source: $got"
+	got=$(split_branch_pattern_for pkg/dispatcher/other.go '^(validateBranchConfig)$')
+	[[ -z "$got" ]] || fail "split-branch owner accepted wrong dispatcher source: $got"
+	got=$(split_branch_pattern_for cmd/oro/cmd_start.go '^(unmappedStartFunction)$')
+	[[ -z "$got" ]] || fail "split-branch owner accepted wrong function: $got"
+	got=$(split_branch_pattern_for cmd/oro/cmd_start.go '^(resolveStartBranchConfig|runDaemonOnly)$')
+	[[ -z "$got" ]] || fail "split-branch owner accepted grouped function union: $got"
+
+	got=$(p0_durability_pattern_for pkg/dispatcher/scheduling.go '^(tryAssignBatch)$')
+	[[ "$got" == '^TestTryAssignBatchP0MutationOwner$' ]] || fail "split-branch mapping changed P0 scheduling owner: $got"
+	got=$(p0_durability_pattern_for pkg/dispatcher/scheduling.go '^(scopeRecoveryQuarantineAssignments)$')
+	[[ "$got" == '^TestTryAssignBatchP0MutationOwner$' ]] || fail "split-branch mapping changed P0 quarantine owner: $got"
+	got=$(p0_durability_pattern_for pkg/beadstore/sqlite.go '^(RemoveDependency)$')
+	[[ "$got" == '^(TestParityDependencyAndStatusAPIs|TestSQLiteRemoveDependencyNoOpDoesNotEmitEvent|TestSQLiteRemoveDependencyPropagatesTransactionFailures|TestSQLiteStoreDependencyRoundTrip)$' ]] ||
+		fail "split-branch mapping changed P0 dependency owner: $got"
+	got=$(startup_maintenance_pattern_for cmd/oro/cmd_start.go '^(withEnvValue)$')
+	[[ "$got" == '^(TestDaemonChildEnvMarksTmuxManagedDaemon|TestStartModesPropagateOracleRuntimeIdentity|TestStartupReadinessCoversDevCacheSweep)$' ]] ||
+		fail "split-branch mapping changed startup owner: $got"
+
+	while IFS=$'\t' read -r function pattern; do
+		got=$(startup_maintenance_pattern_for pkg/storage/dev_schedule.go "^(${function})$")
+		[[ "$got" == "$pattern" ]] || fail "split-branch mapping changed $function owner: $got"
+	done <<'EOF'
+RunWeeklyDevCacheSweep	^(TestDevCacheSweepTriggersOnSizeThreshold|TestWeeklyDevCacheDueAndCatchup|TestWeeklyDevCacheSweepMutationRejectsInvalidRequest|TestWeeklyDevCacheSweepMutationRunBoundaries)$
+failInterruptedWeeklyDevCacheSweeps	^(TestWeeklyDevCacheSweepMutationRejectsMissingSweepCAS|TestWeeklyDevCacheSweepReconcilesInterruptedRun|TestWeeklyDevCacheSweepReconciliationRollsBackOnEvidenceCollision)$
+interruptedSweepHasLiveController	^(TestWeeklyDevCacheSweepMutationReportsControllerQueryFailure|TestWeeklyDevCacheSweepReconciliationFailsClosedForLiveOwnership)$
+interruptedWeeklyDevCacheSweeps	^(TestWeeklyDevCacheSweepMutationReportsSweepQueryFailure|TestWeeklyDevCacheSweepReconcilesInterruptedRun|TestWeeklyDevCacheSweepReconciliationRequiresUniquePauseCorrelation)$
+openInterruptedWeeklyDevCachePauses	^(TestWeeklyDevCacheSweepMutationRejectsMissingPauseCAS|TestWeeklyDevCacheSweepReconcilesInterruptedRun|TestWeeklyDevCacheSweepReconciliationLeavesLaterPauseEpochUnchanged)$
+reconcileInterruptedWeeklyDevCacheSweep	^TestWeeklyDevCacheSweepMutationReconciliationBoundaries$
+runWeeklyDevCacheProviders	^(TestWeeklyDevCacheDueAndCatchup|TestWeeklyDevCacheSweepMutationSkipsIneligibleProviders|TestWeeklyDevCacheSweepMutationUsesDefaultProviderRunner)$
+EOF
+
+	while IFS=$'\t' read -r file function pattern; do
+		got=$(cmd_mutation_pattern_for "$file" "^(${function})$")
+		[[ "$got" == "$pattern" ]] || fail "split-branch mapping changed $file $function owner: $got"
+	done <<'EOF'
+cmd/oro/cmd_start.go	buildArgs	^(TestDetachedStartForwardsBaseBranchToDaemon|TestJanitorStartPlumbing|TestStartProgressTimeoutFlag|TestStartReviewTimeoutFlagsAreDistinct)$
+cmd/oro/cmd_start.go	newStartCmd	^(TestNewStartCmdMutationBoundaries|TestStartRejectsGitHubPolicyBeforeDispatcherMutation)$
+cmd/oro/cmd_start.go	startFreshSwarm	^TestDetachedStartForwardsBaseBranchToDaemon$
+cmd/oro/cmd_monitor.go	RestartDaemon	^(TestCLIMonitorRestartErrorBoundaries|TestCLIMonitorRestartUsesDetachedStartHandoff)$
+EOF
+
+	got=$(split_branch_pattern_for pkg/dispatcher/config.go '^(unrelatedDispatcherFunction)$')
+	[[ -z "$got" ]] || fail "split-branch resolver intercepted generic dispatcher fallback: $got"
+	got=$(split_branch_pattern_for cmd/oro/cmd_status.go '^(unrelatedCommandFunction)$')
+	[[ -z "$got" ]] || fail "split-branch resolver intercepted unrelated command fallback: $got"
+	if function_sharded_for cmd/oro/cmd_status.go; then
+		fail 'unrelated command source must retain whole-package fallback'
+	fi
+	grep -Fq "pattern=\$(cochanged_dispatcher_test_match" "$runner" ||
+		fail 'generic dispatcher cochanged-test fallback was removed'
+	grep -Fq "supplements=\$(dispatcher_test_supplement" "$runner" ||
+		fail 'generic dispatcher supplement fallback was removed'
+	grep -q 'dispatcher mutation target has no deterministic test owner' "$runner" ||
+		fail 'generic dispatcher deterministic-owner failure was removed'
 }
 
 TestStartupMaintenanceMutationMapping() {
@@ -3587,6 +3710,9 @@ main() {
 		;;
 	TestP0DurabilityMutationMapping)
 		TestP0DurabilityMutationMapping
+		;;
+	TestSplitBranchMutationOwners)
+		TestSplitBranchMutationOwners
 		;;
 	TestStartupMaintenanceMutationMapping)
 		TestStartupMaintenanceMutationMapping
