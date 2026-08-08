@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -1507,9 +1508,26 @@ func TestDetachedStartForwardsBaseBranchToDaemon(t *testing.T) {
 
 	emptyArgs := (&ExecDaemonSpawner{}).buildArgs(2, 2)
 	for _, arg := range emptyArgs {
-		if strings.HasPrefix(arg, "--base-branch=") {
-			t.Fatalf("empty base branch emitted child argument %q in %q", arg, emptyArgs)
+		if strings.HasPrefix(arg, "--base-branch=") || strings.HasPrefix(arg, "--base-ref=") ||
+			strings.HasPrefix(arg, "--target-branch=") || strings.HasPrefix(arg, "--ops-review-timeout=") {
+			t.Fatalf("empty optional daemon config emitted child argument %q in %q", arg, emptyArgs)
 		}
+	}
+	for _, tc := range []struct {
+		name    string
+		spawner ExecDaemonSpawner
+		want    string
+	}{
+		{name: "base ref only", spawner: ExecDaemonSpawner{BaseRef: " origin/main "}, want: "--base-ref=origin/main"},
+		{name: "target branch only", spawner: ExecDaemonSpawner{TargetBranch: " release "}, want: "--target-branch=release"},
+		{name: "web enabled", spawner: ExecDaemonSpawner{WebEnabled: true}, want: "--web"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.spawner.buildArgs(2, 2)
+			if !slices.Contains(got, tc.want) {
+				t.Fatalf("daemon args %q do not contain %q", got, tc.want)
+			}
+		})
 	}
 
 	t.Setenv("ORO_BEADSOURCE_MODE", "cli")
@@ -1668,13 +1686,20 @@ func TestSplitBranchCmdMutationOwner(t *testing.T) {
 			t.Fatalf("review-timeout alias = %+v, want hidden", alias)
 		}
 		if err := cmd.ParseFlags([]string{
-			"--workers=4", "--base-ref=origin/main", "--target-branch=release",
-			"--review-timeout=3m", "--no-web",
+			"--workers=4", "--max-workers=9", "--daemon-only", "--detach",
+			"--progress-timeout=2m", "--ops-review-timeout=4m", "--review-timeout=3m",
+			"--manual-integration", "--base-branch=legacy", "--base-ref=origin/main",
+			"--target-branch=release", "--mutation-testing", "--no-web", "--janitor-interval=17",
 		}); err != nil {
 			t.Fatalf("parse registered flags: %v", err)
 		}
-		if workers != 4 || baseRef != "origin/main" || targetBranch != "release" || reviewTimeout != 3*time.Minute || !noWeb {
-			t.Fatalf("parsed bindings workers/base/target/review/no-web = %d/%q/%q/%v/%t", workers, baseRef, targetBranch, reviewTimeout, noWeb)
+		if workers != 4 || maxWorkers != 9 || !daemonOnly || !detach ||
+			progressTimeout != 2*time.Minute || opsTimeout != 4*time.Minute || reviewTimeout != 3*time.Minute ||
+			!manualIntegration || baseBranch != "legacy" || baseRef != "origin/main" ||
+			targetBranch != "release" || !mutationTesting || !noWeb || cleanliness.JanitorInterval != 17 {
+			t.Fatalf("parsed bindings workers/max/daemon/detach/timeouts/manual/branches/mutation/no-web/janitor = %d/%d/%t/%t/%v/%v/%v/%t/%q/%q/%q/%t/%t/%d",
+				workers, maxWorkers, daemonOnly, detach, progressTimeout, opsTimeout, reviewTimeout,
+				manualIntegration, baseBranch, baseRef, targetBranch, mutationTesting, noWeb, cleanliness.JanitorInterval)
 		}
 	})
 
@@ -1691,6 +1716,44 @@ func TestSplitBranchCmdMutationOwner(t *testing.T) {
 		}
 		if startTargetIsRemoteTrackingRef(context.Background(), "release") {
 			t.Fatal("local release target was classified as remote")
+		}
+
+		repo := t.TempDir()
+		runGitTestCommand(t, "", "init", repo)
+		runGitTestCommand(t, repo, "remote", "add", "upstream", filepath.Join(t.TempDir(), "upstream.git"))
+		runGitTestCommand(t, repo, "remote", "add", "release", filepath.Join(t.TempDir(), "release.git"))
+		withChdir(t, repo, func() {
+			if !startTargetIsRemoteTrackingRef(context.Background(), "upstream/main") {
+				t.Fatal("configured remote target was not classified as remote")
+			}
+			if startTargetIsRemoteTrackingRef(context.Background(), "release") {
+				t.Fatal("slashless local branch was classified as configured remote")
+			}
+		})
+		withChdir(t, t.TempDir(), func() {
+			if !startTargetIsRemoteTrackingRef(context.Background(), "origin/main") {
+				t.Fatal("origin target must fail closed when git remote lookup fails")
+			}
+		})
+
+		for _, tc := range []struct {
+			name                          string
+			baseRef, target, legacy       string
+			wantBaseRef, wantTargetBranch string
+		}{
+			{name: "empty", wantBaseRef: "main", wantTargetBranch: "main"},
+			{name: "legacy", legacy: " release/local ", wantBaseRef: "release/local", wantTargetBranch: "release/local"},
+			{name: "base only", baseRef: " origin/main ", wantBaseRef: "origin/main", wantTargetBranch: "main"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				got, err := resolveStartBranchConfig(context.Background(), tc.baseRef, tc.target, tc.legacy)
+				if err != nil {
+					t.Fatalf("resolve branches: %v", err)
+				}
+				if got.BaseRef != tc.wantBaseRef || got.TargetBranch != tc.wantTargetBranch {
+					t.Fatalf("resolved branches = %+v, want base %q target %q", got, tc.wantBaseRef, tc.wantTargetBranch)
+				}
+			})
 		}
 
 		_, _, err = buildDispatcherWithReviewTimeoutsAndCleanliness(
@@ -1753,6 +1816,13 @@ func TestSplitBranchCmdMutationOwner(t *testing.T) {
 		err := startFreshSwarmWithSpawner(io.Discard, 2, 5, "deep", true, spawner)
 		if err == nil || err.Error() != "bounded owner handoff" || !called {
 			t.Fatalf("fresh start result called/error = %t/%v", called, err)
+		}
+
+		called = false
+		t.Setenv("ORO_BEADSOURCE_MODE", "cli")
+		err = startFreshSwarmWithSpawner(io.Discard, 2, 5, "deep", true, spawner)
+		if err == nil || !strings.Contains(err.Error(), "requires native sqlite beadstore") || called {
+			t.Fatalf("non-native fresh start called/error = %t/%v, want rejection before handoff", called, err)
 		}
 	})
 }
