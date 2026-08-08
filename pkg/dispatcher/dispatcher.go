@@ -203,14 +203,15 @@ type Dispatcher struct {
 
 	// reranker fields — populated lazily on first RerankByIDsRequest (sync.Once-guarded).
 	// rerankerFactory == nil means reranker is unavailable for this session.
-	reranker        Reranker
-	rerankerOnce    sync.Once
-	rerankerErr     error
-	rerankerFactory func(modelDir string) (Reranker, error)
-	procMgr         ProcessManager
-	acceptance      AcceptanceRunner // runs epic acceptance test commands
-	qgRunner        QGRunner         // runs quality gate before merge (defaults to &ShellQGRunner{})
-	qgBaselineCache map[string]qgBaseline
+	reranker               Reranker
+	rerankerOnce           sync.Once
+	rerankerErr            error
+	rerankerFactory        func(modelDir string) (Reranker, error)
+	procMgr                ProcessManager
+	acceptance             AcceptanceRunner // runs epic acceptance test commands
+	qgRunner               QGRunner         // runs quality gate before merge (defaults to &ShellQGRunner{})
+	qgBaselineCache        map[string]qgBaseline
+	qgBaselineFingerprints map[string]string
 	// presubmitCandidates holds independent local validation plans. Its
 	// semaphore scopes capacity to each action's declared resource class.
 	presubmitCandidates   chan presubmitCandidate
@@ -503,18 +504,19 @@ func New(cfg Config, db *sql.DB, merger *merge.Coordinator, opsSpawner *ops.Spaw
 		embedderFactory: func(modelDir string) (Embedder, error) {
 			return embeddings.NewEmbedder(modelDir)
 		},
-		rerankerFactory:     defaultRerankerFactory(resolved),
-		repoRoot:            rootDir,
-		shutdownRunner:      &ExecCommandRunner{Dir: rootDir},
-		acceptance:          &ShellAcceptanceRunner{},
-		estimator:           resolved.Estimator,
-		qgRunner:            &ShellQGRunner{},
-		qgBaselineCache:     make(map[string]qgBaseline),
-		presubmitCandidates: make(chan presubmitCandidate),
-		presubmitSemaphore:  newPresubmitSemaphore(),
-		sseBroadcaster:      web.NewSSEBroadcaster(),
-		state:               StateInert,
-		targetWorkers:       resolved.InitialWorkers,
+		rerankerFactory:        defaultRerankerFactory(resolved),
+		repoRoot:               rootDir,
+		shutdownRunner:         &ExecCommandRunner{Dir: rootDir},
+		acceptance:             &ShellAcceptanceRunner{},
+		estimator:              resolved.Estimator,
+		qgRunner:               &ShellQGRunner{},
+		qgBaselineCache:        make(map[string]qgBaseline),
+		qgBaselineFingerprints: make(map[string]string),
+		presubmitCandidates:    make(chan presubmitCandidate),
+		presubmitSemaphore:     newPresubmitSemaphore(),
+		sseBroadcaster:         web.NewSSEBroadcaster(),
+		state:                  StateInert,
+		targetWorkers:          resolved.InitialWorkers,
 		explicitScaleTarget: resolved.AllowZeroWorkers &&
 			resolved.InitialWorkers == 0 && resolved.MaxWorkers > 0,
 		WorkerPool: WorkerPool{

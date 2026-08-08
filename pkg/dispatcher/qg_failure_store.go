@@ -230,7 +230,7 @@ func (d *Dispatcher) classifyQGFailure(ctx context.Context, rec QGFailureRecord,
 	if override.AffectedBeads > history.AffectedBeads {
 		history.AffectedBeads = override.AffectedBeads
 	}
-	return ClassifyQGFailure(rec, history)
+	return ClassifyQGFailure(rec, history, d.qgFailureAttribution(ctx, rec.WorkerID, rec))
 }
 
 func (d *Dispatcher) loadQGFailureHistory(ctx context.Context, rec QGFailureRecord) QGFailureHistory {

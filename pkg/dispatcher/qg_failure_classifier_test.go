@@ -174,7 +174,7 @@ func TestClassifyQGFailureDecisionMatrix(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := dispatcher.ClassifyQGFailure(tt.record, tt.history)
+			got := dispatcher.ClassifyQGFailure(tt.record, tt.history, dispatcher.QGFailureAttribution{})
 			if got.Class != tt.wantClass || got.Decision != tt.wantDecision {
 				t.Fatalf("ClassifyQGFailure() = class=%q decision=%q, want class=%q decision=%q; reason=%q",
 					got.Class, got.Decision, tt.wantClass, tt.wantDecision, got.Reason)
@@ -189,11 +189,92 @@ func TestClassifyQGFailureDecisionMatrix(t *testing.T) {
 	}
 }
 
+func TestClassifyQGFailureTargetBaselineAttribution(t *testing.T) {
+	reviveFailure := "▶ revive                         ✗ FAIL\n" +
+		"pkg/remotegate/types_test.go:130:6: avoid package-level name `delete` (builtinShadow)"
+	fingerprint, _ := dispatcher.FingerprintQGFailure(reviveFailure, dispatcher.QGFingerprintOptions{})
+
+	tests := []struct {
+		name         string
+		record       dispatcher.QGFailureRecord
+		history      dispatcher.QGFailureHistory
+		attribution  dispatcher.QGFailureAttribution
+		wantClass    dispatcher.QGFailureClass
+		wantDecision dispatcher.QGFailureDecision
+	}{
+		{
+			name: "candidate is target baseline",
+			record: dispatcher.QGFailureRecord{
+				Fingerprint: fingerprint,
+				Output:      reviveFailure,
+			},
+			attribution: dispatcher.QGFailureAttribution{
+				CandidateSHA: "target-sha",
+				TargetSHA:    "target-sha",
+				TargetKnown:  true,
+			},
+			wantClass:    dispatcher.QGFailureClassSystemic,
+			wantDecision: dispatcher.QGFailureDecisionCreateOrReuseInfra,
+		},
+		{
+			name: "candidate matches target failure fingerprint",
+			record: dispatcher.QGFailureRecord{
+				Fingerprint: fingerprint,
+				Output:      reviveFailure,
+			},
+			attribution: dispatcher.QGFailureAttribution{
+				CandidateSHA:      "candidate-sha",
+				TargetSHA:         "target-sha",
+				TargetFingerprint: fingerprint,
+				TargetKnown:       true,
+			},
+			wantClass:    dispatcher.QGFailureClassSystemic,
+			wantDecision: dispatcher.QGFailureDecisionCreateOrReuseInfra,
+		},
+		{
+			name: "candidate-only deterministic failure overrides cross-bead history",
+			record: dispatcher.QGFailureRecord{
+				Fingerprint: fingerprint,
+				Output:      reviveFailure,
+			},
+			history: dispatcher.QGFailureHistory{AffectedBeads: 3},
+			attribution: dispatcher.QGFailureAttribution{
+				CandidateSHA: "candidate-sha",
+				TargetSHA:    "target-sha",
+				TargetKnown:  true,
+				TargetPassed: true,
+			},
+			wantClass:    dispatcher.QGFailureClassWorkerDeterministic,
+			wantDecision: dispatcher.QGFailureDecisionRetryOriginal,
+		},
+		{
+			name: "unknown target evidence preserves conservative policy",
+			record: dispatcher.QGFailureRecord{
+				Fingerprint: fingerprint,
+				Output:      reviveFailure,
+			},
+			history:      dispatcher.QGFailureHistory{AffectedBeads: 3},
+			wantClass:    dispatcher.QGFailureClassSystemic,
+			wantDecision: dispatcher.QGFailureDecisionCreateOrReuseInfra,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := dispatcher.ClassifyQGFailure(tt.record, tt.history, tt.attribution)
+			if got.Class != tt.wantClass || got.Decision != tt.wantDecision {
+				t.Fatalf("ClassifyQGFailure() = class=%q decision=%q reason=%q, want class=%q decision=%q",
+					got.Class, got.Decision, got.Reason, tt.wantClass, tt.wantDecision)
+			}
+		})
+	}
+}
+
 func TestClassifyNilAwaySourceDiagnosticDeterministic(t *testing.T) {
 	output := `▶ nilaway                       ✗ FAIL
 pkg/dispatcher/presubmit.go:141:24: Potential nil panic detected`
 
-	got := dispatcher.ClassifyQGFailure(dispatcher.QGFailureRecord{Output: output}, dispatcher.QGFailureHistory{})
+	got := dispatcher.ClassifyQGFailure(dispatcher.QGFailureRecord{Output: output}, dispatcher.QGFailureHistory{}, dispatcher.QGFailureAttribution{})
 	if got.Class != dispatcher.QGFailureClassWorkerDeterministic ||
 		got.Decision != dispatcher.QGFailureDecisionRetryOriginal ||
 		got.Confidence != dispatcher.QGFailureConfidenceHigh {
@@ -224,7 +305,7 @@ func TestClassifyNilAwayWithoutSourceDiagnosticPreservesExistingRules(t *testing
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := dispatcher.ClassifyQGFailure(dispatcher.QGFailureRecord{Output: tt.output}, dispatcher.QGFailureHistory{})
+			got := dispatcher.ClassifyQGFailure(dispatcher.QGFailureRecord{Output: tt.output}, dispatcher.QGFailureHistory{}, dispatcher.QGFailureAttribution{})
 			if got.Class != tt.wantClass || got.Decision != tt.wantDecision {
 				t.Fatalf("classification = %+v, want class=%q decision=%q", got, tt.wantClass, tt.wantDecision)
 			}
@@ -263,7 +344,7 @@ Get "https://proxy.example.com/example.com/module/@v/v1.2.3.zip": net/http: TLS 
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := dispatcher.ClassifyQGFailure(dispatcher.QGFailureRecord{Output: tt.output}, dispatcher.QGFailureHistory{})
+			got := dispatcher.ClassifyQGFailure(dispatcher.QGFailureRecord{Output: tt.output}, dispatcher.QGFailureHistory{}, dispatcher.QGFailureAttribution{})
 			if got.Class != tt.wantClass || got.Decision != tt.wantDecision {
 				t.Fatalf("ClassifyQGFailure() = class=%q decision=%q reason=%q, want class=%q decision=%q",
 					got.Class, got.Decision, got.Reason, tt.wantClass, tt.wantDecision)
@@ -335,7 +416,7 @@ signal: killed`,
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := dispatcher.ClassifyQGFailure(dispatcher.QGFailureRecord{Output: tt.output}, tt.history)
+			got := dispatcher.ClassifyQGFailure(dispatcher.QGFailureRecord{Output: tt.output}, tt.history, dispatcher.QGFailureAttribution{})
 			if got.Class != tt.wantClass || got.Decision != tt.wantDecision {
 				t.Fatalf("ClassifyQGFailure() = class=%q decision=%q reason=%q, want class=%q decision=%q",
 					got.Class, got.Decision, got.Reason, tt.wantClass, tt.wantDecision)
