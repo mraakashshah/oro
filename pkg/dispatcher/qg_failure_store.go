@@ -228,6 +228,16 @@ func nullableInt64(v int64) any {
 }
 
 func (d *Dispatcher) classifyQGFailure(ctx context.Context, rec QGFailureRecord, override QGFailureHistory) QGFailureClassification {
+	attribution := d.qgFailureAttribution(ctx, rec.WorkerID, rec)
+	return d.classifyQGFailureWithAttribution(ctx, rec, override, attribution)
+}
+
+func (d *Dispatcher) classifyQGFailureWithAttribution(
+	ctx context.Context,
+	rec QGFailureRecord,
+	override QGFailureHistory,
+	attribution QGFailureAttribution,
+) QGFailureClassification {
 	history := d.loadQGFailureHistory(ctx, rec)
 	history.KnownFlaky = history.KnownFlaky || override.KnownFlaky
 	history.RerunPassed = history.RerunPassed || override.RerunPassed
@@ -235,7 +245,7 @@ func (d *Dispatcher) classifyQGFailure(ctx context.Context, rec QGFailureRecord,
 	if override.AffectedBeads > history.AffectedBeads {
 		history.AffectedBeads = override.AffectedBeads
 	}
-	return ClassifyQGFailure(rec, history, d.qgFailureAttribution(ctx, rec.WorkerID, rec))
+	return ClassifyQGFailure(rec, history, attribution)
 }
 
 func (d *Dispatcher) qgFailureAttribution(ctx context.Context, workerID string, record QGFailureRecord) QGFailureAttribution {
@@ -271,6 +281,11 @@ func (d *Dispatcher) qgFailureAttribution(ctx context.Context, workerID string, 
 	observation, ok := d.qgTargetObservations[targetSHA]
 	_, fingerprintObserved := observation.failureFingerprints[record.Fingerprint]
 	d.mu.Unlock()
+	if !observation.passed && d.acceptedQGTargetPassed(ctx, targetSHA) {
+		d.recordQGTargetPass(targetSHA)
+		observation.passed = true
+		ok = true
+	}
 	if !ok {
 		return attribution
 	}
@@ -282,12 +297,25 @@ func (d *Dispatcher) qgFailureAttribution(ctx context.Context, workerID string, 
 	return attribution
 }
 
-// recordQGTargetPassLocked records trusted canonical READY evidence for an
-// unchanged target. The caller must hold d.mu.
-func (d *Dispatcher) recordQGTargetPassLocked(targetSHA string) {
+func (d *Dispatcher) acceptedQGTargetPassed(ctx context.Context, targetSHA string) bool {
+	if d.db == nil || targetSHA == "" {
+		return false
+	}
+	var matches int
+	err := d.db.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM review_checkpoints
+WHERE state = ? AND head_sha = ? AND target_sha = ?`,
+		ReviewCheckpointStateQGPassed, targetSHA, targetSHA).Scan(&matches)
+	return err == nil && matches > 0
+}
+
+func (d *Dispatcher) recordQGTargetPass(targetSHA string) {
 	if targetSHA == "" {
 		return
 	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	if d.qgTargetObservations == nil {
 		d.qgTargetObservations = make(map[string]qgTargetObservation)
 	}

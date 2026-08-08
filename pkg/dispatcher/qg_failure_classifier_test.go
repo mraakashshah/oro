@@ -2,6 +2,7 @@ package dispatcher
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -372,6 +373,94 @@ func TestClassifyQGFailureTargetBaselineAttribution(t *testing.T) {
 		}
 		if got := len(d.qgRunner.(*mockQGRunner).calls); got != 0 {
 			t.Fatalf("evaluation reran target QG %d times, want 0", got)
+		}
+	})
+
+	t.Run("exact target failure bypasses retry reservation", func(t *testing.T) {
+		ctx := context.Background()
+		d, beadSource, _, _, _, _ := newTestDispatcher(t)
+		const (
+			beadID    = "exact-target-no-retry"
+			workerID  = "exact-target-worker"
+			targetSHA = "exact-target-sha"
+		)
+		worktree := t.TempDir()
+		assignmentID := insertActiveAssignment(t, d, beadID, workerID, worktree)
+		beadSource.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress"}
+		conn := newMockConn()
+		d.mu.Lock()
+		d.workers[workerID] = &trackedWorker{
+			id: workerID, conn: conn, encoder: json.NewEncoder(conn),
+			state: protocol.WorkerBusy, beadID: beadID, assignmentID: assignmentID,
+			worktree: worktree, targetSHA: targetSHA,
+		}
+		d.mu.Unlock()
+		d.shutdownRunner = &mockCommandRunner{output: []byte(targetSHA + "\n")}
+
+		d.handleDone(ctx, workerID, protocol.Message{Done: &protocol.DonePayload{
+			BeadID: beadID, WorkerID: workerID, QualityGatePassed: false, QGOutput: reviveFailure,
+		}})
+
+		d.mu.Lock()
+		attempts := d.attemptCounts[beadID]
+		d.mu.Unlock()
+		conn.mu.Lock()
+		writes := len(conn.written)
+		conn.mu.Unlock()
+		if attempts != 0 || writes != 0 {
+			t.Fatalf("exact-target retry side effects = attempts %d, ASSIGN writes %d; want 0/0", attempts, writes)
+		}
+		var assignmentStatus string
+		if err := d.db.QueryRowContext(ctx, `SELECT status FROM assignments WHERE id=?`, assignmentID).Scan(&assignmentStatus); err != nil {
+			t.Fatalf("read assignment status: %v", err)
+		}
+		if assignmentStatus != "completed" {
+			t.Fatalf("assignment status = %q, want completed by infra routing", assignmentStatus)
+		}
+	})
+
+	t.Run("passing target candidate still reserves retry", func(t *testing.T) {
+		ctx := context.Background()
+		d, ready, readyWorkerID, _, _ := newCanonicalReadyAdmissionTest(t, "")
+		worktrees := d.worktrees.(*mockWorktreeManager)
+		worktrees.branchHeadFn = func(string) (string, error) {
+			return ready.TargetSHA, nil
+		}
+		if _, accepted := d.acceptReadyEvidence(ctx, readyWorkerID, &ready); !accepted {
+			t.Fatal("canonical READY was not accepted")
+		}
+		seedCrossBeadQGHistory(t, d, fingerprint, reviveFailure)
+
+		const (
+			beadID   = "passing-target-retry"
+			workerID = "passing-target-worker"
+		)
+		worktree := t.TempDir()
+		assignmentID := insertActiveAssignment(t, d, beadID, workerID, worktree)
+		beadSource := d.beads.(*fakeBeadStore)
+		beadSource.shown[beadID] = &protocol.BeadDetail{ID: beadID, Status: "in_progress"}
+		conn := newMockConn()
+		d.mu.Lock()
+		d.workers[workerID] = &trackedWorker{
+			id: workerID, conn: conn, encoder: json.NewEncoder(conn),
+			state: protocol.WorkerBusy, beadID: beadID, assignmentID: assignmentID,
+			worktree: worktree, targetSHA: ready.TargetSHA,
+		}
+		d.mu.Unlock()
+		d.shutdownRunner = &mockCommandRunner{output: []byte("distinct-candidate-sha\n")}
+
+		d.handleDone(ctx, workerID, protocol.Message{Done: &protocol.DonePayload{
+			BeadID: beadID, WorkerID: workerID, QualityGatePassed: false, QGOutput: reviveFailure,
+		}})
+
+		d.mu.Lock()
+		attempts := d.attemptCounts[beadID]
+		d.mu.Unlock()
+		conn.mu.Lock()
+		writes := len(conn.written)
+		conn.mu.Unlock()
+		if attempts != 1 || writes != 1 {
+			t.Fatalf("candidate retry side effects = attempts %d, ASSIGN writes %d; want 1/1", attempts, writes)
 		}
 	})
 }
