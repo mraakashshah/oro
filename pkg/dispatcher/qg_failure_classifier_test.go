@@ -1,4 +1,4 @@
-package dispatcher
+package dispatcher //nolint:testpackage // white-box: target attribution requires private durable-state fixtures
 
 import (
 	"context"
