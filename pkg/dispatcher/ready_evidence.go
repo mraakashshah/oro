@@ -101,6 +101,9 @@ WHERE id = ? AND state = ?
 	if err != nil || rows != 1 || tx.Commit() != nil {
 		return durableReadyIdentity{}, false
 	}
+	if checkpoint.HeadSHA != "" && checkpoint.HeadSHA == checkpoint.TargetSHA {
+		d.recordQGTargetPassLocked(checkpoint.TargetSHA)
+	}
 	return identity, true
 }
 

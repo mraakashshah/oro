@@ -41,10 +41,6 @@ func (d *Dispatcher) captureQGBaseline(ctx context.Context, beadID, worktree, mu
 	if err != nil {
 		return nil, fmt.Errorf("capture qg baseline run: %w", err)
 	}
-	fingerprint := ""
-	if !passed {
-		fingerprint, _ = FingerprintQGFailure(output, QGFingerprintOptions{})
-	}
 	baseline := qgBaseline{
 		beadID: {
 			HeadSHA:     headSHA,
@@ -52,7 +48,7 @@ func (d *Dispatcher) captureQGBaseline(ctx context.Context, beadID, worktree, mu
 			Outcomes:    parseTestOutcomes(output),
 		},
 	}
-	return d.storeQGBaseline(headSHA, baseline, fingerprint), nil
+	return d.storeQGBaseline(headSHA, baseline), nil
 }
 
 // seedQGBaselineFromFailure records the worker's failed QG result as the
@@ -69,7 +65,6 @@ func (d *Dispatcher) seedQGBaselineFromFailure(ctx context.Context, beadID, work
 		return cached, nil
 	}
 
-	fingerprint, _ := FingerprintQGFailure(qgOutput, QGFingerprintOptions{})
 	baseline := qgBaseline{
 		beadID: {
 			HeadSHA:     headSHA,
@@ -77,57 +72,7 @@ func (d *Dispatcher) seedQGBaselineFromFailure(ctx context.Context, beadID, work
 			Outcomes:    parseTestOutcomes(qgOutput),
 		},
 	}
-	return d.storeQGBaseline(headSHA, baseline, fingerprint), nil
-}
-
-func (d *Dispatcher) qgFailureAttribution(ctx context.Context, workerID string, record QGFailureRecord) QGFailureAttribution {
-	d.mu.Lock()
-	worker := d.workers[workerID]
-	if worker == nil {
-		d.mu.Unlock()
-		return QGFailureAttribution{}
-	}
-	worktree, targetSHA := worker.worktree, worker.targetSHA
-	d.mu.Unlock()
-	if worktree == "" || targetSHA == "" {
-		return QGFailureAttribution{}
-	}
-
-	headOut, err := d.commandRunner().Run(ctx, "git", "-C", worktree, "rev-parse", "HEAD")
-	if err != nil {
-		return QGFailureAttribution{}
-	}
-	candidateSHA := strings.TrimSpace(string(headOut))
-	attribution := QGFailureAttribution{CandidateSHA: candidateSHA, TargetSHA: targetSHA}
-	if candidateSHA == "" {
-		return attribution
-	}
-	if candidateSHA == targetSHA {
-		attribution.TargetKnown = true
-		attribution.TargetFingerprint = record.Fingerprint
-		return attribution
-	}
-
-	baseline, ok := d.cachedQGBaseline(targetSHA)
-	if !ok {
-		return attribution
-	}
-	allPassed := true
-	targetFingerprint := d.cachedQGBaselineFingerprint(targetSHA)
-	for _, entry := range baseline {
-		if entry.HeadSHA != targetSHA {
-			continue
-		}
-		attribution.TargetKnown = true
-		allPassed = allPassed && entry.SuitePassed
-	}
-	if record.Fingerprint != "" && record.Fingerprint == targetFingerprint {
-		attribution.TargetFingerprint = targetFingerprint
-	}
-	if attribution.TargetKnown {
-		attribution.TargetPassed = allPassed
-	}
-	return attribution
+	return d.storeQGBaseline(headSHA, baseline), nil
 }
 
 func (d *Dispatcher) detectQGRegression(ctx context.Context, base qgBaseline, worktree, mutationBase string) (qgRegression, error) {
@@ -173,28 +118,16 @@ func (d *Dispatcher) cachedQGBaseline(headSHA string) (qgBaseline, bool) {
 	return cloneQGBaseline(baseline), ok
 }
 
-func (d *Dispatcher) cachedQGBaselineFingerprint(headSHA string) string {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.qgBaselineFingerprints[headSHA]
-}
-
-func (d *Dispatcher) storeQGBaseline(headSHA string, baseline qgBaseline, fingerprint string) qgBaseline {
+func (d *Dispatcher) storeQGBaseline(headSHA string, baseline qgBaseline) qgBaseline {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.qgBaselineCache == nil {
 		d.qgBaselineCache = make(map[string]qgBaseline)
 	}
-	if d.qgBaselineFingerprints == nil {
-		d.qgBaselineFingerprints = make(map[string]string)
-	}
 	if cached, ok := d.qgBaselineCache[headSHA]; ok {
 		return cloneQGBaseline(cached)
 	}
 	d.qgBaselineCache[headSHA] = cloneQGBaseline(baseline)
-	if fingerprint != "" {
-		d.qgBaselineFingerprints[headSHA] = fingerprint
-	}
 	return cloneQGBaseline(baseline)
 }
 
@@ -210,7 +143,6 @@ func (d *Dispatcher) takeQGBaselineForBead(beadID string) (qgBaseline, bool) {
 			continue
 		}
 		delete(d.qgBaselineCache, headSHA)
-		delete(d.qgBaselineFingerprints, headSHA)
 		return cloneQGBaseline(qgBaseline{beadID: entry}), true
 	}
 	return nil, false
