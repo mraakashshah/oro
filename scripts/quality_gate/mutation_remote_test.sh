@@ -257,6 +257,43 @@ split_branch_pattern_for() {
 	bash -c "$function_source"$'\n''split_branch_mutation_test_pattern "$1" "$2"' _ "$file" "$match" || true
 }
 
+qg_target_attribution_pattern_for() {
+	local file="$1"
+	local match="$2"
+	local function_source
+	function_source=$(awk '
+		/^qg_target_attribution_mutation_test_pattern\(\)/ { copying = 1 }
+		copying { print }
+		copying && /^}/ { exit }
+	' "$runner")
+	if [[ -z "$function_source" ]]; then
+		fail 'mutation runner omitted QG target-attribution owner mapping'
+		return 1
+	fi
+	bash -c "$function_source"$'\n''qg_target_attribution_mutation_test_pattern "$1" "$2"' _ "$file" "$match" || true
+}
+
+qg_target_attribution_test_file_for() {
+	local file="$1"
+	local match="$2"
+	local function_source pattern_source
+	pattern_source=$(awk '
+		/^qg_target_attribution_mutation_test_pattern\(\)/ { copying = 1 }
+		copying { print }
+		copying && /^}/ { exit }
+	' "$runner")
+	function_source=$(awk '
+		/^qg_target_attribution_mutation_test_file\(\)/ { copying = 1 }
+		copying { print }
+		copying && /^}/ { exit }
+	' "$runner")
+	if [[ -z "$pattern_source" || -z "$function_source" ]]; then
+		fail 'mutation runner omitted QG target-attribution standalone file mapping'
+		return 1
+	fi
+	bash -c "$pattern_source"$'\n'"$function_source"$'\n''qg_target_attribution_mutation_test_file "$1" "$2"' _ "$file" "$match" || true
+}
+
 function_sharded_for() {
 	local file="$1"
 	local function_source
@@ -432,6 +469,99 @@ EOF
 		fail 'generic dispatcher supplement fallback was removed'
 	grep -q 'dispatcher mutation target has no deterministic test owner' "$runner" ||
 		fail 'generic dispatcher deterministic-owner failure was removed'
+}
+
+TestQGTargetAttributionMutationOwners() {
+	local cardinality coverage coverage_root file function got listed package pattern report test_file
+	local deterministic_pattern='^TestQGIsDeterministicMutationOwner$'
+	local store_pattern='^TestQGFailureAttributionMutationOwner$'
+	local flow_pattern='^TestQGEvaluateFailureMutationOwner$'
+	local owner_file='pkg/dispatcher/qg_target_attribution_mutation_test.go'
+
+	coverage_root=$(mktemp -d)
+	# shellcheck disable=SC2064 # expand the function-local path before the RETURN trap runs.
+	trap "rm -rf '$coverage_root'" RETURN
+	while IFS=$'\t' read -r file function package pattern cardinality; do
+		got=$(qg_target_attribution_pattern_for "$file" "^(${function})$")
+		[[ "$got" == "$pattern" ]] ||
+			fail "$file $function QG target-attribution owner = $got, want $pattern"
+		function_sharded_for "$file" || fail "$file must use per-function mutation sharding"
+		test_file=$(qg_target_attribution_test_file_for "$file" "^(${function})$")
+		[[ "$test_file" == "$owner_file" ]] ||
+			fail "$file $function standalone owner file = $test_file, want $owner_file"
+		listed=$(go test -list "$pattern" "$package")
+		[[ "$(grep -Ec '^Test' <<<"$listed")" == "$cardinality" ]] ||
+			fail "$file $function owner must select exactly $cardinality real test"
+		coverage="$coverage_root/${function}.out"
+		timeout 60 go test -vet=off -count=1 -timeout 55s -coverprofile="$coverage" -run "$pattern" "$package" >/dev/null
+		report=$(go tool cover -func="$coverage")
+		awk -v target="$function" '
+			$2 == target || $2 ~ ("[.]" target "$") {
+				value = $3
+				gsub(/%/, "", value)
+				if (value + 0 > 0) found = 1
+			}
+			END { exit !found }
+		' <<<"$report" || fail "$file $function owner has zero production coverage"
+	done <<EOF
+pkg/dispatcher/qg_failure_classifier.go	isDeterministicQGFailure	./pkg/dispatcher	$deterministic_pattern	1
+pkg/dispatcher/qg_failure_store.go	qgFailureAttribution	./pkg/dispatcher	$store_pattern	1
+pkg/dispatcher/qg_flow.go	evaluateQGFailure	./pkg/dispatcher	$flow_pattern	1
+EOF
+
+	while IFS=$'\t' read -r file function; do
+		got=$(qg_target_attribution_pattern_for "$file" "^(${function})$")
+		[[ -z "$got" ]] || fail "$file $function must retain its existing mutation owner: $got"
+		got=$(qg_target_attribution_test_file_for "$file" "^(${function})$")
+		[[ -z "$got" ]] || fail "$file $function must retain its existing mutation test scope: $got"
+	done <<'EOF'
+pkg/dispatcher/dispatcher.go	New
+pkg/dispatcher/qg_failure_classifier.go	ClassifyQGFailure
+pkg/dispatcher/qg_failure_classifier.go	candidateOnlyDeterministicFailure
+pkg/dispatcher/qg_failure_classifier.go	targetBaselineHasFailure
+pkg/dispatcher/qg_failure_store.go	acceptedQGTargetPassed
+pkg/dispatcher/qg_failure_store.go	classifyQGFailureWithAttribution
+pkg/dispatcher/qg_failure_store.go	recordQGTargetFailure
+pkg/dispatcher/qg_failure_store.go	recordQGTargetPass
+pkg/dispatcher/qg_flow.go	handleQGFailure
+pkg/dispatcher/qg_flow.go	targetBaselineFailure
+EOF
+
+	got=$(qg_target_attribution_pattern_for pkg/dispatcher/other.go '^(qgFailureAttribution)$')
+	[[ -z "$got" ]] || fail "QG target-attribution owner accepted wrong source: $got"
+	got=$(qg_target_attribution_pattern_for pkg/dispatcher/qg_failure_store.go '^(unmappedQGFunction)$')
+	[[ -z "$got" ]] || fail "QG target-attribution owner accepted wrong function: $got"
+	got=$(qg_target_attribution_pattern_for pkg/dispatcher/qg_failure_store.go '^(qgFailureAttribution|recordQGTargetPass)$')
+	[[ -z "$got" ]] || fail "QG target-attribution owner accepted grouped function union: $got"
+	got=$(qg_target_attribution_test_file_for pkg/dispatcher/other.go '^(qgFailureAttribution)$')
+	[[ -z "$got" ]] || fail "QG target-attribution standalone file accepted wrong source: $got"
+
+	local qg_line split_line startup_line targeted_source
+	targeted_source=$(awk '
+		/^targeted_test_pattern\(\)/ { copying = 1 }
+		copying { print }
+		copying && /^}/ { exit }
+	' "$runner")
+	# shellcheck disable=SC2016 # search for literal command substitutions in runner source.
+	split_line=$(grep -nF 'split_branch_pattern=$(split_branch_mutation_test_pattern' <<<"$targeted_source" | cut -d: -f1)
+	# shellcheck disable=SC2016 # search for literal command substitutions in runner source.
+	qg_line=$(grep -nF 'qg_target_attribution_pattern=$(qg_target_attribution_mutation_test_pattern' <<<"$targeted_source" | cut -d: -f1)
+	# shellcheck disable=SC2016 # search for literal command substitutions in runner source.
+	startup_line=$(grep -nF 'startup_maintenance_pattern=$(startup_maintenance_mutation_test_pattern' <<<"$targeted_source" | cut -d: -f1)
+	[[ "$split_line" =~ ^[0-9]+$ && "$qg_line" =~ ^[0-9]+$ && "$startup_line" =~ ^[0-9]+$ ]] ||
+		fail 'targeted router omitted split/QG/startup priority markers'
+	((split_line < qg_line && qg_line < startup_line)) ||
+		fail 'QG target-attribution routing must run after split-branch and before startup fallbacks'
+	# shellcheck disable=SC2016 # search for the literal MUTATION_TEST_FILE assignment.
+	grep -Fq 'mutation_test_file=$(qg_target_attribution_mutation_test_file "$file" "$match")' "$runner" ||
+		fail 'mutation runner omitted QG target-attribution MUTATION_TEST_FILE routing'
+
+	got=$(split_branch_pattern_for cmd/oro/cmd_start.go '^(resolveStartBranchConfig)$')
+	[[ "$got" == '^TestSplitBranchCmdMutationOwner$' ]] ||
+		fail "QG target-attribution mapping changed split-branch owner: $got"
+	got=$(p0_durability_pattern_for pkg/dispatcher/scheduling.go '^(tryAssignBatch)$')
+	[[ "$got" == '^TestTryAssignBatchP0MutationOwner$' ]] ||
+		fail "QG target-attribution mapping changed P0 owner: $got"
 }
 
 TestStartupMaintenanceMutationMapping() {
@@ -3627,6 +3757,7 @@ TestStrictIncrementalMutation() {
 	TestEscalationTouchedFunctionRouting "$tmp/escalation-touched"
 	TestMutationOwnerMappingsCoexist
 	TestP0DurabilityMutationMapping
+	TestQGTargetAttributionMutationOwners
 	TestStartupMaintenanceMutationMapping
 	TestStartupMaintenanceMutationSharding
 	TestCmdMutationSharding
@@ -3713,6 +3844,9 @@ main() {
 		;;
 	TestSplitBranchMutationOwners)
 		TestSplitBranchMutationOwners
+		;;
+	TestQGTargetAttributionMutationOwners)
+		TestQGTargetAttributionMutationOwners
 		;;
 	TestStartupMaintenanceMutationMapping)
 		TestStartupMaintenanceMutationMapping
