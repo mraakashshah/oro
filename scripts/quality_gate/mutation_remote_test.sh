@@ -4013,6 +4013,7 @@ TestStrictIncrementalMutation() {
 	TestP0DurabilityMutationMapping
 	TestQGTargetAttributionMutationOwners
 	TestQGClassifierDecisionMutationOwnerRouting
+	TestQGStoreLifecycleMutationOwnerRouting
 	TestStartupMaintenanceMutationMapping
 	TestStartupMaintenanceMutationSharding
 	TestCmdMutationSharding
