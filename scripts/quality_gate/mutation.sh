@@ -1230,6 +1230,7 @@ heavy_parallel_mutation_shard() {
 		'pkg/dispatcher/worker_directives.go:^(applyKillWorker)$' | \
 		'pkg/dispatcher/worker_directives.go:^(applyRestartWorker)$' | \
 		'pkg/dispatcher/worker_directives.go:^(restartCheckpointOwnedWorkerUsing)$' | \
+		'pkg/dispatcher/startup_recovery.go:^(handleConn)$' | \
 		'pkg/dispatcher/worker_pool.go:^(registerWorkerWithProtocol)$' | \
 		'pkg/dispatcher/worker_pool.go:^(releaseReviewWorkerAfterSendFailureUsing)$')
 		return 0

@@ -2011,6 +2011,13 @@ new_targeted_fixture() {
 		test_names=(TestExistingDispatcherBehavior)
 		head_test_name=TestReviewCheckpointStartupOrdering
 		;;
+	handle-conn)
+		package_name=dispatcher
+		source_file=pkg/dispatcher/startup_recovery.go
+		test_file=pkg/dispatcher/startup_recovery_mutation_test.go
+		function_name=handleConn
+		test_names=(TestHandleConnLifecycleMatrix)
+		;;
 	assignment-claim)
 		package_name=dispatcher
 		source_file=pkg/dispatcher/assignment.go
@@ -2543,11 +2550,14 @@ if [[ "$1" = tool && "$2" = go-mutesting && " $* " == *" --no-exec "* ]]; then
 	generation=$(mktemp -d "${TMPDIR:-/tmp}/fake-mutants.XXXXXX")
 	mkdir -p "$generation/$(dirname "$source_file")"
 	cp "$source_file" "$generation/$source_file.original"
-	sed '0,/return true/s//return false/' "$source_file" >"$generation/$source_file.0"
-	sed '0,/return true/s//return !false/' "$source_file" >"$generation/$source_file.1"
+	mutant_count=${MUTATION_FAKE_MUTANT_COUNT:-2}
+	for ((index = 0; index < mutant_count; index++)); do
+		sed "0,/return true/s//return $((index % 2 == 0 ? 0 : 1)) == 1/" "$source_file" >"$generation/$source_file.$index"
+	done
 	printf 'Save mutations into "%s"\n' "$generation"
-	printf 'Save mutation into "%s" with checksum 0\n' "$generation/$source_file.0"
-	printf 'Save mutation into "%s" with checksum 1\n' "$generation/$source_file.1"
+	for ((index = 0; index < mutant_count; index++)); do
+		printf 'Save mutation into "%s" with checksum %d\n' "$generation/$source_file.$index" "$index"
+	done
 	printf 'PARALLEL_WORKERS=%s\n' "${MUTATION_PARALLEL_WORKERS:-}" >>"${MUTATION_ARGS_TRACE:?}"
 	printf 'EXEC_TIMEOUT=%s\n' "${MUTATION_EXEC_TIMEOUT:-}" >>"${MUTATION_ARGS_TRACE:?}"
 	printf 'TIMEOUT_MARGIN=%s\n' "${MUTATION_TEST_TIMEOUT_MARGIN_SECONDS:-}" >>"${MUTATION_ARGS_TRACE:?}"
@@ -2590,6 +2600,7 @@ if [[ "$1" = test ]]; then
 		*TestRetrySQLiteBusyOperation*) printf 'TestRetrySQLiteBusyOperation\n' ;;
 		*TestEpicBranchAdmissionMutationBypassAndClaimPreservation*) printf 'TestEpicBranchAdmissionMutationBypassAndClaimPreservation\n' ;;
 		*TestReviewCheckpointStartupOrdering*) printf 'TestReviewCheckpointStartupOrdering\n' ;;
+		*TestHandleConnLifecycleMatrix*) printf 'TestHandleConnLifecycleMatrix\n' ;;
 		*TestAssignmentClaimAuthoritativeSurvivorMutation*) printf 'TestAssignmentClaimAuthoritativeSurvivorMutation\nTestAssignmentBehaviorMutation\nTestStandaloneAssignmentBehaviorHarnessCaseIsolation\n' ;;
 		*TestAssignmentBehaviorMutation*) printf 'TestAssignmentBehaviorMutation\nTestStandaloneAssignmentBehaviorHarnessCaseIsolation\n' ;;
 		*TestAssignBeadWithClaimReportsUnclaimedValidationFailure*) printf 'TestAssignBeadWithClaimReportsUnclaimedValidationFailure\n' ;;
@@ -2628,6 +2639,7 @@ if [[ "$1" = tool && "$2" = cover ]]; then
 	if [[ "$MUTATION_FIXTURE" != targeted-uncovered ]]; then
 		printf 'pkg/dispatcher/startup_recovery.go:1: startupRecovery 100.0%%\n'
 	fi
+	printf 'pkg/dispatcher/startup_recovery.go:2: handleConn 100.0%%\n'
 	printf 'pkg/dispatcher/scheduling.go:1: advanceAssignedGeneralIdle 100.0%%\n'
 	printf 'pkg/dispatcher/scheduling.go:2: launchAssignmentWithResult 100.0%%\n'
 	printf 'pkg/dispatcher/sqlite_busy_retry.go:1: retrySQLiteBusyOperation 100.0%%\n'
@@ -2991,6 +3003,42 @@ TestHeavyMutationShardRouting() {
 	) || fail 'known compile-heavy mutation shards are not routed to bounded parallel execution'
 	[[ "$(grep -Fc "heavy_parallel_mutation_shard \"\$file\"" "$runner")" = 2 ]] ||
 		fail 'heavy mutation routing must drive both inner execution and outer serialization'
+}
+
+TestHandleConnHeavyMutationRouting() {
+	local evidence fixture original_hash pattern
+	fixture=$(mktemp -d)
+	# shellcheck disable=SC2064 # Bind this fixture before another test replaces the local.
+	trap "rm -rf '$fixture'" RETURN
+	fixture="$fixture/handle-conn"
+	pattern='^TestHandleConnLifecycleMatrix$'
+	evidence=$(MUTATION_FAKE_MUTANT_COUNT=17 \
+		run_targeted_fixture "$fixture" targeted pass 0 false handle-conn)
+
+	grep -Fq -- "-list $pattern ./pkg/dispatcher" "$fixture/mutation-list.txt" ||
+		fail 'handleConn mutations omitted their exact owner list preflight'
+	jq -e --arg pattern "$pattern" \
+		'.shards[0].match == "^(handleConn)$" and .shards[0].test_pattern == $pattern and
+		 .shards[0].conclusion == "completed" and .shards[0].exit_code == 0 and
+		 .shards[0].passed == 17 and .shards[0].failed == 0 and
+		 .shards[0].skipped == 0 and .shards[0].total == 17' \
+		"$evidence" >/dev/null || fail 'handleConn exact 17-mutant replay lost terminal evidence'
+	for expected_limit in \
+		'PARALLEL_WORKERS=2' \
+		'EXEC_TIMEOUT=60' \
+		'TIMEOUT_MARGIN=5' \
+		'BASE_SHARD_TIMEOUT=240' \
+		'MAX_SHARD_TIMEOUT=240'; do
+		grep -Fxq "$expected_limit" "$fixture/mutation-args.txt" ||
+			fail "handleConn heavy mutation boundary omitted $expected_limit"
+	done
+	! grep -q '^MUTATION_TEST_FILE=' "$fixture/mutation-args.txt" ||
+		fail 'handleConn heavy mutation routing silently narrowed its full-package owner'
+	grep -Fxq 'mutation shard capacity: mutants=17 workers=2 effective_timeout=240s emergency_cap=240s' \
+		"$fixture/runner.log" || fail 'handleConn did not use bounded two-worker shard capacity'
+	original_hash=$(git -C "$fixture" rev-parse HEAD:pkg/dispatcher/startup_recovery.go)
+	[[ "$(git hash-object "$fixture/pkg/dispatcher/startup_recovery.go")" == "$original_hash" ]] ||
+		fail 'handleConn mutation replay did not restore its original source'
 }
 
 TestStrictIncrementalMutationShards() {
@@ -4596,6 +4644,9 @@ main() {
 		;;
 	TestHeavyMutationShardRouting)
 		TestHeavyMutationShardRouting
+		;;
+	TestHandleConnHeavyMutationRouting)
+		TestHandleConnHeavyMutationRouting
 		;;
 	TestMutationExecInternalDeadline)
 		TestMutationExecInternalDeadline
