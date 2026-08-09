@@ -4210,6 +4210,304 @@ TestHeavyMutationPrewarmBeforeOuterTimeout() {
 		fail 'source-changing heavy prewarm lost infrastructure evidence'
 }
 
+write_heavy_production_seam_bundle() {
+	local bundle_root="$1"
+	local bundle_dir="$bundle_root/scripts/quality_gate"
+	[[ "$(tail -1 "$runner")" == 'main "$@"' ]] ||
+		fail 'mutation runner no longer has one removable main invocation'
+	mkdir -p "$bundle_dir"
+	sed '$d' "$runner" >"$bundle_dir/mutation.sh"
+	cp "$repo_root/scripts/quality_gate/mutation_parallel.sh" \
+		"$repo_root/scripts/quality_gate/mutation_exec.sh" "$bundle_dir/"
+	chmod +x "$bundle_dir/mutation.sh" "$bundle_dir/mutation_parallel.sh" \
+		"$bundle_dir/mutation_exec.sh"
+	cmp -s "$repo_root/scripts/quality_gate/mutation_parallel.sh" \
+		"$bundle_dir/mutation_parallel.sh" || fail 'production-seam bundle changed mutation_parallel.sh'
+	cmp -s "$repo_root/scripts/quality_gate/mutation_exec.sh" \
+		"$bundle_dir/mutation_exec.sh" || fail 'production-seam bundle changed mutation_exec.sh'
+	printf '%s\n' "$bundle_dir/mutation.sh"
+}
+
+new_heavy_production_seam_fixture() {
+	local fixture="$1"
+	mkdir -p "$fixture/bin" "$fixture/pkg/dispatcher" "$fixture/state"
+	git -C "$fixture" init -q
+	git -C "$fixture" config user.email mutation@example.test
+	git -C "$fixture" config user.name mutation-test
+	printf 'module mutation.test/production-seam\n\ngo 1.26\n' >"$fixture/go.mod"
+	printf 'package dispatcher\n\nfunc handleConn() bool { return true }\n' \
+		>"$fixture/pkg/dispatcher/startup_recovery.go"
+	printf 'package dispatcher\n\nfunc registerWorkerWithProtocol() bool { return true }\n' \
+		>"$fixture/pkg/dispatcher/worker_pool.go"
+	printf 'package dispatcher\n\nfunc TestHandleConnLifecycleMatrix() {}\n' \
+		>"$fixture/pkg/dispatcher/startup_recovery_mutation_test.go"
+	printf 'package dispatcher\n\nfunc TestRegisterWorkerWithProtocolMutationCoverage() {}\n\nfunc TestRegisterWorkerWithProtocolReleasesMutexBoundedMutation() {}\n' \
+		>"$fixture/pkg/dispatcher/lifecycle_lock_bounded_mutation_test.go"
+	git -C "$fixture" add go.mod pkg/dispatcher
+	git -C "$fixture" commit -qm head
+
+	cat >"$fixture/bin/go" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" = tool && "$2" = go-mutesting ]]; then
+	source_file=${*: -1}
+	case "$source_file" in
+	*startup_recovery.go) mutant_count=17 ;;
+	*worker_pool.go) mutant_count=38 ;;
+	*) exit 64 ;;
+	esac
+	generation=$(mktemp -d "${GOTMPDIR:-/tmp}/production-seam-mutants.XXXXXX")
+	mkdir -p "$generation/$(dirname "$source_file")"
+	cp "$source_file" "$generation/$source_file.original"
+	for ((index = 0; index < mutant_count; index++)); do
+		sed '0,/return true/s//return false/' "$source_file" >"$generation/$source_file.$index"
+	done
+	printf 'Save mutations into "%s"\n' "$generation"
+	for ((index = 0; index < mutant_count; index++)); do
+		printf 'Save mutation into "%s" with checksum %d\n' "$generation/$source_file.$index" "$index"
+	done
+	exit 0
+fi
+if [[ "$1" = tool && "$2" = cover ]]; then
+	printf 'pkg/dispatcher/startup_recovery.go:1: handleConn 100.0%%\n'
+	printf 'pkg/dispatcher/worker_pool.go:1: registerWorkerWithProtocol 100.0%%\n'
+	exit 0
+fi
+[[ "$1" = test ]] || exit 64
+printf 'GO|%s|%s|%s\n' "${GOCACHE:-}" "${GOTMPDIR:-}" "$*" >>"${MUTATION_SEAM_GO_TRACE:?}"
+for arg in "$@"; do
+	case "$arg" in
+	-coverprofile=*) printf 'mode: set\n' >"${arg#-coverprofile=}" ;;
+	esac
+done
+if [[ " $* " == *" -list "* ]]; then
+	case "$*" in
+	*TestHandleConnLifecycleMatrix*) printf 'TestHandleConnLifecycleMatrix\n' ;;
+	*TestRegisterWorkerWithProtocol*)
+		printf 'TestRegisterWorkerWithProtocolMutationCoverage\n'
+		printf 'TestRegisterWorkerWithProtocolReleasesMutexBoundedMutation\n'
+		;;
+	esac
+	exit 0
+fi
+if [[ " $* " == *" -run ^$ "* ]]; then
+	printf 'PREWARM|%s|%s\n' "$GOCACHE" "$GOTMPDIR" >>"${MUTATION_SEAM_TRACE:?}"
+fi
+[[ -z "${MUTATE_CHANGED:-}" ]] || exit 1
+exit 0
+EOF
+	cat >"$fixture/bin/timeout" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+	for arg in "$@"; do
+		if [[ "$arg" == *mutation_parallel.sh ]]; then
+			printf 'OUTER|%s\n' "$*" >>"${MUTATION_SEAM_TRACE:?}"
+			printf 'CONFIG|workers=%s|warm=%s|base=%s|max=%s|exec=%s|margin=%s|test_file=%s\n' \
+				"${MUTATION_PARALLEL_WORKERS:-}" \
+				"${MUTATION_WORKER_CACHE_WARM_TIMEOUT_SECONDS:-}" \
+				"${MUTATION_BASE_SHARD_TIMEOUT_SECONDS:-}" \
+				"${MUTATION_MAX_SHARD_TIMEOUT_SECONDS:-}" \
+				"${MUTATION_EXEC_TIMEOUT:-}" \
+				"${MUTATION_TEST_TIMEOUT_MARGIN_SECONDS:-}" \
+				"${MUTATION_TEST_FILE:-}" \
+				>>"${MUTATION_SEAM_TRACE:?}"
+			break
+		fi
+	done
+exec "${MUTATION_REAL_TIMEOUT:?}" "$@"
+EOF
+	chmod +x "$fixture/bin/go" "$fixture/bin/timeout"
+}
+
+run_heavy_production_seam_replay() {
+	local replay_root="$1"
+	local mode="$2"
+	local source_file="$3"
+	local function_match="$4"
+	local test_pattern="$5"
+	local replay_repo="$repo_root"
+	local head bundle_runner original_path="$PATH" real_timeout run_path="$PATH"
+	real_timeout=$(command -v timeout)
+	mkdir -p "$replay_root/results" "$replay_root/evidence" "$replay_root/state" \
+		"$replay_root/mod"
+	bundle_runner=$(write_heavy_production_seam_bundle "$replay_root/runner")
+	if [[ "$mode" = synthetic ]]; then
+		replay_repo="$replay_root/repo"
+		new_heavy_production_seam_fixture "$replay_repo"
+	elif [[ "$mode" = real ]]; then
+		mkdir -p "$replay_root/prepopulate/cache" "$replay_root/prepopulate/tmp"
+		(
+			cd "$replay_repo"
+			GOMODCACHE="$replay_root/mod" \
+				GOCACHE="$replay_root/prepopulate/cache" \
+				GOTMPDIR="$replay_root/prepopulate/tmp" \
+				go mod download
+		) >"$replay_root/prepopulate/go-mod-download.log" 2>&1
+		[[ ! -e "$replay_root/caches" && ! -e "$replay_root/tmp" ]] ||
+			fail "$source_file real replay mutation caches were not fresh at seam entry"
+		printf 'fresh|%s|%s\n' "$replay_root/caches" "$replay_root/tmp" \
+			>"$replay_root/state/seam-entry.trace"
+	else
+		fail "unknown production-seam replay mode $mode"
+		return
+	fi
+	head=$(git -C "$replay_repo" rev-parse HEAD)
+	if [[ "$mode" = real && "${ORO_REAL_REPLAY_PREP_ONLY:-}" = 1 ]]; then
+		printf '%s\n' "$head" >"$replay_root/head"
+		return
+	fi
+	(
+		cd "$replay_repo"
+		set --
+		# This exact bundle omits only mutation.sh's final main invocation, preserving
+		# BASH_SOURCE-based mutation_parallel.sh and mutation_exec.sh resolution.
+		# shellcheck disable=SC1090
+		source "$bundle_runner"
+		# shellcheck disable=SC2034 # Consumed dynamically by the sourced run_mutation_shard.
+		mutation_failure_evidence_root="$replay_root/evidence"
+		export GOMODCACHE="$replay_root/mod"
+		if [[ "$mode" = synthetic ]]; then
+			run_path="$replay_repo/bin:$original_path"
+			export MUTATION_REAL_TIMEOUT="$real_timeout" \
+				MUTATION_SEAM_GO_TRACE="$replay_root/state/go.trace" \
+				MUTATION_SEAM_TRACE="$replay_root/state/seam.trace"
+			# shellcheck disable=SC2329 # The sourced shard runner resolves this override dynamically.
+			touched_functions_covered() { return 0; }
+		else
+			unset MUTATION_REAL_TIMEOUT MUTATION_SEAM_GO_TRACE MUTATION_SEAM_TRACE
+		fi
+		PATH="$run_path" run_mutation_shard 000000 "$source_file" "$function_match" "$test_pattern" \
+			0 "$head" "$replay_root" "$replay_root/results" 240 60 900
+	)
+	printf '%s\n' "$head" >"$replay_root/head"
+}
+
+assert_heavy_production_seam_replay() {
+	local replay_root="$1"
+	local mode="$2"
+	local source_file="$3"
+	local function_match="$4"
+	local mutant_count="$5"
+	local replay_repo="$repo_root"
+	local evidence_run expected_hash index
+	[[ "$mode" = real ]] || replay_repo="$replay_root/repo"
+
+	jq -e --arg file "$source_file" --arg match "$function_match" \
+		--argjson total "$mutant_count" \
+		'.index == 0 and .file == $file and .match == $match and
+		 .conclusion == "completed" and .exit_code == 0 and
+		 .total == $total and .skipped == 0' \
+		"$replay_root/results/000000.json" >/dev/null ||
+		fail "$mode $function_match replay lost its exact terminal shard result"
+	grep -Fxq \
+		"mutation shard capacity: mutants=$mutant_count workers=2 effective_timeout=240s emergency_cap=240s" \
+		"$replay_root/logs/000000.log" ||
+		fail "$mode $function_match replay changed bounded shard capacity"
+
+	evidence_run=$(find "$replay_root/evidence/000000" -mindepth 1 -maxdepth 1 \
+		-type d -name 'run.*')
+	[[ "$(wc -l <<<"$evidence_run" | tr -d ' ')" = 1 && -d "$evidence_run" ]] ||
+		fail "$mode $function_match replay did not retain one evidence run"
+	jq -s -e --arg file "$source_file" --arg match "$function_match" \
+		--argjson total "$mutant_count" \
+		'length == $total and
+		 ([.[].mutant_index] | sort) == [range(0; $total)] and
+		 all(.[]; .source_file == $file and .function_match == $match and
+			(.exit_class == "killed" or .exit_class == "survived"))' \
+		"$evidence_run"/mutant-*.json >/dev/null ||
+		fail "$mode $function_match replay lost exact terminal mutant evidence"
+
+	expected_hash=$(git -C "$replay_repo" rev-parse "$(<"$replay_root/head"):$source_file")
+	for index in "$replay_repo/$source_file" \
+		"$replay_root/checkouts/000000/$source_file"; do
+		[[ "$(git hash-object "$index")" = "$expected_hash" ]] ||
+			fail "$mode $function_match replay did not restore $index"
+	done
+
+	if [[ "$mode" = synthetic ]]; then
+		grep -Fxq 'CONFIG|workers=2|warm=120|base=240|max=240|exec=60|margin=5|test_file=' \
+			"$replay_root/state/seam.trace" ||
+			fail "$function_match replay changed the heavy production boundary"
+		[[ "$(grep -c '^PREWARM|' "$replay_root/state/seam.trace")" = 4 ]] ||
+			fail "$function_match replay did not preserve external and inner worker prewarms"
+		[[ "$(grep -c '^OUTER|240 ' "$replay_root/state/seam.trace")" = 1 ]] ||
+			fail "$function_match replay did not cross one outer 240s production seam"
+		local outer_line prewarm_before prewarm_after
+		outer_line=$(grep -n '^OUTER|' "$replay_root/state/seam.trace" | cut -d: -f1)
+		prewarm_before=$(sed -n "1,$((outer_line - 1))p" "$replay_root/state/seam.trace" |
+			grep -c '^PREWARM|' || true)
+		prewarm_after=$(sed -n "$((outer_line + 1)),\$p" "$replay_root/state/seam.trace" |
+			grep -c '^PREWARM|' || true)
+		[[ "$prewarm_before" = 2 && "$prewarm_after" = 2 ]] ||
+			fail "$function_match replay did not place exactly two external prewarms before its outer clock"
+		for index in 0 1; do
+			local worker_trace="$replay_root/caches/0/parallel-$index|$replay_root/tmp/000000/parallel-worker-$index"
+			[[ "$(sed -n "1,$((outer_line - 1))p" "$replay_root/state/seam.trace" | grep -Fc "$worker_trace")" = 1 &&
+				"$(sed -n "$((outer_line + 1)),\$p" "$replay_root/state/seam.trace" | grep -Fc "$worker_trace")" = 1 ]] ||
+				fail "$function_match replay omitted isolated worker $index cache/tmp"
+		done
+	else
+		[[ -f "$replay_root/prepopulate/go-mod-download.log" ]] ||
+			fail "$function_match real replay did not retain module prepopulation evidence"
+		grep -Fxq "fresh|$replay_root/caches|$replay_root/tmp" \
+			"$replay_root/state/seam-entry.trace" ||
+			fail "$function_match real replay did not prove fresh mutation caches at seam entry"
+	fi
+}
+
+TestHeavyMutationProductionSeamReplays() {
+	local mode=synthetic replay_root
+	if [[ "${ORO_REAL_REPLAY:-}" = 1 ]]; then
+		mode=real
+		replay_root=${ORO_REAL_REPLAY_ROOT:?set a fresh retained replay root}
+		mkdir -p "$replay_root"
+		[[ -z "$(find "$replay_root" -mindepth 1 -maxdepth 1 -print -quit)" ]] ||
+			fail 'real production-seam replay root must be fresh and empty'
+	else
+		if [[ -n "${ORO_REAL_REPLAY_ROOT:-}" ]]; then
+			replay_root=$ORO_REAL_REPLAY_ROOT
+			mkdir -p "$replay_root"
+			[[ -z "$(find "$replay_root" -mindepth 1 -maxdepth 1 -print -quit)" ]] ||
+				fail 'synthetic production-seam replay root must be fresh and empty'
+		else
+			replay_root=$(mktemp -d)
+			# shellcheck disable=SC2064 # Bind this fixture before another test replaces the local.
+			trap "rm -rf '$replay_root'" RETURN
+		fi
+	fi
+
+	run_heavy_production_seam_replay "$replay_root/handle" "$mode" \
+		pkg/dispatcher/startup_recovery.go '^(handleConn)$' \
+		'^TestHandleConnLifecycleMatrix$'
+	if [[ "$mode" = real && "${ORO_REAL_REPLAY_PREP_ONLY:-}" = 1 ]]; then
+		run_heavy_production_seam_replay "$replay_root/register" "$mode" \
+			pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocol)$' \
+			'^(TestRegisterWorkerWithProtocolMutationCoverage|TestRegisterWorkerWithProtocolReleasesMutexBoundedMutation)$'
+		local prepared
+		for prepared in handle register; do
+			[[ -f "$replay_root/$prepared/prepopulate/go-mod-download.log" ]] ||
+				fail "$prepared real preparation smoke lost its module log"
+			grep -Fxq "fresh|$replay_root/$prepared/caches|$replay_root/$prepared/tmp" \
+				"$replay_root/$prepared/state/seam-entry.trace" ||
+				fail "$prepared real preparation smoke lost its fresh-cache sentinel"
+			[[ ! -e "$replay_root/$prepared/results/000000.json" &&
+				! -e "$replay_root/$prepared/logs/000000.log" ]] ||
+				fail "$prepared preparation-only smoke started mutation execution"
+		done
+		printf 'retained production-seam preparation smoke: %s\n' "$replay_root"
+		return
+	fi
+	assert_heavy_production_seam_replay "$replay_root/handle" "$mode" \
+		pkg/dispatcher/startup_recovery.go '^(handleConn)$' 17
+
+	run_heavy_production_seam_replay "$replay_root/register" "$mode" \
+		pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocol)$' \
+		'^(TestRegisterWorkerWithProtocolMutationCoverage|TestRegisterWorkerWithProtocolReleasesMutexBoundedMutation)$'
+	assert_heavy_production_seam_replay "$replay_root/register" "$mode" \
+		pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocol)$' 38
+	[[ "$mode" = synthetic ]] || printf 'retained production-seam replay: %s\n' "$replay_root"
+}
+
 run_parallel_completion_handshake_fixture() {
 	local fixture="$1"
 	local mode="$2"
@@ -4699,6 +4997,7 @@ TestStrictIncrementalMutation() {
 	test_parallel_mutant_executor "$tmp/parallel-mutants"
 	TestMutationCapacity
 	TestHeavyMutationPrewarmBeforeOuterTimeout
+	ORO_REAL_REPLAY=0 ORO_REAL_REPLAY_ROOT='' TestHeavyMutationProductionSeamReplays
 	run_fixture "$tmp/unknown-exit" unknown-exit infrastructure_failure 2
 	jq -e \
 		'.score == null and .total == 0 and .mutation_exit_code == 2 and
@@ -4890,6 +5189,9 @@ main() {
 		;;
 	TestHeavyMutationPrewarmBeforeOuterTimeout)
 		TestHeavyMutationPrewarmBeforeOuterTimeout
+		;;
+	TestHeavyMutationProductionSeamReplays)
+		TestHeavyMutationProductionSeamReplays
 		;;
 	TestMutationExecInternalDeadline)
 		TestMutationExecInternalDeadline
