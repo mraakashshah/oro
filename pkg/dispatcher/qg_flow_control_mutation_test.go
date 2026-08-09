@@ -485,6 +485,21 @@ func TestQGFlowControlMutationOwner(t *testing.T) {
 		if got := qgFlowControlMutationEventCount(t, fixture.db, "qg_retry_assign_sent"); got != 0 {
 			t.Fatalf("exhausted failure emitted %d retry events", got)
 		}
+		if got := qgFlowControlMutationEventCount(t, fixture.db, "qg_original_reopened"); got != 1 {
+			t.Fatalf("exhausted reopen events = %d, want 1", got)
+		}
+		worker := qgFlowControlMutationWorkerSnapshot(t, fixture.d)
+		if worker.state != protocol.WorkerIdle || worker.assignmentID != 0 || worker.beadID != "" {
+			t.Fatalf("exhausted worker = %+v, want released idle worker", worker)
+		}
+		var assignmentStatus string
+		if err := fixture.db.QueryRowContext(context.Background(),
+			`SELECT status FROM assignments WHERE id=?`, fixture.assignmentID).Scan(&assignmentStatus); err != nil {
+			t.Fatalf("read exhausted assignment status: %v", err)
+		}
+		if assignmentStatus != "completed" {
+			t.Fatalf("exhausted assignment status = %q, want completed", assignmentStatus)
+		}
 	})
 
 	t.Run("blocking dependency stops downstream effects", func(t *testing.T) {
