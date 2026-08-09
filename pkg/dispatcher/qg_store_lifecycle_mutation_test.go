@@ -320,6 +320,10 @@ func TestQGStoreLifecycleMutationOwner(t *testing.T) {
 			if got := qgStoreLifecycleMutationAttributionWithin(t, d, workerID, record); got != (QGFailureAttribution{}) {
 				t.Fatalf("missing-worker attribution = %+v, want empty", got)
 			}
+			qgStoreLifecycleMutationRecordPassWithin(t, d, "unlock-probe")
+			if !d.qgTargetObservations["unlock-probe"].passed {
+				t.Fatal("missing-worker attribution did not release the dispatcher mutex")
+			}
 		})
 
 		for _, tt := range []struct {
