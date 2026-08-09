@@ -46,6 +46,26 @@ func newQGTargetAttributionMutationDispatcher(
 	}
 }
 
+func qgFailureAttributionWithin(
+	t *testing.T,
+	d *Dispatcher,
+	workerID string,
+	record QGFailureRecord,
+) QGFailureAttribution {
+	t.Helper()
+	result := make(chan QGFailureAttribution, 1)
+	go func() {
+		result <- d.qgFailureAttribution(context.Background(), workerID, record)
+	}()
+	select {
+	case attribution := <-result:
+		return attribution
+	case <-time.After(2 * time.Second):
+		t.Fatal("qgFailureAttribution did not return; possible local mutex deadlock")
+		return QGFailureAttribution{}
+	}
+}
+
 func TestQGIsDeterministicMutationOwner(t *testing.T) {
 	tests := []struct {
 		name string
@@ -90,7 +110,7 @@ func TestQGFailureAttributionMutationOwner(t *testing.T) {
 
 	t.Run("missing worker", func(t *testing.T) {
 		d := &Dispatcher{WorkerPool: WorkerPool{workers: make(map[string]*trackedWorker)}}
-		if got := d.qgFailureAttribution(context.Background(), workerID, record); got != (QGFailureAttribution{}) {
+		if got := qgFailureAttributionWithin(t, d, workerID, record); got != (QGFailureAttribution{}) {
 			t.Fatalf("missing-worker attribution = %+v, want empty", got)
 		}
 	})
@@ -106,7 +126,7 @@ func TestQGFailureAttributionMutationOwner(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			runner := &qgTargetAttributionMutationRunner{output: []byte(candidate + "\n")}
 			d := newQGTargetAttributionMutationDispatcher(workerID, beadID, tt.worktree, tt.targetSHA, runner)
-			if got := d.qgFailureAttribution(context.Background(), workerID, record); got != (QGFailureAttribution{}) {
+			if got := qgFailureAttributionWithin(t, d, workerID, record); got != (QGFailureAttribution{}) {
 				t.Fatalf("incomplete-worker attribution = %+v, want empty", got)
 			}
 			if runner.name != "" {
@@ -118,7 +138,7 @@ func TestQGFailureAttributionMutationOwner(t *testing.T) {
 	t.Run("git failure", func(t *testing.T) {
 		runner := &qgTargetAttributionMutationRunner{err: errors.New("rev-parse failed")}
 		d := newQGTargetAttributionMutationDispatcher(workerID, beadID, worktree, targetSHA, runner)
-		if got := d.qgFailureAttribution(context.Background(), workerID, record); got != (QGFailureAttribution{}) {
+		if got := qgFailureAttributionWithin(t, d, workerID, record); got != (QGFailureAttribution{}) {
 			t.Fatalf("git-failure attribution = %+v, want empty", got)
 		}
 	})
@@ -127,7 +147,7 @@ func TestQGFailureAttributionMutationOwner(t *testing.T) {
 		runner := &qgTargetAttributionMutationRunner{output: []byte(" \n")}
 		d := newQGTargetAttributionMutationDispatcher(workerID, beadID, worktree, targetSHA, runner)
 		want := QGFailureAttribution{TargetSHA: targetSHA}
-		if got := d.qgFailureAttribution(context.Background(), workerID, record); got != want {
+		if got := qgFailureAttributionWithin(t, d, workerID, record); got != want {
 			t.Fatalf("empty-candidate attribution = %+v, want %+v", got, want)
 		}
 	})
@@ -139,7 +159,7 @@ func TestQGFailureAttributionMutationOwner(t *testing.T) {
 			CandidateSHA: targetSHA, TargetSHA: targetSHA,
 			TargetFingerprint: fingerprint, TargetKnown: true,
 		}
-		if got := d.qgFailureAttribution(context.Background(), workerID, record); got != want {
+		if got := qgFailureAttributionWithin(t, d, workerID, record); got != want {
 			t.Fatalf("exact-target attribution = %+v, want %+v", got, want)
 		}
 		observation := d.qgTargetObservations[targetSHA]
@@ -155,7 +175,7 @@ func TestQGFailureAttributionMutationOwner(t *testing.T) {
 		runner := &qgTargetAttributionMutationRunner{output: []byte(candidate + "\n")}
 		d := newQGTargetAttributionMutationDispatcher(workerID, beadID, worktree, targetSHA, runner)
 		want := QGFailureAttribution{CandidateSHA: candidate, TargetSHA: targetSHA}
-		if got := d.qgFailureAttribution(context.Background(), workerID, record); got != want {
+		if got := qgFailureAttributionWithin(t, d, workerID, record); got != want {
 			t.Fatalf("unknown-target attribution = %+v, want %+v", got, want)
 		}
 	})
@@ -171,7 +191,7 @@ func TestQGFailureAttributionMutationOwner(t *testing.T) {
 			CandidateSHA: candidate, TargetSHA: targetSHA,
 			TargetFingerprint: fingerprint, TargetKnown: true, TargetPassed: true,
 		}
-		if got := d.qgFailureAttribution(context.Background(), workerID, record); got != want {
+		if got := qgFailureAttributionWithin(t, d, workerID, record); got != want {
 			t.Fatalf("cached-target attribution = %+v, want %+v", got, want)
 		}
 	})
@@ -197,7 +217,7 @@ func TestQGFailureAttributionMutationOwner(t *testing.T) {
 		want := QGFailureAttribution{
 			CandidateSHA: candidate, TargetSHA: targetSHA, TargetKnown: true, TargetPassed: true,
 		}
-		if got := d.qgFailureAttribution(context.Background(), workerID, record); got != want {
+		if got := qgFailureAttributionWithin(t, d, workerID, record); got != want {
 			t.Fatalf("accepted-target attribution = %+v, want %+v", got, want)
 		}
 		if !d.qgTargetObservations[targetSHA].passed {
