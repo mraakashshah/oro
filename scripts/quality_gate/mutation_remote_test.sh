@@ -1175,7 +1175,7 @@ EOF
 }
 
 TestAuthoritativeMutationTargetedScope() {
-	local evidence fixture focused_line focused_lines function pattern source target test_file
+	local evidence fixture focused_line focused_lines function pattern prewarm_line prewarm_lines source target test_file
 	while IFS=$'\t' read -r target source function pattern test_file; do
 		fixture="$tmp/targeted-$target"
 		evidence=$(run_targeted_fixture "$fixture" targeted pass 0 false "$target")
@@ -1206,7 +1206,7 @@ TestAuthoritativeMutationTargetedScope() {
 		fi
 		grep -Fxq "MUTATION_TEST_FILE=$test_file" "$fixture/mutation-args.txt" ||
 			fail "$function authoritative mutation omitted standalone owner file"
-		focused_lines=$(grep -F "$test_file" "$fixture/mutation-list.txt")
+		focused_lines=$(grep -F -- "-run $pattern" "$fixture/mutation-list.txt" | grep -F "$test_file")
 		[[ -n "$focused_lines" ]] || fail "$function emitted no focused authoritative argv"
 		while IFS= read -r focused_line; do
 			[[ "$(grep -oF "$source" <<<"$focused_line" | wc -l | tr -d ' ')" = 1 ]] ||
@@ -1218,6 +1218,12 @@ TestAuthoritativeMutationTargetedScope() {
 			! grep -Fq authoritative_unselected_test.go <<<"$focused_line" ||
 				fail "$function focused argv included an unselected test file"
 		done <<<"$focused_lines"
+		prewarm_lines=$(grep -F -- '-run ^$' "$fixture/mutation-list.txt" | grep -F "$test_file")
+		[[ -n "$prewarm_lines" ]] || fail "$function emitted no authoritative cache-prewarm argv"
+		while IFS= read -r prewarm_line; do
+			grep -Fq -- '-timeout 115s' <<<"$prewarm_line" ||
+				fail "$function cache-prewarm argv omitted bounded internal Go deadline"
+		done <<<"$prewarm_lines"
 	done <<'EOF'
 authoritative-assignment	pkg/dispatcher/assignment.go	assignmentInsertFailureAllowsReopen	^TestAssignmentAuthoritativeSurvivorMutation	pkg/dispatcher/assignment_authoritative_survivor_mutation_test.go
 authoritative-ops	pkg/dispatcher/ops_runs.go	applyOpsResolve	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
