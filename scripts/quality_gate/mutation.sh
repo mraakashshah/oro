@@ -506,13 +506,7 @@ split_branch_mutation_test_pattern() {
 }
 
 qg_target_attribution_mutation_test_pattern() {
-	local file="$1"
-	local match="$2"
-	case "$file:$match" in
-	'pkg/dispatcher/qg_flow.go:^(evaluateQGFailure)$')
-		printf '^TestQGEvaluateFailureMutationOwner$'
-		;;
-	esac
+	return 0
 }
 
 qg_target_attribution_mutation_test_file() {
@@ -564,6 +558,26 @@ qg_store_lifecycle_mutation_test_file() {
 	local match="$2"
 	if [[ -n "$(qg_store_lifecycle_mutation_test_pattern "$file" "$match")" ]]; then
 		printf 'pkg/dispatcher/qg_store_lifecycle_mutation_test.go'
+	fi
+}
+
+qg_flow_control_mutation_test_pattern() {
+	local file="$1"
+	local match="$2"
+	case "$file:$match" in
+	'pkg/dispatcher/qg_flow.go:^(evaluateQGFailure)$' | \
+		'pkg/dispatcher/qg_flow.go:^(handleQGFailure)$' | \
+		'pkg/dispatcher/qg_flow.go:^(targetBaselineFailure)$')
+		printf '^TestQGFlowControlMutationOwner$'
+		;;
+	esac
+}
+
+qg_flow_control_mutation_test_file() {
+	local file="$1"
+	local match="$2"
+	if [[ -n "$(qg_flow_control_mutation_test_pattern "$file" "$match")" ]]; then
+		printf 'pkg/dispatcher/qg_flow_control_mutation_test.go'
 	fi
 }
 
@@ -936,7 +950,7 @@ targeted_test_pattern() {
 	local head="$2"
 	local file="$3"
 	local match="$4"
-	local assignment_admission_pattern assignment_bc_pattern authoritative_pattern cmd_pattern escalation_survivor_pattern p0_durability_pattern qg_classifier_decision_pattern qg_store_lifecycle_pattern qg_target_attribution_pattern review_checkpoint_pattern review_integration_recovery_pattern split_branch_pattern startup_maintenance_pattern
+	local assignment_admission_pattern assignment_bc_pattern authoritative_pattern cmd_pattern escalation_survivor_pattern p0_durability_pattern qg_classifier_decision_pattern qg_flow_control_pattern qg_store_lifecycle_pattern qg_target_attribution_pattern review_checkpoint_pattern review_integration_recovery_pattern split_branch_pattern startup_maintenance_pattern
 	p0_durability_pattern=$(p0_durability_mutation_test_pattern "$file" "$match")
 	if [[ -n "$p0_durability_pattern" ]]; then
 		printf '%s' "$p0_durability_pattern"
@@ -955,6 +969,11 @@ targeted_test_pattern() {
 	qg_store_lifecycle_pattern=$(qg_store_lifecycle_mutation_test_pattern "$file" "$match")
 	if [[ -n "$qg_store_lifecycle_pattern" ]]; then
 		printf '%s' "$qg_store_lifecycle_pattern"
+		return
+	fi
+	qg_flow_control_pattern=$(qg_flow_control_mutation_test_pattern "$file" "$match")
+	if [[ -n "$qg_flow_control_pattern" ]]; then
+		printf '%s' "$qg_flow_control_pattern"
 		return
 	fi
 	qg_target_attribution_pattern=$(qg_target_attribution_mutation_test_pattern "$file" "$match")
@@ -1066,6 +1085,9 @@ run_mutation_shard() {
 	fi
 	if [[ -z "$mutation_test_file" ]]; then
 		mutation_test_file=$(qg_store_lifecycle_mutation_test_file "$file" "$match")
+	fi
+	if [[ -z "$mutation_test_file" ]]; then
+		mutation_test_file=$(qg_flow_control_mutation_test_file "$file" "$match")
 	fi
 	if [[ -z "$mutation_test_file" ]]; then
 		mutation_test_file=$(qg_target_attribution_mutation_test_file "$file" "$match")
