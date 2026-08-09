@@ -36,6 +36,17 @@ type QGFailureHistory struct {
 	RetryExhausted bool
 }
 
+// QGFailureAttribution describes evidence from the exact target revision that
+// the candidate was assigned against. TargetKnown is false when no
+// SHA-matched target evidence is available.
+type QGFailureAttribution struct {
+	CandidateSHA      string
+	TargetSHA         string
+	TargetFingerprint string
+	TargetKnown       bool
+	TargetPassed      bool
+}
+
 // QGFailureClass is the broad cause category assigned to a QG failure.
 type QGFailureClass string
 
@@ -131,17 +142,32 @@ func FingerprintQGFailure(output string, opts QGFingerprintOptions) (fingerprint
 }
 
 // ClassifyQGFailure maps a QG failure record plus prior history to the
-// dispatcher policy that should handle it.
-func ClassifyQGFailure(record QGFailureRecord, history QGFailureHistory) QGFailureClassification {
+// dispatcher policy that should handle it. Callers without exact target
+// evidence may omit attribution to preserve the conservative policy.
+func ClassifyQGFailure(record QGFailureRecord, history QGFailureHistory, attributions ...QGFailureAttribution) QGFailureClassification {
+	var attribution QGFailureAttribution
+	if len(attributions) > 0 {
+		attribution = attributions[0]
+	}
 	text := strings.ToLower(record.Output + "\n" + record.Summary)
 
 	switch {
+	case targetBaselineHasFailure(record, attribution):
+		return qgClassification(QGFailureClassSystemic, QGFailureDecisionCreateOrReuseInfra, QGFailureConfidenceHigh,
+			"failure is present on the exact target baseline")
 	case isImpossibleQGFailure(text):
 		return qgClassification(QGFailureClassImpossible, QGFailureDecisionBumpOriginal, QGFailureConfidenceHigh,
 			"failure indicates missing or impossible task acceptance")
 	case isWorkerTransientQGFailure(text):
 		return qgClassification(QGFailureClassWorkerTransient, QGFailureDecisionRetryOriginal, QGFailureConfidenceHigh,
 			"worker subprocess exited before completing; retry original with preserved diagnostics")
+	case candidateOnlyDeterministicFailure(text, attribution):
+		if history.RetryExhausted {
+			return qgClassification(QGFailureClassWorkerDeterministic, QGFailureDecisionReopenOriginal, QGFailureConfidenceHigh,
+				"candidate-only deterministic failure exhausted retry budget")
+		}
+		return qgClassification(QGFailureClassWorkerDeterministic, QGFailureDecisionRetryOriginal, QGFailureConfidenceHigh,
+			"deterministic failure is absent from the passing target baseline")
 	case history.AffectedBeads > 1 || isSystemicQGFailure(text):
 		return qgClassification(QGFailureClassSystemic, QGFailureDecisionCreateOrReuseInfra, QGFailureConfidenceHigh,
 			"failure appears systemic across beads or shared infrastructure")
@@ -164,6 +190,22 @@ func ClassifyQGFailure(record QGFailureRecord, history QGFailureHistory) QGFailu
 	}
 }
 
+func targetBaselineHasFailure(record QGFailureRecord, attribution QGFailureAttribution) bool {
+	if !attribution.TargetKnown {
+		return false
+	}
+	if attribution.CandidateSHA != "" && attribution.CandidateSHA == attribution.TargetSHA {
+		return true
+	}
+	return record.Fingerprint != "" && record.Fingerprint == attribution.TargetFingerprint
+}
+
+func candidateOnlyDeterministicFailure(text string, attribution QGFailureAttribution) bool {
+	return attribution.TargetKnown && attribution.TargetPassed &&
+		attribution.CandidateSHA != "" && attribution.TargetSHA != "" &&
+		attribution.CandidateSHA != attribution.TargetSHA && isDeterministicQGFailure(text)
+}
+
 func qgClassification(class QGFailureClass, decision QGFailureDecision, confidence QGFailureConfidence, reason string) QGFailureClassification {
 	return QGFailureClassification{Class: class, Decision: decision, Confidence: confidence, Reason: reason}
 }
@@ -175,6 +217,7 @@ func isDeterministicQGFailure(text string) bool {
 		toolFailure(text, "gofumpt") ||
 		toolFailure(text, "goimports") ||
 		toolFailure(text, "golangci-lint") ||
+		toolFailure(text, "revive") ||
 		strings.Contains(text, "compile error") ||
 		strings.Contains(text, "compilation failed") ||
 		strings.Contains(text, "build failed") ||
