@@ -81,12 +81,14 @@ func TestQGClassifierDecisionMutationOwner(t *testing.T) {
 			{name: "gofumpt", text: "gofumpt failed: file is not formatted", want: true},
 			{name: "goimports", text: "goimports error: imports are unsorted", want: true},
 			{name: "golangci", text: "golangci-lint failed: revive", want: true},
+			{name: "golangci without another tool marker", text: "golangci-lint failed: errcheck", want: true},
 			{name: "revive", text: "revive error: builtinShadow", want: true},
 			{name: "compile", text: "compile error in package", want: true},
 			{name: "compilation", text: "compilation failed for command", want: true},
 			{name: "build", text: "build failed for binary", want: true},
 			{name: "unused", text: "pkg/example.go: unused variable value", want: true},
 			{name: "passing tools", text: "gofumpt pass\ngoimports pass\ngolangci-lint pass\nrevive pass", want: false},
+			{name: "nil source diagnostic without nilaway", text: "pkg/example.go:12:3: potential nil panic detected", want: false},
 			{name: "word fragment", text: "prefailure marker", want: false},
 			{name: "empty", text: "", want: false},
 		}
@@ -107,6 +109,18 @@ func TestQGClassifierDecisionMutationOwner(t *testing.T) {
 			want        bool
 		}{
 			{name: "unknown target", record: QGFailureRecord{Fingerprint: "failure"}, want: false},
+			{
+				name: "unknown target with matching revisions",
+				attribution: QGFailureAttribution{
+					CandidateSHA: "target", TargetSHA: "target",
+				},
+				want: false,
+			},
+			{
+				name:        "known target with empty revisions",
+				attribution: QGFailureAttribution{TargetKnown: true},
+				want:        false,
+			},
 			{
 				name: "candidate is target",
 				attribution: QGFailureAttribution{
@@ -163,6 +177,13 @@ func TestQGClassifierDecisionMutationOwner(t *testing.T) {
 			{name: "non deterministic", text: "command timed out", attribution: passingDistinct, want: false},
 			{name: "unknown target", text: "revive failed", attribution: QGFailureAttribution{TargetPassed: true}, want: false},
 			{
+				name: "unknown target with complete revisions", text: "revive failed",
+				attribution: QGFailureAttribution{
+					CandidateSHA: "candidate", TargetSHA: "target", TargetPassed: true,
+				},
+				want: false,
+			},
+			{
 				name: "target did not pass", text: "revive failed",
 				attribution: QGFailureAttribution{
 					CandidateSHA: "candidate", TargetSHA: "target", TargetKnown: true,
@@ -199,12 +220,13 @@ func TestQGClassifierDecisionMutationOwner(t *testing.T) {
 	t.Run("classification precedence", func(t *testing.T) {
 		deterministic := QGFailureRecord{Fingerprint: "failure", Output: "revive failed: builtinShadow"}
 		tests := []struct {
-			name         string
-			record       QGFailureRecord
-			history      QGFailureHistory
-			attribution  QGFailureAttribution
-			wantClass    QGFailureClass
-			wantDecision QGFailureDecision
+			name            string
+			record          QGFailureRecord
+			history         QGFailureHistory
+			attribution     QGFailureAttribution
+			omitAttribution bool
+			wantClass       QGFailureClass
+			wantDecision    QGFailureDecision
 		}{
 			{
 				name: "exact target beats deterministic marker", record: deterministic,
@@ -245,13 +267,56 @@ func TestQGClassifierDecisionMutationOwner(t *testing.T) {
 				wantClass: QGFailureClassWorkerDeterministic, wantDecision: QGFailureDecisionRetryOriginal,
 			},
 			{
+				name: "zero attribution deterministic fallback", record: deterministic,
+				omitAttribution: true,
+				wantClass:       QGFailureClassWorkerDeterministic, wantDecision: QGFailureDecisionRetryOriginal,
+			},
+			{
+				name: "zero attribution deterministic retry exhausted", record: deterministic,
+				history: QGFailureHistory{RetryExhausted: true}, omitAttribution: true,
+				wantClass: QGFailureClassWorkerDeterministic, wantDecision: QGFailureDecisionReopenOriginal,
+			},
+			{
+				name:      "single affected bead is not systemic",
+				record:    QGFailureRecord{Output: "unrecognized quality gate output"},
+				history:   QGFailureHistory{AffectedBeads: 1},
+				wantClass: QGFailureClassUnknown, wantDecision: QGFailureDecisionStopForTriage,
+			},
+			{
+				name:      "package loader output is systemic",
+				record:    QGFailureRecord{Output: "package loader returned malformed export data"},
+				wantClass: QGFailureClassSystemic, wantDecision: QGFailureDecisionCreateOrReuseInfra,
+			},
+			{
+				name:      "known flaky history",
+				record:    QGFailureRecord{Output: "unrecognized quality gate output"},
+				history:   QGFailureHistory{KnownFlaky: true},
+				wantClass: QGFailureClassFlaky, wantDecision: QGFailureDecisionBackoffRetry,
+			},
+			{
+				name:      "passing rerun history",
+				record:    QGFailureRecord{Output: "unrecognized quality gate output"},
+				history:   QGFailureHistory{RerunPassed: true},
+				wantClass: QGFailureClassFlaky, wantDecision: QGFailureDecisionBackoffRetry,
+			},
+			{
+				name:      "flaky output",
+				record:    QGFailureRecord{Output: "intermittent flaky quality gate"},
+				wantClass: QGFailureClassFlaky, wantDecision: QGFailureDecisionBackoffRetry,
+			},
+			{
 				name: "unknown output", record: QGFailureRecord{Output: "unrecognized quality gate output"},
 				wantClass: QGFailureClassUnknown, wantDecision: QGFailureDecisionStopForTriage,
 			},
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
-				got := ClassifyQGFailure(tt.record, tt.history, tt.attribution)
+				var got QGFailureClassification
+				if tt.omitAttribution {
+					got = ClassifyQGFailure(tt.record, tt.history)
+				} else {
+					got = ClassifyQGFailure(tt.record, tt.history, tt.attribution)
+				}
 				if got.Class != tt.wantClass || got.Decision != tt.wantDecision {
 					t.Fatalf("ClassifyQGFailure() = %+v, want class=%q decision=%q", got, tt.wantClass, tt.wantDecision)
 				}
@@ -272,6 +337,10 @@ func TestQGClassifierDecisionMutationOwner(t *testing.T) {
 
 		t.Run("empty target", func(t *testing.T) {
 			d := newQGClassifierDecisionMutationDispatcher(t, true)
+			if _, err := d.db.Exec(`INSERT INTO review_checkpoints VALUES
+				('', '', 'evidence.json', 'hash')`); err != nil {
+				t.Fatalf("insert empty classifier decision evidence: %v", err)
+			}
 			if qgClassifierDecisionAcceptedWithin(t, d, context.Background(), "") {
 				t.Fatal("empty target was accepted")
 			}
