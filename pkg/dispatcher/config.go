@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"oro/pkg/factoryhealth"
@@ -52,7 +53,9 @@ type Config struct {
 	WorkerProgram           string        // Absolute path to worker-program.md. Defaults to <RepoRoot>/worker-program.md.
 	ReviewPatterns          string        // Absolute path for review patterns. Populated from ProjectPaths.ReviewPatterns.
 	ReviewPatternCandidates string        // Absolute path for review-pattern candidate inbox. Populated from ProjectPaths.ReviewPatternCandidates.
-	DefaultBranch           string        // Base branch for worktree creation and epic FF merges (default "main"). Set via --base-branch flag.
+	BaseRef                 string        // Immutable ref or commit used to seed assignments and evaluate ancestry (default TargetBranch).
+	TargetBranch            string        // Writable local branch used for integration (default DefaultBranch, then "main").
+	DefaultBranch           string        // Deprecated compatibility alias for TargetBranch. New code should choose BaseRef or TargetBranch explicitly.
 	WebEnabled              bool          // Enable HTTP server for dashboard/health endpoints (default false).
 	WebAddr                 string        // HTTP server listen address (default 127.0.0.1:4444 in withDefaults).
 	SemanticModelDir        string        // Directory containing the BGE ONNX model files. Empty means semantic search is disabled.
@@ -146,9 +149,21 @@ func (c *Config) withDefaults() Config {
 	out.ReviewDeadGrace = durationDefault(out.ReviewDeadGrace, 30*time.Second)
 	out.RegressionRevert = boolDefault(out.RegressionRevert, true)
 	out.CheckpointThreshold = intDefault(out.CheckpointThreshold, 75)
-	if out.DefaultBranch == "" {
-		out.DefaultBranch = "main"
+	out.TargetBranch = strings.TrimSpace(out.TargetBranch)
+	out.DefaultBranch = strings.TrimSpace(out.DefaultBranch)
+	out.BaseRef = strings.TrimSpace(out.BaseRef)
+	if out.TargetBranch == "" {
+		out.TargetBranch = out.DefaultBranch
 	}
+	if out.TargetBranch == "" {
+		out.TargetBranch = "main"
+	}
+	if out.BaseRef == "" {
+		out.BaseRef = out.TargetBranch
+	}
+	// Keep legacy dispatcher consumers on the writable side of the split until
+	// they migrate to BaseRef or TargetBranch explicitly.
+	out.DefaultBranch = out.TargetBranch
 	if out.WebAddr == "" {
 		out.WebAddr = "127.0.0.1:4444"
 	}
@@ -159,6 +174,20 @@ func (c *Config) withDefaults() Config {
 // durations, non-negative counts, and compatible feature flags. Call this
 // AFTER withDefaults().
 func (c Config) validate() error {
+	if err := c.validateBranchConfig(); err != nil {
+		return err
+	}
+	return c.validateOperationalConfig()
+}
+
+func (c Config) validateBranchConfig() error {
+	if strings.HasPrefix(c.TargetBranch, "refs/remotes/") || strings.HasPrefix(c.TargetBranch, "origin/") {
+		return fmt.Errorf("TargetBranch must name a writable local branch, got remote-tracking ref %q", c.TargetBranch)
+	}
+	return nil
+}
+
+func (c Config) validateOperationalConfig() error {
 	if c.MaxWorkers < 0 {
 		return fmt.Errorf("MaxWorkers must be non-negative, got %d", c.MaxWorkers)
 	}

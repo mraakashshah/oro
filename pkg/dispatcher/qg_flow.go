@@ -47,6 +47,17 @@ func (d *Dispatcher) handleQGFailure(ctx context.Context, workerID, beadID, qgOu
 		d.handleQGStuckDetected(ctx, workerID, beadID, qgOutput, qg.record.Fingerprint, qg.record.Summary)
 		return
 	}
+	if qg.targetBaselineFailure() {
+		d.handleSystemicQGExhaustion(
+			ctx,
+			workerID,
+			beadID,
+			qg.record.AssignmentID,
+			qg.record,
+			qg.classification,
+		)
+		return
+	}
 
 	// Transient and flaky failures use backoff retry — they do not increment
 	// attemptCounts and therefore do not burn the worker-fix retry budget.
@@ -123,19 +134,31 @@ func (d *Dispatcher) qgRetryBlockingDependency(ctx context.Context, beadID strin
 type qgFailureEvaluation struct {
 	err            *protocol.QualityGateError
 	record         QGFailureRecord
+	attribution    QGFailureAttribution
 	classification QGFailureClassification
+}
+
+func (q qgFailureEvaluation) targetBaselineFailure() bool {
+	return q.classification.Decision == QGFailureDecisionCreateOrReuseInfra &&
+		q.classification.Confidence == QGFailureConfidenceHigh &&
+		targetBaselineHasFailure(q.record, q.attribution)
 }
 
 func (d *Dispatcher) evaluateQGFailure(ctx context.Context, workerID, beadID, qgOutput string) qgFailureEvaluation {
 	fingerprint, summary := FingerprintQGFailure(qgOutput, QGFingerprintOptions{})
+	d.mu.Lock()
+	assignmentID := d.assignmentIDLocked(workerID, beadID)
+	d.mu.Unlock()
 	record := QGFailureRecord{
-		BeadID:      beadID,
-		WorkerID:    workerID,
-		Component:   "worker",
-		Fingerprint: fingerprint,
-		Summary:     summary,
-		Output:      qgOutput,
+		BeadID:       beadID,
+		WorkerID:     workerID,
+		AssignmentID: assignmentID,
+		Component:    "worker",
+		Fingerprint:  fingerprint,
+		Summary:      summary,
+		Output:       qgOutput,
 	}
+	attribution := d.qgFailureAttribution(ctx, workerID, record)
 	return qgFailureEvaluation{
 		err: &protocol.QualityGateError{
 			BeadID:   beadID,
@@ -143,7 +166,8 @@ func (d *Dispatcher) evaluateQGFailure(ctx context.Context, workerID, beadID, qg
 			Output:   qgOutput,
 		},
 		record:         record,
-		classification: d.classifyQGFailure(ctx, record, QGFailureHistory{}),
+		attribution:    attribution,
+		classification: d.classifyQGFailureWithAttribution(ctx, record, QGFailureHistory{}, attribution),
 	}
 }
 

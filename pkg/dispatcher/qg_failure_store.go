@@ -13,6 +13,11 @@ import (
 
 const maxQGFailureStoreAttempts = 8
 
+type qgTargetObservation struct {
+	passed              bool
+	failureFingerprints map[string]struct{}
+}
+
 // QGIncident is the persisted incident row for a deduped QG failure.
 type QGIncident struct {
 	ID              int64
@@ -223,6 +228,16 @@ func nullableInt64(v int64) any {
 }
 
 func (d *Dispatcher) classifyQGFailure(ctx context.Context, rec QGFailureRecord, override QGFailureHistory) QGFailureClassification {
+	attribution := d.qgFailureAttribution(ctx, rec.WorkerID, rec)
+	return d.classifyQGFailureWithAttribution(ctx, rec, override, attribution)
+}
+
+func (d *Dispatcher) classifyQGFailureWithAttribution(
+	ctx context.Context,
+	rec QGFailureRecord,
+	override QGFailureHistory,
+	attribution QGFailureAttribution,
+) QGFailureClassification {
 	history := d.loadQGFailureHistory(ctx, rec)
 	history.KnownFlaky = history.KnownFlaky || override.KnownFlaky
 	history.RerunPassed = history.RerunPassed || override.RerunPassed
@@ -230,7 +245,102 @@ func (d *Dispatcher) classifyQGFailure(ctx context.Context, rec QGFailureRecord,
 	if override.AffectedBeads > history.AffectedBeads {
 		history.AffectedBeads = override.AffectedBeads
 	}
-	return ClassifyQGFailure(rec, history)
+	return ClassifyQGFailure(rec, history, attribution)
+}
+
+func (d *Dispatcher) qgFailureAttribution(ctx context.Context, workerID string, record QGFailureRecord) QGFailureAttribution {
+	d.mu.Lock()
+	worker := d.workers[workerID]
+	if worker == nil {
+		d.mu.Unlock()
+		return QGFailureAttribution{}
+	}
+	worktree, targetSHA := worker.worktree, worker.targetSHA
+	d.mu.Unlock()
+	if worktree == "" || targetSHA == "" {
+		return QGFailureAttribution{}
+	}
+
+	headOut, err := d.commandRunner().Run(ctx, "git", "-C", worktree, "rev-parse", "HEAD")
+	if err != nil {
+		return QGFailureAttribution{}
+	}
+	candidateSHA := strings.TrimSpace(string(headOut))
+	attribution := QGFailureAttribution{CandidateSHA: candidateSHA, TargetSHA: targetSHA}
+	if candidateSHA == "" {
+		return attribution
+	}
+	if candidateSHA == targetSHA {
+		d.recordQGTargetFailure(targetSHA, record.Fingerprint)
+		attribution.TargetKnown = true
+		attribution.TargetFingerprint = record.Fingerprint
+		return attribution
+	}
+
+	d.mu.Lock()
+	observation, ok := d.qgTargetObservations[targetSHA]
+	_, fingerprintObserved := observation.failureFingerprints[record.Fingerprint]
+	d.mu.Unlock()
+	if !observation.passed && d.acceptedQGTargetPassed(ctx, targetSHA) {
+		d.recordQGTargetPass(targetSHA)
+		observation.passed = true
+		ok = true
+	}
+	if !ok {
+		return attribution
+	}
+	attribution.TargetKnown = true
+	attribution.TargetPassed = observation.passed
+	if fingerprintObserved && record.Fingerprint != "" {
+		attribution.TargetFingerprint = record.Fingerprint
+	}
+	return attribution
+}
+
+func (d *Dispatcher) acceptedQGTargetPassed(ctx context.Context, targetSHA string) bool {
+	if d.db == nil || targetSHA == "" {
+		return false
+	}
+	var matches int
+	err := d.db.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM review_checkpoints
+WHERE head_sha = ? AND target_sha = ?
+  AND COALESCE(qg_evidence_path, '') <> ''
+  AND COALESCE(qg_evidence_sha256, '') <> ''`,
+		targetSHA, targetSHA).Scan(&matches)
+	return err == nil && matches > 0
+}
+
+func (d *Dispatcher) recordQGTargetPass(targetSHA string) {
+	if targetSHA == "" {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.qgTargetObservations == nil {
+		d.qgTargetObservations = make(map[string]qgTargetObservation)
+	}
+	observation := d.qgTargetObservations[targetSHA]
+	observation.passed = true
+	d.qgTargetObservations[targetSHA] = observation
+}
+
+func (d *Dispatcher) recordQGTargetFailure(targetSHA, fingerprint string) {
+	if targetSHA == "" || fingerprint == "" {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.qgTargetObservations == nil {
+		d.qgTargetObservations = make(map[string]qgTargetObservation)
+	}
+	observation := d.qgTargetObservations[targetSHA]
+	if observation.failureFingerprints == nil {
+		observation.failureFingerprints = make(map[string]struct{})
+	}
+	observation.failureFingerprints[fingerprint] = struct{}{}
+	d.qgTargetObservations[targetSHA] = observation
 }
 
 func (d *Dispatcher) loadQGFailureHistory(ctx context.Context, rec QGFailureRecord) QGFailureHistory {

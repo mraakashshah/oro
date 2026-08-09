@@ -111,6 +111,12 @@ func TestReadyObservationFailureBlocksAssignmentAndDegradesHealthAndStatus(t *te
 	tryAssignAndWait(t, d, ctx)
 	assertNoAssignmentMessage(t, conn)
 	assertAssignmentObservationDegraded(t, d, "ready", "injected ready observation failure")
+	d.mu.Lock()
+	cachedIdleWorkers := d.cachedIdleWorkers
+	d.mu.Unlock()
+	if cachedIdleWorkers != 0 {
+		t.Fatalf("cached idle workers after failed ready observation = %d, want unchanged 0", cachedIdleWorkers)
+	}
 }
 
 func TestCheckpointObservationFailureBlocksAssignmentAndDegradesHealthAndStatus(t *testing.T) {
