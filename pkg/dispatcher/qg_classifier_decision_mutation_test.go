@@ -48,9 +48,9 @@ func newQGClassifierDecisionMutationDispatcher(t *testing.T, withReviewTable boo
 }
 
 func qgClassifierDecisionAcceptedWithin(
+	ctx context.Context,
 	t *testing.T,
 	d *Dispatcher,
-	ctx context.Context,
 	targetSHA string,
 ) bool {
 	t.Helper()
@@ -330,7 +330,7 @@ func TestQGClassifierDecisionMutationOwner(t *testing.T) {
 	t.Run("accepted target evidence", func(t *testing.T) {
 		t.Run("nil database", func(t *testing.T) {
 			d := &Dispatcher{shutdownRunner: &qgClassifierDecisionMutationRunner{err: errors.New("unused")}}
-			if qgClassifierDecisionAcceptedWithin(t, d, context.Background(), "target") {
+			if qgClassifierDecisionAcceptedWithin(context.Background(), t, d, "target") {
 				t.Fatal("nil database target was accepted")
 			}
 		})
@@ -341,14 +341,14 @@ func TestQGClassifierDecisionMutationOwner(t *testing.T) {
 				('', '', 'evidence.json', 'hash')`); err != nil {
 				t.Fatalf("insert empty classifier decision evidence: %v", err)
 			}
-			if qgClassifierDecisionAcceptedWithin(t, d, context.Background(), "") {
+			if qgClassifierDecisionAcceptedWithin(context.Background(), t, d, "") {
 				t.Fatal("empty target was accepted")
 			}
 		})
 
 		t.Run("missing table", func(t *testing.T) {
 			d := newQGClassifierDecisionMutationDispatcher(t, false)
-			if qgClassifierDecisionAcceptedWithin(t, d, context.Background(), "target") {
+			if qgClassifierDecisionAcceptedWithin(context.Background(), t, d, "target") {
 				t.Fatal("target without review table was accepted")
 			}
 		})
@@ -362,15 +362,15 @@ func TestQGClassifierDecisionMutationOwner(t *testing.T) {
 				('target', 'target', 'evidence.json', 'hash')`); err != nil {
 				t.Fatalf("insert classifier decision evidence: %v", err)
 			}
-			if !qgClassifierDecisionAcceptedWithin(t, d, context.Background(), "target") {
+			if !qgClassifierDecisionAcceptedWithin(context.Background(), t, d, "target") {
 				t.Fatal("exact target with complete evidence was not accepted")
 			}
-			if qgClassifierDecisionAcceptedWithin(t, d, context.Background(), "other") {
+			if qgClassifierDecisionAcceptedWithin(context.Background(), t, d, "other") {
 				t.Fatal("mismatched target evidence was accepted")
 			}
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel()
-			if qgClassifierDecisionAcceptedWithin(t, d, ctx, "target") {
+			if qgClassifierDecisionAcceptedWithin(ctx, t, d, "target") {
 				t.Fatal("canceled target lookup was accepted")
 			}
 		})
