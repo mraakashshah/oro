@@ -1220,6 +1220,74 @@ reset_mutation_cache_slot() {
 	mkdir -p "$cache_root"
 }
 
+prewarm_parallel_mutation_workers() {
+	local checkout="$1"
+	local source_file="$2"
+	local test_file="$3"
+	local cache_root="$4"
+	local tmp_root="$5"
+	local worker_count="$6"
+	local timeout_seconds="$7"
+	local module_path source_path source_dir source_dir_abs test_path test_dir_abs
+	local worker warm_status warm_failure=0
+	local -a test_targets warm_pids=()
+
+	if [[ -z "$checkout" || ! -d "$checkout" || -z "$source_file" || "$source_file" == /* ||
+		! -f "$checkout/$source_file" || -z "$cache_root" || -z "$tmp_root" ||
+		! "$worker_count" =~ ^[1-9][0-9]*$ || ! "$timeout_seconds" =~ ^[1-9][0-9]*$ ]] ||
+		((timeout_seconds <= 5)); then
+		return 2
+	fi
+	module_path=$(awk '$1 == "module" { print $2; exit }' "$checkout/go.mod")
+	[[ -n "$module_path" ]] || return 2
+	source_path="$checkout/$source_file"
+	source_dir=$(dirname -- "$source_path")
+	if ! source_dir_abs=$(cd "$source_dir" && pwd -P); then
+		return 2
+	fi
+	if [[ -n "$test_file" ]]; then
+		[[ "$test_file" != /* ]] || return 2
+		test_path="$checkout/$test_file"
+		if ! test_dir_abs=$(cd "$(dirname -- "$test_path")" 2>/dev/null && pwd -P); then
+			return 2
+		fi
+		if [[ "$test_dir_abs" != "$source_dir_abs" || "$(basename -- "$test_path")" != *_test.go ||
+			! -f "$test_path" ]]; then
+			return 2
+		fi
+		mapfile -t test_targets < <(find "$source_dir_abs" -maxdepth 1 -type f -name '*.go' ! -name '*_test.go' | sort)
+		test_targets+=("$test_path")
+	else
+		test_targets=("$module_path/$(dirname "$source_file")")
+	fi
+
+	mkdir -p "$cache_root" "$tmp_root/prewarm-logs"
+	for ((worker = 0; worker < worker_count; worker++)); do
+		mkdir -p "$cache_root/parallel-$worker" "$tmp_root/parallel-worker-$worker"
+		(
+			cd "$checkout"
+			GOCACHE="$cache_root/parallel-$worker" \
+				GOTMPDIR="$tmp_root/parallel-worker-$worker" \
+				timeout --foreground "$timeout_seconds" \
+				go test -vet=off -count=1 -timeout "$((timeout_seconds - 5))s" \
+				-run '^$' "${test_targets[@]}"
+		) >"$tmp_root/prewarm-logs/$worker.log" 2>&1 &
+		warm_pids+=("$!")
+	done
+	for ((worker = 0; worker < worker_count; worker++)); do
+		warm_status=0
+		if wait "${warm_pids[$worker]}"; then
+			continue
+		else
+			warm_status=$?
+		fi
+		warm_failure=1
+		cat "$tmp_root/prewarm-logs/$worker.log" >&2
+		printf 'mutation worker %d cache prewarm failed: status=%d\n' "$worker" "$warm_status" >&2
+	done
+	((warm_failure == 0))
+}
+
 heavy_parallel_mutation_shard() {
 	local file="$1"
 	local match="$2"
@@ -1257,6 +1325,7 @@ run_mutation_shard() {
 	local mutation_exit=0
 	local mutation_test_file=""
 	local authoritative_cache_warm_timeout=""
+	local expected_source_hash=""
 	mutation_test_file=$(authoritative_mutation_test_file "$file" "$match")
 	if [[ -z "$mutation_test_file" ]]; then
 		mutation_test_file=$(escalation_mutation_test_file "$file" "$match")
@@ -1378,6 +1447,21 @@ run_mutation_shard() {
 		fi
 		if [[ "$file" == pkg/dispatcher/*.go ]] && ! touched_functions_covered "$match" "$coverage_file"; then
 			write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" 2 'targeted mutation tests do not cover every touched function'
+			return
+		fi
+	fi
+	if heavy_parallel_mutation_shard "$file" "$match"; then
+		if ! expected_source_hash=$(git rev-parse "$head:$file" 2>/dev/null); then
+			write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" 2 'record archived mutation source identity'
+			return
+		fi
+		if ! prewarm_parallel_mutation_workers "$checkout" "$file" "$mutation_test_file" \
+			"$shard_root/caches/$cache_slot" "$shard_root/tmp/$index" 2 120 >>"$output_file" 2>&1; then
+			write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" 2 'prewarm isolated mutation worker caches'
+			return
+		fi
+		if [[ "$(git hash-object "$checkout/$file" 2>/dev/null || true)" != "$expected_source_hash" ]]; then
+			write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" 2 'mutation source changed during worker cache prewarm'
 			return
 		fi
 	fi

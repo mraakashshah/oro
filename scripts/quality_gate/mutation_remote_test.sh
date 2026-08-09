@@ -3001,8 +3001,8 @@ TestHeavyMutationShardRouting() {
 		heavy_parallel_mutation_shard pkg/dispatcher/worker_pool.go '^(releaseReviewWorkerAfterSendFailureUsing)$'
 		! heavy_parallel_mutation_shard pkg/dispatcher/review.go '^(reserveReviewRetryAttempt)$'
 	) || fail 'known compile-heavy mutation shards are not routed to bounded parallel execution'
-	[[ "$(grep -Fc "heavy_parallel_mutation_shard \"\$file\"" "$runner")" = 2 ]] ||
-		fail 'heavy mutation routing must drive both inner execution and outer serialization'
+	[[ "$(grep -Fc "heavy_parallel_mutation_shard \"\$file\"" "$runner")" = 3 ]] ||
+		fail 'heavy mutation routing must drive prewarm, inner execution, and outer serialization'
 }
 
 TestHandleConnHeavyMutationRouting() {
@@ -3971,6 +3971,176 @@ test_parallel_worker_cache_prewarm() {
 	run_parallel_worker_cache_prewarm_fixture "$fixture/nonzero" nonzero
 }
 
+run_heavy_mutation_outer_prewarm_fixture() {
+	local fixture="$1"
+	local mode="$2"
+	local checkout="$fixture/shards/checkouts/0"
+	local source_file=pkg/dispatcher/startup_recovery.go
+	local test_file=pkg/dispatcher/startup_recovery_mutation_test.go
+	local head status
+	mkdir -p "$fixture/bin" "$fixture/pkg/dispatcher" "$fixture/results" "$fixture/state"
+	git -C "$fixture" init -q
+	git -C "$fixture" config user.email mutation@example.test
+	git -C "$fixture" config user.name mutation-test
+	printf 'module mutation.test/prewarm\n\ngo 1.26\n' >"$fixture/go.mod"
+	printf 'package dispatcher\n\nfunc Alpha() bool { return true }\n' >"$fixture/pkg/dispatcher/alpha.go"
+	printf 'package dispatcher\n\nfunc handleConn() bool { return true }\n' >"$fixture/$source_file"
+	printf 'package dispatcher\n\nfunc TestHandleConnLifecycleMatrix() {}\n' >"$fixture/$test_file"
+	printf 'package dispatcher\n\nfunc TestUnselected() {}\n' >"$fixture/pkg/dispatcher/unselected_test.go"
+	git -C "$fixture" add go.mod pkg/dispatcher
+	git -C "$fixture" commit -qm head
+	head=$(git -C "$fixture" rev-parse HEAD)
+
+	cat >"$fixture/bin/go" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "$1" = test ]] || exit 64
+for arg in "$@"; do
+	case "$arg" in
+	-coverprofile=*) printf 'mode: set\n' >"${arg#-coverprofile=}" ;;
+	esac
+done
+if [[ " $* " == *" -list "* ]]; then
+	printf 'TestHandleConnLifecycleMatrix\n'
+	exit 0
+fi
+if [[ " $* " == *" -run ^$ "* ]]; then
+	printf 'PREWARM|%s|%s|%s\n' "$GOCACHE" "$GOTMPDIR" "$*" >>"$MUTATION_PREWARM_TRACE"
+	case "$MUTATION_PREWARM_MODE:$GOCACHE" in
+	fail:*parallel-1)
+		exit 17
+		;;
+	tamper:*parallel-0)
+		printf 'package dispatcher\n\nfunc handleConn() bool { return false }\n' >pkg/dispatcher/startup_recovery.go
+		;;
+	esac
+fi
+EOF
+	cat >"$fixture/bin/timeout" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" = --foreground ]]; then
+	shift
+fi
+limit=${1:?}
+shift
+printf 'TIMEOUT|%s|%s\n' "$limit" "$*" >>"$MUTATION_TIMEOUT_TRACE"
+if [[ "$limit" = 120 && "$MUTATION_PREWARM_MODE" = timeout ]]; then
+	exit 124
+fi
+if [[ " $* " == *mutation_parallel.sh* ]]; then
+	printf 'OUTER|%s\n' "$limit" >>"$MUTATION_PREWARM_TRACE"
+	[[ "$(grep -c '^PREWARM|' "$MUTATION_PREWARM_TRACE" || true)" = 2 ]] || exit 98
+	printf 'The mutation score is 1.000000 (2 passed, 0 failed, 0 duplicated, 0 skipped, total is 2)\n'
+	exit 0
+fi
+if [[ "${1:-}" = go ]]; then
+	shift
+	exec "$MUTATION_FAKE_GO" "$@"
+fi
+exec "$@"
+EOF
+	chmod +x "$fixture/bin/go" "$fixture/bin/timeout"
+
+	set +e
+	(
+		cd "$fixture"
+		set --
+		# Load the production runner functions; its argument parser deliberately rejects
+		# the empty source-only invocation after defining them.
+		# shellcheck disable=SC1090
+		source "$runner" >/dev/null 2>&1 || true
+		# shellcheck disable=SC2329 # run_mutation_shard resolves this override dynamically.
+		touched_functions_covered() { return 0; }
+		# shellcheck disable=SC2034 # Consumed by the sourced run_mutation_shard function.
+		mutation_failure_evidence_root="$fixture/failures"
+		# shellcheck disable=SC2329 # Sourced functions resolve these fixture commands dynamically.
+		go() { "$fixture/bin/go" "$@"; }
+		# shellcheck disable=SC2329 # Sourced functions resolve these fixture commands dynamically.
+		timeout() { "$fixture/bin/timeout" "$@"; }
+		# shellcheck disable=SC2030,SC2031 # Fixture variables are intentionally subshell-local.
+		export MUTATION_FAKE_GO="$fixture/bin/go" MUTATION_PREWARM_MODE="$mode" \
+			MUTATION_PREWARM_TRACE="$fixture/state/prewarm.trace" \
+			MUTATION_TIMEOUT_TRACE="$fixture/state/timeout.trace"
+		run_mutation_shard 0 "$source_file" '^(handleConn)$' \
+			'^TestHandleConnLifecycleMatrix$' 0 "$head" "$fixture/shards" \
+			"$fixture/results" 240 60 240
+	)
+	status=$?
+	set -e
+	[[ "$status" = 0 ]] || fail "$mode production-seam prewarm fixture exit = $status, want 0"
+	printf '%s\n' "$checkout"
+}
+
+TestHeavyMutationPrewarmBeforeOuterTimeout() {
+	local checkout expected_hash fixture focused_trace
+	fixture=$(mktemp -d)
+	# shellcheck disable=SC2064 # Bind this fixture before another test replaces the local.
+	trap "rm -rf '$fixture'" RETURN
+
+	checkout=$(run_heavy_mutation_outer_prewarm_fixture "$fixture/success" success)
+	expected_hash=$(git -C "$fixture/success" rev-parse HEAD:pkg/dispatcher/startup_recovery.go)
+	[[ "$(git hash-object "$checkout/pkg/dispatcher/startup_recovery.go")" = "$expected_hash" ]] ||
+		fail 'heavy prewarm did not preserve the exact archived HEAD source blob'
+	[[ "$(grep -c '^PREWARM|' "$fixture/success/state/prewarm.trace")" = 2 ]] ||
+		fail 'outer heavy timeout started before both worker caches were prewarmed'
+	[[ "$(tail -1 "$fixture/success/state/prewarm.trace")" = 'OUTER|240' ]] ||
+		fail 'heavy cache prewarm did not finish before the outer 240s timeout'
+	jq -e '.conclusion == "completed"' "$fixture/success/results/0.json" >/dev/null ||
+		fail 'successful production-seam prewarm lost completed evidence'
+	for worker in 0 1; do
+		grep -Fq "PREWARM|$fixture/success/shards/caches/0/parallel-$worker|$fixture/success/shards/tmp/0/parallel-worker-$worker|" \
+			"$fixture/success/state/prewarm.trace" ||
+			fail "heavy cache prewarm omitted isolated worker $worker cache/tmp slots"
+	done
+	[[ "$(grep -Fc 'TIMEOUT|120|go test -vet=off -count=1 -timeout 115s -run ^$ mutation.test/prewarm/pkg/dispatcher' \
+		"$fixture/success/state/timeout.trace")" = 2 ]] ||
+		fail 'full-package heavy prewarm did not preserve the bounded package target'
+
+	focused_trace="$fixture/success/state/focused.trace"
+	(
+		set --
+		# shellcheck disable=SC1090
+		source "$runner" >/dev/null 2>&1 || true
+		# shellcheck disable=SC2329 # Sourced functions resolve these fixture commands dynamically.
+		go() { "$fixture/success/bin/go" "$@"; }
+		# shellcheck disable=SC2329 # Sourced functions resolve these fixture commands dynamically.
+		timeout() { "$fixture/success/bin/timeout" "$@"; }
+		# shellcheck disable=SC2030,SC2031 # Fixture variables are intentionally subshell-local.
+		export MUTATION_FAKE_GO="$fixture/success/bin/go" MUTATION_PREWARM_MODE=success \
+			MUTATION_PREWARM_TRACE="$focused_trace" \
+			MUTATION_TIMEOUT_TRACE="$fixture/success/state/focused-timeout.trace"
+		prewarm_parallel_mutation_workers "$checkout" \
+				pkg/dispatcher/startup_recovery.go \
+				pkg/dispatcher/startup_recovery_mutation_test.go \
+				"$fixture/success/focused-cache" "$fixture/success/focused-tmp" 2 120
+	)
+	[[ "$(grep -c '^PREWARM|' "$focused_trace")" = 2 ]] ||
+		fail 'focused heavy prewarm did not populate both workers'
+	grep -Eq 'alpha[.]go .*/startup_recovery[.]go .*/startup_recovery_mutation_test[.]go$' \
+		"$focused_trace" || fail 'focused heavy prewarm did not select sorted production files plus exactly its owner test'
+	! grep -Fq 'unselected_test.go' "$focused_trace" ||
+		fail 'focused heavy prewarm compiled an unselected test file'
+
+	run_heavy_mutation_outer_prewarm_fixture "$fixture/fail" fail >/dev/null
+	! grep -q '^OUTER|' "$fixture/fail/state/prewarm.trace" ||
+		fail 'failed heavy prewarm entered mutation execution'
+	jq -e '.conclusion == "infrastructure_failure"' "$fixture/fail/results/0.json" >/dev/null ||
+		fail 'failed heavy prewarm lost infrastructure evidence'
+	run_heavy_mutation_outer_prewarm_fixture "$fixture/timeout" timeout >/dev/null
+	[[ ! -e "$fixture/timeout/state/prewarm.trace" ]] ||
+		! grep -q '^OUTER|' "$fixture/timeout/state/prewarm.trace" ||
+		fail 'timed out heavy prewarm entered mutation execution'
+	jq -e '.conclusion == "infrastructure_failure" and .total == 0' \
+		"$fixture/timeout/results/0.json" >/dev/null ||
+		fail 'timed out heavy prewarm lost zero-denominator infrastructure evidence'
+	run_heavy_mutation_outer_prewarm_fixture "$fixture/tamper" tamper >/dev/null
+	! grep -q '^OUTER|' "$fixture/tamper/state/prewarm.trace" ||
+		fail 'source-changing heavy prewarm entered mutation execution'
+	jq -e '.conclusion == "infrastructure_failure"' "$fixture/tamper/results/0.json" >/dev/null ||
+		fail 'source-changing heavy prewarm lost infrastructure evidence'
+}
+
 run_parallel_completion_handshake_fixture() {
 	local fixture="$1"
 	local mode="$2"
@@ -4459,6 +4629,7 @@ TestStrictIncrementalMutation() {
 	TestMutationExecInternalDeadline
 	test_parallel_mutant_executor "$tmp/parallel-mutants"
 	TestMutationCapacity
+	TestHeavyMutationPrewarmBeforeOuterTimeout
 	run_fixture "$tmp/unknown-exit" unknown-exit infrastructure_failure 2
 	jq -e \
 		'.score == null and .total == 0 and .mutation_exit_code == 2 and
@@ -4647,6 +4818,9 @@ main() {
 		;;
 	TestHandleConnHeavyMutationRouting)
 		TestHandleConnHeavyMutationRouting
+		;;
+	TestHeavyMutationPrewarmBeforeOuterTimeout)
+		TestHeavyMutationPrewarmBeforeOuterTimeout
 		;;
 	TestMutationExecInternalDeadline)
 		TestMutationExecInternalDeadline
