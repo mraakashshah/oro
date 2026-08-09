@@ -294,6 +294,43 @@ qg_target_attribution_test_file_for() {
 	bash -c "$pattern_source"$'\n'"$function_source"$'\n''qg_target_attribution_mutation_test_file "$1" "$2"' _ "$file" "$match" || true
 }
 
+qg_classifier_decision_pattern_for() {
+	local file="$1"
+	local match="$2"
+	local function_source
+	function_source=$(awk '
+		/^qg_classifier_decision_mutation_test_pattern\(\)/ { copying = 1 }
+		copying { print }
+		copying && /^}/ { exit }
+	' "$runner")
+	if [[ -z "$function_source" ]]; then
+		fail 'mutation runner omitted QG classifier-decision owner mapping'
+		return 1
+	fi
+	bash -c "$function_source"$'\n''qg_classifier_decision_mutation_test_pattern "$1" "$2"' _ "$file" "$match" || true
+}
+
+qg_classifier_decision_test_file_for() {
+	local file="$1"
+	local match="$2"
+	local function_source pattern_source
+	pattern_source=$(awk '
+		/^qg_classifier_decision_mutation_test_pattern\(\)/ { copying = 1 }
+		copying { print }
+		copying && /^}/ { exit }
+	' "$runner")
+	function_source=$(awk '
+		/^qg_classifier_decision_mutation_test_file\(\)/ { copying = 1 }
+		copying { print }
+		copying && /^}/ { exit }
+	' "$runner")
+	if [[ -z "$pattern_source" || -z "$function_source" ]]; then
+		fail 'mutation runner omitted QG classifier-decision standalone file mapping'
+		return 1
+	fi
+	bash -c "$pattern_source"$'\n'"$function_source"$'\n''qg_classifier_decision_mutation_test_file "$1" "$2"' _ "$file" "$match" || true
+}
+
 function_sharded_for() {
 	local file="$1"
 	local function_source
@@ -473,7 +510,6 @@ EOF
 
 TestQGTargetAttributionMutationOwners() {
 	local cardinality coverage coverage_root file function got listed package pattern report test_file
-	local deterministic_pattern='^TestQGIsDeterministicMutationOwner$'
 	local store_pattern='^TestQGFailureAttributionMutationOwner$'
 	local flow_pattern='^TestQGEvaluateFailureMutationOwner$'
 	local owner_file='pkg/dispatcher/qg_target_attribution_mutation_test.go'
@@ -504,7 +540,6 @@ TestQGTargetAttributionMutationOwners() {
 			END { exit !found }
 		' <<<"$report" || fail "$file $function owner has zero production coverage"
 	done <<EOF
-pkg/dispatcher/qg_failure_classifier.go	isDeterministicQGFailure	./pkg/dispatcher	$deterministic_pattern	1
 pkg/dispatcher/qg_failure_store.go	qgFailureAttribution	./pkg/dispatcher	$store_pattern	1
 pkg/dispatcher/qg_flow.go	evaluateQGFailure	./pkg/dispatcher	$flow_pattern	1
 EOF
@@ -518,6 +553,7 @@ EOF
 pkg/dispatcher/dispatcher.go	New
 pkg/dispatcher/qg_failure_classifier.go	ClassifyQGFailure
 pkg/dispatcher/qg_failure_classifier.go	candidateOnlyDeterministicFailure
+pkg/dispatcher/qg_failure_classifier.go	isDeterministicQGFailure
 pkg/dispatcher/qg_failure_classifier.go	targetBaselineHasFailure
 pkg/dispatcher/qg_failure_store.go	acceptedQGTargetPassed
 pkg/dispatcher/qg_failure_store.go	classifyQGFailureWithAttribution
@@ -562,6 +598,85 @@ EOF
 	got=$(p0_durability_pattern_for pkg/dispatcher/scheduling.go '^(tryAssignBatch)$')
 	[[ "$got" == '^TestTryAssignBatchP0MutationOwner$' ]] ||
 		fail "QG target-attribution mapping changed P0 owner: $got"
+}
+
+TestQGClassifierDecisionMutationOwnerRouting() {
+	local cardinality coverage coverage_root file function got listed match owner_file pattern report test_file
+	local owner_pattern='^TestQGClassifierDecisionMutationOwner$'
+	local owner_file='pkg/dispatcher/qg_classifier_decision_mutation_test.go'
+	local -a production_files
+
+	coverage_root=$(mktemp -d)
+	# shellcheck disable=SC2064 # expand the function-local path before the RETURN trap runs.
+	trap "rm -rf '$coverage_root'" RETURN
+	mapfile -t production_files < <(find pkg/dispatcher -maxdepth 1 -type f -name '*.go' ! -name '*_test.go' | sort)
+	while IFS=$'\t' read -r file function cardinality; do
+		match="^(${function})$"
+		got=$(qg_classifier_decision_pattern_for "$file" "$match")
+		[[ "$got" == "$owner_pattern" ]] ||
+			fail "$file $function QG classifier-decision owner = $got, want $owner_pattern"
+		function_sharded_for "$file" || fail "$file must use per-function mutation sharding"
+		test_file=$(qg_classifier_decision_test_file_for "$file" "$match")
+		[[ "$test_file" == "$owner_file" ]] ||
+			fail "$file $function standalone owner file = $test_file, want $owner_file"
+		listed=$(go test -vet=off -count=1 -timeout=60s -list "$owner_pattern" "${production_files[@]}" "$owner_file")
+		[[ "$(grep -Ec '^TestQGClassifierDecisionMutationOwner$' <<<"$listed")" == "$cardinality" ]] ||
+			fail "$file $function owner must select exactly $cardinality standalone test"
+		coverage="$coverage_root/${function}.out"
+		timeout 60 go test -vet=off -count=1 -timeout 55s -coverprofile="$coverage" \
+			-run "$owner_pattern" "${production_files[@]}" "$owner_file" >/dev/null
+		report=$(go tool cover -func="$coverage")
+		awk -v target="$function" '
+			$2 == target || $2 ~ ("[.]" target "$") {
+				value = $3
+				gsub(/%/, "", value)
+				if (value + 0 > 0) found = 1
+			}
+			END { exit !found }
+		' <<<"$report" || fail "$file $function standalone owner has zero production coverage"
+	done <<'EOF'
+pkg/dispatcher/qg_failure_classifier.go	ClassifyQGFailure	1
+pkg/dispatcher/qg_failure_classifier.go	candidateOnlyDeterministicFailure	1
+pkg/dispatcher/qg_failure_classifier.go	isDeterministicQGFailure	1
+pkg/dispatcher/qg_failure_classifier.go	targetBaselineHasFailure	1
+pkg/dispatcher/qg_failure_store.go	acceptedQGTargetPassed	1
+EOF
+
+	got=$(qg_classifier_decision_pattern_for pkg/dispatcher/other.go '^(ClassifyQGFailure)$')
+	[[ -z "$got" ]] || fail "QG classifier-decision owner accepted wrong source: $got"
+	got=$(qg_classifier_decision_pattern_for pkg/dispatcher/qg_failure_classifier.go '^(unmappedQGFunction)$')
+	[[ -z "$got" ]] || fail "QG classifier-decision owner accepted wrong function: $got"
+	got=$(qg_classifier_decision_pattern_for pkg/dispatcher/qg_failure_classifier.go '^(ClassifyQGFailure|isDeterministicQGFailure)$')
+	[[ -z "$got" ]] || fail "QG classifier-decision owner accepted grouped function union: $got"
+	got=$(qg_classifier_decision_test_file_for pkg/dispatcher/qg_failure_store.go '^(unmappedQGFunction)$')
+	[[ -z "$got" ]] || fail "QG classifier-decision standalone file accepted unmapped function: $got"
+
+	got=$(qg_target_attribution_pattern_for pkg/dispatcher/qg_failure_store.go '^(qgFailureAttribution)$')
+	[[ "$got" == '^TestQGFailureAttributionMutationOwner$' ]] ||
+		fail "QG classifier-decision mapping changed attribution owner: $got"
+	got=$(qg_target_attribution_pattern_for pkg/dispatcher/qg_flow.go '^(evaluateQGFailure)$')
+	[[ "$got" == '^TestQGEvaluateFailureMutationOwner$' ]] ||
+		fail "QG classifier-decision mapping changed evaluation owner: $got"
+
+	local classifier_line qg_line split_line targeted_source
+	targeted_source=$(awk '
+		/^targeted_test_pattern\(\)/ { copying = 1 }
+		copying { print }
+		copying && /^}/ { exit }
+	' "$runner")
+	# shellcheck disable=SC2016 # search for literal command substitutions in runner source.
+	split_line=$(grep -nF 'split_branch_pattern=$(split_branch_mutation_test_pattern' <<<"$targeted_source" | cut -d: -f1)
+	# shellcheck disable=SC2016 # search for literal command substitutions in runner source.
+	classifier_line=$(grep -nF 'qg_classifier_decision_pattern=$(qg_classifier_decision_mutation_test_pattern' <<<"$targeted_source" | cut -d: -f1)
+	# shellcheck disable=SC2016 # search for literal command substitutions in runner source.
+	qg_line=$(grep -nF 'qg_target_attribution_pattern=$(qg_target_attribution_mutation_test_pattern' <<<"$targeted_source" | cut -d: -f1)
+	[[ "$split_line" =~ ^[0-9]+$ && "$classifier_line" =~ ^[0-9]+$ && "$qg_line" =~ ^[0-9]+$ ]] ||
+		fail 'targeted router omitted split/classifier/QG priority markers'
+	((split_line < classifier_line && classifier_line < qg_line)) ||
+		fail 'QG classifier-decision routing must run after split-branch and before target-attribution routing'
+	# shellcheck disable=SC2016 # search for the literal MUTATION_TEST_FILE assignment.
+	grep -Fq 'mutation_test_file=$(qg_classifier_decision_mutation_test_file "$file" "$match")' "$runner" ||
+		fail 'mutation runner omitted QG classifier-decision MUTATION_TEST_FILE routing'
 }
 
 TestStartupMaintenanceMutationMapping() {
@@ -3758,6 +3873,7 @@ TestStrictIncrementalMutation() {
 	TestMutationOwnerMappingsCoexist
 	TestP0DurabilityMutationMapping
 	TestQGTargetAttributionMutationOwners
+	TestQGClassifierDecisionMutationOwnerRouting
 	TestStartupMaintenanceMutationMapping
 	TestStartupMaintenanceMutationSharding
 	TestCmdMutationSharding
@@ -3847,6 +3963,9 @@ main() {
 		;;
 	TestQGTargetAttributionMutationOwners)
 		TestQGTargetAttributionMutationOwners
+		;;
+	TestQGClassifierDecisionMutationOwnerRouting)
+		TestQGClassifierDecisionMutationOwnerRouting
 		;;
 	TestStartupMaintenanceMutationMapping)
 		TestStartupMaintenanceMutationMapping
