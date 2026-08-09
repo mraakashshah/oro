@@ -378,7 +378,7 @@ oro stop
 
 **`oro init`** flags: `--check` (verify only), `--force` (overwrite regenerated Oro assets and quality gate files), `--project-root <dir>`, `--quiet`, `--local` (in-repo mode: create `.oro/` in project root), `--skip-wizard`. Default is stealth mode — zero footprint, config stored under `~/.oro/projects/s-<hash>/`.
 
-**`oro start`** flags: `--workers, -w` (default: 2), `--max-workers` (default: same as `--workers`), `--model` (tier name or provider model name — default: `balanced`), `--detach, -D`, `--daemon-only, -d`, `--manual-integration`, `--base-branch`, `--mutation-testing`, `--web`, `--web-addr`, `--progress-timeout`, `--ops-review-timeout`, `--review-stall-timeout`
+**`oro start`** flags: `--workers, -w` (default: 2), `--max-workers` (default: same as `--workers`), `--model` (tier name or provider model name — default: `balanced`), `--detach, -D`, `--daemon-only, -d`, `--manual-integration`, `--base-ref`, `--target-branch`, `--base-branch`, `--mutation-testing`, `--web`, `--web-addr`, `--progress-timeout`, `--ops-review-timeout`, `--review-stall-timeout`
 
 Janitor and audit cleanliness roles are enabled by default. Their `oro start` controls are `--janitor-enabled` (default: `true`), `--audit-enabled` (default: `true`; requires janitor), `--janitor-interval` (default: every 50 completed merges; `0` disables janitor), `--janitor-idle-threshold` (default: `0`, so janitor waits unless the task queue is empty), `--audit-every-n-janitors` (default: every 5 janitor cycles; `0` disables periodic audits), and `--janitor-top-k` (default: `5`). By default, each janitor cycle files its top five findings; set `--janitor-top-k=0` to use the janitor's natural detector limit instead.
 
