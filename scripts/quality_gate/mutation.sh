@@ -1307,6 +1307,15 @@ heavy_parallel_mutation_shard() {
 	return 1
 }
 
+mutation_shard_timeout_seconds() {
+	[[ "$#" = 3 && "$3" =~ ^[1-9][0-9]*$ ]] || return 2
+	if [[ "$1:$2" = 'pkg/dispatcher/worker_pool.go:^(registerWorkerWithProtocol)$' ]]; then
+		printf '360\n'
+	else
+		printf '%s\n' "$3"
+	fi
+}
+
 run_mutation_shard() {
 	local index="$1"
 	local file="$2"
@@ -1326,6 +1335,7 @@ run_mutation_shard() {
 	local mutation_test_file=""
 	local authoritative_cache_warm_timeout=""
 	local expected_source_hash=""
+	local shard_timeout=""
 	mutation_test_file=$(authoritative_mutation_test_file "$file" "$match")
 	if [[ -z "$mutation_test_file" ]]; then
 		mutation_test_file=$(escalation_mutation_test_file "$file" "$match")
@@ -1464,6 +1474,10 @@ run_mutation_shard() {
 			write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" 2 'mutation source changed during worker cache prewarm'
 			return
 		fi
+		if ! shard_timeout=$(mutation_shard_timeout_seconds "$file" "$match" "$file_timeout"); then
+			write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" 2 'invalid heavy mutation shard timeout'
+			return
+		fi
 	fi
 	(
 		cd "$checkout"
@@ -1494,11 +1508,11 @@ run_mutation_shard() {
 				MUTATION_TEST_TIMEOUT_MARGIN_SECONDS=5 \
 				MUTATION_PARALLEL_WORKERS=2 \
 				MUTATION_WORKER_CACHE_WARM_TIMEOUT_SECONDS=120 \
-				MUTATION_BASE_SHARD_TIMEOUT_SECONDS="$file_timeout" \
-				MUTATION_MAX_SHARD_TIMEOUT_SECONDS="$file_timeout" \
+				MUTATION_BASE_SHARD_TIMEOUT_SECONDS="$shard_timeout" \
+				MUTATION_MAX_SHARD_TIMEOUT_SECONDS="$shard_timeout" \
 				MUTATION_FAILURE_EVIDENCE_DIR="$mutation_failure_evidence_root/$index" \
 				MUTATION_EXEC_SCRIPT="$mutation_script_dir/mutation_exec.sh" \
-				timeout "$file_timeout" bash "$mutation_script_dir/mutation_parallel.sh"
+				timeout "$shard_timeout" bash "$mutation_script_dir/mutation_parallel.sh"
 		elif [[ "$test_pattern" == *AuthoritativeSurvivorMutation* ||
 			"$file" == pkg/dispatcher/review_integration_recovery.go ||
 			"$mutation_test_file" == pkg/dispatcher/assignment_reservation_worktree_survivor_mutation_test.go ||

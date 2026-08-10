@@ -4293,7 +4293,12 @@ fi
 if [[ " $* " == *" -run ^$ "* ]]; then
 	printf 'PREWARM|%s|%s\n' "$GOCACHE" "$GOTMPDIR" >>"${MUTATION_SEAM_TRACE:?}"
 fi
-[[ -z "${MUTATE_CHANGED:-}" ]] || exit 1
+if [[ -n "${MUTATE_CHANGED:-}" ]]; then
+	case "${MUTATE_ORIGINAL:-}" in
+	*worker_pool.go) exit 0 ;;
+	*) exit 1 ;;
+	esac
+fi
 exit 0
 EOF
 	cat >"$fixture/bin/timeout" <<'EOF'
@@ -4311,6 +4316,36 @@ set -euo pipefail
 				"${MUTATION_TEST_TIMEOUT_MARGIN_SECONDS:-}" \
 				"${MUTATION_TEST_FILE:-}" \
 				>>"${MUTATION_SEAM_TRACE:?}"
+			if [[ "${MUTATION_SEAM_NEGATIVE:-}" = 1 ]]; then
+				evidence_run="${MUTATION_FAILURE_EVIDENCE_DIR:?}/run.synthetic"
+				mkdir -p "$evidence_run"
+				for ((index = 0; index < 38; index++)); do
+					if ((index < 36)); then
+						jq -n --arg source_file "$MUTATION_SOURCE_FILE" \
+							--arg function_match "$MUTATION_FUNCTION_MATCH" --argjson mutant_index "$index" \
+							--arg source_path "$PWD/$MUTATION_SOURCE_FILE" \
+							'{worker: ($mutant_index % 2), source_file: $source_file, source_path: $source_path,
+							function_match: $function_match, mutant_index: $mutant_index,
+							mutant_path: ($source_path + "." + ($mutant_index|tostring)),
+							content_hash_algorithm: "git-blob", content_hash: "synthetic",
+							exit_class: "survived", exit_status: 1}' \
+							>"$evidence_run/mutant-$index.json"
+					else
+						jq -n --arg source_file "$MUTATION_SOURCE_FILE" \
+							--arg function_match "$MUTATION_FUNCTION_MATCH" --argjson mutant_index "$index" \
+							--arg source_path "$PWD/$MUTATION_SOURCE_FILE" \
+							'{worker: ($mutant_index % 2), source_file: $source_file, source_path: $source_path,
+							function_match: $function_match, mutant_index: $mutant_index,
+							mutant_path: ($source_path + "." + ($mutant_index|tostring)),
+							content_hash_algorithm: "git-blob", content_hash: "synthetic",
+							exit_class: "aborted", exit_status: null}' \
+							>"$evidence_run/mutant-$index.json"
+					fi
+				done
+				printf '%s\n' "$$" >"${MUTATION_SEAM_TRACE:?}.negative.pid"
+				printf 'ORO_MUTATION_EXEC_TIMEOUT\n'
+				exit 124
+			fi
 			break
 		fi
 	done
@@ -4365,9 +4400,11 @@ run_heavy_production_seam_replay() {
 		source "$bundle_runner"
 		# shellcheck disable=SC2034 # Consumed dynamically by the sourced run_mutation_shard.
 		mutation_failure_evidence_root="$replay_root/evidence"
+		# shellcheck disable=SC2030 # The sourced runner consumes this subshell-local environment.
 		export GOMODCACHE="$replay_root/mod"
 		if [[ "$mode" = synthetic ]]; then
 			run_path="$replay_repo/bin:$original_path"
+			# shellcheck disable=SC2030 # The sourced runner consumes this subshell-local environment.
 			export MUTATION_REAL_TIMEOUT="$real_timeout" \
 				MUTATION_SEAM_GO_TRACE="$replay_root/state/go.trace" \
 				MUTATION_SEAM_TRACE="$replay_root/state/seam.trace"
@@ -4388,6 +4425,7 @@ assert_heavy_production_seam_replay() {
 	local source_file="$3"
 	local function_match="$4"
 	local mutant_count="$5"
+	local expected_timeout="${6:-240}"
 	local replay_repo="$repo_root"
 	local evidence_run expected_hash index
 	[[ "$mode" = real ]] || replay_repo="$replay_root/repo"
@@ -4399,8 +4437,15 @@ assert_heavy_production_seam_replay() {
 		 .total == $total and .skipped == 0' \
 		"$replay_root/results/000000.json" >/dev/null ||
 		fail "$mode $function_match replay lost its exact terminal shard result"
+	if [[ "$function_match" = '^(registerWorkerWithProtocol)$' ]]; then
+		jq -e --argjson total "$mutant_count" \
+			'.score == 0 and .passed == 0 and .failed == $total and
+			 .skipped == 0 and .total == $total' \
+			"$replay_root/results/000000.json" >/dev/null ||
+			fail "$mode $function_match replay lost its exact zero-score summary"
+	fi
 	grep -Fxq \
-		"mutation shard capacity: mutants=$mutant_count workers=2 effective_timeout=240s emergency_cap=240s" \
+		"mutation shard capacity: mutants=$mutant_count workers=2 effective_timeout=${expected_timeout}s emergency_cap=${expected_timeout}s" \
 		"$replay_root/logs/000000.log" ||
 		fail "$mode $function_match replay changed bounded shard capacity"
 
@@ -4416,6 +4461,12 @@ assert_heavy_production_seam_replay() {
 			(.exit_class == "killed" or .exit_class == "survived"))' \
 		"$evidence_run"/mutant-*.json >/dev/null ||
 		fail "$mode $function_match replay lost exact terminal mutant evidence"
+	if [[ "$function_match" = '^(registerWorkerWithProtocol)$' ]]; then
+		jq -s -e \
+			'all(.[]; .exit_class == "survived" and .exit_status == 1)' \
+			"$evidence_run"/mutant-*.json >/dev/null ||
+			fail "$mode $function_match replay lost all-survived register-worker evidence"
+	fi
 
 	expected_hash=$(git -C "$replay_repo" rev-parse "$(<"$replay_root/head"):$source_file")
 	for index in "$replay_repo/$source_file" \
@@ -4425,13 +4476,13 @@ assert_heavy_production_seam_replay() {
 	done
 
 	if [[ "$mode" = synthetic ]]; then
-		grep -Fxq 'CONFIG|workers=2|warm=120|base=240|max=240|exec=60|margin=5|test_file=' \
+		grep -Fxq "CONFIG|workers=2|warm=120|base=${expected_timeout}|max=${expected_timeout}|exec=60|margin=5|test_file=" \
 			"$replay_root/state/seam.trace" ||
 			fail "$function_match replay changed the heavy production boundary"
 		[[ "$(grep -c '^PREWARM|' "$replay_root/state/seam.trace")" = 4 ]] ||
 			fail "$function_match replay did not preserve external and inner worker prewarms"
-		[[ "$(grep -c '^OUTER|240 ' "$replay_root/state/seam.trace")" = 1 ]] ||
-			fail "$function_match replay did not cross one outer 240s production seam"
+		[[ "$(grep -c "^OUTER|${expected_timeout} " "$replay_root/state/seam.trace")" = 1 ]] ||
+			fail "$function_match replay did not cross one outer ${expected_timeout}s production seam"
 		local outer_line prewarm_before prewarm_after
 		outer_line=$(grep -n '^OUTER|' "$replay_root/state/seam.trace" | cut -d: -f1)
 		prewarm_before=$(sed -n "1,$((outer_line - 1))p" "$replay_root/state/seam.trace" |
@@ -4442,7 +4493,7 @@ assert_heavy_production_seam_replay() {
 			fail "$function_match replay did not place exactly two external prewarms before its outer clock"
 		for index in 0 1; do
 			local worker_trace="$replay_root/caches/0/parallel-$index|$replay_root/tmp/000000/parallel-worker-$index"
-			[[ "$(sed -n "1,$((outer_line - 1))p" "$replay_root/state/seam.trace" | grep -Fc "$worker_trace")" = 1 &&
+		[[ "$(sed -n "1,$((outer_line - 1))p" "$replay_root/state/seam.trace" | grep -Fc "$worker_trace")" = 1 &&
 				"$(sed -n "$((outer_line + 1)),\$p" "$replay_root/state/seam.trace" | grep -Fc "$worker_trace")" = 1 ]] ||
 				fail "$function_match replay omitted isolated worker $index cache/tmp"
 		done
@@ -4504,8 +4555,118 @@ TestHeavyMutationProductionSeamReplays() {
 		pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocol)$' \
 		'^(TestRegisterWorkerWithProtocolMutationCoverage|TestRegisterWorkerWithProtocolReleasesMutexBoundedMutation)$'
 	assert_heavy_production_seam_replay "$replay_root/register" "$mode" \
-		pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocol)$' 38
+		pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocol)$' 38 360
 	[[ "$mode" = synthetic ]] || printf 'retained production-seam replay: %s\n' "$replay_root"
+}
+
+TestRegisterWorkerMutationAggregateBudget() {
+	local replay_root
+	replay_root=$(mktemp -d)
+	# shellcheck disable=SC2064 # Expand the function-local temporary path before RETURN.
+	trap "rm -rf '$replay_root'" RETURN
+	run_register_worker_budget_negative_fixture "$replay_root/negative"
+	printf 'negative register-worker budget fixture passed at 240s with exact abort evidence\n'
+	run_heavy_production_seam_replay "$replay_root/register" synthetic \
+		pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocol)$' \
+		'^(TestRegisterWorkerWithProtocolMutationCoverage|TestRegisterWorkerWithProtocolReleasesMutexBoundedMutation)$'
+	assert_heavy_production_seam_replay "$replay_root/register" synthetic \
+		pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocol)$' 38 360
+	assert_register_worker_timeout_selector "$replay_root/register/runner/scripts/quality_gate/mutation.sh"
+	test_parallel_abnormal_teardown_evidence "$replay_root/abnormal-teardown"
+}
+
+assert_register_worker_timeout_selector() {
+	local runner_bundle="$1"
+	local actual
+	(
+		set --
+		# shellcheck disable=SC1090 # Test-only bundle omits the production main call.
+		source "$runner_bundle"
+		export MUTATION_BASE_SHARD_TIMEOUT_SECONDS=240 MUTATION_MAX_SHARD_TIMEOUT_SECONDS=900
+		actual=$(mutation_shard_timeout_seconds pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocol)$' 240)
+		[[ "$actual" = 360 ]] || fail "register-worker timeout selector = $actual, want 360"
+		[[ "$(mutation_shard_timeout_seconds pkg/dispatcher/worker_pool.go '^(registerWorker)$' 240)" = 240 ]] ||
+			fail 'register wrapper unexpectedly received the aggregate cap'
+		[[ "$(mutation_shard_timeout_seconds pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocolExtra)$' 240)" = 240 ]] ||
+			fail 'register near-match unexpectedly received the aggregate cap'
+		[[ "$(mutation_shard_timeout_seconds pkg/dispatcher/connection.go '^(handleConn)$' 240)" = 240 ]] ||
+			fail 'handleConn unexpectedly received the aggregate cap'
+		[[ "$(mutation_shard_timeout_seconds pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocol)$' 1800)" = 360 ]] ||
+			fail 'exact register route did not override inherited default'
+		[[ "$(mutation_shard_timeout_seconds pkg/dispatcher/assignment.go '^(assignBeadWithClaim)$' 1800)" = 1800 ]] ||
+			fail 'assignBeadWithClaim changed its existing 1800s default'
+		assert_invalid_timeout_args() {
+			local output status
+			set +e
+			output=$(mutation_shard_timeout_seconds "$@")
+			status=$?
+			set -e
+			[[ "$status" = 2 && -z "$output" ]] ||
+				fail "invalid selector args were accepted: $*"
+		}
+		assert_invalid_timeout_args pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocol)$'
+		assert_invalid_timeout_args pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocol)$' 240 extra
+		assert_invalid_timeout_args pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocol)$' 0
+		assert_invalid_timeout_args pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocol)$' -1
+		assert_invalid_timeout_args pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocol)$' abc
+	) || return
+}
+
+run_register_worker_budget_negative_fixture() {
+	local replay_root="$1"
+	local bundle_runner replay_repo head
+	bundle_runner=$(write_heavy_production_seam_bundle "$replay_root/runner")
+	replay_repo="$replay_root/repo"
+	new_heavy_production_seam_fixture "$replay_repo"
+	head=$(git -C "$replay_repo" rev-parse HEAD)
+	mkdir -p "$replay_root/results" "$replay_root/evidence" "$replay_root/state" "$replay_root/mod"
+	(
+		cd "$replay_repo"
+		set --
+		# shellcheck disable=SC1090 # Test-only bundle omits the production main call.
+		source "$bundle_runner"
+		# shellcheck disable=SC2034 # Consumed dynamically by the sourced run_mutation_shard.
+		mutation_failure_evidence_root="$replay_root/evidence"
+		# shellcheck disable=SC2030,SC2031,SC2155 # The sourced runner consumes this subshell-local environment.
+		local_real_timeout=$(command -v timeout)
+		# shellcheck disable=SC2031 # The sourced runner consumes this subshell-local environment.
+		export GOMODCACHE="$replay_root/mod" \
+			MUTATION_REAL_TIMEOUT="$local_real_timeout" \
+			MUTATION_SEAM_GO_TRACE="$replay_root/state/go.trace" \
+			MUTATION_SEAM_TRACE="$replay_root/state/seam.trace" \
+			MUTATION_SEAM_NEGATIVE=1
+		# Test-only override: the production helper is expected to select 360.
+		# shellcheck disable=SC2329,SC2317 # run_mutation_shard resolves this test seam dynamically.
+		mutation_shard_timeout_seconds() { printf '240\n'; }
+		# shellcheck disable=SC2329,SC2317 # Sourced runner resolves this dynamically.
+		touched_functions_covered() { return 0; }
+		PATH="$replay_repo/bin:$PATH" run_mutation_shard 000000 \
+			pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocol)$' \
+			'^(TestRegisterWorkerWithProtocolMutationCoverage|TestRegisterWorkerWithProtocolReleasesMutexBoundedMutation)$' \
+			0 "$head" "$replay_root" "$replay_root/results" 240 60 900
+	)
+	jq -e '.conclusion == "infrastructure_failure" and .exit_code == 124 and .score == null and .total == 0' \
+		"$replay_root/results/000000.json" >/dev/null || fail 'negative budget fixture lost zero-denominator shard evidence'
+	grep -Fxq 'ORO_MUTATION_EXEC_TIMEOUT' "$replay_root/logs/000000.log" ||
+		fail 'negative budget fixture lost the timeout marker'
+	grep -Fxq 'CONFIG|workers=2|warm=120|base=240|max=240|exec=60|margin=5|test_file=' \
+		"$replay_root/state/seam.trace" ||
+		fail 'negative budget fixture changed its current 240s worker configuration'
+	[[ "$(grep -c '^OUTER|240 ' "$replay_root/state/seam.trace")" = 1 ]] ||
+		fail 'negative budget fixture did not cross exactly one outer 240s seam'
+	[[ "$(grep -c '^OUTER|360 ' "$replay_root/state/seam.trace" || true)" = 0 ]] ||
+		fail 'negative budget fixture unexpectedly crossed a 360s seam'
+	local evidence_run
+	evidence_run=$(find "$replay_root/evidence/000000" -mindepth 1 -maxdepth 1 -type d -name 'run.*')
+	[[ "$(wc -l <<<"$evidence_run" | tr -d ' ')" = 1 ]] || fail 'negative budget fixture lost its evidence run'
+	jq -s -e 'length == 38 and
+		([.[].mutant_index] | sort) == [range(0;38)] and
+		all(.[] | select(.mutant_index < 36); .exit_class == "survived" and .exit_status == 1) and
+		all(.[] | select(.mutant_index >= 36); .exit_class == "aborted" and .exit_status == null)' \
+		"$evidence_run"/mutant-*.json >/dev/null || fail 'negative budget fixture changed terminal/aborted mutant evidence'
+	local timeout_pid
+	timeout_pid=$(<"$replay_root/state/seam.trace.negative.pid")
+	! kill -0 "$timeout_pid" 2>/dev/null || fail "negative budget fixture left timeout helper $timeout_pid running"
 }
 
 run_parallel_completion_handshake_fixture() {
@@ -4998,6 +5159,7 @@ TestStrictIncrementalMutation() {
 	TestMutationCapacity
 	TestHeavyMutationPrewarmBeforeOuterTimeout
 	ORO_REAL_REPLAY=0 ORO_REAL_REPLAY_ROOT='' TestHeavyMutationProductionSeamReplays
+	TestRegisterWorkerMutationAggregateBudget
 	run_fixture "$tmp/unknown-exit" unknown-exit infrastructure_failure 2
 	jq -e \
 		'.score == null and .total == 0 and .mutation_exit_code == 2 and
@@ -5192,6 +5354,9 @@ main() {
 		;;
 	TestHeavyMutationProductionSeamReplays)
 		TestHeavyMutationProductionSeamReplays
+		;;
+	TestRegisterWorkerMutationAggregateBudget)
+		TestRegisterWorkerMutationAggregateBudget
 		;;
 	TestMutationExecInternalDeadline)
 		TestMutationExecInternalDeadline
