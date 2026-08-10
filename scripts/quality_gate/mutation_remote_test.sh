@@ -436,6 +436,53 @@ function_sharded_for() {
 	bash -c "$function_source"$'\n''function_sharded_mutation_target "$1"' _ "$file"
 }
 
+TestWorkerReadyEvidenceMutationRouting() {
+	local assembly_fixture file fixture got match expected result
+	fixture=$(mktemp -d)
+	assembly_fixture=$(mktemp -d)
+	# shellcheck disable=SC2064 # Bind this function-local fixture before RETURN runs.
+	trap "rm -rf '$fixture' '$assembly_fixture'" RETURN
+	(
+		set --
+		# shellcheck disable=SC1090 # The process substitution intentionally omits main.
+		source <(sed '$d' "$runner")
+		while IFS=$'\t' read -r file match expected; do
+			function_sharded_mutation_target "$file" ||
+				fail "$file must be emitted as per-function mutation shards"
+			got=$(targeted_test_pattern '' '' "$file" "$match")
+			[[ "$got" = "$expected" ]] ||
+				fail "$file $match owner = $got, want $expected"
+		done <<'EOF'
+pkg/worker/ready_evidence.go	^(buildQGEvidence)$	^(TestWorkerQGEvidenceRejectsSymlinkedParents|TestWorkerWritesCanonicalQGEvidenceAndSendsAssignedIdentity|TestWorkerWritesDurableReadyEvidenceIdentity|TestWorkerBuildsOrderedSubsecondEvidenceTiming)$
+pkg/worker/ready_evidence.go	^(sha256Hex)$	^(TestWorkerWritesCanonicalQGEvidenceAndSendsAssignedIdentity|TestWorkerWritesDurableReadyEvidenceIdentity|TestWorkerBuildsOrderedSubsecondEvidenceTiming)$
+pkg/worker/ready_evidence.go	^(writeQGEvidence)$	^(TestWorkerQGEvidenceRejectsSymlinkedParents|TestWorkerWritesCanonicalQGEvidenceAndSendsAssignedIdentity|TestWorkerWritesDurableReadyEvidenceIdentity)$
+pkg/worker/worker.go	^(SendReadyForReview)$	^(TestWorkerWritesCanonicalQGEvidenceAndSendsAssignedIdentity|TestWorkerWritesDurableReadyEvidenceIdentity|TestWorkerResetDoesNotLeakPriorReadyEvidence|TestSendReadyForReview_ProducesCorrectJSON)$
+pkg/worker/worker.go	^(gitHeadSHA)$	^(TestWorkerWritesDurableReadyEvidenceIdentity|TestRunQGAndReport_RebasesBeforeQG|TestRunQGAndReport_NoGitRepo_QGStillRuns)$
+pkg/worker/worker.go	^(loadQualityGateScript)$	^(TestWorkerWritesDurableReadyEvidenceIdentity|TestRunQGAndReport_RebasesBeforeQG|TestRunQGAndReport_RebaseConflict_QGStillRuns|TestRunQGAndReport_NoGitRepo_QGStillRuns)$
+pkg/worker/worker.go	^(resetForNewAssignment)$	^(TestReceiveAssign_StoresState|TestWorkerResetDoesNotLeakPriorReadyEvidence|TestStaleStreamContextIgnoredAfterNewAssign)$
+pkg/worker/worker.go	^(runQGAndReport)$	^(TestWorkerWritesDurableReadyEvidenceIdentity|TestRunQGAndReport_RebasesBeforeQG|TestRunQGAndReport_RebaseConflict_QGStillRuns|TestRunQGAndReport_NoGitRepo_QGStillRuns|TestSubprocessExit_RunsQGAndSendsDone)$
+pkg/worker/worker.go	^(runQualityGateWithProgress)$	^(TestWorkerWritesDurableReadyEvidenceIdentity|TestSubprocessExit_RunsQGAndSendsDone)$
+EOF
+		got=$(targeted_test_pattern '' '' pkg/worker/worker.go '^(unmappedWorkerFunction)$')
+		[[ -z "$got" ]] || fail "unmapped worker function unexpectedly received owner $got"
+		got=$(targeted_test_pattern '' '' pkg/dispatcher/scheduling.go '^(advanceAssignedGeneralIdle)$')
+		[[ "$got" = '^TestAdvanceAssignedGeneralIdleConsumesReportedClaimAfterAsyncRelease$' ]] ||
+			fail "unrelated dispatcher fallback changed: $got"
+		mkdir -p "$fixture/results" "$fixture/shards"
+		for file in pkg/worker/ready_evidence.go pkg/worker/worker.go; do
+			result="$fixture/results/0.json"
+			run_mutation_shard 0 "$file" '^(unmappedWorkerFunction)$' '' 0 '' \
+				"$fixture/shards" "$fixture/results" 240 60 900
+			jq -e \
+				'.conclusion == "infrastructure_failure" and .exit_code == 2 and
+				 .reason == "worker mutation target has no deterministic test owner" and
+				 .total == 0' \
+				"$result" >/dev/null || fail "$file unmapped worker target did not fail closed"
+		done
+	)
+	TestWorkerReadyEvidenceMutationAssembly "$assembly_fixture"
+}
+
 TestP0DurabilityMutationMapping() {
 	local cardinality coverage coverage_root file function got listed package pattern report
 	local dispatcher_pattern='^TestTryAssignBatchP0MutationOwner$'
@@ -4855,6 +4902,107 @@ test_parallel_internal_timeout_margin_validation() {
 	done
 }
 
+TestWorkerReadyEvidenceMutationAssembly() {
+	local assembly_fixture="$1"
+	local base head index
+	mkdir -p "$assembly_fixture/bin" "$assembly_fixture/pkg/worker"
+	git -C "$assembly_fixture" init -q
+	git -C "$assembly_fixture" config user.email mutation@example.test
+	git -C "$assembly_fixture" config user.name mutation-test
+	printf 'module mutation.test/worker\n\ngo 1.26\n' >"$assembly_fixture/go.mod"
+	git -C "$assembly_fixture" add go.mod
+	git -C "$assembly_fixture" commit -qm base
+	base=$(git -C "$assembly_fixture" rev-parse HEAD)
+	cat >"$assembly_fixture/pkg/worker/ready_evidence.go" <<'EOF'
+package worker
+
+func buildQGEvidence() {}
+func sha256Hex() {}
+func writeQGEvidence() {}
+EOF
+	cat >"$assembly_fixture/pkg/worker/worker.go" <<'EOF'
+package worker
+
+func SendReadyForReview() {}
+func gitHeadSHA() {}
+func loadQualityGateScript() {}
+func resetForNewAssignment() {}
+func runQGAndReport() {}
+func runQualityGateWithProgress() {}
+EOF
+	git -C "$assembly_fixture" add pkg/worker
+	git -C "$assembly_fixture" commit -qm head
+	head=$(git -C "$assembly_fixture" rev-parse HEAD)
+	cat >"$assembly_fixture/bin/go" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "${MUTATION_TEST_FILE:-<empty>}" >>"${MUTATION_FILE_TRACE:?}"
+if [[ "$1" = test ]]; then
+	for arg in "$@"; do
+		case "$arg" in
+		-coverprofile=*) : >"${arg#-coverprofile=}" ;;
+		esac
+	done
+	printf '%s\n' \
+		TestWorkerQGEvidenceRejectsSymlinkedParents \
+		TestWorkerWritesCanonicalQGEvidenceAndSendsAssignedIdentity \
+		TestWorkerWritesDurableReadyEvidenceIdentity \
+		TestWorkerBuildsOrderedSubsecondEvidenceTiming \
+		TestWorkerResetDoesNotLeakPriorReadyEvidence \
+		TestSendReadyForReview_ProducesCorrectJSON \
+		TestReceiveAssign_StoresState \
+		TestStaleStreamContextIgnoredAfterNewAssign \
+		TestRunQGAndReport_RebasesBeforeQG \
+		TestRunQGAndReport_RebaseConflict_QGStillRuns \
+		TestRunQGAndReport_NoGitRepo_QGStillRuns \
+		TestSubprocessExit_RunsQGAndSendsDone
+	exit 0
+fi
+if [[ "$1" = tool && "$2" = go-mutesting ]]; then
+	printf 'The mutation score is 1.000000 (1 passed, 0 failed, 0 duplicated, 0 skipped, total is 1)\n'
+	exit 0
+fi
+exit 64
+EOF
+	chmod +x "$assembly_fixture/bin/go"
+	(
+		cd "$assembly_fixture"
+		MUTATION_MAX_WORKERS=1 \
+			MUTATION_FILE_TIMEOUT_SECONDS=240 \
+			MUTATION_EXEC_TIMEOUT_SECONDS=60 \
+			MUTATION_FILE_TRACE="$assembly_fixture/mutation-test-files.txt" \
+			PATH="$assembly_fixture/bin:$PATH" \
+			bash "$runner" --base "$base" --head "$head" \
+			--evidence "$assembly_fixture/mutation-evidence.json"
+	)
+	jq -e '
+		.conclusion == "pass" and .mutation_exit_code == 0 and .score != null and .total == 9 and
+		(.shards | length) == 9 and
+		([.shards[].match] | unique | length) == 9 and
+		([.shards[] | select(
+			.conclusion != "completed" or .exit_code != 0 or .total != 1 or
+			.test_pattern == "" or (.test_pattern | startswith("^") | not) or
+			(.test_pattern | endswith("$") | not)
+		)] | length) == 0' \
+		"$assembly_fixture/mutation-evidence.json" >/dev/null ||
+		fail 'actual worker mutation runner did not emit nine terminal owned shards'
+	[[ "$(jq -r '.shards[] | [.file, .match, .test_pattern] | @tsv' \
+		"$assembly_fixture/mutation-evidence.json")" = "$(cat <<'EOF'
+pkg/worker/ready_evidence.go	^(buildQGEvidence)$	^(TestWorkerQGEvidenceRejectsSymlinkedParents|TestWorkerWritesCanonicalQGEvidenceAndSendsAssignedIdentity|TestWorkerWritesDurableReadyEvidenceIdentity|TestWorkerBuildsOrderedSubsecondEvidenceTiming)$
+pkg/worker/ready_evidence.go	^(sha256Hex)$	^(TestWorkerWritesCanonicalQGEvidenceAndSendsAssignedIdentity|TestWorkerWritesDurableReadyEvidenceIdentity|TestWorkerBuildsOrderedSubsecondEvidenceTiming)$
+pkg/worker/ready_evidence.go	^(writeQGEvidence)$	^(TestWorkerQGEvidenceRejectsSymlinkedParents|TestWorkerWritesCanonicalQGEvidenceAndSendsAssignedIdentity|TestWorkerWritesDurableReadyEvidenceIdentity)$
+pkg/worker/worker.go	^(SendReadyForReview)$	^(TestWorkerWritesCanonicalQGEvidenceAndSendsAssignedIdentity|TestWorkerWritesDurableReadyEvidenceIdentity|TestWorkerResetDoesNotLeakPriorReadyEvidence|TestSendReadyForReview_ProducesCorrectJSON)$
+pkg/worker/worker.go	^(gitHeadSHA)$	^(TestWorkerWritesDurableReadyEvidenceIdentity|TestRunQGAndReport_RebasesBeforeQG|TestRunQGAndReport_NoGitRepo_QGStillRuns)$
+pkg/worker/worker.go	^(loadQualityGateScript)$	^(TestWorkerWritesDurableReadyEvidenceIdentity|TestRunQGAndReport_RebasesBeforeQG|TestRunQGAndReport_RebaseConflict_QGStillRuns|TestRunQGAndReport_NoGitRepo_QGStillRuns)$
+pkg/worker/worker.go	^(resetForNewAssignment)$	^(TestReceiveAssign_StoresState|TestWorkerResetDoesNotLeakPriorReadyEvidence|TestStaleStreamContextIgnoredAfterNewAssign)$
+pkg/worker/worker.go	^(runQGAndReport)$	^(TestWorkerWritesDurableReadyEvidenceIdentity|TestRunQGAndReport_RebasesBeforeQG|TestRunQGAndReport_RebaseConflict_QGStillRuns|TestRunQGAndReport_NoGitRepo_QGStillRuns|TestSubprocessExit_RunsQGAndSendsDone)$
+pkg/worker/worker.go	^(runQualityGateWithProgress)$	^(TestWorkerWritesDurableReadyEvidenceIdentity|TestSubprocessExit_RunsQGAndSendsDone)$
+EOF
+)" ]] || fail 'actual worker mutation runner emitted an unexpected owner matrix'
+	! grep -qv '^<empty>$' "$assembly_fixture/mutation-test-files.txt" ||
+		fail 'worker mutation shards unexpectedly selected MUTATION_TEST_FILE'
+}
+
 run_parallel_marker_fixture() {
 	local fixture="$1"
 	local mode="$2"
@@ -5345,6 +5493,9 @@ main() {
 		;;
 	TestHeavyMutationShardRouting)
 		TestHeavyMutationShardRouting
+		;;
+	TestWorkerReadyEvidenceMutationRouting)
+		TestWorkerReadyEvidenceMutationRouting
 		;;
 	TestHandleConnHeavyMutationRouting)
 		TestHandleConnHeavyMutationRouting
