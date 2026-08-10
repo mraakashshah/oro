@@ -226,6 +226,8 @@ type Worker struct {
 	qgEvidenceDir          string
 	targetSHA              string
 	qgEvidencePath         string
+	qgEvidence             *protocol.QGEvidence
+	qgEvidenceRef          *protocol.QGEvidenceRef
 	runtime                string
 	model                  string
 	streamFormat           StreamFormat
@@ -747,6 +749,8 @@ func (w *Worker) resetForNewAssignment(a *protocol.AssignPayload, execution Work
 	w.qgEvidenceDir = a.QGEvidenceDir
 	w.targetSHA = a.TargetSHA
 	w.qgEvidencePath = ""
+	w.qgEvidence = nil
+	w.qgEvidenceRef = nil
 	w.tier = a.Tier
 	w.targetBranch = target
 	w.sessionText.Reset()
@@ -954,6 +958,7 @@ func (w *Worker) runQGAndReport(ctx context.Context) {
 	w.mu.Lock()
 	wt := w.worktree
 	target := w.targetBranch
+	assignmentID := w.assignmentID
 	w.mu.Unlock()
 
 	// Rebase onto the target branch before QG so fixes already on main
@@ -962,7 +967,13 @@ func (w *Worker) runQGAndReport(ctx context.Context) {
 	// surface legitimate failures without blocking the worker indefinitely.
 	_ = rebaseOntoTarget(ctx, wt, target)
 
-	passed, output, err := w.runQualityGateWithProgress(ctx, wt, true, target)
+	scriptPath, script, err := loadQualityGateScript(ctx, wt)
+	if err != nil {
+		_ = w.SendDone(ctx, false, err.Error())
+		return
+	}
+	startedAt := time.Now().UTC()
+	passed, output, err := w.runQualityGateWithProgress(ctx, wt, scriptPath, true, target)
 	if ctx.Err() != nil {
 		return
 	}
@@ -977,6 +988,12 @@ func (w *Worker) runQGAndReport(ctx context.Context) {
 		_ = w.SendDone(ctx, false, output)
 		return
 	}
+	finishedAt := time.Now().UTC()
+	headSHA, err := gitHeadSHA(ctx, wt)
+	if err != nil {
+		_ = w.SendDone(ctx, false, err.Error())
+		return
+	}
 
 	// QG passed — store the output and send READY_FOR_REVIEW.
 	// The worker waits for the dispatcher to send back a REVIEW_RESULT
@@ -984,7 +1001,19 @@ func (w *Worker) runQGAndReport(ctx context.Context) {
 	w.mu.Lock()
 	w.pendingQGOutput = output
 	w.mu.Unlock()
-	if err := w.writeQGEvidence(); err != nil {
+	evidence, err := w.buildQGEvidence(qgEvidenceOptions{
+		RunID:      fmt.Sprintf("%d:1", assignmentID),
+		HeadSHA:    headSHA,
+		ScriptHash: sha256Hex(script),
+		Output:     []byte(output),
+		StartedAt:  startedAt,
+		FinishedAt: finishedAt,
+	})
+	if err != nil {
+		_ = w.SendDone(ctx, false, err.Error())
+		return
+	}
+	if _, err := w.writeQGEvidence(evidence); err != nil {
 		_ = w.SendDone(ctx, false, err.Error())
 		return
 	}
@@ -992,12 +1021,19 @@ func (w *Worker) runQGAndReport(ctx context.Context) {
 	_ = w.SendReadyForReview(ctx)
 }
 
-func (w *Worker) runQualityGateWithProgress(ctx context.Context, worktree string, skipMutation bool, mutationBase string) (passed bool, output string, err error) {
-	scriptPath, statErr := findQualityGateScript(ctx, worktree)
-	if statErr != nil {
-		return false, "", statErr
+func loadQualityGateScript(ctx context.Context, worktree string) (scriptPath string, script []byte, err error) {
+	scriptPath, err = findQualityGateScript(ctx, worktree)
+	if err != nil {
+		return "", nil, err
 	}
+	script, err = os.ReadFile(scriptPath) //nolint:gosec // selected from the assigned worktree
+	if err != nil {
+		return "", nil, fmt.Errorf("read quality gate script: %w", err)
+	}
+	return scriptPath, script, nil
+}
 
+func (w *Worker) runQualityGateWithProgress(ctx context.Context, worktree, scriptPath string, skipMutation bool, mutationBase string) (passed bool, output string, err error) {
 	args := []string{scriptPath}
 	if !skipMutation {
 		args = append(args, "--mutation-testing")
@@ -1046,6 +1082,21 @@ func (w *Worker) runQualityGateWithProgress(ctx context.Context, worktree string
 		return false, output, fmt.Errorf("run quality gate: %w", err)
 	}
 	return true, output, nil
+}
+
+func gitHeadSHA(ctx context.Context, worktree string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD^{commit}") //nolint:gosec // fixed git arguments
+	cmd.Dir = worktree
+	cmd.Env = processenv.ForWorkdir(os.Environ(), worktree)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("read post-quality-gate HEAD: %w", err)
+	}
+	head := strings.TrimSpace(string(out))
+	if head == "" {
+		return "", errors.New("read post-quality-gate HEAD: empty result")
+	}
+	return head, nil
 }
 
 // processOutput reads subprocess stdout according to the runtime stream format,
@@ -1863,6 +1914,15 @@ func (w *Worker) SendReadyForReview(_ context.Context) error {
 		Worktree:       w.worktree,
 		QGEvidencePath: w.qgEvidencePath,
 		TargetSHA:      w.targetSHA,
+		ReadyAttempt:   "1",
+	}
+	if w.qgEvidence != nil {
+		evidence := *w.qgEvidence
+		ready.QGEvidence = &evidence
+	}
+	if w.qgEvidenceRef != nil {
+		ref := *w.qgEvidenceRef
+		ready.QGEvidenceRef = &ref
 	}
 	w.mu.Unlock()
 

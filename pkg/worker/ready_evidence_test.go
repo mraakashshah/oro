@@ -3,11 +3,16 @@ package worker //nolint:testpackage // Evidence construction requires assignment
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -122,7 +127,8 @@ func TestWorkerQGEvidenceRejectsSymlinkedParents(t *testing.T) {
 			w.worktree = t.TempDir()
 			w.assignmentID = 19
 			w.qgEvidenceDir = root
-			w.targetSHA = "target-sha"
+			w.targetBranch = "main"
+			w.targetSHA = strings.Repeat("1", 40)
 
 			assignmentDir := filepath.Join(root, w.beadID, strconv.FormatInt(w.assignmentID, 10))
 			externalEvidence := filepath.Join(external, qgEvidenceAttempt)
@@ -149,7 +155,17 @@ func TestWorkerQGEvidenceRejectsSymlinkedParents(t *testing.T) {
 				t.Fatalf("write external sentinel: %v", err)
 			}
 
-			if err := w.writeQGEvidence(); err == nil {
+			evidence, err := w.buildQGEvidence(qgEvidenceOptions{
+				RunID:      "19:1",
+				HeadSHA:    strings.Repeat("2", 40),
+				ScriptHash: strings.Repeat("a", 64),
+				StartedAt:  time.Date(2026, time.August, 10, 3, 0, 0, 0, time.UTC),
+				FinishedAt: time.Date(2026, time.August, 10, 3, 1, 0, 0, time.UTC),
+			})
+			if err != nil {
+				t.Fatalf("build evidence: %v", err)
+			}
+			if _, err := w.writeQGEvidence(evidence); err == nil {
 				t.Fatal("symlinked evidence parent accepted")
 			}
 			got, err := os.ReadFile(externalEvidence)
@@ -206,12 +222,27 @@ func TestWorkerWritesCanonicalQGEvidenceAndSendsAssignedIdentity(t *testing.T) {
 	w.worktree = t.TempDir()
 	w.assignmentID = 17
 	w.qgEvidenceDir = root
-	w.targetSHA = "target-sha"
+	w.targetBranch = "main"
+	w.targetSHA = strings.Repeat("1", 40)
 
-	if err := w.writeQGEvidence(); err != nil {
+	evidence, err := w.buildQGEvidence(qgEvidenceOptions{
+		RunID:      "17:1",
+		HeadSHA:    strings.Repeat("2", 40),
+		ScriptHash: strings.Repeat("a", 64),
+		StartedAt:  time.Date(2026, time.August, 10, 3, 0, 0, 0, time.UTC),
+		FinishedAt: time.Date(2026, time.August, 10, 3, 1, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("build evidence: %v", err)
+	}
+	ref, err := w.writeQGEvidence(evidence)
+	if err != nil {
 		t.Fatalf("write evidence: %v", err)
 	}
 	wantPath := filepath.Join(root, "oro-ready", strconv.FormatInt(w.assignmentID, 10), qgEvidenceAttempt)
+	if ref.Path != wantPath || ref.RunID != evidence.RunID {
+		t.Fatalf("evidence ref = %#v, want path %q and run %q", ref, wantPath, evidence.RunID)
+	}
 	info, err := os.Stat(wantPath)
 	if err != nil {
 		t.Fatalf("stat evidence: %v", err)
@@ -234,20 +265,197 @@ func TestWorkerWritesCanonicalQGEvidenceAndSendsAssignedIdentity(t *testing.T) {
 	}
 	want := protocol.ReadyForReviewPayload{
 		BeadID: "oro-ready", WorkerID: "worker-ready", AssignmentID: 17,
-		Worktree: w.worktree, QGEvidencePath: wantPath, TargetSHA: "target-sha",
+		Worktree: w.worktree, QGEvidencePath: wantPath, TargetSHA: strings.Repeat("1", 40),
+		ReadyAttempt: "1", QGEvidence: &evidence, QGEvidenceRef: &ref,
 	}
-	if *msg.ReadyForReview != want {
+	if !reflect.DeepEqual(*msg.ReadyForReview, want) {
 		t.Fatalf("READY payload = %#v, want %#v", *msg.ReadyForReview, want)
 	}
 	data, err := os.ReadFile(wantPath)
 	if err != nil {
 		t.Fatalf("read evidence: %v", err)
 	}
-	var evidence protocol.ReadyForReviewPayload
-	if err := json.Unmarshal(data, &evidence); err != nil {
+	var stored protocol.QGEvidence
+	if err := json.Unmarshal(data, &stored); err != nil {
 		t.Fatalf("decode evidence: %v", err)
 	}
-	if evidence != want {
-		t.Fatalf("evidence = %#v, want %#v", evidence, want)
+	if stored != evidence {
+		t.Fatalf("evidence = %#v, want %#v", stored, evidence)
+	}
+}
+
+func TestWorkerWritesDurableReadyEvidenceIdentity(t *testing.T) {
+	t.Parallel()
+
+	worktree := t.TempDir()
+	script := []byte("#!/bin/sh\nprintf 'quality gate passed\\n'\n")
+	scriptPath := filepath.Join(worktree, "quality_gate.sh")
+	if err := os.WriteFile(scriptPath, script, 0o700); err != nil {
+		t.Fatalf("write quality gate script: %v", err)
+	}
+	runGit := func(args ...string) string {
+		cmd := exec.Command("git", args...) //nolint:gosec // fixed test fixture commands
+		cmd.Dir = worktree
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	runGit("init", "-b", "main")
+	runGit("config", "user.email", "test@oro.test")
+	runGit("config", "user.name", "Oro Test")
+	runGit("add", "quality_gate.sh")
+	runGit("commit", "-m", "add quality gate")
+	headSHA := runGit("rev-parse", "HEAD")
+
+	workerConn, dispatcherConn := net.Pipe()
+	t.Cleanup(func() {
+		_ = workerConn.Close()
+		_ = dispatcherConn.Close()
+	})
+
+	root := t.TempDir()
+	w := NewWithConn("worker-ready", workerConn, nil)
+	w.beadID = "oro-ready"
+	w.worktree = worktree
+	w.assignmentID = 17
+	w.qgEvidenceDir = root
+	w.targetBranch = "main"
+	w.targetSHA = strings.Repeat("1", 40)
+	output := []byte("quality gate passed\n")
+	scriptHash := sha256.Sum256(script)
+	outputHash := sha256.Sum256(output)
+
+	done := make(chan struct{})
+	go func() {
+		w.runQGAndReport(context.Background())
+		close(done)
+	}()
+	var msg protocol.Message
+	decoder := json.NewDecoder(dispatcherConn)
+	for {
+		if err := decoder.Decode(&msg); err != nil {
+			t.Fatalf("decode QG result: %v", err)
+		}
+		if msg.Type != protocol.MsgStatus {
+			break
+		}
+	}
+	<-done
+	if msg.Type != protocol.MsgReadyForReview || msg.ReadyForReview == nil ||
+		msg.ReadyForReview.QGEvidence == nil || msg.ReadyForReview.QGEvidenceRef == nil {
+		t.Fatalf("production QG did not emit durable READY: %#v", msg)
+	}
+	evidence := *msg.ReadyForReview.QGEvidence
+	ref := *msg.ReadyForReview.QGEvidenceRef
+	if evidence.RunID != "17:1" || evidence.AssignmentID != 17 || evidence.BeadID != w.beadID ||
+		evidence.WorkerID != w.ID || evidence.HeadSHA != headSHA || evidence.TargetBranch != "main" ||
+		evidence.TargetSHA != strings.Repeat("1", 40) || evidence.ScriptHash != hex.EncodeToString(scriptHash[:]) ||
+		evidence.OutputHash != hex.EncodeToString(outputHash[:]) || evidence.Mode != "worker" || !evidence.Passed {
+		t.Fatalf("production evidence identity = %#v", evidence)
+	}
+	startedAt, err := time.Parse(time.RFC3339, evidence.StartedAt)
+	if err != nil {
+		t.Fatalf("parse evidence start: %v", err)
+	}
+	finishedAt, err := time.Parse(time.RFC3339, evidence.FinishedAt)
+	if err != nil || !finishedAt.After(startedAt) {
+		t.Fatalf("evidence timing = %q..%q: %v", evidence.StartedAt, evidence.FinishedAt, err)
+	}
+	wantPath := filepath.Join(root, "oro-ready", "17", qgEvidenceAttempt)
+	if ref.RunID != evidence.RunID || ref.Path != wantPath {
+		t.Fatalf("evidence ref = %#v, want run/path %q/%q", ref, evidence.RunID, wantPath)
+	}
+	data, err := os.ReadFile(wantPath)
+	if err != nil {
+		t.Fatalf("read evidence: %v", err)
+	}
+	fileHash := sha256.Sum256(data)
+	if ref.SHA256 != hex.EncodeToString(fileHash[:]) {
+		t.Fatalf("evidence ref hash = %q, want %q", ref.SHA256, hex.EncodeToString(fileHash[:]))
+	}
+	var stored protocol.QGEvidence
+	if err := json.Unmarshal(data, &stored); err != nil {
+		t.Fatalf("decode evidence: %v", err)
+	}
+	if stored != evidence {
+		t.Fatalf("stored evidence = %#v, want %#v", stored, evidence)
+	}
+}
+
+func TestWorkerBuildsOrderedSubsecondEvidenceTiming(t *testing.T) {
+	startedAt := time.Date(2026, time.August, 10, 3, 0, 0, 100, time.UTC)
+	w := NewWithConn("worker-ready-timing", nil, nil)
+	w.beadID = "oro-ready-timing"
+	w.assignmentID = 29
+	w.qgEvidenceDir = t.TempDir()
+	w.targetBranch = "main"
+	w.targetSHA = strings.Repeat("1", 40)
+
+	evidence, err := w.buildQGEvidence(qgEvidenceOptions{
+		RunID:      "29:1",
+		HeadSHA:    strings.Repeat("2", 40),
+		ScriptHash: strings.Repeat("a", 64),
+		StartedAt:  startedAt,
+		FinishedAt: startedAt.Add(100 * time.Nanosecond),
+	})
+	if err != nil {
+		t.Fatalf("build subsecond evidence: %v", err)
+	}
+	if evidence.StartedAt == evidence.FinishedAt {
+		t.Fatalf("subsecond evidence timing collapsed to %q", evidence.StartedAt)
+	}
+	if evidence.OutputHash != sha256Hex(nil) {
+		t.Fatalf("empty output hash = %q, want %q", evidence.OutputHash, sha256Hex(nil))
+	}
+	parsedStart, err := time.Parse(time.RFC3339, evidence.StartedAt)
+	if err != nil {
+		t.Fatalf("parse evidence start: %v", err)
+	}
+	parsedFinish, err := time.Parse(time.RFC3339, evidence.FinishedAt)
+	if err != nil {
+		t.Fatalf("parse evidence finish: %v", err)
+	}
+	if !parsedStart.Equal(startedAt) || !parsedFinish.Equal(startedAt.Add(100*time.Nanosecond)) ||
+		!parsedFinish.After(parsedStart) {
+		t.Fatalf("subsecond evidence timing = %s..%s", parsedStart, parsedFinish)
+	}
+}
+
+func TestWorkerResetDoesNotLeakPriorReadyEvidence(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	workerConn, dispatcherConn := net.Pipe()
+	t.Cleanup(func() {
+		_ = workerConn.Close()
+		_ = dispatcherConn.Close()
+	})
+	w := NewWithConn("worker-ready-reset", workerConn, nil)
+	w.qgEvidencePath = "/previous/evidence.json"
+	w.qgEvidence = &protocol.QGEvidence{RunID: "previous:1"}
+	w.qgEvidenceRef = &protocol.QGEvidenceRef{RunID: "previous:1"}
+
+	w.resetForNewAssignment(&protocol.AssignPayload{
+		BeadID:        "oro-next",
+		AssignmentID:  18,
+		QGEvidenceDir: t.TempDir(),
+		TargetSHA:     strings.Repeat("3", 40),
+	}, WorkerExecutionContext{})
+	t.Cleanup(w.closeLogFile)
+
+	sendErr := make(chan error, 1)
+	go func() { sendErr <- w.SendReadyForReview(context.Background()) }()
+	var msg protocol.Message
+	if err := json.NewDecoder(dispatcherConn).Decode(&msg); err != nil {
+		t.Fatalf("decode READY: %v", err)
+	}
+	if err := <-sendErr; err != nil {
+		t.Fatalf("send READY: %v", err)
+	}
+	if msg.ReadyForReview == nil {
+		t.Fatal("READY payload missing")
+	}
+	if msg.ReadyForReview.QGEvidence != nil || msg.ReadyForReview.QGEvidenceRef != nil {
+		t.Fatalf("READY leaked prior evidence: %#v", msg.ReadyForReview)
 	}
 }
