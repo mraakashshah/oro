@@ -257,7 +257,7 @@ func sendMessage(t *testing.T, conn net.Conn, msg protocol.Message) {
 		}
 		if assign.QGEvidenceDir == "" && assign.TargetSHA == "" {
 			assign.QGEvidenceDir = t.TempDir()
-			assign.TargetSHA = "test-target-sha"
+			assign.TargetSHA = strings.Repeat("1", 40)
 		}
 	}
 	data, err := json.Marshal(msg)
