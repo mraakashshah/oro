@@ -4,6 +4,7 @@ package protocol
 
 import (
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"time"
 
@@ -253,14 +254,108 @@ type CheckpointAckPayload struct {
 	IntentSummary string `json:"intent_summary,omitempty"`
 }
 
+// QGEvidence is the immutable identity and result of one worker quality-gate
+// run. It is optional on READY_FOR_REVIEW for compatibility with old workers.
+type QGEvidence struct {
+	RunID        string `json:"run_id"`
+	AssignmentID int64  `json:"assignment_id"`
+	BeadID       string `json:"bead_id"`
+	WorkerID     string `json:"worker_id,omitempty"`
+	HeadSHA      string `json:"head_sha"`
+	TargetBranch string `json:"target_branch"`
+	TargetSHA    string `json:"target_sha"`
+	ScriptHash   string `json:"script_hash"`
+	Mode         string `json:"mode"`
+	Passed       bool   `json:"passed"`
+	OutputHash   string `json:"output_hash,omitempty"`
+	StartedAt    string `json:"started_at"`
+	FinishedAt   string `json:"finished_at"`
+}
+
+// Validate checks that evidence is a complete, worker-produced passing run.
+func (e *QGEvidence) Validate() error {
+	if e == nil {
+		return fmt.Errorf("QG evidence cannot be nil")
+	}
+	if err := e.validateIdentity(); err != nil {
+		return err
+	}
+	if !lowerHexSHA40Pattern.MatchString(e.HeadSHA) || !lowerHexSHA40Pattern.MatchString(e.TargetSHA) {
+		return fmt.Errorf("QG evidence head and target SHAs must be lowercase 40-hex commits")
+	}
+	if !lowerHexSHA64Pattern.MatchString(e.ScriptHash) {
+		return fmt.Errorf("QG evidence script hash must be lowercase 64-hex")
+	}
+	if e.Mode != "worker" {
+		return fmt.Errorf("QG evidence mode must be worker")
+	}
+	if !e.Passed {
+		return fmt.Errorf("QG evidence must report a passing gate")
+	}
+	if e.OutputHash != "" && !lowerHexSHA64Pattern.MatchString(e.OutputHash) {
+		return fmt.Errorf("QG evidence output hash must be lowercase 64-hex")
+	}
+	return e.validateTiming()
+}
+
+func (e *QGEvidence) validateIdentity() error {
+	if e.RunID == "" || e.AssignmentID <= 0 || e.BeadID == "" || e.WorkerID == "" ||
+		e.TargetBranch == "" || e.Mode == "" || e.StartedAt == "" || e.FinishedAt == "" {
+		return fmt.Errorf("QG evidence identity and timing fields are required")
+	}
+	if !beadIDPattern.MatchString(e.BeadID) {
+		return fmt.Errorf("QG evidence bead ID is invalid")
+	}
+	return nil
+}
+
+func (e *QGEvidence) validateTiming() error {
+	started, err := time.Parse(time.RFC3339, e.StartedAt)
+	if err != nil {
+		return fmt.Errorf("QG evidence start time: %w", err)
+	}
+	finished, err := time.Parse(time.RFC3339, e.FinishedAt)
+	if err != nil {
+		return fmt.Errorf("QG evidence finish time: %w", err)
+	}
+	if !finished.After(started) {
+		return fmt.Errorf("QG evidence finish time must follow start time")
+	}
+	return nil
+}
+
+// QGEvidenceRef identifies the atomically published evidence artifact.
+type QGEvidenceRef struct {
+	RunID  string `json:"run_id"`
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
+}
+
+// Validate checks that an evidence reference is canonical and hash-shaped.
+func (r *QGEvidenceRef) Validate() error {
+	if r == nil || r.RunID == "" || r.Path == "" || r.SHA256 == "" {
+		return fmt.Errorf("QG evidence reference fields are required")
+	}
+	if !filepath.IsAbs(r.Path) || filepath.Clean(r.Path) != r.Path {
+		return fmt.Errorf("QG evidence reference path must be absolute and clean")
+	}
+	if !lowerHexSHA64Pattern.MatchString(r.SHA256) {
+		return fmt.Errorf("QG evidence reference hash must be lowercase 64-hex")
+	}
+	return nil
+}
+
 // ReadyForReviewPayload is sent by a worker when its bead is ready for review.
 type ReadyForReviewPayload struct {
-	BeadID         string `json:"bead_id"`
-	WorkerID       string `json:"worker_id"`
-	AssignmentID   int64  `json:"assignment_id"`
-	Worktree       string `json:"worktree"`
-	QGEvidencePath string `json:"qg_evidence_path"`
-	TargetSHA      string `json:"target_sha"`
+	BeadID         string         `json:"bead_id"`
+	WorkerID       string         `json:"worker_id"`
+	AssignmentID   int64          `json:"assignment_id"`
+	Worktree       string         `json:"worktree"`
+	QGEvidencePath string         `json:"qg_evidence_path"`
+	TargetSHA      string         `json:"target_sha"`
+	ReadyAttempt   string         `json:"ready_attempt,omitempty"`
+	QGEvidence     *QGEvidence    `json:"qg_evidence,omitempty"`
+	QGEvidenceRef  *QGEvidenceRef `json:"qg_evidence_ref,omitempty"`
 }
 
 // Validate checks that a READY_FOR_REVIEW message carries the complete
@@ -272,6 +367,30 @@ func (r *ReadyForReviewPayload) Validate() error {
 	if r.BeadID == "" || r.WorkerID == "" || r.AssignmentID <= 0 || r.Worktree == "" ||
 		r.QGEvidencePath == "" || r.TargetSHA == "" {
 		return fmt.Errorf("bead ID, worker ID, assignment ID, worktree, evidence path, and target SHA are required")
+	}
+	if r.QGEvidence == nil && r.QGEvidenceRef == nil {
+		return nil
+	}
+	return r.validateDurableEvidence()
+}
+
+func (r *ReadyForReviewPayload) validateDurableEvidence() error {
+	if r.ReadyAttempt == "" {
+		return fmt.Errorf("bead ID, worker ID, assignment ID, worktree, evidence path, target SHA, and ready attempt are required")
+	}
+	if r.QGEvidence == nil || r.QGEvidenceRef == nil {
+		return fmt.Errorf("durable READY payload requires evidence and reference")
+	}
+	if err := r.QGEvidence.Validate(); err != nil {
+		return fmt.Errorf("validate QG evidence: %w", err)
+	}
+	if err := r.QGEvidenceRef.Validate(); err != nil {
+		return fmt.Errorf("validate QG evidence reference: %w", err)
+	}
+	if r.QGEvidence.AssignmentID != r.AssignmentID || r.QGEvidence.BeadID != r.BeadID ||
+		r.QGEvidence.WorkerID != r.WorkerID || r.QGEvidence.TargetSHA != r.TargetSHA ||
+		r.QGEvidenceRef.RunID != r.QGEvidence.RunID || r.QGEvidenceRef.Path != r.QGEvidencePath {
+		return fmt.Errorf("durable READY payload identity does not match QG evidence")
 	}
 	return nil
 }
@@ -377,6 +496,10 @@ type CapabilityRefreshACKPayload struct {
 // by 0-61 chars of lowercase letters, digits, dots, hyphens, or underscores,
 // and must end with lowercase letter or digit.
 var beadIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,61}[a-z0-9]$`)
+
+var lowerHexSHA40Pattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+var lowerHexSHA64Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // ValidateBeadID validates a bead ID for path safety to prevent directory
 // traversal attacks. Returns an error if the ID contains path traversal

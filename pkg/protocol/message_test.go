@@ -520,6 +520,447 @@ func TestDonePayload_QualityGatePassed_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestReadyForReviewEvidenceContract(t *testing.T) {
+	t.Parallel()
+
+	trustedEvidence := &protocol.QGEvidence{
+		RunID:        "run-17",
+		AssignmentID: 17,
+		BeadID:       "oro-ready",
+		WorkerID:     "worker-ready",
+		HeadSHA:      strings.Repeat("2", 40),
+		TargetBranch: "main",
+		TargetSHA:    strings.Repeat("1", 40),
+		ScriptHash:   strings.Repeat("a", 64),
+		Mode:         "worker",
+		Passed:       true,
+		OutputHash:   strings.Repeat("b", 64),
+		StartedAt:    "2026-08-10T03:00:00Z",
+		FinishedAt:   "2026-08-10T03:01:00Z",
+	}
+	trustedRef := &protocol.QGEvidenceRef{
+		RunID:  "run-17",
+		Path:   "/var/tmp/oro/evidence/oro-ready/17/1.json",
+		SHA256: strings.Repeat("c", 64),
+	}
+	want := protocol.ReadyForReviewPayload{
+		BeadID:         "oro-ready",
+		WorkerID:       "worker-ready",
+		AssignmentID:   17,
+		Worktree:       "/tmp/oro-ready",
+		QGEvidencePath: trustedRef.Path,
+		TargetSHA:      trustedEvidence.TargetSHA,
+		ReadyAttempt:   "1",
+		QGEvidence:     trustedEvidence,
+		QGEvidenceRef:  trustedRef,
+	}
+
+	data, err := json.Marshal(want)
+	if err != nil {
+		t.Fatalf("marshal durable READY evidence: %v", err)
+	}
+	var got protocol.ReadyForReviewPayload
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal durable READY evidence: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("durable READY evidence round-trip = %#v, want %#v", got, want)
+	}
+	if err := got.Validate(); err != nil {
+		t.Fatalf("trusted evidence validation: %v", err)
+	}
+
+	legacyJSON := []byte(`{"bead_id":"oro-ready","worker_id":"worker-ready","assignment_id":17,"worktree":"/tmp/oro-ready","qg_evidence_path":"/var/tmp/oro/evidence/oro-ready/17/1.json","target_sha":"1111111111111111111111111111111111111111"}`)
+	var legacy protocol.ReadyForReviewPayload
+	if err := json.Unmarshal(legacyJSON, &legacy); err != nil {
+		t.Fatalf("unmarshal legacy READY payload: %v", err)
+	}
+	if legacy.QGEvidence != nil || legacy.QGEvidenceRef != nil {
+		t.Fatal("legacy READY payload unexpectedly acquired durable evidence pointers")
+	}
+	if err := legacy.Validate(); err != nil {
+		t.Fatalf("legacy READY payload validation: %v", err)
+	}
+	legacyBaseCases := []struct {
+		name   string
+		mutate func(*protocol.ReadyForReviewPayload)
+	}{
+		{name: "missing bead ID", mutate: func(p *protocol.ReadyForReviewPayload) { p.BeadID = "" }},
+		{name: "missing worker ID", mutate: func(p *protocol.ReadyForReviewPayload) { p.WorkerID = "" }},
+		{name: "missing assignment ID", mutate: func(p *protocol.ReadyForReviewPayload) { p.AssignmentID = 0 }},
+		{name: "missing worktree", mutate: func(p *protocol.ReadyForReviewPayload) { p.Worktree = "" }},
+		{name: "missing evidence path", mutate: func(p *protocol.ReadyForReviewPayload) { p.QGEvidencePath = "" }},
+		{name: "missing target SHA", mutate: func(p *protocol.ReadyForReviewPayload) { p.TargetSHA = "" }},
+	}
+	for _, tc := range legacyBaseCases {
+		t.Run("legacy "+tc.name, func(t *testing.T) {
+			candidate := legacy
+			tc.mutate(&candidate)
+			if err := candidate.Validate(); err == nil {
+				t.Fatalf("legacy validation unexpectedly accepted %s", tc.name)
+			}
+		})
+	}
+
+	cases := []struct {
+		name   string
+		mutate func(*protocol.ReadyForReviewPayload)
+	}{
+		{
+			name: "missing evidence pointer",
+			mutate: func(p *protocol.ReadyForReviewPayload) {
+				p.QGEvidence = nil
+			},
+		},
+		{
+			name: "missing reference pointer",
+			mutate: func(p *protocol.ReadyForReviewPayload) {
+				p.QGEvidenceRef = nil
+			},
+		},
+		{
+			name: "empty required evidence field",
+			mutate: func(p *protocol.ReadyForReviewPayload) {
+				p.QGEvidence = &protocol.QGEvidence{}
+			},
+		},
+		{
+			name: "invalid head SHA",
+			mutate: func(p *protocol.ReadyForReviewPayload) {
+				p.QGEvidence.HeadSHA = "not-a-commit"
+			},
+		},
+		{
+			name: "invalid target SHA",
+			mutate: func(p *protocol.ReadyForReviewPayload) {
+				p.QGEvidence.TargetSHA = "not-a-target"
+			},
+		},
+		{
+			name: "invalid hash",
+			mutate: func(p *protocol.ReadyForReviewPayload) {
+				p.QGEvidence.ScriptHash = "not-a-hash"
+			},
+		},
+		{
+			name: "invalid output hash",
+			mutate: func(p *protocol.ReadyForReviewPayload) {
+				p.QGEvidence.OutputHash = "not-an-output-hash"
+			},
+		},
+		{
+			name: "uppercase hash",
+			mutate: func(p *protocol.ReadyForReviewPayload) {
+				p.QGEvidence.ScriptHash = strings.Repeat("A", 64)
+			},
+		},
+		{
+			name: "reference run mismatch",
+			mutate: func(p *protocol.ReadyForReviewPayload) {
+				p.QGEvidenceRef.RunID = "run-other"
+			},
+		},
+		{
+			name: "empty reference run ID",
+			mutate: func(p *protocol.ReadyForReviewPayload) {
+				p.QGEvidenceRef.RunID = ""
+			},
+		},
+		{
+			name: "empty reference path",
+			mutate: func(p *protocol.ReadyForReviewPayload) {
+				p.QGEvidenceRef.Path = ""
+			},
+		},
+		{
+			name: "relative reference path",
+			mutate: func(p *protocol.ReadyForReviewPayload) {
+				p.QGEvidenceRef.Path = "evidence/oro-ready/17/1.json"
+			},
+		},
+		{
+			name: "unclean reference path",
+			mutate: func(p *protocol.ReadyForReviewPayload) {
+				p.QGEvidenceRef.Path = "/var/tmp/oro/evidence/oro-ready/17/../17/1.json"
+			},
+		},
+		{
+			name: "invalid reference hash",
+			mutate: func(p *protocol.ReadyForReviewPayload) {
+				p.QGEvidenceRef.SHA256 = strings.Repeat("d", 63)
+			},
+		},
+		{
+			name: "uppercase reference hash",
+			mutate: func(p *protocol.ReadyForReviewPayload) {
+				p.QGEvidenceRef.SHA256 = strings.Repeat("C", 64)
+			},
+		},
+		{
+			name: "wrong mode",
+			mutate: func(p *protocol.ReadyForReviewPayload) {
+				p.QGEvidence.Mode = "dispatcher"
+			},
+		},
+		{
+			name: "failed evidence",
+			mutate: func(p *protocol.ReadyForReviewPayload) {
+				p.QGEvidence.Passed = false
+			},
+		},
+		{
+			name: "finish precedes start",
+			mutate: func(p *protocol.ReadyForReviewPayload) {
+				p.QGEvidence.FinishedAt = "2026-08-10T02:59:00Z"
+			},
+		},
+		{
+			name: "empty ready attempt",
+			mutate: func(p *protocol.ReadyForReviewPayload) {
+				p.ReadyAttempt = ""
+			},
+		},
+		{
+			name: "empty ready worker ID",
+			mutate: func(p *protocol.ReadyForReviewPayload) {
+				p.WorkerID = ""
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := want
+			candidate.QGEvidence = trustedEvidenceCopy(trustedEvidence)
+			candidate.QGEvidenceRef = &protocol.QGEvidenceRef{
+				RunID:  trustedRef.RunID,
+				Path:   trustedRef.Path,
+				SHA256: trustedRef.SHA256,
+			}
+			tc.mutate(&candidate)
+			if err := candidate.Validate(); err == nil {
+				t.Fatalf("validation unexpectedly accepted %s", tc.name)
+			}
+		})
+	}
+}
+
+func trustedEvidenceCopy(evidence *protocol.QGEvidence) *protocol.QGEvidence {
+	cloned := *evidence
+	return &cloned
+}
+
+func TestReadyEvidenceValidationBranches(t *testing.T) {
+	t.Parallel()
+
+	validEvidence := func() protocol.QGEvidence {
+		return protocol.QGEvidence{
+			RunID:        "run-17",
+			AssignmentID: 17,
+			BeadID:       "oro-ready",
+			WorkerID:     "worker-ready",
+			HeadSHA:      strings.Repeat("2", 40),
+			TargetBranch: "main",
+			TargetSHA:    strings.Repeat("1", 40),
+			ScriptHash:   strings.Repeat("a", 64),
+			Mode:         "worker",
+			Passed:       true,
+			StartedAt:    "2026-08-10T03:00:00Z",
+			FinishedAt:   "2026-08-10T03:01:00Z",
+		}
+	}
+
+	t.Run("nil evidence is rejected", func(t *testing.T) {
+		var evidence *protocol.QGEvidence
+		if err := evidence.Validate(); err == nil {
+			t.Fatal("nil evidence unexpectedly validated")
+		}
+	})
+
+	identityFields := []struct {
+		name   string
+		mutate func(*protocol.QGEvidence)
+	}{
+		{name: "run ID", mutate: func(e *protocol.QGEvidence) { e.RunID = "" }},
+		{name: "assignment ID", mutate: func(e *protocol.QGEvidence) { e.AssignmentID = 0 }},
+		{name: "bead ID", mutate: func(e *protocol.QGEvidence) { e.BeadID = "" }},
+		{name: "worker ID", mutate: func(e *protocol.QGEvidence) { e.WorkerID = "" }},
+		{name: "target branch", mutate: func(e *protocol.QGEvidence) { e.TargetBranch = "" }},
+		{name: "mode", mutate: func(e *protocol.QGEvidence) { e.Mode = "" }},
+		{name: "started at", mutate: func(e *protocol.QGEvidence) { e.StartedAt = "" }},
+		{name: "finished at", mutate: func(e *protocol.QGEvidence) { e.FinishedAt = "" }},
+	}
+	for _, tc := range identityFields {
+		t.Run("required "+tc.name, func(t *testing.T) {
+			evidence := validEvidence()
+			tc.mutate(&evidence)
+			if err := evidence.Validate(); err == nil {
+				t.Fatalf("missing %s unexpectedly validated", tc.name)
+			} else if !strings.Contains(err.Error(), "identity and timing fields are required") {
+				t.Fatalf("missing %s returned wrong error: %v", tc.name, err)
+			}
+		})
+	}
+
+	t.Run("invalid bead ID", func(t *testing.T) {
+		evidence := validEvidence()
+		evidence.BeadID = "not a bead"
+		if err := evidence.Validate(); err == nil {
+			t.Fatal("invalid bead ID unexpectedly validated")
+		} else if !strings.Contains(err.Error(), "bead ID is invalid") {
+			t.Fatalf("invalid bead ID returned wrong error: %v", err)
+		}
+	})
+	t.Run("invalid target SHA", func(t *testing.T) {
+		evidence := validEvidence()
+		evidence.TargetSHA = "not-a-target"
+		if err := evidence.Validate(); err == nil {
+			t.Fatal("invalid target SHA unexpectedly validated")
+		} else if !strings.Contains(err.Error(), "head and target SHAs must be lowercase 40-hex commits") {
+			t.Fatalf("invalid target SHA returned wrong error: %v", err)
+		}
+	})
+
+	for _, tc := range []struct {
+		name      string
+		mutate    func(*protocol.QGEvidence)
+		errorText string
+	}{
+		{name: "malformed start time", mutate: func(e *protocol.QGEvidence) { e.StartedAt = "not-a-time" }, errorText: "start time:"},
+		{name: "malformed finish time", mutate: func(e *protocol.QGEvidence) { e.FinishedAt = "not-a-time" }, errorText: "finish time:"},
+		{name: "finish equals start", mutate: func(e *protocol.QGEvidence) { e.FinishedAt = e.StartedAt }, errorText: "finish time must follow start time"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			evidence := validEvidence()
+			tc.mutate(&evidence)
+			if err := evidence.Validate(); err == nil {
+				t.Fatalf("%s unexpectedly validated", tc.name)
+			} else if !strings.Contains(err.Error(), tc.errorText) {
+				t.Fatalf("%s returned wrong error: %v", tc.name, err)
+			}
+		})
+	}
+
+	t.Run("empty output hash is valid", func(t *testing.T) {
+		evidence := validEvidence()
+		if err := evidence.Validate(); err != nil {
+			t.Fatalf("empty output hash rejected: %v", err)
+		}
+	})
+
+	validReference := func() protocol.QGEvidenceRef {
+		return protocol.QGEvidenceRef{
+			RunID:  "run-17",
+			Path:   "/var/tmp/oro/evidence/oro-ready/17/1.json",
+			SHA256: strings.Repeat("c", 64),
+		}
+	}
+	t.Run("nil reference is rejected", func(t *testing.T) {
+		var ref *protocol.QGEvidenceRef
+		if err := ref.Validate(); err == nil {
+			t.Fatal("nil reference unexpectedly validated")
+		}
+	})
+	for _, tc := range []struct {
+		name      string
+		mutate    func(*protocol.QGEvidenceRef)
+		errorText string
+	}{
+		{name: "run ID", mutate: func(r *protocol.QGEvidenceRef) { r.RunID = "" }, errorText: "reference fields are required"},
+		{name: "path", mutate: func(r *protocol.QGEvidenceRef) { r.Path = "" }, errorText: "reference fields are required"},
+		{name: "hash", mutate: func(r *protocol.QGEvidenceRef) { r.SHA256 = "" }, errorText: "reference fields are required"},
+		{name: "relative path", mutate: func(r *protocol.QGEvidenceRef) { r.Path = "evidence.json" }, errorText: "path must be absolute and clean"},
+		{name: "unclean path", mutate: func(r *protocol.QGEvidenceRef) { r.Path = "/var/tmp/oro/../evidence.json" }, errorText: "path must be absolute and clean"},
+		{name: "invalid hash", mutate: func(r *protocol.QGEvidenceRef) { r.SHA256 = "not-a-hash" }, errorText: "reference hash must be lowercase 64-hex"},
+	} {
+		t.Run("reference "+tc.name, func(t *testing.T) {
+			ref := validReference()
+			tc.mutate(&ref)
+			if err := ref.Validate(); err == nil {
+				t.Fatalf("invalid %s unexpectedly validated", tc.name)
+			} else if !strings.Contains(err.Error(), tc.errorText) {
+				t.Fatalf("invalid %s returned wrong error: %v", tc.name, err)
+			}
+		})
+	}
+
+	t.Run("nil READY payload is rejected", func(t *testing.T) {
+		var ready *protocol.ReadyForReviewPayload
+		if err := ready.Validate(); err == nil {
+			t.Fatal("nil READY payload unexpectedly validated")
+		}
+	})
+	t.Run("missing durable pointer pair is rejected specifically", func(t *testing.T) {
+		ready := protocol.ReadyForReviewPayload{
+			BeadID:         "oro-ready",
+			WorkerID:       "worker-ready",
+			AssignmentID:   17,
+			Worktree:       "/tmp/oro-ready",
+			QGEvidencePath: "/var/tmp/oro/evidence/oro-ready/17/1.json",
+			TargetSHA:      strings.Repeat("1", 40),
+			ReadyAttempt:   "1",
+		}
+		for _, tc := range []struct {
+			name string
+			set  func(*protocol.ReadyForReviewPayload)
+		}{
+			{name: "missing evidence", set: func(r *protocol.ReadyForReviewPayload) {
+				ref := validReference()
+				r.QGEvidenceRef = &ref
+			}},
+			{name: "missing reference", set: func(r *protocol.ReadyForReviewPayload) {
+				evidence := validEvidence()
+				r.QGEvidence = &evidence
+			}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				candidate := ready
+				tc.set(&candidate)
+				if err := candidate.Validate(); err == nil {
+					t.Fatal("missing durable pointer unexpectedly validated")
+				} else if !strings.Contains(err.Error(), "requires evidence and reference") {
+					t.Fatalf("missing durable pointer error = %v", err)
+				}
+			})
+		}
+	})
+
+	baseReady := func() protocol.ReadyForReviewPayload {
+		evidence := validEvidence()
+		ref := validReference()
+		return protocol.ReadyForReviewPayload{
+			BeadID:         evidence.BeadID,
+			WorkerID:       evidence.WorkerID,
+			AssignmentID:   evidence.AssignmentID,
+			Worktree:       "/tmp/oro-ready",
+			QGEvidencePath: ref.Path,
+			TargetSHA:      evidence.TargetSHA,
+			ReadyAttempt:   "1",
+			QGEvidence:     &evidence,
+			QGEvidenceRef:  &ref,
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(*protocol.ReadyForReviewPayload)
+	}{
+		{name: "assignment mismatch", mutate: func(r *protocol.ReadyForReviewPayload) { r.QGEvidence.AssignmentID++ }},
+		{name: "bead mismatch", mutate: func(r *protocol.ReadyForReviewPayload) { r.QGEvidence.BeadID = "oro-other" }},
+		{name: "worker mismatch", mutate: func(r *protocol.ReadyForReviewPayload) { r.QGEvidence.WorkerID = "worker-other" }},
+		{name: "target mismatch", mutate: func(r *protocol.ReadyForReviewPayload) { r.QGEvidence.TargetSHA = strings.Repeat("3", 40) }},
+		{name: "path mismatch", mutate: func(r *protocol.ReadyForReviewPayload) {
+			r.QGEvidenceRef.Path = "/var/tmp/oro/evidence/oro-ready/17/2.json"
+		}},
+	} {
+		t.Run("identity "+tc.name, func(t *testing.T) {
+			candidate := baseReady()
+			tc.mutate(&candidate)
+			if err := candidate.Validate(); err == nil {
+				t.Fatalf("identity mismatch %s unexpectedly validated", tc.name)
+			}
+		})
+	}
+}
+
 func TestAssignPayload_Validate(t *testing.T) {
 	t.Parallel()
 
