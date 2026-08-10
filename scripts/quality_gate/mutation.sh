@@ -797,13 +797,13 @@ worker_ready_evidence_mutation_test_pattern() {
 		printf '^TestWorkerReadyEvidenceMutationOwners$'
 		;;
 	'pkg/worker/worker.go:^(gitHeadSHA)$')
-		printf '^(TestWorkerWritesDurableReadyEvidenceIdentity|TestRunQGAndReport_RebasesBeforeQG|TestRunQGAndReport_NoGitRepo_QGStillRuns)$'
+		printf '^TestWorkerReadyEvidenceMutationOwners$'
 		;;
 	'pkg/worker/worker.go:^(loadQualityGateScript)$')
-		printf '^(TestWorkerWritesDurableReadyEvidenceIdentity|TestRunQGAndReport_RebasesBeforeQG|TestRunQGAndReport_RebaseConflict_QGStillRuns|TestRunQGAndReport_NoGitRepo_QGStillRuns)$'
+		printf '^TestWorkerReadyEvidenceMutationOwners$'
 		;;
 	'pkg/worker/worker.go:^(resetForNewAssignment)$')
-		printf '^TestWorkerReadyEvidenceMutationOwners$'
+		printf '^TestWorkerResetMutationOwners$'
 		;;
 	'pkg/worker/worker.go:^(runQGAndReport)$')
 		printf '^TestWorkerQGLifecycleMutationOwners$'

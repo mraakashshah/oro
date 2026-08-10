@@ -465,7 +465,8 @@ TestWorkerMutationOwnerRouting() {
 			' <<<"$report" || fail "$pattern has zero production coverage for $function"
 		done < <(tr ',' '\n' <<<"$functions")
 	done <<'EOF'
-^TestWorkerReadyEvidenceMutationOwners$	buildQGEvidence,writeQGEvidence,SendReadyForReview,resetForNewAssignment
+^TestWorkerReadyEvidenceMutationOwners$	buildQGEvidence,writeQGEvidence,SendReadyForReview
+^TestWorkerResetMutationOwners$	resetForNewAssignment
 ^TestWorkerQGLifecycleMutationOwners$	runQGAndReport,runQualityGateWithProgress
 ^TestWorkerLogOutputMutationOwners$	closeLogFile,openLogFile,processOutput,processOutputTextLine,processStructuredStreamLine
 EOF
@@ -485,13 +486,13 @@ pkg/worker/ready_evidence.go	^(sha256Hex)$	^(TestWorkerWritesCanonicalQGEvidence
 pkg/worker/ready_evidence.go	^(writeQGEvidence)$	^TestWorkerReadyEvidenceMutationOwners$
 pkg/worker/worker.go	^(SendReadyForReview)$	^TestWorkerReadyEvidenceMutationOwners$
 pkg/worker/worker.go	^(closeLogFile)$	^TestWorkerLogOutputMutationOwners$
-pkg/worker/worker.go	^(gitHeadSHA)$	^(TestWorkerWritesDurableReadyEvidenceIdentity|TestRunQGAndReport_RebasesBeforeQG|TestRunQGAndReport_NoGitRepo_QGStillRuns)$
-pkg/worker/worker.go	^(loadQualityGateScript)$	^(TestWorkerWritesDurableReadyEvidenceIdentity|TestRunQGAndReport_RebasesBeforeQG|TestRunQGAndReport_RebaseConflict_QGStillRuns|TestRunQGAndReport_NoGitRepo_QGStillRuns)$
+pkg/worker/worker.go	^(gitHeadSHA)$	^TestWorkerReadyEvidenceMutationOwners$
+pkg/worker/worker.go	^(loadQualityGateScript)$	^TestWorkerReadyEvidenceMutationOwners$
 pkg/worker/worker.go	^(openLogFile)$	^TestWorkerLogOutputMutationOwners$
 pkg/worker/worker.go	^(processOutput)$	^TestWorkerLogOutputMutationOwners$
 pkg/worker/worker.go	^(processOutputTextLine)$	^TestWorkerLogOutputMutationOwners$
 pkg/worker/worker.go	^(processStructuredStreamLine)$	^TestWorkerLogOutputMutationOwners$
-pkg/worker/worker.go	^(resetForNewAssignment)$	^TestWorkerReadyEvidenceMutationOwners$
+pkg/worker/worker.go	^(resetForNewAssignment)$	^TestWorkerResetMutationOwners$
 pkg/worker/worker.go	^(runQGAndReport)$	^TestWorkerQGLifecycleMutationOwners$
 pkg/worker/worker.go	^(runQualityGateWithProgress)$	^TestWorkerQGLifecycleMutationOwners$
 EOF
@@ -4986,6 +4987,7 @@ if [[ "$1" = test ]]; then
 		TestWorkerWritesDurableReadyEvidenceIdentity \
 		TestWorkerBuildsOrderedSubsecondEvidenceTiming \
 		TestWorkerReadyEvidenceMutationOwners \
+		TestWorkerResetMutationOwners \
 		TestWorkerQGLifecycleMutationOwners \
 		TestWorkerLogOutputMutationOwners \
 		TestWorkerResetDoesNotLeakPriorReadyEvidence \
@@ -5033,13 +5035,13 @@ pkg/worker/ready_evidence.go	^(sha256Hex)$	^(TestWorkerWritesCanonicalQGEvidence
 pkg/worker/ready_evidence.go	^(writeQGEvidence)$	^TestWorkerReadyEvidenceMutationOwners$
 pkg/worker/worker.go	^(SendReadyForReview)$	^TestWorkerReadyEvidenceMutationOwners$
 pkg/worker/worker.go	^(closeLogFile)$	^TestWorkerLogOutputMutationOwners$
-pkg/worker/worker.go	^(gitHeadSHA)$	^(TestWorkerWritesDurableReadyEvidenceIdentity|TestRunQGAndReport_RebasesBeforeQG|TestRunQGAndReport_NoGitRepo_QGStillRuns)$
-pkg/worker/worker.go	^(loadQualityGateScript)$	^(TestWorkerWritesDurableReadyEvidenceIdentity|TestRunQGAndReport_RebasesBeforeQG|TestRunQGAndReport_RebaseConflict_QGStillRuns|TestRunQGAndReport_NoGitRepo_QGStillRuns)$
+pkg/worker/worker.go	^(gitHeadSHA)$	^TestWorkerReadyEvidenceMutationOwners$
+pkg/worker/worker.go	^(loadQualityGateScript)$	^TestWorkerReadyEvidenceMutationOwners$
 pkg/worker/worker.go	^(openLogFile)$	^TestWorkerLogOutputMutationOwners$
 pkg/worker/worker.go	^(processOutput)$	^TestWorkerLogOutputMutationOwners$
 pkg/worker/worker.go	^(processOutputTextLine)$	^TestWorkerLogOutputMutationOwners$
 pkg/worker/worker.go	^(processStructuredStreamLine)$	^TestWorkerLogOutputMutationOwners$
-pkg/worker/worker.go	^(resetForNewAssignment)$	^TestWorkerReadyEvidenceMutationOwners$
+pkg/worker/worker.go	^(resetForNewAssignment)$	^TestWorkerResetMutationOwners$
 pkg/worker/worker.go	^(runQGAndReport)$	^TestWorkerQGLifecycleMutationOwners$
 pkg/worker/worker.go	^(runQualityGateWithProgress)$	^TestWorkerQGLifecycleMutationOwners$
 EOF
