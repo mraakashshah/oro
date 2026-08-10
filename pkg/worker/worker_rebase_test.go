@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"oro/pkg/protocol"
@@ -270,8 +271,10 @@ func TestRunQGAndReport_NoGitRepo_QGStillRuns(t *testing.T) {
 	sendMessage(t, dispatcherConn, protocol.Message{
 		Type: protocol.MsgAssign,
 		Assign: &protocol.AssignPayload{
-			BeadID:   "bead-nogit",
-			Worktree: worktreeDir,
+			BeadID:        "bead-nogit",
+			Worktree:      worktreeDir,
+			QGEvidenceDir: t.TempDir(),
+			TargetSHA:     strings.Repeat("1", 40),
 		},
 	})
 
@@ -291,10 +294,11 @@ func TestRunQGAndReport_NoGitRepo_QGStillRuns(t *testing.T) {
 		t.Fatalf("expected STATUS after subprocess exit, got %s", msg.Type)
 	}
 
-	// Then READY_FOR_REVIEW (QG passed; rebase was skipped for non-git dir).
+	// The gate ran, but durable READY fails closed because a non-git worktree
+	// cannot provide the measured post-QG HEAD required by its evidence.
 	msg = readMessage(t, dispatcherConn)
-	if msg.Type != protocol.MsgReadyForReview {
-		t.Fatalf("expected READY_FOR_REVIEW, got %s: %s", msg.Type, readDoneOutput(msg))
+	if msg.Type != protocol.MsgDone || !strings.Contains(readDoneOutput(msg), "read post-quality-gate HEAD:") {
+		t.Fatalf("expected DONE with post-QG HEAD error, got %s: %s", msg.Type, readDoneOutput(msg))
 	}
 
 	cancel()

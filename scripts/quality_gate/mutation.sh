@@ -780,11 +780,53 @@ cmd_mutation_test_pattern() {
 	esac
 }
 
+worker_ready_evidence_mutation_test_pattern() {
+	local file="$1"
+	local match="$2"
+	case "$file:$match" in
+	'pkg/worker/ready_evidence.go:^(buildQGEvidence)$')
+		printf '^TestWorkerReadyEvidenceMutationOwners$'
+		;;
+	'pkg/worker/ready_evidence.go:^(sha256Hex)$')
+		printf '^(TestWorkerWritesCanonicalQGEvidenceAndSendsAssignedIdentity|TestWorkerWritesDurableReadyEvidenceIdentity|TestWorkerBuildsOrderedSubsecondEvidenceTiming)$'
+		;;
+	'pkg/worker/ready_evidence.go:^(writeQGEvidence)$')
+		printf '^TestWorkerReadyEvidenceMutationOwners$'
+		;;
+	'pkg/worker/worker.go:^(SendReadyForReview)$')
+		printf '^TestWorkerReadyEvidenceMutationOwners$'
+		;;
+	'pkg/worker/worker.go:^(gitHeadSHA)$')
+		printf '^TestWorkerReadyEvidenceMutationOwners$'
+		;;
+	'pkg/worker/worker.go:^(loadQualityGateScript)$')
+		printf '^TestWorkerReadyEvidenceMutationOwners$'
+		;;
+	'pkg/worker/worker.go:^(resetForNewAssignment)$')
+		printf '^TestWorkerResetMutationOwners$'
+		;;
+	'pkg/worker/worker.go:^(runQGAndReport)$')
+		printf '^TestWorkerQGLifecycleMutationOwners$'
+		;;
+	'pkg/worker/worker.go:^(runQualityGateWithProgress)$')
+		printf '^TestWorkerQGLifecycleMutationOwners$'
+		;;
+	'pkg/worker/worker.go:^(closeLogFile)$' | \
+	'pkg/worker/worker.go:^(openLogFile)$' | \
+	'pkg/worker/worker.go:^(processOutput)$' | \
+	'pkg/worker/worker.go:^(processOutputTextLine)$' | \
+	'pkg/worker/worker.go:^(processStructuredStreamLine)$')
+		printf '^TestWorkerLogOutputMutationOwners$'
+		;;
+	esac
+}
+
 function_sharded_mutation_target() {
 	local file="$1"
 	[[ "$file" == pkg/dispatcher/*.go || "$file" == pkg/storage/dev_schedule.go ||
 		"$file" == cmd/oro/cmd_start.go || "$file" == cmd/oro/cmd_monitor.go ||
-		"$file" == pkg/beadstore/sqlite.go ]]
+		"$file" == pkg/beadstore/sqlite.go || "$file" == pkg/worker/worker.go ||
+		"$file" == pkg/worker/ready_evidence.go ]]
 }
 
 authoritative_mutation_test_pattern() {
@@ -1095,7 +1137,15 @@ targeted_test_pattern() {
 	local head="$2"
 	local file="$3"
 	local match="$4"
-	local assignment_admission_pattern assignment_bc_pattern authoritative_pattern cmd_pattern escalation_survivor_pattern p0_durability_pattern qg_classifier_decision_pattern qg_flow_control_pattern qg_store_lifecycle_pattern qg_target_attribution_pattern review_checkpoint_pattern review_integration_recovery_pattern review_worker_lifecycle_pattern split_branch_pattern startup_maintenance_pattern
+	local assignment_admission_pattern assignment_bc_pattern authoritative_pattern cmd_pattern escalation_survivor_pattern p0_durability_pattern qg_classifier_decision_pattern qg_flow_control_pattern qg_store_lifecycle_pattern qg_target_attribution_pattern review_checkpoint_pattern review_integration_recovery_pattern review_worker_lifecycle_pattern split_branch_pattern startup_maintenance_pattern worker_ready_evidence_pattern
+	worker_ready_evidence_pattern=$(worker_ready_evidence_mutation_test_pattern "$file" "$match")
+	if [[ -n "$worker_ready_evidence_pattern" ]]; then
+		printf '%s' "$worker_ready_evidence_pattern"
+		return
+	fi
+	if [[ "$file" == pkg/worker/worker.go || "$file" == pkg/worker/ready_evidence.go ]]; then
+		return
+	fi
 	p0_durability_pattern=$(p0_durability_mutation_test_pattern "$file" "$match")
 	if [[ -n "$p0_durability_pattern" ]]; then
 		printf '%s' "$p0_durability_pattern"
@@ -1389,6 +1439,12 @@ run_mutation_shard() {
 	esac
 	if [[ -z "$match" ]]; then
 		write_shard_no_mutants "$result" "$index" "$file" "$match" "$test_pattern"
+		return
+	fi
+	if [[ "$file" == pkg/worker/worker.go || "$file" == pkg/worker/ready_evidence.go ]] &&
+		[[ -z "$test_pattern" ]]; then
+		write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" 2 \
+			'worker mutation target has no deterministic test owner'
 		return
 	fi
 	if [[ "$test_pattern" == *AuthoritativeSurvivorMutation* ]]; then

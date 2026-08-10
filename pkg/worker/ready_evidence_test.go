@@ -1,18 +1,49 @@
 package worker //nolint:testpackage // Evidence construction requires assignment-local worker state.
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"oro/pkg/protocol"
 )
+
+type readyEvidenceCallResult[T any] struct {
+	value T
+	err   error
+}
+
+func callReadyEvidenceWithTimeout[T any](t *testing.T, name string, fn func() (T, error)) (T, error) {
+	t.Helper()
+	result := make(chan readyEvidenceCallResult[T], 1)
+	go func() {
+		value, err := fn()
+		result <- readyEvidenceCallResult[T]{value: value, err: err}
+	}()
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	select {
+	case got := <-result:
+		return got.value, got.err
+	case <-timer.C:
+		var zero T
+		t.Fatalf("%s did not finish within 1s", name)
+		return zero, nil
+	}
+}
 
 func TestWorkerHeartbeatAdvertisesReadyEvidenceCapability(t *testing.T) {
 	t.Parallel()
@@ -122,7 +153,8 @@ func TestWorkerQGEvidenceRejectsSymlinkedParents(t *testing.T) {
 			w.worktree = t.TempDir()
 			w.assignmentID = 19
 			w.qgEvidenceDir = root
-			w.targetSHA = "target-sha"
+			w.targetBranch = "main"
+			w.targetSHA = strings.Repeat("1", 40)
 
 			assignmentDir := filepath.Join(root, w.beadID, strconv.FormatInt(w.assignmentID, 10))
 			externalEvidence := filepath.Join(external, qgEvidenceAttempt)
@@ -149,7 +181,17 @@ func TestWorkerQGEvidenceRejectsSymlinkedParents(t *testing.T) {
 				t.Fatalf("write external sentinel: %v", err)
 			}
 
-			if err := w.writeQGEvidence(); err == nil {
+			evidence, err := w.buildQGEvidence(qgEvidenceOptions{
+				RunID:      "19:1",
+				HeadSHA:    strings.Repeat("2", 40),
+				ScriptHash: strings.Repeat("a", 64),
+				StartedAt:  time.Date(2026, time.August, 10, 3, 0, 0, 0, time.UTC),
+				FinishedAt: time.Date(2026, time.August, 10, 3, 1, 0, 0, time.UTC),
+			})
+			if err != nil {
+				t.Fatalf("build evidence: %v", err)
+			}
+			if _, err := w.writeQGEvidence(evidence); err == nil {
 				t.Fatal("symlinked evidence parent accepted")
 			}
 			got, err := os.ReadFile(externalEvidence)
@@ -206,12 +248,27 @@ func TestWorkerWritesCanonicalQGEvidenceAndSendsAssignedIdentity(t *testing.T) {
 	w.worktree = t.TempDir()
 	w.assignmentID = 17
 	w.qgEvidenceDir = root
-	w.targetSHA = "target-sha"
+	w.targetBranch = "main"
+	w.targetSHA = strings.Repeat("1", 40)
 
-	if err := w.writeQGEvidence(); err != nil {
+	evidence, err := w.buildQGEvidence(qgEvidenceOptions{
+		RunID:      "17:1",
+		HeadSHA:    strings.Repeat("2", 40),
+		ScriptHash: strings.Repeat("a", 64),
+		StartedAt:  time.Date(2026, time.August, 10, 3, 0, 0, 0, time.UTC),
+		FinishedAt: time.Date(2026, time.August, 10, 3, 1, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("build evidence: %v", err)
+	}
+	ref, err := w.writeQGEvidence(evidence)
+	if err != nil {
 		t.Fatalf("write evidence: %v", err)
 	}
 	wantPath := filepath.Join(root, "oro-ready", strconv.FormatInt(w.assignmentID, 10), qgEvidenceAttempt)
+	if ref.Path != wantPath || ref.RunID != evidence.RunID {
+		t.Fatalf("evidence ref = %#v, want path %q and run %q", ref, wantPath, evidence.RunID)
+	}
 	info, err := os.Stat(wantPath)
 	if err != nil {
 		t.Fatalf("stat evidence: %v", err)
@@ -234,20 +291,587 @@ func TestWorkerWritesCanonicalQGEvidenceAndSendsAssignedIdentity(t *testing.T) {
 	}
 	want := protocol.ReadyForReviewPayload{
 		BeadID: "oro-ready", WorkerID: "worker-ready", AssignmentID: 17,
-		Worktree: w.worktree, QGEvidencePath: wantPath, TargetSHA: "target-sha",
+		Worktree: w.worktree, QGEvidencePath: wantPath, TargetSHA: strings.Repeat("1", 40),
+		ReadyAttempt: "1", QGEvidence: &evidence, QGEvidenceRef: &ref,
 	}
-	if *msg.ReadyForReview != want {
+	if !reflect.DeepEqual(*msg.ReadyForReview, want) {
 		t.Fatalf("READY payload = %#v, want %#v", *msg.ReadyForReview, want)
 	}
 	data, err := os.ReadFile(wantPath)
 	if err != nil {
 		t.Fatalf("read evidence: %v", err)
 	}
-	var evidence protocol.ReadyForReviewPayload
-	if err := json.Unmarshal(data, &evidence); err != nil {
+	var stored protocol.QGEvidence
+	if err := json.Unmarshal(data, &stored); err != nil {
 		t.Fatalf("decode evidence: %v", err)
 	}
-	if evidence != want {
-		t.Fatalf("evidence = %#v, want %#v", evidence, want)
+	if stored != evidence {
+		t.Fatalf("evidence = %#v, want %#v", stored, evidence)
 	}
+}
+
+func TestWorkerWritesDurableReadyEvidenceIdentity(t *testing.T) {
+	t.Parallel()
+
+	worktree := t.TempDir()
+	script := []byte("#!/bin/sh\nprintf 'quality gate passed\\n'\n")
+	scriptPath := filepath.Join(worktree, "quality_gate.sh")
+	if err := os.WriteFile(scriptPath, script, 0o700); err != nil {
+		t.Fatalf("write quality gate script: %v", err)
+	}
+	runGit := func(args ...string) string {
+		cmd := exec.Command("git", args...) //nolint:gosec // fixed test fixture commands
+		cmd.Dir = worktree
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	runGit("init", "-b", "main")
+	runGit("config", "user.email", "test@oro.test")
+	runGit("config", "user.name", "Oro Test")
+	runGit("add", "quality_gate.sh")
+	runGit("commit", "-m", "add quality gate")
+	headSHA := runGit("rev-parse", "HEAD")
+
+	workerConn, dispatcherConn := net.Pipe()
+	t.Cleanup(func() {
+		_ = workerConn.Close()
+		_ = dispatcherConn.Close()
+	})
+
+	root := t.TempDir()
+	w := NewWithConn("worker-ready", workerConn, nil)
+	w.beadID = "oro-ready"
+	w.worktree = worktree
+	w.assignmentID = 17
+	w.qgEvidenceDir = root
+	w.targetBranch = "main"
+	w.targetSHA = strings.Repeat("1", 40)
+	output := []byte("quality gate passed\n")
+	scriptHash := sha256.Sum256(script)
+	outputHash := sha256.Sum256(output)
+
+	done := make(chan struct{})
+	go func() {
+		w.runQGAndReport(context.Background())
+		close(done)
+	}()
+	var msg protocol.Message
+	decoder := json.NewDecoder(dispatcherConn)
+	for {
+		if err := decoder.Decode(&msg); err != nil {
+			t.Fatalf("decode QG result: %v", err)
+		}
+		if msg.Type != protocol.MsgStatus {
+			break
+		}
+	}
+	<-done
+	if msg.Type != protocol.MsgReadyForReview || msg.ReadyForReview == nil ||
+		msg.ReadyForReview.QGEvidence == nil || msg.ReadyForReview.QGEvidenceRef == nil {
+		t.Fatalf("production QG did not emit durable READY: %#v", msg)
+	}
+	evidence := *msg.ReadyForReview.QGEvidence
+	ref := *msg.ReadyForReview.QGEvidenceRef
+	if evidence.RunID != "17:1" || evidence.AssignmentID != 17 || evidence.BeadID != w.beadID ||
+		evidence.WorkerID != w.ID || evidence.HeadSHA != headSHA || evidence.TargetBranch != "main" ||
+		evidence.TargetSHA != strings.Repeat("1", 40) || evidence.ScriptHash != hex.EncodeToString(scriptHash[:]) ||
+		evidence.OutputHash != hex.EncodeToString(outputHash[:]) || evidence.Mode != "worker" || !evidence.Passed {
+		t.Fatalf("production evidence identity = %#v", evidence)
+	}
+	startedAt, err := time.Parse(time.RFC3339, evidence.StartedAt)
+	if err != nil {
+		t.Fatalf("parse evidence start: %v", err)
+	}
+	finishedAt, err := time.Parse(time.RFC3339, evidence.FinishedAt)
+	if err != nil || !finishedAt.After(startedAt) {
+		t.Fatalf("evidence timing = %q..%q: %v", evidence.StartedAt, evidence.FinishedAt, err)
+	}
+	wantPath := filepath.Join(root, "oro-ready", "17", qgEvidenceAttempt)
+	if ref.RunID != evidence.RunID || ref.Path != wantPath {
+		t.Fatalf("evidence ref = %#v, want run/path %q/%q", ref, evidence.RunID, wantPath)
+	}
+	data, err := os.ReadFile(wantPath)
+	if err != nil {
+		t.Fatalf("read evidence: %v", err)
+	}
+	fileHash := sha256.Sum256(data)
+	if ref.SHA256 != hex.EncodeToString(fileHash[:]) {
+		t.Fatalf("evidence ref hash = %q, want %q", ref.SHA256, hex.EncodeToString(fileHash[:]))
+	}
+	var stored protocol.QGEvidence
+	if err := json.Unmarshal(data, &stored); err != nil {
+		t.Fatalf("decode evidence: %v", err)
+	}
+	if stored != evidence {
+		t.Fatalf("stored evidence = %#v, want %#v", stored, evidence)
+	}
+}
+
+func TestWorkerBuildsOrderedSubsecondEvidenceTiming(t *testing.T) {
+	startedAt := time.Date(2026, time.August, 10, 3, 0, 0, 100, time.UTC)
+	w := NewWithConn("worker-ready-timing", nil, nil)
+	w.beadID = "oro-ready-timing"
+	w.assignmentID = 29
+	w.qgEvidenceDir = t.TempDir()
+	w.targetBranch = "main"
+	w.targetSHA = strings.Repeat("1", 40)
+
+	evidence, err := w.buildQGEvidence(qgEvidenceOptions{
+		RunID:      "29:1",
+		HeadSHA:    strings.Repeat("2", 40),
+		ScriptHash: strings.Repeat("a", 64),
+		StartedAt:  startedAt,
+		FinishedAt: startedAt.Add(100 * time.Nanosecond),
+	})
+	if err != nil {
+		t.Fatalf("build subsecond evidence: %v", err)
+	}
+	if evidence.StartedAt == evidence.FinishedAt {
+		t.Fatalf("subsecond evidence timing collapsed to %q", evidence.StartedAt)
+	}
+	if evidence.OutputHash != sha256Hex(nil) {
+		t.Fatalf("empty output hash = %q, want %q", evidence.OutputHash, sha256Hex(nil))
+	}
+	parsedStart, err := time.Parse(time.RFC3339, evidence.StartedAt)
+	if err != nil {
+		t.Fatalf("parse evidence start: %v", err)
+	}
+	parsedFinish, err := time.Parse(time.RFC3339, evidence.FinishedAt)
+	if err != nil {
+		t.Fatalf("parse evidence finish: %v", err)
+	}
+	if !parsedStart.Equal(startedAt) || !parsedFinish.Equal(startedAt.Add(100*time.Nanosecond)) ||
+		!parsedFinish.After(parsedStart) {
+		t.Fatalf("subsecond evidence timing = %s..%s", parsedStart, parsedFinish)
+	}
+}
+
+func TestWorkerResetDoesNotLeakPriorReadyEvidence(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	workerConn, dispatcherConn := net.Pipe()
+	t.Cleanup(func() {
+		_ = workerConn.Close()
+		_ = dispatcherConn.Close()
+	})
+	w := NewWithConn("worker-ready-reset", workerConn, nil)
+	w.qgEvidencePath = "/previous/evidence.json"
+	w.qgEvidence = &protocol.QGEvidence{RunID: "previous:1"}
+	w.qgEvidenceRef = &protocol.QGEvidenceRef{RunID: "previous:1"}
+
+	w.resetForNewAssignment(&protocol.AssignPayload{
+		BeadID:        "oro-next",
+		AssignmentID:  18,
+		QGEvidenceDir: t.TempDir(),
+		TargetSHA:     strings.Repeat("3", 40),
+	}, WorkerExecutionContext{})
+	t.Cleanup(w.closeLogFile)
+
+	sendErr := make(chan error, 1)
+	go func() { sendErr <- w.SendReadyForReview(context.Background()) }()
+	var msg protocol.Message
+	if err := json.NewDecoder(dispatcherConn).Decode(&msg); err != nil {
+		t.Fatalf("decode READY: %v", err)
+	}
+	if err := <-sendErr; err != nil {
+		t.Fatalf("send READY: %v", err)
+	}
+	if msg.ReadyForReview == nil {
+		t.Fatal("READY payload missing")
+	}
+	if msg.ReadyForReview.QGEvidence != nil || msg.ReadyForReview.QGEvidenceRef != nil {
+		t.Fatalf("READY leaked prior evidence: %#v", msg.ReadyForReview)
+	}
+}
+
+func TestWorkerReadyEvidenceMutationOwners(t *testing.T) {
+	runReadyEvidenceMutationOwnerCases(t)
+}
+
+func runReadyEvidenceMutationOwnerCases(t *testing.T) {
+	t.Helper()
+	const targetSHA = "0123456789012345678901234567890123456789"
+
+	t.Run("buildQGEvidence", func(t *testing.T) {
+		w := NewWithConn("owner-build", nil, nil)
+		w.beadID = "owner-bead"
+		w.worktree = t.TempDir()
+		w.assignmentID = 31
+		w.qgEvidenceDir = t.TempDir()
+		w.targetBranch = "main"
+		w.targetSHA = targetSHA
+
+		output := []byte("quality gate passed\n")
+		startedAt := time.Date(2026, time.August, 10, 3, 0, 0, 0, time.UTC)
+		finishedAt := time.Date(2026, time.August, 10, 3, 1, 0, 0, time.UTC)
+		evidence, err := callReadyEvidenceWithTimeout(t, "buildQGEvidence", func() (protocol.QGEvidence, error) {
+			return w.buildQGEvidence(qgEvidenceOptions{
+				RunID:      "31:1",
+				HeadSHA:    targetSHA,
+				ScriptHash: strings.Repeat("a", 64),
+				Output:     output,
+				StartedAt:  startedAt,
+				FinishedAt: finishedAt,
+			})
+		})
+		if err != nil {
+			t.Fatalf("build evidence: %v", err)
+		}
+		if evidence.RunID != "31:1" || evidence.AssignmentID != 31 ||
+			evidence.BeadID != w.beadID || evidence.WorkerID != w.ID ||
+			evidence.HeadSHA != targetSHA || evidence.TargetBranch != "main" || evidence.TargetSHA != targetSHA ||
+			evidence.ScriptHash != strings.Repeat("a", 64) ||
+			evidence.OutputHash != sha256Hex(output) || evidence.Mode != "worker" ||
+			evidence.StartedAt != startedAt.Format(time.RFC3339Nano) ||
+			evidence.FinishedAt != finishedAt.Format(time.RFC3339Nano) || !evidence.Passed {
+			t.Fatalf("evidence identity = %#v", evidence)
+		}
+
+		for _, test := range []struct {
+			name    string
+			wantErr string
+			mutate  func(*Worker, *qgEvidenceOptions)
+		}{
+			{name: "assignment identity", wantErr: "assignment ID, evidence directory, and target SHA are required", mutate: func(w *Worker, _ *qgEvidenceOptions) { w.targetSHA = "" }},
+			{name: "target branch", wantErr: "target branch is required", mutate: func(w *Worker, _ *qgEvidenceOptions) { w.targetBranch = "" }},
+			{name: "evidence validation", wantErr: "validate QG evidence", mutate: func(_ *Worker, opts *qgEvidenceOptions) { opts.RunID = "" }},
+		} {
+			t.Run(test.name+" fails closed", func(t *testing.T) {
+				owner := NewWithConn("owner-build-invalid", nil, nil)
+				owner.beadID = "owner-bead"
+				owner.assignmentID = 31
+				owner.qgEvidenceDir = t.TempDir()
+				owner.targetBranch = "main"
+				owner.targetSHA = targetSHA
+				opts := qgEvidenceOptions{
+					RunID: "31:2", HeadSHA: targetSHA, ScriptHash: strings.Repeat("a", 64),
+					StartedAt: startedAt, FinishedAt: finishedAt,
+				}
+				test.mutate(owner, &opts)
+				if _, err := callReadyEvidenceWithTimeout(t, "invalid buildQGEvidence", func() (protocol.QGEvidence, error) {
+					return owner.buildQGEvidence(opts)
+				}); err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("invalid evidence build error = %v, want %q", err, test.wantErr)
+				}
+			})
+		}
+	})
+
+	t.Run("writeQGEvidence", func(t *testing.T) {
+		w := NewWithConn("owner-write", nil, nil)
+		w.beadID = "owner-bead"
+		w.worktree = t.TempDir()
+		w.assignmentID = 32
+		w.qgEvidenceDir = t.TempDir()
+		w.targetBranch = "main"
+		w.targetSHA = targetSHA
+		startedAt := time.Date(2026, time.August, 10, 3, 0, 0, 0, time.UTC)
+		finishedAt := time.Date(2026, time.August, 10, 3, 1, 0, 0, time.UTC)
+		evidence, err := callReadyEvidenceWithTimeout(t, "buildQGEvidence", func() (protocol.QGEvidence, error) {
+			return w.buildQGEvidence(qgEvidenceOptions{
+				RunID:      "32:1",
+				HeadSHA:    targetSHA,
+				ScriptHash: strings.Repeat("b", 64),
+				Output:     []byte("passed\n"),
+				StartedAt:  time.Date(2026, time.August, 10, 3, 0, 0, 0, time.UTC),
+				FinishedAt: time.Date(2026, time.August, 10, 3, 1, 0, 0, time.UTC),
+			})
+		})
+		if err != nil {
+			t.Fatalf("build evidence: %v", err)
+		}
+		ref, err := callReadyEvidenceWithTimeout(t, "writeQGEvidence", func() (protocol.QGEvidenceRef, error) {
+			return w.writeQGEvidence(evidence)
+		})
+		if err != nil {
+			t.Fatalf("write evidence: %v", err)
+		}
+		wantPath := filepath.Join(w.qgEvidenceDir, w.beadID, strconv.FormatInt(w.assignmentID, 10), qgEvidenceAttempt)
+		if ref.RunID != evidence.RunID || ref.Path != wantPath || ref.SHA256 == "" {
+			t.Fatalf("evidence ref = %#v", ref)
+		}
+		data, err := os.ReadFile(ref.Path)
+		if err != nil {
+			t.Fatalf("read evidence file: %v", err)
+		}
+		var stored protocol.QGEvidence
+		if err := json.Unmarshal(data, &stored); err != nil {
+			t.Fatalf("decode stored evidence: %v", err)
+		}
+		if stored != evidence {
+			t.Fatalf("stored evidence = %#v, want %#v", stored, evidence)
+		}
+		fileHash := sha256.Sum256(data)
+		if ref.SHA256 != hex.EncodeToString(fileHash[:]) {
+			t.Fatalf("evidence ref hash = %q, want %q", ref.SHA256, hex.EncodeToString(fileHash[:]))
+		}
+		info, err := os.Stat(ref.Path)
+		if err != nil {
+			t.Fatalf("stat evidence: %v", err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("evidence mode = %o, want 600", info.Mode().Perm())
+		}
+		if w.qgEvidencePath != ref.Path || w.qgEvidence == nil || *w.qgEvidence != evidence ||
+			w.qgEvidenceRef == nil || *w.qgEvidenceRef != ref {
+			t.Fatalf("published worker evidence state = path %q evidence %#v ref %#v",
+				w.qgEvidencePath, w.qgEvidence, w.qgEvidenceRef)
+		}
+		if !w.mu.TryLock() {
+			t.Fatal("writeQGEvidence retained the worker mutex")
+		}
+		w.mu.Unlock()
+
+		for _, test := range []struct {
+			name    string
+			wantErr string
+			mutate  func(*Worker, *protocol.QGEvidence)
+		}{
+			{name: "assignment identity", wantErr: "assignment ID, evidence directory, and target SHA are required", mutate: func(w *Worker, _ *protocol.QGEvidence) { w.targetSHA = "" }},
+			{name: "target branch", wantErr: "target branch is required", mutate: func(w *Worker, _ *protocol.QGEvidence) { w.targetBranch = "" }},
+			{name: "assignment ID mismatch", wantErr: "does not match", mutate: func(_ *Worker, e *protocol.QGEvidence) { e.AssignmentID++ }},
+			{name: "bead mismatch", wantErr: "does not match", mutate: func(_ *Worker, e *protocol.QGEvidence) { e.BeadID = "other-bead" }},
+			{name: "worker mismatch", wantErr: "does not match", mutate: func(_ *Worker, e *protocol.QGEvidence) { e.WorkerID = "other-worker" }},
+			{name: "branch mismatch", wantErr: "does not match", mutate: func(_ *Worker, e *protocol.QGEvidence) { e.TargetBranch = "other" }},
+			{name: "target mismatch", wantErr: "does not match", mutate: func(_ *Worker, e *protocol.QGEvidence) { e.TargetSHA = strings.Repeat("9", 40) }},
+			{name: "invalid evidence", wantErr: "validate QG evidence", mutate: func(_ *Worker, e *protocol.QGEvidence) { e.RunID = "" }},
+		} {
+			t.Run(test.name+" fails closed", func(t *testing.T) {
+				owner := NewWithConn(w.ID, nil, nil)
+				owner.beadID = w.beadID
+				owner.assignmentID = w.assignmentID
+				owner.qgEvidenceDir = t.TempDir()
+				owner.targetBranch = w.targetBranch
+				owner.targetSHA = w.targetSHA
+				candidate := evidence
+				test.mutate(owner, &candidate)
+				if _, err := callReadyEvidenceWithTimeout(t, "invalid writeQGEvidence", func() (protocol.QGEvidenceRef, error) {
+					return owner.writeQGEvidence(candidate)
+				}); err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("invalid evidence write error = %v, want %q", err, test.wantErr)
+				}
+				if owner.qgEvidencePath != "" || owner.qgEvidence != nil || owner.qgEvidenceRef != nil {
+					t.Fatal("failed write published evidence state")
+				}
+			})
+		}
+
+		t.Run("symlinked parent fails closed", func(t *testing.T) {
+			root := t.TempDir()
+			external := t.TempDir()
+			w := NewWithConn("owner-write-symlink", nil, nil)
+			w.beadID = "owner-bead"
+			w.worktree = t.TempDir()
+			w.assignmentID = 36
+			w.qgEvidenceDir = root
+			w.targetBranch = "main"
+			w.targetSHA = targetSHA
+			if err := os.Symlink(external, filepath.Join(root, w.beadID)); err != nil {
+				t.Fatalf("symlink evidence parent: %v", err)
+			}
+			evidence, err := callReadyEvidenceWithTimeout(t, "buildQGEvidence", func() (protocol.QGEvidence, error) {
+				return w.buildQGEvidence(qgEvidenceOptions{
+					RunID: "36:1", HeadSHA: targetSHA, ScriptHash: strings.Repeat("d", 64),
+					StartedAt: startedAt, FinishedAt: finishedAt,
+				})
+			})
+			if err != nil {
+				t.Fatalf("build evidence: %v", err)
+			}
+			if _, err := callReadyEvidenceWithTimeout(t, "writeQGEvidence", func() (protocol.QGEvidenceRef, error) {
+				return w.writeQGEvidence(evidence)
+			}); err == nil {
+				t.Fatal("symlinked evidence parent accepted")
+			}
+		})
+
+		t.Run("non-directory root fails closed", func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "evidence-root")
+			if err := os.WriteFile(root, []byte("not a directory"), 0o600); err != nil {
+				t.Fatalf("write root sentinel: %v", err)
+			}
+			w := NewWithConn("owner-write-file", nil, nil)
+			w.beadID = "owner-bead"
+			w.worktree = t.TempDir()
+			w.assignmentID = 37
+			w.qgEvidenceDir = root
+			w.targetBranch = "main"
+			w.targetSHA = targetSHA
+			evidence, err := callReadyEvidenceWithTimeout(t, "buildQGEvidence", func() (protocol.QGEvidence, error) {
+				return w.buildQGEvidence(qgEvidenceOptions{
+					RunID: "37:1", HeadSHA: targetSHA, ScriptHash: strings.Repeat("e", 64),
+					StartedAt: startedAt, FinishedAt: finishedAt,
+				})
+			})
+			if err != nil {
+				t.Fatalf("build evidence: %v", err)
+			}
+			if _, err := callReadyEvidenceWithTimeout(t, "writeQGEvidence", func() (protocol.QGEvidenceRef, error) {
+				return w.writeQGEvidence(evidence)
+			}); err == nil {
+				t.Fatal("non-directory evidence root accepted")
+			}
+		})
+	})
+
+	t.Run("gitHeadSHA", func(t *testing.T) {
+		if _, err := gitHeadSHA(context.Background(), filepath.Join(t.TempDir(), "missing")); err == nil || strings.Contains(err.Error(), "empty result") {
+			t.Fatalf("missing repository error = %v", err)
+		}
+
+		bin := t.TempDir()
+		git := filepath.Join(bin, "git")
+		if err := os.WriteFile(git, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+			t.Fatalf("write empty git fixture: %v", err)
+		}
+		t.Setenv("PATH", bin)
+		if _, err := gitHeadSHA(context.Background(), t.TempDir()); err == nil || !strings.Contains(err.Error(), "empty result") {
+			t.Fatalf("empty HEAD error = %v", err)
+		}
+	})
+
+	t.Run("loadQualityGateScript", func(t *testing.T) {
+		if _, _, err := loadQualityGateScript(context.Background(), t.TempDir()); err == nil || !strings.Contains(err.Error(), "quality gate script not found") {
+			t.Fatalf("missing script error = %v", err)
+		}
+
+		worktree := t.TempDir()
+		if err := os.Mkdir(filepath.Join(worktree, "quality_gate.sh"), 0o700); err != nil {
+			t.Fatalf("create unreadable script fixture: %v", err)
+		}
+		if _, _, err := loadQualityGateScript(context.Background(), worktree); err == nil {
+			t.Fatal("directory accepted as quality gate script")
+		}
+	})
+
+	t.Run("SendReadyForReview", func(t *testing.T) {
+		workerConn, dispatcherConn := net.Pipe()
+		t.Cleanup(func() {
+			_ = workerConn.Close()
+			_ = dispatcherConn.Close()
+		})
+		w := NewWithConn("owner-ready", workerConn, nil)
+		w.beadID = "owner-bead"
+		w.worktree = t.TempDir()
+		w.assignmentID = 33
+		w.targetSHA = targetSHA
+		w.qgEvidencePath = filepath.Join(t.TempDir(), "evidence.json")
+		evidence := protocol.QGEvidence{
+			RunID: "33:1", AssignmentID: 33, BeadID: w.beadID, WorkerID: w.ID,
+			HeadSHA: targetSHA, TargetBranch: "main", TargetSHA: targetSHA,
+			ScriptHash: strings.Repeat("c", 64), OutputHash: sha256Hex([]byte("passed\n")),
+			Mode: "worker", Passed: true, StartedAt: "2026-08-10T03:00:00Z", FinishedAt: "2026-08-10T03:01:00Z",
+		}
+		ref := protocol.QGEvidenceRef{RunID: evidence.RunID, Path: w.qgEvidencePath, SHA256: strings.Repeat("d", 64)}
+		w.qgEvidence = &evidence
+		w.qgEvidenceRef = &ref
+		sendErr := make(chan error, 1)
+		go func() { sendErr <- w.SendReadyForReview(context.Background()) }()
+		msg, err := readReadyEvidenceMessage(t, dispatcherConn)
+		if err != nil {
+			_ = workerConn.Close()
+			_ = dispatcherConn.Close()
+			t.Fatalf("read READY: %v", err)
+		}
+		select {
+		case err := <-sendErr:
+			if err != nil {
+				t.Fatalf("send READY: %v", err)
+			}
+		case <-time.After(time.Second):
+			_ = workerConn.Close()
+			_ = dispatcherConn.Close()
+			t.Fatal("SendReadyForReview did not complete")
+		}
+		if msg.Type != protocol.MsgReadyForReview || msg.ReadyForReview == nil ||
+			msg.ReadyForReview.QGEvidence == nil || msg.ReadyForReview.QGEvidenceRef == nil {
+			t.Fatalf("READY payload = %#v", msg)
+		}
+		if msg.ReadyForReview.AssignmentID != 33 || msg.ReadyForReview.ReadyAttempt != "1" ||
+			msg.ReadyForReview.BeadID != w.beadID || msg.ReadyForReview.WorkerID != w.ID ||
+			msg.ReadyForReview.Worktree != w.worktree || msg.ReadyForReview.TargetSHA != targetSHA ||
+			msg.ReadyForReview.QGEvidencePath != w.qgEvidencePath ||
+			!reflect.DeepEqual(*msg.ReadyForReview.QGEvidence, evidence) ||
+			!reflect.DeepEqual(*msg.ReadyForReview.QGEvidenceRef, ref) {
+			t.Fatalf("READY identity = %#v", msg.ReadyForReview)
+		}
+	})
+
+	t.Run("readReadyEvidenceMessage rejects malformed input", func(t *testing.T) {
+		workerConn, dispatcherConn := net.Pipe()
+		t.Cleanup(func() {
+			_ = workerConn.Close()
+			_ = dispatcherConn.Close()
+		})
+		writerDone := make(chan struct{})
+		go func() {
+			_, _ = workerConn.Write([]byte("not-json\n"))
+			_ = workerConn.Close()
+			close(writerDone)
+		}()
+		if _, err := readReadyEvidenceMessage(t, dispatcherConn); err == nil {
+			t.Fatal("malformed READY message accepted")
+		}
+		select {
+		case <-writerDone:
+		case <-time.After(time.Second):
+			t.Fatal("malformed-message writer did not finish")
+		}
+	})
+
+	t.Run("readReadyEvidenceMessage rejects EOF", func(t *testing.T) {
+		workerConn, dispatcherConn := net.Pipe()
+		t.Cleanup(func() {
+			_ = workerConn.Close()
+			_ = dispatcherConn.Close()
+		})
+		_ = workerConn.Close()
+		if _, err := readReadyEvidenceMessage(t, dispatcherConn); err == nil {
+			t.Fatal("EOF accepted as READY message")
+		}
+	})
+
+	t.Run("resetForNewAssignment", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		w := NewWithConn("owner-reset", nil, nil)
+		w.beadID = "old-bead"
+		w.assignmentID = 34
+		w.qgEvidencePath = "/previous/evidence.json"
+		w.qgEvidence = &protocol.QGEvidence{RunID: "34:1"}
+		w.qgEvidenceRef = &protocol.QGEvidenceRef{RunID: "34:1"}
+		w.resetForNewAssignment(&protocol.AssignPayload{
+			BeadID:        "new-bead",
+			AssignmentID:  35,
+			QGEvidenceDir: t.TempDir(),
+			TargetBranch:  "main",
+			TargetSHA:     targetSHA,
+		}, WorkerExecutionContext{})
+		t.Cleanup(w.closeLogFile)
+		if w.beadID != "new-bead" || w.assignmentID != 35 || w.qgEvidencePath != "" ||
+			w.qgEvidence != nil || w.qgEvidenceRef != nil {
+			t.Fatalf("reset state leaked prior evidence: bead=%q assignment=%d path=%q evidence=%#v ref=%#v",
+				w.beadID, w.assignmentID, w.qgEvidencePath, w.qgEvidence, w.qgEvidenceRef)
+		}
+	})
+}
+
+func readReadyEvidenceMessage(t *testing.T, conn net.Conn) (protocol.Message, error) {
+	t.Helper()
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		return protocol.Message{}, err
+	}
+	scanner := bufio.NewScanner(conn)
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return protocol.Message{}, err
+		}
+		return protocol.Message{}, io.EOF
+	}
+	var msg protocol.Message
+	if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
+		return protocol.Message{}, err
+	}
+	return msg, nil
 }
