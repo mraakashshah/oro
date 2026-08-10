@@ -83,6 +83,14 @@ func TestWorkerQGLifecycleMutationOwners(t *testing.T) {
 			select {
 			case result := <-messages:
 				assertQGLifecycleResult(t, result, tc, worktree, targetSHA)
+				if tc.wantReady {
+					w.mu.Lock()
+					pendingOutput := w.pendingQGOutput
+					w.mu.Unlock()
+					if strings.TrimSpace(pendingOutput) != tc.wantOutput {
+						t.Fatalf("pending QG output = %q, want %q", pendingOutput, tc.wantOutput)
+					}
+				}
 			case <-ctx.Done():
 				t.Fatalf("terminal QG message was not received: %v", ctx.Err())
 			}
@@ -95,19 +103,135 @@ func TestWorkerQGLifecycleMutationOwners(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 
-		passed, output, err := w.runQualityGateWithProgress(
-			ctx,
-			worktree,
-			filepath.Join(worktree, "missing-quality-gate.sh"),
-			true,
-			"main",
-		)
+		passed, output, err := runQualityGateWithTimeout(ctx, t, w, worktree,
+			filepath.Join(worktree, "missing-quality-gate.sh"), true, "main")
 		if err == nil {
 			t.Fatal("expected missing quality gate to return an error")
 		}
 		if passed || output != "" {
 			t.Fatalf("missing quality gate returned passed=%v output=%q", passed, output)
 		}
+		w.mu.Lock()
+		procRecorded := w.proc != nil
+		w.mu.Unlock()
+		if procRecorded {
+			t.Fatal("failed quality gate start recorded a process")
+		}
+	})
+
+	t.Run("direct quality gate state and argument guards", func(t *testing.T) {
+		t.Run("mutation argument and stderr are retained", func(t *testing.T) {
+			worktree := t.TempDir()
+			scriptPath := writeQGLifecycleScript(t, worktree, "#!/bin/sh\nprintf '%s\\n' \"$@\"\nprintf 'stderr output\\n' >&2\nexit 0\n")
+			w := &Worker{}
+
+			passed, output, err := runQualityGateWithTimeout(context.Background(), t, w, worktree, scriptPath, false, "main")
+			if err != nil || !passed {
+				t.Fatalf("quality gate result = passed=%v output=%q err=%v, want pass", passed, output, err)
+			}
+			if !strings.Contains(output, "--mutation-testing") {
+				t.Fatalf("quality gate args = %q, want --mutation-testing", output)
+			}
+			if !strings.Contains(output, "stderr output") {
+				t.Fatalf("quality gate output = %q, want stderr output", output)
+			}
+			lockQGLifecycleWorker(t, w)
+			procRecorded := w.proc != nil
+			w.mu.Unlock()
+			if !procRecorded {
+				t.Fatal("quality gate process was not recorded")
+			}
+		})
+
+		t.Run("failed command records exit state and closes channel", func(t *testing.T) {
+			worktree := t.TempDir()
+			scriptPath := writeQGLifecycleScript(t, worktree, "#!/bin/sh\nprintf 'failed output\\n' >&2\nexit 7\n")
+			w := &Worker{}
+
+			passed, output, err := runQualityGateWithTimeout(context.Background(), t, w, worktree, scriptPath, true, "main")
+			if err != nil || passed || !strings.Contains(output, "failed output") {
+				t.Fatalf("quality gate result = passed=%v output=%q err=%v, want failed output", passed, output, err)
+			}
+			lockQGLifecycleWorker(t, w)
+			exitCode := w.subprocExitCode
+			exitErr := w.subprocExitErr
+			handleClaimed := w.handleExitClaimed
+			exitCh := w.subprocExitCh
+			exitClosed := w.subprocExitClosed
+			w.mu.Unlock()
+			if exitCode != 7 || !strings.Contains(exitErr, "exit status 7") {
+				t.Fatalf("exit state = code=%d err=%q, want code 7/status", exitCode, exitErr)
+			}
+			if !handleClaimed || !exitClosed || !channelClosed(exitCh) {
+				t.Fatalf("exit coordination = claimed=%v closed=%v channelClosed=%v, want all true", handleClaimed, exitClosed, channelClosed(exitCh))
+			}
+		})
+
+		t.Run("start error preserves error and no process", func(t *testing.T) {
+			worktree := filepath.Join(t.TempDir(), "missing-worktree")
+			w := &Worker{}
+
+			_, _, err := runQualityGateWithTimeout(context.Background(), t, w, worktree, filepath.Join(worktree, "quality_gate.sh"), true, "main")
+			if err == nil || !strings.Contains(err.Error(), "chdir") {
+				t.Fatalf("start error = %v, want chdir error", err)
+			}
+			lockQGLifecycleWorker(t, w)
+			procRecorded := w.proc != nil
+			w.mu.Unlock()
+			if procRecorded {
+				t.Fatal("failed quality gate start recorded a process")
+			}
+		})
+
+		t.Run("canceled command returns context error", func(t *testing.T) {
+			worktree := t.TempDir()
+			scriptPath := writeQGLifecycleScript(t, worktree, "#!/bin/sh\nprintf 'started\\n'\nwhile :; do :; done\n")
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			w := &Worker{}
+
+			passed, output, err := runQualityGateWithTimeout(ctx, t, w, worktree, scriptPath, true, "main")
+			if passed || !errors.Is(err, context.Canceled) {
+				t.Fatalf("canceled result = passed=%v output=%q err=%v, want context canceled", passed, output, err)
+			}
+		})
+	})
+
+	t.Run("run QG reports each failure boundary", func(t *testing.T) {
+		t.Run("missing script sends failed DONE", func(t *testing.T) {
+			worktree := t.TempDir()
+			w, conn := newQGReportWorker(t, worktree, strings.Repeat("1", 40), t.TempDir())
+			result := runQGReportAndRead(context.Background(), t, w, conn)
+			assertQGLifecycleDone(t, result.messages[len(result.messages)-1], "quality gate script")
+		})
+
+		t.Run("missing git HEAD sends failed DONE", func(t *testing.T) {
+			worktree := t.TempDir()
+			writeQGLifecycleScript(t, worktree, "#!/bin/sh\nprintf 'QG passed without git\\n'\nexit 0\n")
+			w, conn := newQGReportWorker(t, worktree, strings.Repeat("1", 40), t.TempDir())
+			result := runQGReportAndRead(context.Background(), t, w, conn)
+			assertQGLifecycleDone(t, result.messages[len(result.messages)-1], "post-quality-gate HEAD")
+		})
+
+		t.Run("invalid assignment evidence sends failed DONE", func(t *testing.T) {
+			worktree := newQGLifecycleWorktree(t, "#!/bin/sh\nprintf 'QG passed\\n'\nexit 0\n")
+			targetSHA := qgLifecycleGit(t, worktree, "rev-parse", "HEAD")
+			w, conn := newQGReportWorker(t, worktree, targetSHA, "")
+			result := runQGReportAndRead(context.Background(), t, w, conn)
+			assertQGLifecycleDone(t, result.messages[len(result.messages)-1], "evidence directory")
+		})
+
+		t.Run("evidence publish failure sends failed DONE", func(t *testing.T) {
+			worktree := newQGLifecycleWorktree(t, "#!/bin/sh\nprintf 'QG passed\\n'\nexit 0\n")
+			targetSHA := qgLifecycleGit(t, worktree, "rev-parse", "HEAD")
+			badRoot := filepath.Join(t.TempDir(), "evidence-file")
+			if err := os.WriteFile(badRoot, []byte("not a directory"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			w, conn := newQGReportWorker(t, worktree, targetSHA, badRoot)
+			result := runQGReportAndRead(context.Background(), t, w, conn)
+			assertQGLifecycleDone(t, result.messages[len(result.messages)-1], "publish QG evidence")
+		})
 	})
 }
 
@@ -241,4 +365,114 @@ func qgLifecycleGit(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+func writeQGLifecycleScript(t *testing.T, worktree, body string) string {
+	t.Helper()
+	path := filepath.Join(worktree, "quality_gate.sh")
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func channelClosed(ch <-chan struct{}) bool {
+	if ch == nil {
+		return false
+	}
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
+}
+
+type qgLifecycleCallResult struct {
+	passed bool
+	output string
+	err    error
+}
+
+func runQualityGateWithTimeout(ctx context.Context, t *testing.T, w *Worker, worktree, scriptPath string, skipMutation bool, mutationBase string) (bool, string, error) {
+	t.Helper()
+	callCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	result := make(chan qgLifecycleCallResult, 1)
+	go func() {
+		passed, output, err := w.runQualityGateWithProgress(callCtx, worktree, scriptPath, skipMutation, mutationBase)
+		result <- qgLifecycleCallResult{passed: passed, output: output, err: err}
+	}()
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	select {
+	case got := <-result:
+		return got.passed, got.output, got.err
+	case <-timer.C:
+		cancel()
+		select {
+		case got := <-result:
+			t.Fatalf("runQualityGateWithProgress did not finish within 5s: %#v", got.err)
+		case <-time.After(time.Second):
+			t.Fatal("runQualityGateWithProgress did not finish after cancellation")
+		}
+		return false, "", context.DeadlineExceeded
+	}
+}
+
+func lockQGLifecycleWorker(t *testing.T, w *Worker) {
+	t.Helper()
+	if w.mu.TryLock() {
+		return
+	}
+	// The caller has received the buffered result, so the worker invocation and
+	// its goroutine have joined. Release exactly one retained post-return
+	// mutant lock so cleanup cannot hang, then fail immediately.
+	w.mu.Unlock()
+	t.Fatal("quality gate lifecycle retained the worker mutex")
+}
+
+func newQGReportWorker(t *testing.T, worktree, targetSHA, evidenceDir string) (*Worker, net.Conn) {
+	t.Helper()
+	dispatcherConn, workerConn := net.Pipe()
+	t.Cleanup(func() {
+		_ = dispatcherConn.Close()
+		_ = workerConn.Close()
+	})
+	w := NewWithConn("qg-owner", workerConn, nil)
+	w.beadID = "bead-qg-owner"
+	w.worktree = worktree
+	w.assignmentID = 1
+	w.qgEvidenceDir = evidenceDir
+	w.targetSHA = targetSHA
+	w.targetBranch = "main"
+	return w, dispatcherConn
+}
+
+func runQGReportAndRead(ctx context.Context, t *testing.T, w *Worker, conn net.Conn) qgLifecycleReadResult {
+	t.Helper()
+	messages := make(chan qgLifecycleReadResult, 1)
+	go func() {
+		messages <- readQGLifecycleMessages(conn, false)
+	}()
+	done := make(chan struct{})
+	go func() {
+		w.runQGAndReport(ctx)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runQGAndReport did not finish")
+	}
+	select {
+	case result := <-messages:
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		return result
+	case <-time.After(5 * time.Second):
+		t.Fatal("runQGAndReport did not send terminal DONE")
+		return qgLifecycleReadResult{}
+	}
 }
