@@ -785,16 +785,16 @@ worker_ready_evidence_mutation_test_pattern() {
 	local match="$2"
 	case "$file:$match" in
 	'pkg/worker/ready_evidence.go:^(buildQGEvidence)$')
-		printf '^(TestWorkerQGEvidenceRejectsSymlinkedParents|TestWorkerWritesCanonicalQGEvidenceAndSendsAssignedIdentity|TestWorkerWritesDurableReadyEvidenceIdentity|TestWorkerBuildsOrderedSubsecondEvidenceTiming)$'
+		printf '^TestWorkerReadyEvidenceMutationOwners$'
 		;;
 	'pkg/worker/ready_evidence.go:^(sha256Hex)$')
 		printf '^(TestWorkerWritesCanonicalQGEvidenceAndSendsAssignedIdentity|TestWorkerWritesDurableReadyEvidenceIdentity|TestWorkerBuildsOrderedSubsecondEvidenceTiming)$'
 		;;
 	'pkg/worker/ready_evidence.go:^(writeQGEvidence)$')
-		printf '^(TestWorkerQGEvidenceRejectsSymlinkedParents|TestWorkerWritesCanonicalQGEvidenceAndSendsAssignedIdentity|TestWorkerWritesDurableReadyEvidenceIdentity)$'
+		printf '^TestWorkerReadyEvidenceMutationOwners$'
 		;;
 	'pkg/worker/worker.go:^(SendReadyForReview)$')
-		printf '^(TestWorkerWritesCanonicalQGEvidenceAndSendsAssignedIdentity|TestWorkerWritesDurableReadyEvidenceIdentity|TestWorkerResetDoesNotLeakPriorReadyEvidence|TestSendReadyForReview_ProducesCorrectJSON)$'
+		printf '^TestWorkerReadyEvidenceMutationOwners$'
 		;;
 	'pkg/worker/worker.go:^(gitHeadSHA)$')
 		printf '^(TestWorkerWritesDurableReadyEvidenceIdentity|TestRunQGAndReport_RebasesBeforeQG|TestRunQGAndReport_NoGitRepo_QGStillRuns)$'
@@ -803,13 +803,20 @@ worker_ready_evidence_mutation_test_pattern() {
 		printf '^(TestWorkerWritesDurableReadyEvidenceIdentity|TestRunQGAndReport_RebasesBeforeQG|TestRunQGAndReport_RebaseConflict_QGStillRuns|TestRunQGAndReport_NoGitRepo_QGStillRuns)$'
 		;;
 	'pkg/worker/worker.go:^(resetForNewAssignment)$')
-		printf '^(TestReceiveAssign_StoresState|TestWorkerResetDoesNotLeakPriorReadyEvidence|TestStaleStreamContextIgnoredAfterNewAssign)$'
+		printf '^TestWorkerReadyEvidenceMutationOwners$'
 		;;
 	'pkg/worker/worker.go:^(runQGAndReport)$')
-		printf '^(TestWorkerWritesDurableReadyEvidenceIdentity|TestRunQGAndReport_RebasesBeforeQG|TestRunQGAndReport_RebaseConflict_QGStillRuns|TestRunQGAndReport_NoGitRepo_QGStillRuns|TestSubprocessExit_RunsQGAndSendsDone)$'
+		printf '^TestWorkerQGLifecycleMutationOwners$'
 		;;
 	'pkg/worker/worker.go:^(runQualityGateWithProgress)$')
-		printf '^(TestWorkerWritesDurableReadyEvidenceIdentity|TestSubprocessExit_RunsQGAndSendsDone)$'
+		printf '^TestWorkerQGLifecycleMutationOwners$'
+		;;
+	'pkg/worker/worker.go:^(closeLogFile)$' | \
+	'pkg/worker/worker.go:^(openLogFile)$' | \
+	'pkg/worker/worker.go:^(processOutput)$' | \
+	'pkg/worker/worker.go:^(processOutputTextLine)$' | \
+	'pkg/worker/worker.go:^(processStructuredStreamLine)$')
+		printf '^TestWorkerLogOutputMutationOwners$'
 		;;
 	esac
 }
