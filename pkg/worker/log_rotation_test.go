@@ -98,7 +98,8 @@ func runAssignmentResetSynchronizesPriorOutputLog(t *testing.T) {
 
 	close(oldSink.release)
 	waitRotation(t, firstDone, "assignment A output")
-	waitRotation(t, secondDone, "assignment B reset")
+	waitRotationRecoverLogMu(t, w, secondDone, "assignment B reset")
+	assertLogMuReusable(t, w, "assignment B reset")
 
 	w.processOutputTextLine(ctx, "markerB")
 	w.closeLogFile()
@@ -141,7 +142,9 @@ func TestWorkerLogOutputMutationOwners(t *testing.T) {
 		if err := w.openLogFile(); err != nil {
 			t.Fatalf("open log: %v", err)
 		}
+		assertLogMuReusable(t, w, "openLogFile")
 		w.processOutputTextLine(context.Background(), "OPENAI_API_KEY=secret")
+		assertLogMuReusable(t, w, "processOutputTextLine")
 		w.closeLogFile()
 		w.closeLogFile()
 
@@ -201,4 +204,29 @@ func waitRotation(t *testing.T, done <-chan struct{}, what string) {
 	case <-time.After(time.Second):
 		t.Fatalf("%s did not finish", what)
 	}
+}
+
+func waitRotationRecoverLogMu(t *testing.T, w *Worker, done <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-done:
+		return
+	case <-time.After(time.Second):
+		if w.logMu.TryLock() {
+			w.logMu.Unlock()
+			t.Fatalf("%s did not finish", what)
+		}
+		w.logMu.Unlock()
+		waitRotation(t, done, what+" after releasing retained logMu")
+		t.Fatalf("%s retained logMu", what)
+	}
+}
+
+func assertLogMuReusable(t *testing.T, w *Worker, what string) {
+	t.Helper()
+	if !w.logMu.TryLock() {
+		w.logMu.Unlock()
+		t.Fatalf("%s retained logMu", what)
+	}
+	w.logMu.Unlock()
 }
