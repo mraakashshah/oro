@@ -277,12 +277,8 @@ func (e *QGEvidence) Validate() error {
 	if e == nil {
 		return fmt.Errorf("QG evidence cannot be nil")
 	}
-	if e.RunID == "" || e.AssignmentID <= 0 || e.BeadID == "" || e.WorkerID == "" ||
-		e.TargetBranch == "" || e.Mode == "" || e.StartedAt == "" || e.FinishedAt == "" {
-		return fmt.Errorf("QG evidence identity and timing fields are required")
-	}
-	if !beadIDPattern.MatchString(e.BeadID) {
-		return fmt.Errorf("QG evidence bead ID is invalid")
+	if err := e.validateIdentity(); err != nil {
+		return err
 	}
 	if !lowerHexSHA40Pattern.MatchString(e.HeadSHA) || !lowerHexSHA40Pattern.MatchString(e.TargetSHA) {
 		return fmt.Errorf("QG evidence head and target SHAs must be lowercase 40-hex commits")
@@ -299,6 +295,21 @@ func (e *QGEvidence) Validate() error {
 	if e.OutputHash != "" && !lowerHexSHA64Pattern.MatchString(e.OutputHash) {
 		return fmt.Errorf("QG evidence output hash must be lowercase 64-hex")
 	}
+	return e.validateTiming()
+}
+
+func (e *QGEvidence) validateIdentity() error {
+	if e.RunID == "" || e.AssignmentID <= 0 || e.BeadID == "" || e.WorkerID == "" ||
+		e.TargetBranch == "" || e.Mode == "" || e.StartedAt == "" || e.FinishedAt == "" {
+		return fmt.Errorf("QG evidence identity and timing fields are required")
+	}
+	if !beadIDPattern.MatchString(e.BeadID) {
+		return fmt.Errorf("QG evidence bead ID is invalid")
+	}
+	return nil
+}
+
+func (e *QGEvidence) validateTiming() error {
 	started, err := time.Parse(time.RFC3339, e.StartedAt)
 	if err != nil {
 		return fmt.Errorf("QG evidence start time: %w", err)
@@ -360,6 +371,10 @@ func (r *ReadyForReviewPayload) Validate() error {
 	if r.QGEvidence == nil && r.QGEvidenceRef == nil {
 		return nil
 	}
+	return r.validateDurableEvidence()
+}
+
+func (r *ReadyForReviewPayload) validateDurableEvidence() error {
 	if r.ReadyAttempt == "" {
 		return fmt.Errorf("bead ID, worker ID, assignment ID, worktree, evidence path, target SHA, and ready attempt are required")
 	}

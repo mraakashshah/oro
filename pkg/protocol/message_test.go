@@ -745,8 +745,8 @@ func TestReadyForReviewEvidenceContract(t *testing.T) {
 }
 
 func trustedEvidenceCopy(evidence *protocol.QGEvidence) *protocol.QGEvidence {
-	copy := *evidence
-	return &copy
+	cloned := *evidence
+	return &cloned
 }
 
 func TestAssignPayload_Validate(t *testing.T) {
