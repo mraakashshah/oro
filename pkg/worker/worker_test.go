@@ -246,6 +246,54 @@ func readMessageAsync(t *testing.T, conn net.Conn) <-chan protocol.Message {
 	return ch
 }
 
+func ensureReadyFixtureGitHead(t *testing.T, worktree string) string {
+	t.Helper()
+	if _, err := os.Stat(worktree); err != nil {
+		if !os.IsNotExist(err) {
+			t.Fatalf("stat assigned worktree %s: %v", worktree, err)
+		}
+		return strings.Repeat("1", 40)
+	}
+	runGit := func(args ...string) []byte {
+		cmd := exec.Command("git", args...) //nolint:gosec // test helper with fixed git arguments
+		cmd.Dir = worktree
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v in %s: %v\n%s", args, worktree, err, out)
+		}
+		return out
+	}
+	readHead := func() (string, error) {
+		cmd := exec.Command("git", "rev-parse", "HEAD") //nolint:gosec // test helper with fixed git arguments
+		cmd.Dir = worktree
+		out, err := cmd.Output()
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(string(out)), nil
+	}
+	if head, err := readHead(); err == nil {
+		if len(head) != 40 || strings.Trim(head, "0123456789abcdef") != "" {
+			t.Fatalf("existing git HEAD is not lowercase 40-hex: %q", head)
+		}
+		return head
+	}
+
+	runGit("init", "-b", "main")
+	runGit("config", "user.email", "test@oro.test")
+	runGit("config", "user.name", "Oro Test")
+	runGit("add", ".")
+	runGit("commit", "--allow-empty", "-m", "initialize READY evidence fixture")
+	head, err := readHead()
+	if err != nil {
+		t.Fatalf("read initialized git HEAD in %s: %v", worktree, err)
+	}
+	if len(head) != 40 || strings.Trim(head, "0123456789abcdef") != "" {
+		t.Fatalf("initialized git HEAD is not lowercase 40-hex: %q", head)
+	}
+	return head
+}
+
 // sendMessage writes a line-delimited JSON message to a connection.
 func sendMessage(t *testing.T, conn net.Conn, msg protocol.Message) {
 	t.Helper()
@@ -257,7 +305,7 @@ func sendMessage(t *testing.T, conn net.Conn, msg protocol.Message) {
 		}
 		if assign.QGEvidenceDir == "" && assign.TargetSHA == "" {
 			assign.QGEvidenceDir = t.TempDir()
-			assign.TargetSHA = strings.Repeat("1", 40)
+			assign.TargetSHA = ensureReadyFixtureGitHead(t, assign.Worktree)
 		}
 	}
 	data, err := json.Marshal(msg)
