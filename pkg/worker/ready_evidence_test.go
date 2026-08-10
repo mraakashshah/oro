@@ -21,6 +21,30 @@ import (
 	"oro/pkg/protocol"
 )
 
+type readyEvidenceCallResult[T any] struct {
+	value T
+	err   error
+}
+
+func callReadyEvidenceWithTimeout[T any](t *testing.T, name string, fn func() (T, error)) (T, error) {
+	t.Helper()
+	result := make(chan readyEvidenceCallResult[T], 1)
+	go func() {
+		value, err := fn()
+		result <- readyEvidenceCallResult[T]{value: value, err: err}
+	}()
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	select {
+	case got := <-result:
+		return got.value, got.err
+	case <-timer.C:
+		var zero T
+		t.Fatalf("%s did not finish within 1s", name)
+		return zero, nil
+	}
+}
+
 func TestWorkerHeartbeatAdvertisesReadyEvidenceCapability(t *testing.T) {
 	t.Parallel()
 	workerConn, dispatcherConn := net.Pipe()
@@ -482,13 +506,15 @@ func runReadyEvidenceMutationOwnerCases(t *testing.T) {
 		output := []byte("quality gate passed\n")
 		startedAt := time.Date(2026, time.August, 10, 3, 0, 0, 0, time.UTC)
 		finishedAt := time.Date(2026, time.August, 10, 3, 1, 0, 0, time.UTC)
-		evidence, err := w.buildQGEvidence(qgEvidenceOptions{
-			RunID:      "31:1",
-			HeadSHA:    targetSHA,
-			ScriptHash: strings.Repeat("a", 64),
-			Output:     output,
-			StartedAt:  startedAt,
-			FinishedAt: finishedAt,
+		evidence, err := callReadyEvidenceWithTimeout(t, "buildQGEvidence", func() (protocol.QGEvidence, error) {
+			return w.buildQGEvidence(qgEvidenceOptions{
+				RunID:      "31:1",
+				HeadSHA:    targetSHA,
+				ScriptHash: strings.Repeat("a", 64),
+				Output:     output,
+				StartedAt:  startedAt,
+				FinishedAt: finishedAt,
+			})
 		})
 		if err != nil {
 			t.Fatalf("build evidence: %v", err)
@@ -514,18 +540,22 @@ func runReadyEvidenceMutationOwnerCases(t *testing.T) {
 		w.targetSHA = targetSHA
 		startedAt := time.Date(2026, time.August, 10, 3, 0, 0, 0, time.UTC)
 		finishedAt := time.Date(2026, time.August, 10, 3, 1, 0, 0, time.UTC)
-		evidence, err := w.buildQGEvidence(qgEvidenceOptions{
-			RunID:      "32:1",
-			HeadSHA:    targetSHA,
-			ScriptHash: strings.Repeat("b", 64),
-			Output:     []byte("passed\n"),
-			StartedAt:  time.Date(2026, time.August, 10, 3, 0, 0, 0, time.UTC),
-			FinishedAt: time.Date(2026, time.August, 10, 3, 1, 0, 0, time.UTC),
+		evidence, err := callReadyEvidenceWithTimeout(t, "buildQGEvidence", func() (protocol.QGEvidence, error) {
+			return w.buildQGEvidence(qgEvidenceOptions{
+				RunID:      "32:1",
+				HeadSHA:    targetSHA,
+				ScriptHash: strings.Repeat("b", 64),
+				Output:     []byte("passed\n"),
+				StartedAt:  time.Date(2026, time.August, 10, 3, 0, 0, 0, time.UTC),
+				FinishedAt: time.Date(2026, time.August, 10, 3, 1, 0, 0, time.UTC),
+			})
 		})
 		if err != nil {
 			t.Fatalf("build evidence: %v", err)
 		}
-		ref, err := w.writeQGEvidence(evidence)
+		ref, err := callReadyEvidenceWithTimeout(t, "writeQGEvidence", func() (protocol.QGEvidenceRef, error) {
+			return w.writeQGEvidence(evidence)
+		})
 		if err != nil {
 			t.Fatalf("write evidence: %v", err)
 		}
@@ -569,14 +599,18 @@ func runReadyEvidenceMutationOwnerCases(t *testing.T) {
 			if err := os.Symlink(external, filepath.Join(root, w.beadID)); err != nil {
 				t.Fatalf("symlink evidence parent: %v", err)
 			}
-			evidence, err := w.buildQGEvidence(qgEvidenceOptions{
-				RunID: "36:1", HeadSHA: targetSHA, ScriptHash: strings.Repeat("d", 64),
-				StartedAt: startedAt, FinishedAt: finishedAt,
+			evidence, err := callReadyEvidenceWithTimeout(t, "buildQGEvidence", func() (protocol.QGEvidence, error) {
+				return w.buildQGEvidence(qgEvidenceOptions{
+					RunID: "36:1", HeadSHA: targetSHA, ScriptHash: strings.Repeat("d", 64),
+					StartedAt: startedAt, FinishedAt: finishedAt,
+				})
 			})
 			if err != nil {
 				t.Fatalf("build evidence: %v", err)
 			}
-			if _, err := w.writeQGEvidence(evidence); err == nil {
+			if _, err := callReadyEvidenceWithTimeout(t, "writeQGEvidence", func() (protocol.QGEvidenceRef, error) {
+				return w.writeQGEvidence(evidence)
+			}); err == nil {
 				t.Fatal("symlinked evidence parent accepted")
 			}
 		})
@@ -593,14 +627,18 @@ func runReadyEvidenceMutationOwnerCases(t *testing.T) {
 			w.qgEvidenceDir = root
 			w.targetBranch = "main"
 			w.targetSHA = targetSHA
-			evidence, err := w.buildQGEvidence(qgEvidenceOptions{
-				RunID: "37:1", HeadSHA: targetSHA, ScriptHash: strings.Repeat("e", 64),
-				StartedAt: startedAt, FinishedAt: finishedAt,
+			evidence, err := callReadyEvidenceWithTimeout(t, "buildQGEvidence", func() (protocol.QGEvidence, error) {
+				return w.buildQGEvidence(qgEvidenceOptions{
+					RunID: "37:1", HeadSHA: targetSHA, ScriptHash: strings.Repeat("e", 64),
+					StartedAt: startedAt, FinishedAt: finishedAt,
+				})
 			})
 			if err != nil {
 				t.Fatalf("build evidence: %v", err)
 			}
-			if _, err := w.writeQGEvidence(evidence); err == nil {
+			if _, err := callReadyEvidenceWithTimeout(t, "writeQGEvidence", func() (protocol.QGEvidenceRef, error) {
+				return w.writeQGEvidence(evidence)
+			}); err == nil {
 				t.Fatal("non-directory evidence root accepted")
 			}
 		})
