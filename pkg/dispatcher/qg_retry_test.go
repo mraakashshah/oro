@@ -1010,25 +1010,22 @@ func TestHandleDone_QGStuckDetection_DifferentOutputsReset(t *testing.T) {
 			},
 		})
 
-		if i < maxQGRetries {
-			stopKeepalive, err := startTestWorkerKeepalive(conn, "w1", 100*time.Millisecond)
-			if err != nil {
-				t.Fatalf("start worker keepalive: %v", err)
-			}
-			func() {
-				defer func() {
-					if err := stopKeepalive(); err != nil {
-						t.Errorf("worker keepalive: %v", err)
-					}
-				}()
-				msg, ok := readMsgFromScanner(t, scanner, 2*time.Second)
-				if !ok {
-					t.Fatalf("expected re-ASSIGN on attempt %d", i)
-				}
-				if msg.Type != protocol.MsgAssign {
-					t.Fatalf("attempt %d: expected ASSIGN, got %s", i, msg.Type)
-				}
-			}()
+		if i >= maxQGRetries {
+			continue
+		}
+		stopKeepalive, err := startTestWorkerKeepalive(conn, "w1", 100*time.Millisecond)
+		if err != nil {
+			t.Fatalf("start worker keepalive: %v", err)
+		}
+		msg, ok := readMsgFromScanner(t, scanner, 2*time.Second)
+		if err := stopKeepalive(); err != nil {
+			t.Errorf("worker keepalive: %v", err)
+		}
+		if !ok {
+			t.Fatalf("expected re-ASSIGN on attempt %d", i)
+		}
+		if msg.Type != protocol.MsgAssign {
+			t.Fatalf("attempt %d: expected ASSIGN, got %s", i, msg.Type)
 		}
 	}
 
@@ -1157,17 +1154,13 @@ func TestHandleDone_QGStuckDetection_IndependentOfAttemptCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start worker keepalive: %v", err)
 	}
-	func() {
-		defer func() {
-			if err := stopKeepalive(); err != nil {
-				t.Errorf("worker keepalive: %v", err)
-			}
-		}()
-		msg, ok := readMsgFromScanner(t, scanner, 2*time.Second)
-		if !ok || msg.Type != protocol.MsgAssign {
-			t.Fatalf("expected re-ASSIGN after unique output, got ok=%t type=%s", ok, msg.Type)
-		}
-	}()
+	msg, ok := readMsgFromScanner(t, scanner, 2*time.Second)
+	if err := stopKeepalive(); err != nil {
+		t.Errorf("worker keepalive: %v", err)
+	}
+	if !ok || msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected re-ASSIGN after unique output, got ok=%t type=%s", ok, msg.Type)
+	}
 
 	for i := 0; i < 2; i++ {
 		sendMsg(t, conn, protocol.Message{
@@ -1179,25 +1172,22 @@ func TestHandleDone_QGStuckDetection_IndependentOfAttemptCount(t *testing.T) {
 				QGOutput:          "same lint failure",
 			},
 		})
-		if i < 1 {
-			stopKeepalive, err := startTestWorkerKeepalive(conn, "w1", 100*time.Millisecond)
-			if err != nil {
-				t.Fatalf("start worker keepalive: %v", err)
-			}
-			func() {
-				defer func() {
-					if err := stopKeepalive(); err != nil {
-						t.Errorf("worker keepalive: %v", err)
-					}
-				}()
-				msg, ok := readMsgFromScanner(t, scanner, 2*time.Second)
-				if !ok {
-					t.Fatal("expected re-ASSIGN on attempt 2")
-				}
-				if msg.Type != protocol.MsgAssign {
-					t.Fatalf("expected ASSIGN, got %s", msg.Type)
-				}
-			}()
+		if i >= 1 {
+			continue
+		}
+		stopKeepalive, err := startTestWorkerKeepalive(conn, "w1", 100*time.Millisecond)
+		if err != nil {
+			t.Fatalf("start worker keepalive: %v", err)
+		}
+		msg, ok := readMsgFromScanner(t, scanner, 2*time.Second)
+		if err := stopKeepalive(); err != nil {
+			t.Errorf("worker keepalive: %v", err)
+		}
+		if !ok {
+			t.Fatal("expected re-ASSIGN on attempt 2")
+		}
+		if msg.Type != protocol.MsgAssign {
+			t.Fatalf("expected ASSIGN, got %s", msg.Type)
 		}
 	}
 
