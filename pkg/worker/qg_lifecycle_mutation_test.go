@@ -1,4 +1,4 @@
-package worker
+package worker //nolint:testpackage // mutation owners exercise unexported QG lifecycle methods.
 
 import (
 	"bufio"
@@ -21,12 +21,7 @@ import (
 func TestWorkerQGLifecycleMutationOwners(t *testing.T) {
 	t.Parallel()
 
-	cases := []struct {
-		name       string
-		script     string
-		wantReady  bool
-		wantOutput string
-	}{
+	cases := []qgLifecycleCase{
 		{
 			name:       "passed QG sends READY",
 			script:     "#!/bin/sh\nprintf 'quality gate passed\\n'\nexit 0\n",
@@ -87,55 +82,7 @@ func TestWorkerQGLifecycleMutationOwners(t *testing.T) {
 
 			select {
 			case result := <-messages:
-				if result.err != nil {
-					t.Fatal(result.err)
-				}
-				if len(result.messages) < 2 {
-					t.Fatal("expected STATUS and terminal QG message")
-				}
-				statusSeen := false
-				for _, msg := range result.messages[:len(result.messages)-1] {
-					if msg.Type == protocol.MsgStatus && msg.Status != nil {
-						statusSeen = true
-						break
-					}
-				}
-				if !statusSeen {
-					t.Fatalf("expected STATUS before terminal message, got %v", result.messages)
-				}
-				terminal := result.messages[len(result.messages)-1]
-				if tc.wantReady {
-					ready := terminal.ReadyForReview
-					if terminal.Type != protocol.MsgReadyForReview || ready == nil {
-						t.Fatalf("expected READY_FOR_REVIEW, got %s", terminal.Type)
-					}
-					if ready.BeadID != "bead-qg-owner" || ready.WorkerID != "qg-owner" ||
-						ready.AssignmentID != 1 || ready.Worktree != worktree || ready.TargetSHA != targetSHA {
-						t.Fatalf("READY identity = bead=%q worker=%q assignment=%d worktree=%q target=%q",
-							ready.BeadID, ready.WorkerID, ready.AssignmentID, ready.Worktree, ready.TargetSHA)
-					}
-					if ready.QGEvidence == nil || ready.QGEvidenceRef == nil {
-						t.Fatal("READY must include inline QG evidence and evidence reference")
-					}
-					if ready.QGEvidence.BeadID != ready.BeadID ||
-						ready.QGEvidence.WorkerID != ready.WorkerID ||
-						ready.QGEvidence.AssignmentID != ready.AssignmentID ||
-						ready.QGEvidence.TargetSHA != ready.TargetSHA ||
-						ready.QGEvidenceRef.RunID != ready.QGEvidence.RunID ||
-						ready.QGEvidenceRef.Path == "" || ready.QGEvidenceRef.SHA256 == "" {
-						t.Fatalf("READY evidence identity mismatch: %+v ref=%+v", *ready.QGEvidence, *ready.QGEvidenceRef)
-					}
-				} else {
-					if terminal.Type != protocol.MsgDone || terminal.Done == nil {
-						t.Fatalf("expected DONE, got %s", terminal.Type)
-					}
-					if terminal.Done.QualityGatePassed {
-						t.Fatal("expected failed QG to send QualityGatePassed=false")
-					}
-					if !strings.Contains(terminal.Done.QGOutput, tc.wantOutput) {
-						t.Fatalf("expected DONE output to contain %q, got %q", tc.wantOutput, terminal.Done.QGOutput)
-					}
-				}
+				assertQGLifecycleResult(t, result, tc, worktree, targetSHA)
 			case <-ctx.Done():
 				t.Fatalf("terminal QG message was not received: %v", ctx.Err())
 			}
@@ -162,6 +109,76 @@ func TestWorkerQGLifecycleMutationOwners(t *testing.T) {
 			t.Fatalf("missing quality gate returned passed=%v output=%q", passed, output)
 		}
 	})
+}
+
+type qgLifecycleCase struct {
+	name       string
+	script     string
+	wantReady  bool
+	wantOutput string
+}
+
+func assertQGLifecycleResult(t *testing.T, result qgLifecycleReadResult, tc qgLifecycleCase, worktree, targetSHA string) {
+	t.Helper()
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if len(result.messages) < 2 {
+		t.Fatal("expected STATUS and terminal QG message")
+	}
+	statusSeen := false
+	for _, msg := range result.messages[:len(result.messages)-1] {
+		if msg.Type == protocol.MsgStatus && msg.Status != nil {
+			statusSeen = true
+			break
+		}
+	}
+	if !statusSeen {
+		t.Fatalf("expected STATUS before terminal message, got %v", result.messages)
+	}
+	terminal := result.messages[len(result.messages)-1]
+	if tc.wantReady {
+		assertQGLifecycleReady(t, terminal, worktree, targetSHA)
+		return
+	}
+	assertQGLifecycleDone(t, terminal, tc.wantOutput)
+}
+
+func assertQGLifecycleReady(t *testing.T, terminal protocol.Message, worktree, targetSHA string) {
+	t.Helper()
+	ready := terminal.ReadyForReview
+	if terminal.Type != protocol.MsgReadyForReview || ready == nil {
+		t.Fatalf("expected READY_FOR_REVIEW, got %s", terminal.Type)
+	}
+	if ready.BeadID != "bead-qg-owner" || ready.WorkerID != "qg-owner" ||
+		ready.AssignmentID != 1 || ready.Worktree != worktree || ready.TargetSHA != targetSHA {
+		t.Fatalf("READY identity = bead=%q worker=%q assignment=%d worktree=%q target=%q",
+			ready.BeadID, ready.WorkerID, ready.AssignmentID, ready.Worktree, ready.TargetSHA)
+	}
+	if ready.QGEvidence == nil || ready.QGEvidenceRef == nil {
+		t.Fatal("READY must include inline QG evidence and evidence reference")
+	}
+	if ready.QGEvidence.BeadID != ready.BeadID ||
+		ready.QGEvidence.WorkerID != ready.WorkerID ||
+		ready.QGEvidence.AssignmentID != ready.AssignmentID ||
+		ready.QGEvidence.TargetSHA != ready.TargetSHA ||
+		ready.QGEvidenceRef.RunID != ready.QGEvidence.RunID ||
+		ready.QGEvidenceRef.Path == "" || ready.QGEvidenceRef.SHA256 == "" {
+		t.Fatalf("READY evidence identity mismatch: %+v ref=%+v", *ready.QGEvidence, *ready.QGEvidenceRef)
+	}
+}
+
+func assertQGLifecycleDone(t *testing.T, terminal protocol.Message, wantOutput string) {
+	t.Helper()
+	if terminal.Type != protocol.MsgDone || terminal.Done == nil {
+		t.Fatalf("expected DONE, got %s", terminal.Type)
+	}
+	if terminal.Done.QualityGatePassed {
+		t.Fatal("expected failed QG to send QualityGatePassed=false")
+	}
+	if !strings.Contains(terminal.Done.QGOutput, wantOutput) {
+		t.Fatalf("expected DONE output to contain %q, got %q", wantOutput, terminal.Done.QGOutput)
+	}
 }
 
 type qgLifecycleReadResult struct {
