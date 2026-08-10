@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -48,6 +50,11 @@ func (w *rotationBlockingWriter) String() string {
 }
 
 func TestAssignmentResetSynchronizesPriorOutputLog(t *testing.T) {
+	runAssignmentResetSynchronizesPriorOutputLog(t)
+}
+
+func runAssignmentResetSynchronizesPriorOutputLog(t *testing.T) {
+	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -122,6 +129,69 @@ func TestAssignmentResetSynchronizesPriorOutputLog(t *testing.T) {
 	if failedOpenWorker.logFile != nil || failedOpenWorker.logWriter != nil {
 		t.Fatal("failed open retained log state")
 	}
+}
+
+func TestWorkerLogOutputMutationOwners(t *testing.T) {
+	t.Run("rotation barrier", runAssignmentResetSynchronizesPriorOutputLog)
+
+	t.Run("open text and close", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		w := &Worker{ID: "mutation-log-owner"}
+		if err := w.openLogFile(); err != nil {
+			t.Fatalf("open log: %v", err)
+		}
+		w.processOutputTextLine(context.Background(), "OPENAI_API_KEY=secret")
+		w.closeLogFile()
+		w.closeLogFile()
+
+		data, err := os.ReadFile(filepath.Join(home, ".oro", "workers", w.ID, "output.log"))
+		if err != nil {
+			t.Fatalf("read log: %v", err)
+		}
+		if got, want := string(data), "OPENAI_API_KEY=[REDACTED]\n"; got != want {
+			t.Fatalf("log = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("structured line", func(t *testing.T) {
+		var sink bytes.Buffer
+		w := &Worker{logWriter: bufio.NewWriter(&sink)}
+		var sanitizer credentialLineSanitizer
+		w.processStructuredStreamLine(
+			context.Background(),
+			[]byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","id":"toolu_01","input":{}}]}}`),
+			&sanitizer,
+		)
+		if err := w.logWriter.Flush(); err != nil {
+			t.Fatalf("flush log: %v", err)
+		}
+		if got := sink.String(); !strings.Contains(got, "-> Read\n") {
+			t.Fatalf("structured log = %q, want Read activity", got)
+		}
+	})
+
+	t.Run("output stream", func(t *testing.T) {
+		var sink bytes.Buffer
+		w := &Worker{
+			logWriter:    bufio.NewWriter(&sink),
+			streamFormat: StreamFormatClaudeJSON,
+		}
+		stdout := io.NopCloser(strings.NewReader(
+			`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","id":"toolu_02","input":{}}]}}` + "\n",
+		))
+		w.outputWg.Add(1)
+		go w.processOutput(context.Background(), stdout, 0)
+		outputDone := make(chan struct{})
+		go func() {
+			w.outputWg.Wait()
+			close(outputDone)
+		}()
+		waitRotation(t, outputDone, "output stream")
+		if got := sink.String(); !strings.Contains(got, "-> Bash\n") {
+			t.Fatalf("output log = %q, want Bash activity", got)
+		}
+	})
 }
 
 func waitRotation(t *testing.T, done <-chan struct{}, what string) {
