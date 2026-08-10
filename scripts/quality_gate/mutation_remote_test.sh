@@ -51,6 +51,22 @@ review_checkpoint_pattern_for() {
 	bash -c "$function_source"$'\n''review_checkpoint_mutation_test_pattern "$1" "$2"' _ "$file" "$match"
 }
 
+review_worker_lifecycle_pattern_for() {
+	local file="$1"
+	local match="$2"
+	local function_source
+	function_source=$(awk '
+		/^review_worker_lifecycle_mutation_test_pattern\(\)/ { copying = 1 }
+		copying { print }
+		copying && /^}/ { exit }
+	' "$runner")
+	if [[ -z "$function_source" ]]; then
+		fail 'mutation runner omitted reviewed worker lifecycle owner mapping'
+		return 1
+	fi
+	bash -c "$function_source"$'\n''review_worker_lifecycle_mutation_test_pattern "$1" "$2"' _ "$file" "$match" || true
+}
+
 review_integration_recovery_pattern_for() {
 	local file="$1"
 	local match="$2"
@@ -1116,8 +1132,6 @@ pkg/dispatcher/ops_runs.go	isSQLiteUniqueConstraint	^TestOpsAuthoritativeSurvivo
 pkg/dispatcher/ops_runs.go	loadOpsRunByID	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
 pkg/dispatcher/ops_runs.go	replaceOpsRun	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
 pkg/dispatcher/ops_runs.go	reviewContextForOpsRun	^(TestOpsAuthoritativeSurvivorMutationReviewContexts|TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex)$
-pkg/dispatcher/ops_runs.go	reviewContextFromAnyWorkerLocked	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
-pkg/dispatcher/ops_runs.go	reviewContextFromWorkerLocked	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
 pkg/dispatcher/ops_runs.go	routeOpsRun	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
 pkg/dispatcher/ops_runs.go	routeReviewOpsRun	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
 pkg/dispatcher/ops_runs.go	supersedeAndRerouteOpsRun	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
@@ -1161,7 +1175,7 @@ EOF
 }
 
 TestAuthoritativeMutationTargetedScope() {
-	local evidence fixture focused_line focused_lines function pattern source target test_file
+	local evidence fixture focused_line focused_lines function pattern prewarm_line prewarm_lines source target test_file
 	while IFS=$'\t' read -r target source function pattern test_file; do
 		fixture="$tmp/targeted-$target"
 		evidence=$(run_targeted_fixture "$fixture" targeted pass 0 false "$target")
@@ -1192,7 +1206,7 @@ TestAuthoritativeMutationTargetedScope() {
 		fi
 		grep -Fxq "MUTATION_TEST_FILE=$test_file" "$fixture/mutation-args.txt" ||
 			fail "$function authoritative mutation omitted standalone owner file"
-		focused_lines=$(grep -F "$test_file" "$fixture/mutation-list.txt")
+		focused_lines=$(grep -F -- "-run $pattern" "$fixture/mutation-list.txt" | grep -F "$test_file")
 		[[ -n "$focused_lines" ]] || fail "$function emitted no focused authoritative argv"
 		while IFS= read -r focused_line; do
 			[[ "$(grep -oF "$source" <<<"$focused_line" | wc -l | tr -d ' ')" = 1 ]] ||
@@ -1204,6 +1218,12 @@ TestAuthoritativeMutationTargetedScope() {
 			! grep -Fq authoritative_unselected_test.go <<<"$focused_line" ||
 				fail "$function focused argv included an unselected test file"
 		done <<<"$focused_lines"
+		prewarm_lines=$(grep -F -- '-run ^$' "$fixture/mutation-list.txt" | grep -F "$test_file")
+		[[ -n "$prewarm_lines" ]] || fail "$function emitted no authoritative cache-prewarm argv"
+		while IFS= read -r prewarm_line; do
+			grep -Fq -- '-timeout 115s' <<<"$prewarm_line" ||
+				fail "$function cache-prewarm argv omitted bounded internal Go deadline"
+		done <<<"$prewarm_lines"
 	done <<'EOF'
 authoritative-assignment	pkg/dispatcher/assignment.go	assignmentInsertFailureAllowsReopen	^TestAssignmentAuthoritativeSurvivorMutation	pkg/dispatcher/assignment_authoritative_survivor_mutation_test.go
 authoritative-ops	pkg/dispatcher/ops_runs.go	applyOpsResolve	^TestOpsAuthoritativeSurvivorMutation	pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
@@ -1441,6 +1461,13 @@ TestMutationOwnerMappingsCoexist() {
 		pkg/storage/dev_schedule.go '^(reconcileInterruptedWeeklyDevCacheSweep)$')
 	[[ "$got" == '^TestWeeklyDevCacheSweepMutationReconciliationBoundaries$' ]] ||
 		fail "coexisting weekly sweep resolver selected $got"
+	got=$(review_worker_lifecycle_pattern_for \
+		pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocol)$')
+	[[ "$got" == '^(TestRegisterWorkerWithProtocolMutationCoverage|TestRegisterWorkerWithProtocolReleasesMutexBoundedMutation)$' ]] ||
+		fail "coexisting review lifecycle resolver selected $got"
+	got=$(cmd_mutation_pattern_for cmd/oro/cmd_start.go '^(buildArgs)$')
+	[[ "$got" == '^(TestDetachedStartForwardsBaseBranchToDaemon|TestJanitorStartPlumbing|TestStartProgressTimeoutFlag|TestStartReviewTimeoutFlagsAreDistinct)$' ]] ||
+		fail "coexisting cmd resolver selected $got"
 
 	got=$(assignment_admission_pattern_for pkg/dispatcher/assignment.go '^(beginAssignmentAdmission)$')
 	[[ -z "$got" ]] || fail "assignment admission resolver accepted wrong source: $got"
@@ -1459,6 +1486,175 @@ TestMutationOwnerMappingsCoexist() {
 	got=$(startup_maintenance_pattern_for pkg/storage/dev_schedule.go \
 		'^(reconcileInterruptedWeeklyDevCacheSweep|runWeeklyDevCacheProviders)$')
 	[[ -z "$got" ]] || fail "weekly sweep resolver accepted a grouped function union: $got"
+	got=$(review_worker_lifecycle_pattern_for cmd/oro/cmd_start.go '^(buildArgs)$')
+	[[ -z "$got" ]] || fail "review lifecycle resolver accepted cmd source: $got"
+	got=$(cmd_mutation_pattern_for pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocol)$')
+	[[ -z "$got" ]] || fail "cmd resolver accepted dispatcher source: $got"
+}
+
+review_worker_lifecycle_mapping_cases() {
+	cat <<'EOF'
+pkg/dispatcher/directives.go	restartWorkerIfStillOnBead	^TestRestartWorkerIfStillOnBeadAdmissionAndEffects$
+pkg/dispatcher/ops_runs.go	reviewContextFromAnyWorkerLocked	^(TestOpsAuthoritativeSurvivorMutationReviewContexts|TestReviewContextWorkerIdentityMatrix|TestReviewReleaseTokenFencesDirectReviewTransitions)$
+pkg/dispatcher/ops_runs.go	reviewContextFromWorkerLocked	^(TestOpsAuthoritativeSurvivorMutationReviewContexts|TestReviewContextWorkerIdentityMatrix|TestReviewReleaseTokenFencesDirectReviewTransitions)$
+pkg/dispatcher/qg_flow.go	withReservation	^(TestReviewReleaseTokenFencesDirectReviewTransitions|TestWithReservationRevalidatesAfterUnlockedIO)$
+pkg/dispatcher/reconnect.go	replayReconnectEvents	^TestReplayReconnectEventsSyntheticReadyMatrix$
+pkg/dispatcher/review.go	beginReviewWorkerResult	^(TestBeginReviewWorkerResultAdmission|TestCheckpointWorkerReleaseFenceRejectsConcurrentReviewResult)$
+pkg/dispatcher/review.go	claimBlockedReviewAssignment	^(TestDirectReviewTransitionAdmissionMatrix|TestReviewReleaseTokenFencesDirectReviewTransitions)$
+pkg/dispatcher/review.go	claimReviewDependencyCheck	^(TestDirectReviewTransitionAdmissionMatrix|TestReviewReleaseTokenFencesDirectReviewTransitions)$
+pkg/dispatcher/review.go	handleReviewResultForAssignment	^TestHandleReviewResultForAssignmentOutcomeMatrix$
+pkg/dispatcher/review.go	reserveReviewRetryAttempt	^(TestReserveReviewRetryAttemptOutcomes|TestReviewReleaseTokenFencesDirectReviewTransitions)$
+pkg/dispatcher/review.go	reviewingWorkerMatches	^(TestDirectReviewTransitionAdmissionMatrix|TestReviewReleaseTokenFencesDirectReviewTransitions)$
+pkg/dispatcher/review.go	sendPreReviewGitDirtyFeedback	^TestSendPreReviewGitDirtyFeedbackRevalidatesAfterPayloadBuild$
+pkg/dispatcher/review.go	sendReviewApproved	^TestReviewReleaseTokenFencesDirectReviewTransitions$
+pkg/dispatcher/review_checkpoint_store.go	ReleaseWorker	^TestReviewCheckpointStoreReleaseWorkerAtomicity$
+pkg/dispatcher/review_checkpoint_store.go	loadReviewCheckpointWorkerReleaseTarget	^(TestReviewCheckpointStoreReleaseWorkerAtomicity|TestReviewCheckpointWorkerReleaseTargetFailuresAndZeroAssignment)$
+pkg/dispatcher/review_checkpoint_store.go	releaseWorkerWithHook	^TestReviewCheckpointStoreReleaseWorkerAtomicity$
+pkg/dispatcher/review_checkpoint_store.go	runReviewCheckpointWorkerReleaseHook	^TestReviewCheckpointStoreReleaseWorkerAtomicity$
+pkg/dispatcher/review_worker_release.go	abort	^TestCheckpointWorkerReleaseAbortOwnershipMatrix$
+pkg/dispatcher/review_worker_release.go	acquireCheckpointWorkerRelease	^TestAcquireCheckpointWorkerReleaseAdmission$
+pkg/dispatcher/review_worker_release.go	acquireCheckpointWorkerReleaseLocked	^(TestCheckpointWorkerReleaseFenceTokenCannotBeClearedBySecondRelease|TestCheckpointWorkerReleaseLeaseAdmission)$
+pkg/dispatcher/review_worker_release.go	current	^TestCheckpointWorkerReleaseLeaseCurrentMatrix$
+pkg/dispatcher/review_worker_release.go	finalizeDurable	^TestCheckpointWorkerReleaseFinalizeDurableMatrix$
+pkg/dispatcher/review_worker_release.go	releaseCheckpointOwnedWorker	^TestReleaseCheckpointOwnedWorkerProductionPath$
+pkg/dispatcher/review_worker_release.go	releaseCheckpointOwnedWorkerUsing	^TestReleaseCheckpointOwnedWorkerUsingUnlocksAllPaths$
+pkg/dispatcher/review_worker_release.go	releaseCheckpointOwnedWorkerGeneration	^(TestReviewWorkerDisconnectDurablyReleasesCurrentCheckpoint|TestReviewWorkerDisconnectReleaseFailurePreservesWorker)$
+pkg/dispatcher/review_worker_release.go	releaseCheckpointOwnedWorkerGenerationUsing	^TestReleaseCheckpointOwnedWorkerRejectsStaleConnectionGeneration$
+pkg/dispatcher/review_worker_release.go	releaseCheckpointOwnedWorkerGenerationWithActionUsing	^TestCheckpointWorkerReleasePanicCleanup$
+pkg/dispatcher/review_worker_release.go	runCheckpointWorkerReleaseLease	^(TestCheckpointWorkerReleaseContextCancelClearsOwnedDrain|TestCheckpointWorkerReleasePanicCleanup|TestCheckpointWorkerReleaseRunLeaseFailureAndStaleMatrix|TestCheckpointWorkerReleaseShutdownAbortsBeforeStore|TestReleaseCheckpointOwnedWorkerDurableBeforeMemory)$
+pkg/dispatcher/review_worker_release.go	waitForMessages	^(TestCheckpointWorkerReleaseContextCancelClearsOwnedDrain|TestCheckpointWorkerReleaseShutdownAbortsBeforeStore|TestCheckpointWorkerReleaseWaitCurrentFence|TestCheckpointWorkerReleaseWaitsForAllInFlightMessages)$
+pkg/dispatcher/startup_recovery.go	beginReviewWorkerMessage	^TestCheckpointWorkerReleaseWaitsForAllInFlightMessages$
+pkg/dispatcher/startup_recovery.go	checkpointOwnedWorkerForConnection	^(TestReviewWorkerDisconnectDurablyReleasesCurrentCheckpoint|TestReviewWorkerDisconnectReleaseFailurePreservesWorker|TestReviewWorkerDisconnectStaleConnectionPreservesReplacement|TestReviewWorkerDisconnectStaleConnectionPreservesSamePointerReconnect)$
+pkg/dispatcher/startup_recovery.go	connCloseCleanup	^(TestConnCloseCleanupAdmissionAndEffects|TestReviewWorkerDisconnectDurablyReleasesCurrentCheckpoint|TestReviewWorkerDisconnectReleaseFailurePreservesWorker|TestReviewWorkerDisconnectStaleConnectionPreservesReplacement|TestReviewWorkerDisconnectStaleConnectionPreservesSamePointerReconnect)$
+pkg/dispatcher/startup_recovery.go	finishReviewWorkerMessage	^TestFinishReviewWorkerMessageDrainMatrix$
+pkg/dispatcher/startup_recovery.go	handleConn	^TestHandleConnLifecycleMatrix$
+pkg/dispatcher/startup_recovery.go	handleMessageFromConnection	^(TestCheckpointWorkerReleaseFenceRejectsReconnectAndMessages|TestHandleMessageFromConnectionRoutesAcceptedMessage)$
+pkg/dispatcher/startup_recovery.go	handleMessageUnchecked	^TestHandleMessageUncheckedRoutingMatrix$
+pkg/dispatcher/worker_directives.go	applyKillWorker	^TestApplyKillWorkerAdmissionAndEffects$
+pkg/dispatcher/worker_directives.go	applyRestartWorker	^(TestApplyRestartWorkerAdmissionAndEffects|TestApplyRestartWorkerFailureAndRetryEffects)$
+pkg/dispatcher/worker_directives.go	killCheckpointOwnedWorker	^(TestReviewWorkerDirectiveReleaseFailureDoesNotFallBack|TestReviewWorkerDirectivesDurablyReleaseCheckpoint)$
+pkg/dispatcher/worker_directives.go	killCheckpointOwnedWorkerUsing	^(TestReviewWorkerDirectiveReleaseFailureDoesNotFallBack|TestReviewWorkerDirectivesDurablyReleaseCheckpoint)$
+pkg/dispatcher/worker_directives.go	restartCheckpointOwnedWorker	^(TestReviewWorkerDirectivesDurablyReleaseCheckpoint|TestReviewWorkerRestartActionErrorsStillFinalizeDurableRelease|TestReviewWorkerRestartFenceSpansStoreKillAndSpawn)$
+pkg/dispatcher/worker_directives.go	restartCheckpointOwnedWorkerUsing	^(TestRestartCheckpointOwnedWorkerUsingBoundedMutation|TestRestartCheckpointOwnedWorkerUsingMutationCoverage)$
+pkg/dispatcher/worker_pool.go	registerWorker	^TestSpawnFor_StopCleanupBeforeReconnectPreservesShutdownState$
+pkg/dispatcher/worker_pool.go	registerWorkerWithProtocol	^(TestRegisterWorkerWithProtocolMutationCoverage|TestRegisterWorkerWithProtocolReleasesMutexBoundedMutation)$
+pkg/dispatcher/worker_pool.go	releaseReviewWorkerAfterSendFailure	^(TestReviewSendFailureDefersReleaseUntilCurrentMessageExits|TestReviewWorkerSendFailureDurablyReleasesBeforeFallback|TestReviewWorkerSendFailurePreservesSamePointerReconnect|TestReviewWorkerSendFailureReleaseFailurePreservesMemory|TestReviewWorkerSendFailureStaleGenerationPreservesReplacement|TestReviewWorkerSynchronousSendReleasePanicRestoresCallerLock)$
+pkg/dispatcher/worker_pool.go	releaseReviewWorkerAfterSendFailureUsing	^(TestReleaseReviewWorkerAfterSendFailureUsingBoundedMutation|TestReleaseReviewWorkerAfterSendFailureUsingMutationCoverage)$
+pkg/dispatcher/worker_pool.go	removeDeadWorkersLocked	^TestCheckHeartbeats_RemovesDeadBusyWorker$
+pkg/dispatcher/worker_pool.go	removeStoppedSpawnForWorkersLocked	^TestSpawnFor_StoppedWorkerHeartbeatTimeoutDoesNotEscalateCrash$
+pkg/dispatcher/worker_pool.go	removeStuckWorkersLocked	^TestCheckHeartbeats_DetectsStuckWorker$
+pkg/dispatcher/worker_pool.go	sendShutdownToConnectionWithoutBuffering	^TestReviewWorkerDirectivesDurablyReleaseCheckpoint$
+pkg/dispatcher/worker_pool.go	sendToWorker	^(TestReviewSendFailureDefersReleaseUntilCurrentMessageExits|TestReviewWorkerSendFailureDurablyReleasesBeforeFallback|TestReviewWorkerSendFailurePreservesSamePointerReconnect|TestReviewWorkerSendFailureReleaseFailurePreservesMemory|TestReviewWorkerSendFailureStaleGenerationPreservesReplacement|TestReviewWorkerSynchronousSendReleasePanicRestoresCallerLock)$
+pkg/dispatcher/worker_pool.go	upsertWorker	^TestCheckpointWorkerReleaseFenceRejectsReconnectAndMessages$
+EOF
+}
+
+TestReviewWorkerLifecycleMutationMapping() {
+	local expected expected_count file function got listed rows=0
+	while IFS=$'\t' read -r file function expected; do
+		rows=$((rows + 1))
+		got=$(review_worker_lifecycle_pattern_for "$file" "^($function)$")
+		[[ "$got" == "$expected" ]] ||
+			fail "$file $function lifecycle owner = $got, want $expected"
+		listed=$(go test -list "$expected" ./pkg/dispatcher)
+		expected_count=$(awk -F'|' '{ print NF }' <<<"$expected")
+		[[ "$(grep -Ec '^Test' <<<"$listed")" = "$expected_count" ]] ||
+			fail "$file $function lifecycle owner cardinality != $expected_count: $listed"
+	done < <(review_worker_lifecycle_mapping_cases)
+	[[ "$rows" = 52 ]] || fail "lifecycle owner inventory = $rows functions, want 52"
+	[[ "$(review_worker_lifecycle_mapping_cases | cut -f1,2 | sort -u | wc -l | tr -d ' ')" = 52 ]] ||
+		fail 'lifecycle owner inventory contains duplicate file/function rows'
+
+	got=$(review_worker_lifecycle_pattern_for pkg/dispatcher/health.go '^(applyHealth)$')
+	[[ -z "$got" ]] || fail "lifecycle resolver accepted wrong source: $got"
+	got=$(review_worker_lifecycle_pattern_for pkg/dispatcher/review_checkpoint_store.go '^(LoadOwningForBead)$')
+	[[ -z "$got" ]] || fail "lifecycle resolver hijacked checkpoint owner: $got"
+}
+
+TestReviewWorkerLifecycleMutationCoverage() {
+	local coverage coverage_root expected file function key report
+	coverage_root=$(mktemp -d)
+	while IFS=$'\t' read -r file function expected; do
+		key=$(printf '%s' "$expected" | shasum | awk '{ print $1 }')
+		coverage="$coverage_root/$key.out"
+		if [[ ! -f "$coverage" ]]; then
+			timeout 60 go test -vet=off -count=1 -timeout 55s -coverprofile="$coverage" \
+				-run "$expected" ./pkg/dispatcher >/dev/null
+		fi
+		report=$(go tool cover -func="$coverage")
+		awk -v target="$function" '
+			$2 == target || $2 ~ ("[.]" target "$") {
+				value = $3
+				gsub(/%/, "", value)
+				if (value + 0 > 0) covered = 1
+			}
+			END { exit !covered }
+		' <<<"$report" || fail "$file $function lifecycle owner has zero production coverage"
+	done < <(review_worker_lifecycle_mapping_cases)
+}
+
+TestReviewWorkerLifecycleMutationExecutionScopes() {
+	local coverage coverage_root expected expected_count file function got report
+	coverage_root=$(mktemp -d)
+	# shellcheck disable=SC2064 # Bind the function-local path before the RETURN trap runs.
+	trap "rm -rf '$coverage_root'" RETURN
+	while IFS=$'\t' read -r file function expected expected_count; do
+		got=$(review_worker_lifecycle_pattern_for "$file" "^($function)$")
+		[[ "$got" == "$expected" ]] ||
+			fail "$file $function execution scope = $got, want $expected"
+		[[ "$(go test -list "$expected" ./pkg/dispatcher | grep -Ec '^Test')" = "$expected_count" ]] ||
+			fail "$file $function execution scope must select exactly $expected_count real tests"
+		coverage="$coverage_root/$function.out"
+		timeout 60 go test -vet=off -count=1 -timeout 55s -coverprofile="$coverage" \
+			-run "$expected" ./pkg/dispatcher >/dev/null
+		report=$(go tool cover -func="$coverage")
+		awk -v target="$function" '
+			$2 == target || $2 ~ ("[.]" target "$") {
+				value = $3
+				gsub(/%/, "", value)
+				if (value + 0 > 0) covered = 1
+			}
+			END { exit !covered }
+		' <<<"$report" || fail "$file $function execution scope has zero in-process production coverage"
+	done <<'EOF'
+pkg/dispatcher/worker_directives.go	restartCheckpointOwnedWorkerUsing	^(TestRestartCheckpointOwnedWorkerUsingBoundedMutation|TestRestartCheckpointOwnedWorkerUsingMutationCoverage)$	2
+pkg/dispatcher/worker_pool.go	registerWorkerWithProtocol	^(TestRegisterWorkerWithProtocolMutationCoverage|TestRegisterWorkerWithProtocolReleasesMutexBoundedMutation)$	2
+pkg/dispatcher/worker_pool.go	releaseReviewWorkerAfterSendFailureUsing	^(TestReleaseReviewWorkerAfterSendFailureUsingBoundedMutation|TestReleaseReviewWorkerAfterSendFailureUsingMutationCoverage)$	2
+EOF
+}
+
+TestReviewContextMutationExecutionScope() {
+	local evidence fixture got pattern test_file
+	pattern='^(TestOpsAuthoritativeSurvivorMutationReviewContexts|TestReviewContextWorkerIdentityMatrix|TestReviewReleaseTokenFencesDirectReviewTransitions)$'
+	got=$(review_worker_lifecycle_pattern_for \
+		pkg/dispatcher/ops_runs.go '^(reviewContextFromAnyWorkerLocked)$')
+	[[ "$got" == "$pattern" ]] ||
+		fail "reviewContextFromAnyWorkerLocked owner = $got, want $pattern"
+	[[ "$(go test -list "$pattern" ./pkg/dispatcher | grep -Ec '^Test')" = 3 ]] ||
+		fail 'reviewContextFromAnyWorkerLocked owner must select exactly three real tests'
+	test_file=$(authoritative_test_file_for \
+		pkg/dispatcher/ops_runs.go '^(reviewContextFromAnyWorkerLocked)$')
+	[[ -z "$test_file" ]] ||
+		fail "reviewContextFromAnyWorkerLocked declared full-package owners but executes only $test_file"
+
+	fixture=$(mktemp -d)
+	# shellcheck disable=SC2064 # Bind the function-local path before the RETURN trap runs.
+	trap "rm -rf '$fixture'" RETURN
+	evidence=$(run_targeted_fixture "$fixture" targeted pass 0 false authoritative-ops-any-worker)
+	jq -e --arg pattern "$pattern" '
+		(.shards | length) == 1 and
+		.shards[0].file == "pkg/dispatcher/ops_runs.go" and
+		.shards[0].match == "^(reviewContextFromAnyWorkerLocked)$" and
+		.shards[0].test_pattern == $pattern and
+		.shards[0].conclusion == "completed" and
+		.shards[0].exit_code == 0 and .shards[0].score == 1 and
+		.shards[0].passed == 2 and .shards[0].failed == 0 and .shards[0].total == 2' \
+		"$evidence" >/dev/null ||
+		fail 'reviewContextFromAnyWorkerLocked evidence lost its exact owner scope'
+	! grep -q '^MUTATION_TEST_FILE=' "$fixture/mutation-args.txt" ||
+		fail 'reviewContextFromAnyWorkerLocked mutation execution narrowed away declared owners'
+	grep -Fxq 'WORKER_CACHE_WARM_TIMEOUT=120' "$fixture/mutation-args.txt" ||
+		fail 'reviewContextFromAnyWorkerLocked isolated worker caches were not prewarmed'
 }
 
 TestEscalationSurvivorMutationCoverage() {
@@ -1710,6 +1906,27 @@ new_multi_fixture() {
 	printf '%s\n%s\n' "$base" "$head"
 }
 
+new_cache_rotation_fixture() {
+	local fixture="$1"
+	mkdir -p "$fixture/bin" "$fixture/pkg/example" "$fixture/pkg/other" "$fixture/pkg/third"
+	git -C "$fixture" init -q
+	git -C "$fixture" config user.email mutation@example.test
+	git -C "$fixture" config user.name mutation-test
+	printf 'package example\n\nfunc Value() int { return 1 }\n' >"$fixture/pkg/example/value.go"
+	printf 'package other\n\nfunc Other() int { return 1 }\n' >"$fixture/pkg/other/other.go"
+	printf 'package third\n\nfunc Third() int { return 1 }\n' >"$fixture/pkg/third/third.go"
+	git -C "$fixture" add pkg/example/value.go pkg/other/other.go pkg/third/third.go
+	git -C "$fixture" commit -qm base
+	base=$(git -C "$fixture" rev-parse HEAD)
+	printf 'package example\n\nfunc Value() int { return 2 }\n' >"$fixture/pkg/example/value.go"
+	printf 'package other\n\nfunc Other() int { return 2 }\n' >"$fixture/pkg/other/other.go"
+	printf 'package third\n\nfunc Third() int { return 2 }\n' >"$fixture/pkg/third/third.go"
+	git -C "$fixture" add pkg/example/value.go pkg/other/other.go pkg/third/third.go
+	git -C "$fixture" commit -qm head
+	head=$(git -C "$fixture" rev-parse HEAD)
+	printf '%s\n%s\n' "$base" "$head"
+}
+
 new_targeted_fixture() {
 	local fixture="$1"
 	local expanded="${2:-false}"
@@ -1793,6 +2010,13 @@ new_targeted_fixture() {
 		function_name=startupRecovery
 		test_names=(TestExistingDispatcherBehavior)
 		head_test_name=TestReviewCheckpointStartupOrdering
+		;;
+	handle-conn)
+		package_name=dispatcher
+		source_file=pkg/dispatcher/startup_recovery.go
+		test_file=pkg/dispatcher/startup_recovery_mutation_test.go
+		function_name=handleConn
+		test_names=(TestHandleConnLifecycleMatrix)
 		;;
 	assignment-claim)
 		package_name=dispatcher
@@ -1881,6 +2105,13 @@ new_targeted_fixture() {
 		source_file=pkg/dispatcher/ops_runs.go
 		test_file=pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
 		function_name=reviewContextForOpsRun
+		test_names=(TestOpsAuthoritativeSurvivorMutationReviewContexts)
+		;;
+	authoritative-ops-any-worker)
+		package_name=dispatcher
+		source_file=pkg/dispatcher/ops_runs.go
+		test_file=pkg/dispatcher/ops_runs_authoritative_survivor_mutation_test.go
+		function_name=reviewContextFromAnyWorkerLocked
 		test_names=(TestOpsAuthoritativeSurvivorMutationReviewContexts)
 		;;
 	authoritative-health)
@@ -2005,6 +2236,10 @@ new_targeted_fixture() {
 		printf 'package dispatcher\n\nfunc TestAuthoritativeUnselected() {}\n' \
 			>"$fixture/pkg/dispatcher/authoritative_unselected_test.go"
 		case "$target" in
+		authoritative-ops-any-worker)
+			printf 'package dispatcher\n\nfunc TestReviewContextWorkerIdentityMatrix() {}\nfunc TestReviewReleaseTokenFencesDirectReviewTransitions() {}\n' \
+				>"$fixture/pkg/dispatcher/review_worker_release_test.go"
+			;;
 		authoritative-ops-conflict)
 			printf 'package dispatcher\n\nfunc TestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex() {}\n' \
 				>"$fixture/pkg/dispatcher/bounded_mutation_test.go"
@@ -2046,6 +2281,9 @@ new_targeted_fixture() {
 	authoritative-*)
 		git -C "$fixture" add pkg/dispatcher/authoritative_unselected_test.go
 		case "$target" in
+		authoritative-ops-any-worker)
+			git -C "$fixture" add pkg/dispatcher/review_worker_release_test.go
+			;;
 		authoritative-ops-conflict | authoritative-health-conflict)
 			git -C "$fixture" add pkg/dispatcher/bounded_mutation_test.go
 			;;
@@ -2312,11 +2550,14 @@ if [[ "$1" = tool && "$2" = go-mutesting && " $* " == *" --no-exec "* ]]; then
 	generation=$(mktemp -d "${TMPDIR:-/tmp}/fake-mutants.XXXXXX")
 	mkdir -p "$generation/$(dirname "$source_file")"
 	cp "$source_file" "$generation/$source_file.original"
-	sed '0,/return true/s//return false/' "$source_file" >"$generation/$source_file.0"
-	sed '0,/return true/s//return !false/' "$source_file" >"$generation/$source_file.1"
+	mutant_count=${MUTATION_FAKE_MUTANT_COUNT:-2}
+	for ((index = 0; index < mutant_count; index++)); do
+		sed "0,/return true/s//return $((index % 2 == 0 ? 0 : 1)) == 1/" "$source_file" >"$generation/$source_file.$index"
+	done
 	printf 'Save mutations into "%s"\n' "$generation"
-	printf 'Save mutation into "%s" with checksum 0\n' "$generation/$source_file.0"
-	printf 'Save mutation into "%s" with checksum 1\n' "$generation/$source_file.1"
+	for ((index = 0; index < mutant_count; index++)); do
+		printf 'Save mutation into "%s" with checksum %d\n' "$generation/$source_file.$index" "$index"
+	done
 	printf 'PARALLEL_WORKERS=%s\n' "${MUTATION_PARALLEL_WORKERS:-}" >>"${MUTATION_ARGS_TRACE:?}"
 	printf 'EXEC_TIMEOUT=%s\n' "${MUTATION_EXEC_TIMEOUT:-}" >>"${MUTATION_ARGS_TRACE:?}"
 	printf 'TIMEOUT_MARGIN=%s\n' "${MUTATION_TEST_TIMEOUT_MARGIN_SECONDS:-}" >>"${MUTATION_ARGS_TRACE:?}"
@@ -2333,6 +2574,10 @@ fi
 
 if [[ "$1" = test ]]; then
 	printf '%s\n' "$*" >>"${MUTATION_LIST_TRACE:?}"
+	if [[ "$MUTATION_FIXTURE" = targeted-list-enospc ]]; then
+		printf 'go: writing test binary: no space left on device\n' >&2
+		exit 1
+	fi
 	for arg in "$@"; do
 		case "$arg" in
 		-coverprofile=*) printf 'mode: set\n' >"${arg#-coverprofile=}" ;;
@@ -2355,6 +2600,7 @@ if [[ "$1" = test ]]; then
 		*TestRetrySQLiteBusyOperation*) printf 'TestRetrySQLiteBusyOperation\n' ;;
 		*TestEpicBranchAdmissionMutationBypassAndClaimPreservation*) printf 'TestEpicBranchAdmissionMutationBypassAndClaimPreservation\n' ;;
 		*TestReviewCheckpointStartupOrdering*) printf 'TestReviewCheckpointStartupOrdering\n' ;;
+		*TestHandleConnLifecycleMatrix*) printf 'TestHandleConnLifecycleMatrix\n' ;;
 		*TestAssignmentClaimAuthoritativeSurvivorMutation*) printf 'TestAssignmentClaimAuthoritativeSurvivorMutation\nTestAssignmentBehaviorMutation\nTestStandaloneAssignmentBehaviorHarnessCaseIsolation\n' ;;
 		*TestAssignmentBehaviorMutation*) printf 'TestAssignmentBehaviorMutation\nTestStandaloneAssignmentBehaviorHarnessCaseIsolation\n' ;;
 		*TestAssignBeadWithClaimReportsUnclaimedValidationFailure*) printf 'TestAssignBeadWithClaimReportsUnclaimedValidationFailure\n' ;;
@@ -2369,6 +2615,7 @@ if [[ "$1" = test ]]; then
 		*TestReviewIntegrationRecoveryMutationFinalize*) printf 'TestReviewIntegrationRecoveryMutationFinalize\n' ;;
 		*TestEscalationSurvivorMutation*) printf 'TestEscalationSurvivorMutationRouting\n' ;;
 		*TestAssignmentAuthoritativeSurvivorMutation*) printf 'TestAssignmentAuthoritativeSurvivorMutationInsertFailureDecision\n' ;;
+		*TestReviewContextWorkerIdentityMatrix*) printf 'TestOpsAuthoritativeSurvivorMutationReviewContexts\nTestReviewContextWorkerIdentityMatrix\nTestReviewReleaseTokenFencesDirectReviewTransitions\n' ;;
 		*TestOpsAuthoritativeSurvivorMutation*) printf 'TestOpsAuthoritativeSurvivorMutationResolveContracts\nTestOpsAuthoritativeSurvivorMutationReviewContexts\nTestReviewContextForOpsRunReturnsAndReleasesDispatcherMutex\n' ;;
 		*TestHealthAuthoritativeSurvivorMutation*) printf 'TestHealthAuthoritativeSurvivorMutationApplyContracts\nTestApplyHealthReturnsAndReleasesDispatcherMutex\n' ;;
 		*TestReviewCheckpointAuthoritativeSurvivorMutation*) printf 'TestReviewCheckpointAuthoritativeSurvivorMutationTransitionFailureContracts\nTestReviewCheckpointAuthoritativeSurvivorMutationIdentityValidation\nTestReviewCheckpointMutationIntegrationDurability\nTestReviewCheckpointMutationLegacyBinding\n' ;;
@@ -2392,6 +2639,7 @@ if [[ "$1" = tool && "$2" = cover ]]; then
 	if [[ "$MUTATION_FIXTURE" != targeted-uncovered ]]; then
 		printf 'pkg/dispatcher/startup_recovery.go:1: startupRecovery 100.0%%\n'
 	fi
+	printf 'pkg/dispatcher/startup_recovery.go:2: handleConn 100.0%%\n'
 	printf 'pkg/dispatcher/scheduling.go:1: advanceAssignedGeneralIdle 100.0%%\n'
 	printf 'pkg/dispatcher/scheduling.go:2: launchAssignmentWithResult 100.0%%\n'
 	printf 'pkg/dispatcher/sqlite_busy_retry.go:1: retrySQLiteBusyOperation 100.0%%\n'
@@ -2424,6 +2672,7 @@ if [[ "$1" = tool && "$2" = cover ]]; then
 	printf 'pkg/dispatcher/health.go:3: recordAssignmentObservation 100.0%%\n'
 	printf 'pkg/dispatcher/ops_runs.go:1: reviewContextForOpsRun 100.0%%\n'
 	printf 'pkg/dispatcher/ops_runs.go:2: applyOpsResolve 100.0%%\n'
+	printf 'pkg/dispatcher/ops_runs.go:3: reviewContextFromAnyWorkerLocked 100.0%%\n'
 	printf 'pkg/dispatcher/review_checkpoint_store.go:1: LoadOwningForBead 100.0%%\n'
 	printf 'pkg/dispatcher/review_checkpoint_store.go:2: AdvanceIntegrationStep 100.0%%\n'
 	printf 'pkg/dispatcher/review_checkpoint_store.go:3: BlockIntegration 100.0%%\n'
@@ -2484,6 +2733,13 @@ aggregate | aggregate-below | aggregate-zero | shard-timeout)
 	target=${*: -1}
 	exec_arg=""
 	match=""
+	if [[ -n "${MUTATION_CACHE_ROTATION_TRACE:-}" ]]; then
+		cache_state=fresh
+		[[ ! -e "$GOCACHE/prior-shard" ]] || cache_state=stale
+		printf '%s\t%s\n' "$GOCACHE" "$cache_state" >>"$MUTATION_CACHE_ROTATION_TRACE"
+		mkdir -p "$GOCACHE"
+		: >"$GOCACHE/prior-shard"
+	fi
 	for arg in "$@"; do
 		case "$arg" in
 		--exec=*) exec_arg=${arg#--exec=} ;;
@@ -2514,13 +2770,16 @@ aggregate | aggregate-below | aggregate-zero | shard-timeout)
 			printf 'The mutation score is 0.600000 (6 passed, 4 failed, 2 duplicated, 0 skipped, total is 10)\n'
 		fi
 		;;
+	*pkg/third/third.go)
+		printf 'The mutation score is 1.000000 (10 passed, 0 failed, 0 duplicated, 0 skipped, total is 10)\n'
+		;;
 	*)
 		echo "unexpected mutation target: $target" >&2
 		exit 65
 		;;
 	esac
 	;;
-targeted | targeted-fallback | targeted-list-miss | targeted-timeout | targeted-uncovered)
+targeted | targeted-fallback | targeted-list-miss | targeted-list-enospc | targeted-timeout | targeted-uncovered)
 	printf '%s\n' "$*" >>"${MUTATION_ARGS_TRACE:?}"
 	if [[ -n "${MUTATION_TEST_FILE:-}" ]]; then
 		printf 'MUTATION_TEST_FILE=%s\n' "$MUTATION_TEST_FILE" >>"${MUTATION_ARGS_TRACE:?}"
@@ -2672,6 +2931,114 @@ run_multi_fixture() {
 		 [.shards[].file] == .changed_files' \
 		"$evidence" >/dev/null || fail "$outcome evidence is missing deterministic shard identity"
 	printf '%s\n' "$evidence"
+}
+
+TestMutationCacheSlotRotation() {
+	local base evidence fixture head status trace
+	local -a refs
+	fixture=$(mktemp -d)
+	# shellcheck disable=SC2064 # Bind this fixture before another test replaces the local.
+	trap "rm -rf '$fixture'" RETURN
+	mapfile -t refs < <(new_cache_rotation_fixture "$fixture")
+	base=${refs[0]}
+	head=${refs[1]}
+	evidence="$fixture/mutation-evidence.json"
+	trace="$fixture/cache-rotation.tsv"
+	write_fake_go "$fixture/bin/go"
+
+	set +e
+	(
+		cd "$fixture"
+		PATH="$fixture/bin:$PATH" MUTATION_FIXTURE=aggregate \
+			MUTATION_TRACE="$fixture/mutation-trace.tsv" \
+			MUTATION_LIST_TRACE="$fixture/mutation-list.txt" \
+			MUTATION_CACHE_ROTATION_TRACE="$trace" \
+			MUTATION_MAX_WORKERS=2 MUTATION_FILE_TIMEOUT_SECONDS=5 \
+			bash "$runner" --base "$base" --head "$head" --evidence "$evidence" \
+			>"$fixture/runner.log" 2>&1
+	)
+	status=$?
+	set -e
+	if [[ "$status" != 0 ]]; then
+		cat "$fixture/runner.log" >&2
+		fail "cache rotation fixture exit = $status, want 0"
+	fi
+	[[ "$(wc -l <"$trace" | tr -d ' ')" = 3 ]] ||
+		fail 'cache rotation fixture did not observe all three shards'
+	[[ "$(cut -f1 "$trace" | sort -u | wc -l | tr -d ' ')" = 2 ]] ||
+		fail 'cache rotation fixture did not reuse exactly two bounded cache slots'
+	! grep -q $'\tstale$' "$trace" ||
+		fail 'a reused mutation cache slot retained artifacts from its prior shard'
+}
+
+TestTargetedMutationListENOSPC() {
+	local evidence fixture
+	fixture=$(mktemp -d)
+	# shellcheck disable=SC2064 # Bind this fixture before another test replaces the local.
+	trap "rm -rf '$fixture'" RETURN
+	evidence=$(run_targeted_fixture "$fixture" targeted-list-enospc infrastructure_failure 2)
+	jq -e \
+		'.score == null and .total == 0 and
+		 .shards[0].reason == "list targeted mutation tests: no space left on device"' \
+		"$evidence" >/dev/null || fail 'list ENOSPC did not retain an explicit infrastructure reason'
+	grep -Fq 'go: writing test binary: no space left on device' "$fixture/runner.log" ||
+		fail 'list ENOSPC diagnostics were not retained in the shard log'
+}
+
+TestHeavyMutationShardRouting() {
+	(
+		set --
+		# Load the runner functions without executing its final main invocation.
+		# shellcheck disable=SC1090 # The process substitution intentionally omits main.
+		source <(sed '$d' "$runner")
+		heavy_parallel_mutation_shard pkg/dispatcher/review_checkpoint_store.go '^(releaseWorkerWithHook)$'
+		heavy_parallel_mutation_shard pkg/dispatcher/review_worker_release.go '^(acquireCheckpointWorkerReleaseLocked)$'
+		heavy_parallel_mutation_shard pkg/dispatcher/review_worker_release.go '^(runCheckpointWorkerReleaseLease)$'
+		heavy_parallel_mutation_shard pkg/dispatcher/worker_directives.go '^(applyKillWorker)$'
+		heavy_parallel_mutation_shard pkg/dispatcher/worker_directives.go '^(applyRestartWorker)$'
+		heavy_parallel_mutation_shard pkg/dispatcher/worker_directives.go '^(restartCheckpointOwnedWorkerUsing)$'
+		heavy_parallel_mutation_shard pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocol)$'
+		heavy_parallel_mutation_shard pkg/dispatcher/worker_pool.go '^(releaseReviewWorkerAfterSendFailureUsing)$'
+		! heavy_parallel_mutation_shard pkg/dispatcher/review.go '^(reserveReviewRetryAttempt)$'
+	) || fail 'known compile-heavy mutation shards are not routed to bounded parallel execution'
+	[[ "$(grep -Fc "heavy_parallel_mutation_shard \"\$file\"" "$runner")" = 3 ]] ||
+		fail 'heavy mutation routing must drive prewarm, inner execution, and outer serialization'
+}
+
+TestHandleConnHeavyMutationRouting() {
+	local evidence fixture original_hash pattern
+	fixture=$(mktemp -d)
+	# shellcheck disable=SC2064 # Bind this fixture before another test replaces the local.
+	trap "rm -rf '$fixture'" RETURN
+	fixture="$fixture/handle-conn"
+	pattern='^TestHandleConnLifecycleMatrix$'
+	evidence=$(MUTATION_FAKE_MUTANT_COUNT=17 \
+		run_targeted_fixture "$fixture" targeted pass 0 false handle-conn)
+
+	grep -Fq -- "-list $pattern ./pkg/dispatcher" "$fixture/mutation-list.txt" ||
+		fail 'handleConn mutations omitted their exact owner list preflight'
+	jq -e --arg pattern "$pattern" \
+		'.shards[0].match == "^(handleConn)$" and .shards[0].test_pattern == $pattern and
+		 .shards[0].conclusion == "completed" and .shards[0].exit_code == 0 and
+		 .shards[0].passed == 17 and .shards[0].failed == 0 and
+		 .shards[0].skipped == 0 and .shards[0].total == 17' \
+		"$evidence" >/dev/null || fail 'handleConn exact 17-mutant replay lost terminal evidence'
+	for expected_limit in \
+		'PARALLEL_WORKERS=2' \
+		'EXEC_TIMEOUT=60' \
+		'TIMEOUT_MARGIN=5' \
+		'BASE_SHARD_TIMEOUT=240' \
+		'MAX_SHARD_TIMEOUT=240'; do
+		grep -Fxq "$expected_limit" "$fixture/mutation-args.txt" ||
+			fail "handleConn heavy mutation boundary omitted $expected_limit"
+	done
+	! grep -q '^MUTATION_TEST_FILE=' "$fixture/mutation-args.txt" ||
+		fail 'handleConn heavy mutation routing silently narrowed its full-package owner'
+	grep -Fxq 'mutation shard capacity: mutants=17 workers=2 effective_timeout=240s emergency_cap=240s' \
+		"$fixture/runner.log" || fail 'handleConn did not use bounded two-worker shard capacity'
+	original_hash=$(git -C "$fixture" rev-parse HEAD:pkg/dispatcher/startup_recovery.go)
+	[[ "$(git hash-object "$fixture/pkg/dispatcher/startup_recovery.go")" == "$original_hash" ]] ||
+		fail 'handleConn mutation replay did not restore its original source'
 }
 
 TestStrictIncrementalMutationShards() {
@@ -3604,6 +3971,704 @@ test_parallel_worker_cache_prewarm() {
 	run_parallel_worker_cache_prewarm_fixture "$fixture/nonzero" nonzero
 }
 
+run_heavy_mutation_outer_prewarm_fixture() {
+	local fixture="$1"
+	local mode="$2"
+	local fake_mode="$mode"
+	local checkout="$fixture/shards/checkouts/0"
+	local source_file=pkg/dispatcher/startup_recovery.go
+	local test_file=pkg/dispatcher/startup_recovery_mutation_test.go
+	local head status
+	mkdir -p "$fixture/bin" "$fixture/pkg/dispatcher" "$fixture/pkg/other" "$fixture/results" "$fixture/state"
+	git -C "$fixture" init -q
+	git -C "$fixture" config user.email mutation@example.test
+	git -C "$fixture" config user.name mutation-test
+	printf 'module mutation.test/prewarm\n\ngo 1.26\n' >"$fixture/go.mod"
+	printf 'package dispatcher\n\nfunc Alpha() bool { return true }\n' >"$fixture/pkg/dispatcher/alpha.go"
+	printf 'package dispatcher\n\nfunc handleConn() bool { return true }\n' >"$fixture/$source_file"
+	printf 'package dispatcher\n\nfunc TestHandleConnLifecycleMatrix() {}\n' >"$fixture/$test_file"
+	printf 'package dispatcher\n\nfunc TestUnselected() {}\n' >"$fixture/pkg/dispatcher/unselected_test.go"
+	printf 'package other\n\nfunc TestNotColocated() {}\n' >"$fixture/pkg/other/not_colocated_test.go"
+	git -C "$fixture" add go.mod pkg/dispatcher
+	git -C "$fixture" add pkg/other/not_colocated_test.go
+	git -C "$fixture" commit -qm head
+	head=$(git -C "$fixture" rev-parse HEAD)
+	if [[ "${MUTATION_PREWARM_FORCE_SEQUENTIAL:-}" = 1 && "$mode" = success ]]; then
+		fake_mode=sequential
+	fi
+
+	cat >"$fixture/bin/go" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "$1" = test ]] || exit 64
+for arg in "$@"; do
+	case "$arg" in
+	-coverprofile=*) printf 'mode: set\n' >"${arg#-coverprofile=}" ;;
+	esac
+done
+if [[ " $* " == *" -list "* ]]; then
+	printf 'TestHandleConnLifecycleMatrix\n'
+	exit 0
+fi
+if [[ " $* " == *" -run ^$ "* ]]; then
+	printf 'PREWARM|%s|%s|%s\n' "$GOCACHE" "$GOTMPDIR" "$*" >>"$MUTATION_PREWARM_TRACE"
+	serialize_lock=""
+	if [[ "$MUTATION_PREWARM_MODE" = sequential ]]; then
+		serialize_lock="$MUTATION_PREWARM_STATE/serialize.lock"
+		while ! mkdir "$serialize_lock" 2>/dev/null; do
+			sleep 0.01
+		done
+	fi
+	active_slot=""
+	for candidate in 0 1; do
+		if mkdir "$MUTATION_PREWARM_STATE/active-$candidate" 2>/dev/null; then
+			active_slot="$MUTATION_PREWARM_STATE/active-$candidate"
+			break
+		fi
+	done
+	[[ -n "$active_slot" ]] || exit 76
+	cleanup_prewarm_slot() {
+		rmdir "$active_slot"
+		[[ -z "$serialize_lock" ]] || rmdir "$serialize_lock"
+	}
+	trap cleanup_prewarm_slot EXIT
+	if [[ -d "$MUTATION_PREWARM_STATE/active-0" && -d "$MUTATION_PREWARM_STATE/active-1" ]]; then
+		: >"$MUTATION_PREWARM_STATE/overlap-observed"
+	fi
+	for ((attempt = 0; attempt < 100; attempt++)); do
+		[[ ! -e "$MUTATION_PREWARM_STATE/overlap-observed" ]] || break
+		sleep 0.01
+	done
+	[[ -e "$MUTATION_PREWARM_STATE/overlap-observed" ]] || exit 75
+	case "$MUTATION_PREWARM_MODE:$GOCACHE" in
+	fail:*parallel-1)
+		exit 17
+		;;
+	tamper:*parallel-0)
+		printf 'package dispatcher\n\nfunc handleConn() bool { return false }\n' >pkg/dispatcher/startup_recovery.go
+		;;
+	esac
+fi
+EOF
+	cat >"$fixture/bin/timeout" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" = --foreground ]]; then
+	shift
+fi
+limit=${1:?}
+shift
+printf 'TIMEOUT|%s|%s\n' "$limit" "$*" >>"$MUTATION_TIMEOUT_TRACE"
+if [[ "$limit" = 120 && "$MUTATION_PREWARM_MODE" = timeout ]]; then
+	exit 124
+fi
+if [[ " $* " == *mutation_parallel.sh* ]]; then
+	printf 'OUTER|%s\n' "$limit" >>"$MUTATION_PREWARM_TRACE"
+	[[ "$(grep -c '^PREWARM|' "$MUTATION_PREWARM_TRACE" || true)" = 2 ]] || exit 98
+	printf 'The mutation score is 1.000000 (2 passed, 0 failed, 0 duplicated, 0 skipped, total is 2)\n'
+	exit 0
+fi
+if [[ "${1:-}" = go ]]; then
+	shift
+	exec "$MUTATION_FAKE_GO" "$@"
+fi
+exec "$@"
+EOF
+	chmod +x "$fixture/bin/go" "$fixture/bin/timeout"
+
+	set +e
+	(
+		cd "$fixture"
+		set --
+		# Load the production runner functions; its argument parser deliberately rejects
+		# the empty source-only invocation after defining them.
+		# shellcheck disable=SC1090
+		source "$runner" >/dev/null 2>&1 || true
+		# shellcheck disable=SC2329,SC2317 # run_mutation_shard resolves this override dynamically.
+		touched_functions_covered() { return 0; }
+		# shellcheck disable=SC2034 # Consumed by the sourced run_mutation_shard function.
+		mutation_failure_evidence_root="$fixture/failures"
+		# shellcheck disable=SC2329,SC2317 # Sourced functions resolve these fixture commands dynamically.
+		go() { "$fixture/bin/go" "$@"; }
+		# shellcheck disable=SC2329,SC2317 # Sourced functions resolve these fixture commands dynamically.
+		timeout() { "$fixture/bin/timeout" "$@"; }
+		# shellcheck disable=SC2030,SC2031 # Fixture variables are intentionally subshell-local.
+		export MUTATION_FAKE_GO="$fixture/bin/go" MUTATION_PREWARM_MODE="$fake_mode" \
+			MUTATION_PREWARM_STATE="$fixture/state" \
+			MUTATION_PREWARM_TRACE="$fixture/state/prewarm.trace" \
+			MUTATION_TIMEOUT_TRACE="$fixture/state/timeout.trace"
+		run_mutation_shard 0 "$source_file" '^(handleConn)$' \
+			'^TestHandleConnLifecycleMatrix$' 0 "$head" "$fixture/shards" \
+			"$fixture/results" 240 60 240
+	)
+	status=$?
+	set -e
+	[[ "$status" = 0 ]] || fail "$mode production-seam prewarm fixture exit = $status, want 0"
+	printf '%s\n' "$checkout"
+}
+
+TestHeavyMutationPrewarmBeforeOuterTimeout() {
+	local checkout expected_hash fixture focused_trace
+	fixture=$(mktemp -d)
+	# shellcheck disable=SC2064 # Bind this fixture before another test replaces the local.
+	trap "rm -rf '$fixture'" RETURN
+
+	checkout=$(run_heavy_mutation_outer_prewarm_fixture "$fixture/success" success)
+	expected_hash=$(git -C "$fixture/success" rev-parse HEAD:pkg/dispatcher/startup_recovery.go)
+	[[ "$(git hash-object "$checkout/pkg/dispatcher/startup_recovery.go")" = "$expected_hash" ]] ||
+		fail 'heavy prewarm did not preserve the exact archived HEAD source blob'
+	[[ "$(grep -c '^PREWARM|' "$fixture/success/state/prewarm.trace")" = 2 ]] ||
+		fail 'outer heavy timeout started before both worker caches were prewarmed'
+	[[ -e "$fixture/success/state/overlap-observed" ]] ||
+		fail 'heavy cache prewarm workers did not overlap at the two-slot barrier'
+	[[ "$(tail -1 "$fixture/success/state/prewarm.trace")" = 'OUTER|240' ]] ||
+		fail 'heavy cache prewarm did not finish before the outer 240s timeout'
+	jq -e '.conclusion == "completed" and .exit_code == 0 and .total == 2 and .skipped == 0' \
+		"$fixture/success/results/0.json" >/dev/null ||
+		fail 'successful production-seam prewarm lost completed evidence'
+	for worker in 0 1; do
+		grep -Fq "PREWARM|$fixture/success/shards/caches/0/parallel-$worker|$fixture/success/shards/tmp/0/parallel-worker-$worker|" \
+			"$fixture/success/state/prewarm.trace" ||
+			fail "heavy cache prewarm omitted isolated worker $worker cache/tmp slots"
+	done
+	[[ "$(grep -Fc 'TIMEOUT|120|go test -vet=off -count=1 -timeout 115s -run ^$ mutation.test/prewarm/pkg/dispatcher' \
+		"$fixture/success/state/timeout.trace")" = 2 ]] ||
+		fail 'full-package heavy prewarm did not preserve the bounded package target'
+
+	focused_trace="$fixture/success/state/focused.trace"
+	(
+		set --
+		# shellcheck disable=SC1090
+		source "$runner" >/dev/null 2>&1 || true
+		# shellcheck disable=SC2329,SC2317 # Sourced functions resolve these fixture commands dynamically.
+		go() { "$fixture/success/bin/go" "$@"; }
+		# shellcheck disable=SC2329,SC2317 # Sourced functions resolve these fixture commands dynamically.
+		timeout() { "$fixture/success/bin/timeout" "$@"; }
+		# shellcheck disable=SC2030,SC2031 # Fixture variables are intentionally subshell-local.
+		export MUTATION_FAKE_GO="$fixture/success/bin/go" MUTATION_PREWARM_MODE=success \
+			MUTATION_PREWARM_STATE="$fixture/success/state" \
+			MUTATION_PREWARM_TRACE="$focused_trace" \
+			MUTATION_TIMEOUT_TRACE="$fixture/success/state/focused-timeout.trace"
+		prewarm_parallel_mutation_workers "$checkout" \
+				pkg/dispatcher/startup_recovery.go \
+				pkg/dispatcher/startup_recovery_mutation_test.go \
+				"$fixture/success/focused-cache" "$fixture/success/focused-tmp" 2 120
+	)
+	[[ "$(grep -c '^PREWARM|' "$focused_trace")" = 2 ]] ||
+		fail 'focused heavy prewarm did not populate both workers'
+	grep -Eq 'alpha[.]go .*/startup_recovery[.]go .*/startup_recovery_mutation_test[.]go$' \
+		"$focused_trace" || fail 'focused heavy prewarm did not select sorted production files plus exactly its owner test'
+	! grep -Fq 'unselected_test.go' "$focused_trace" ||
+		fail 'focused heavy prewarm compiled an unselected test file'
+
+	local invalid_status_file="$fixture/success/state/invalid.status"
+	(
+		set --
+		# shellcheck disable=SC1090
+		source "$runner" >/dev/null 2>&1 || true
+		# shellcheck disable=SC2329,SC2317 # Sourced functions resolve these fixture commands dynamically.
+		go() { "$fixture/success/bin/go" "$@"; }
+		# shellcheck disable=SC2329,SC2317 # Sourced functions resolve these fixture commands dynamically.
+		timeout() { "$fixture/success/bin/timeout" "$@"; }
+		# shellcheck disable=SC2030,SC2031 # Fixture variables are intentionally subshell-local.
+		export MUTATION_FAKE_GO="$fixture/success/bin/go" MUTATION_PREWARM_MODE=success \
+			MUTATION_PREWARM_STATE="$fixture/success/state" \
+			MUTATION_PREWARM_TRACE="$fixture/success/state/invalid.trace" \
+			MUTATION_TIMEOUT_TRACE="$fixture/success/state/invalid-timeout.trace"
+		invalid_status=0
+		prewarm_parallel_mutation_workers "$checkout" \
+			pkg/dispatcher/startup_recovery.go \
+			pkg/other/not_colocated_test.go \
+			"$fixture/success/invalid-cache" "$fixture/success/invalid-tmp" 2 120 || invalid_status=$?
+		printf '%d\n' "$invalid_status" >"$invalid_status_file"
+	)
+	[[ "$(<"$invalid_status_file")" = 2 ]] ||
+		fail 'non-colocated focused prewarm did not fail closed with infrastructure status'
+	[[ ! -e "$fixture/success/state/invalid.trace" ]] ||
+		fail 'non-colocated focused prewarm started worker setup'
+	[[ ! -e "$fixture/success/state/invalid-timeout.trace" ]] ||
+		fail 'non-colocated focused prewarm reached an outer timeout'
+
+	run_heavy_mutation_outer_prewarm_fixture "$fixture/fail" fail >/dev/null
+	! grep -q '^OUTER|' "$fixture/fail/state/prewarm.trace" ||
+		fail 'failed heavy prewarm entered mutation execution'
+	jq -e '.conclusion == "infrastructure_failure" and .total == 0' \
+		"$fixture/fail/results/0.json" >/dev/null ||
+		fail 'failed heavy prewarm lost infrastructure evidence'
+	run_heavy_mutation_outer_prewarm_fixture "$fixture/timeout" timeout >/dev/null
+	[[ ! -e "$fixture/timeout/state/prewarm.trace" ]] ||
+		! grep -q '^OUTER|' "$fixture/timeout/state/prewarm.trace" ||
+		fail 'timed out heavy prewarm entered mutation execution'
+	jq -e '.conclusion == "infrastructure_failure" and .total == 0' \
+		"$fixture/timeout/results/0.json" >/dev/null ||
+		fail 'timed out heavy prewarm lost zero-denominator infrastructure evidence'
+	run_heavy_mutation_outer_prewarm_fixture "$fixture/tamper" tamper >/dev/null
+	! grep -q '^OUTER|' "$fixture/tamper/state/prewarm.trace" ||
+		fail 'source-changing heavy prewarm entered mutation execution'
+	jq -e '.conclusion == "infrastructure_failure" and .total == 0' \
+		"$fixture/tamper/results/0.json" >/dev/null ||
+		fail 'source-changing heavy prewarm lost infrastructure evidence'
+}
+
+write_heavy_production_seam_bundle() {
+	local bundle_root="$1"
+	local bundle_dir="$bundle_root/scripts/quality_gate"
+	[[ "$(tail -1 "$runner")" == 'main "$@"' ]] ||
+		fail 'mutation runner no longer has one removable main invocation'
+	mkdir -p "$bundle_dir"
+	sed '$d' "$runner" >"$bundle_dir/mutation.sh"
+	cp "$repo_root/scripts/quality_gate/mutation_parallel.sh" \
+		"$repo_root/scripts/quality_gate/mutation_exec.sh" "$bundle_dir/"
+	chmod +x "$bundle_dir/mutation.sh" "$bundle_dir/mutation_parallel.sh" \
+		"$bundle_dir/mutation_exec.sh"
+	cmp -s "$repo_root/scripts/quality_gate/mutation_parallel.sh" \
+		"$bundle_dir/mutation_parallel.sh" || fail 'production-seam bundle changed mutation_parallel.sh'
+	cmp -s "$repo_root/scripts/quality_gate/mutation_exec.sh" \
+		"$bundle_dir/mutation_exec.sh" || fail 'production-seam bundle changed mutation_exec.sh'
+	printf '%s\n' "$bundle_dir/mutation.sh"
+}
+
+new_heavy_production_seam_fixture() {
+	local fixture="$1"
+	mkdir -p "$fixture/bin" "$fixture/pkg/dispatcher" "$fixture/state"
+	git -C "$fixture" init -q
+	git -C "$fixture" config user.email mutation@example.test
+	git -C "$fixture" config user.name mutation-test
+	printf 'module mutation.test/production-seam\n\ngo 1.26\n' >"$fixture/go.mod"
+	printf 'package dispatcher\n\nfunc handleConn() bool { return true }\n' \
+		>"$fixture/pkg/dispatcher/startup_recovery.go"
+	printf 'package dispatcher\n\nfunc registerWorkerWithProtocol() bool { return true }\n' \
+		>"$fixture/pkg/dispatcher/worker_pool.go"
+	printf 'package dispatcher\n\nfunc TestHandleConnLifecycleMatrix() {}\n' \
+		>"$fixture/pkg/dispatcher/startup_recovery_mutation_test.go"
+	printf 'package dispatcher\n\nfunc TestRegisterWorkerWithProtocolMutationCoverage() {}\n\nfunc TestRegisterWorkerWithProtocolReleasesMutexBoundedMutation() {}\n' \
+		>"$fixture/pkg/dispatcher/lifecycle_lock_bounded_mutation_test.go"
+	git -C "$fixture" add go.mod pkg/dispatcher
+	git -C "$fixture" commit -qm head
+
+	cat >"$fixture/bin/go" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" = tool && "$2" = go-mutesting ]]; then
+	source_file=${*: -1}
+	case "$source_file" in
+	*startup_recovery.go) mutant_count=17 ;;
+	*worker_pool.go) mutant_count=38 ;;
+	*) exit 64 ;;
+	esac
+	generation=$(mktemp -d "${GOTMPDIR:-/tmp}/production-seam-mutants.XXXXXX")
+	mkdir -p "$generation/$(dirname "$source_file")"
+	cp "$source_file" "$generation/$source_file.original"
+	for ((index = 0; index < mutant_count; index++)); do
+		sed '0,/return true/s//return false/' "$source_file" >"$generation/$source_file.$index"
+	done
+	printf 'Save mutations into "%s"\n' "$generation"
+	for ((index = 0; index < mutant_count; index++)); do
+		printf 'Save mutation into "%s" with checksum %d\n' "$generation/$source_file.$index" "$index"
+	done
+	exit 0
+fi
+if [[ "$1" = tool && "$2" = cover ]]; then
+	printf 'pkg/dispatcher/startup_recovery.go:1: handleConn 100.0%%\n'
+	printf 'pkg/dispatcher/worker_pool.go:1: registerWorkerWithProtocol 100.0%%\n'
+	exit 0
+fi
+[[ "$1" = test ]] || exit 64
+printf 'GO|%s|%s|%s\n' "${GOCACHE:-}" "${GOTMPDIR:-}" "$*" >>"${MUTATION_SEAM_GO_TRACE:?}"
+for arg in "$@"; do
+	case "$arg" in
+	-coverprofile=*) printf 'mode: set\n' >"${arg#-coverprofile=}" ;;
+	esac
+done
+if [[ " $* " == *" -list "* ]]; then
+	case "$*" in
+	*TestHandleConnLifecycleMatrix*) printf 'TestHandleConnLifecycleMatrix\n' ;;
+	*TestRegisterWorkerWithProtocol*)
+		printf 'TestRegisterWorkerWithProtocolMutationCoverage\n'
+		printf 'TestRegisterWorkerWithProtocolReleasesMutexBoundedMutation\n'
+		;;
+	esac
+	exit 0
+fi
+if [[ " $* " == *" -run ^$ "* ]]; then
+	printf 'PREWARM|%s|%s\n' "$GOCACHE" "$GOTMPDIR" >>"${MUTATION_SEAM_TRACE:?}"
+fi
+if [[ -n "${MUTATE_CHANGED:-}" ]]; then
+	case "${MUTATE_ORIGINAL:-}" in
+	*worker_pool.go) exit 0 ;;
+	*) exit 1 ;;
+	esac
+fi
+exit 0
+EOF
+	cat >"$fixture/bin/timeout" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+	for arg in "$@"; do
+		if [[ "$arg" == *mutation_parallel.sh ]]; then
+			printf 'OUTER|%s\n' "$*" >>"${MUTATION_SEAM_TRACE:?}"
+			printf 'CONFIG|workers=%s|warm=%s|base=%s|max=%s|exec=%s|margin=%s|test_file=%s\n' \
+				"${MUTATION_PARALLEL_WORKERS:-}" \
+				"${MUTATION_WORKER_CACHE_WARM_TIMEOUT_SECONDS:-}" \
+				"${MUTATION_BASE_SHARD_TIMEOUT_SECONDS:-}" \
+				"${MUTATION_MAX_SHARD_TIMEOUT_SECONDS:-}" \
+				"${MUTATION_EXEC_TIMEOUT:-}" \
+				"${MUTATION_TEST_TIMEOUT_MARGIN_SECONDS:-}" \
+				"${MUTATION_TEST_FILE:-}" \
+				>>"${MUTATION_SEAM_TRACE:?}"
+			if [[ "${MUTATION_SEAM_NEGATIVE:-}" = 1 ]]; then
+				evidence_run="${MUTATION_FAILURE_EVIDENCE_DIR:?}/run.synthetic"
+				mkdir -p "$evidence_run"
+				for ((index = 0; index < 38; index++)); do
+					if ((index < 36)); then
+						jq -n --arg source_file "$MUTATION_SOURCE_FILE" \
+							--arg function_match "$MUTATION_FUNCTION_MATCH" --argjson mutant_index "$index" \
+							--arg source_path "$PWD/$MUTATION_SOURCE_FILE" \
+							'{worker: ($mutant_index % 2), source_file: $source_file, source_path: $source_path,
+							function_match: $function_match, mutant_index: $mutant_index,
+							mutant_path: ($source_path + "." + ($mutant_index|tostring)),
+							content_hash_algorithm: "git-blob", content_hash: "synthetic",
+							exit_class: "survived", exit_status: 1}' \
+							>"$evidence_run/mutant-$index.json"
+					else
+						jq -n --arg source_file "$MUTATION_SOURCE_FILE" \
+							--arg function_match "$MUTATION_FUNCTION_MATCH" --argjson mutant_index "$index" \
+							--arg source_path "$PWD/$MUTATION_SOURCE_FILE" \
+							'{worker: ($mutant_index % 2), source_file: $source_file, source_path: $source_path,
+							function_match: $function_match, mutant_index: $mutant_index,
+							mutant_path: ($source_path + "." + ($mutant_index|tostring)),
+							content_hash_algorithm: "git-blob", content_hash: "synthetic",
+							exit_class: "aborted", exit_status: null}' \
+							>"$evidence_run/mutant-$index.json"
+					fi
+				done
+				printf '%s\n' "$$" >"${MUTATION_SEAM_TRACE:?}.negative.pid"
+				printf 'ORO_MUTATION_EXEC_TIMEOUT\n'
+				exit 124
+			fi
+			break
+		fi
+	done
+exec "${MUTATION_REAL_TIMEOUT:?}" "$@"
+EOF
+	chmod +x "$fixture/bin/go" "$fixture/bin/timeout"
+}
+
+run_heavy_production_seam_replay() {
+	local replay_root="$1"
+	local mode="$2"
+	local source_file="$3"
+	local function_match="$4"
+	local test_pattern="$5"
+	local replay_repo="$repo_root"
+	local head bundle_runner original_path="$PATH" real_timeout run_path="$PATH"
+	real_timeout=$(command -v timeout)
+	mkdir -p "$replay_root/results" "$replay_root/evidence" "$replay_root/state" \
+		"$replay_root/mod"
+	bundle_runner=$(write_heavy_production_seam_bundle "$replay_root/runner")
+	if [[ "$mode" = synthetic ]]; then
+		replay_repo="$replay_root/repo"
+		new_heavy_production_seam_fixture "$replay_repo"
+	elif [[ "$mode" = real ]]; then
+		mkdir -p "$replay_root/prepopulate/cache" "$replay_root/prepopulate/tmp"
+		(
+			cd "$replay_repo"
+			GOMODCACHE="$replay_root/mod" \
+				GOCACHE="$replay_root/prepopulate/cache" \
+				GOTMPDIR="$replay_root/prepopulate/tmp" \
+				go mod download
+		) >"$replay_root/prepopulate/go-mod-download.log" 2>&1
+		[[ ! -e "$replay_root/caches" && ! -e "$replay_root/tmp" ]] ||
+			fail "$source_file real replay mutation caches were not fresh at seam entry"
+		printf 'fresh|%s|%s\n' "$replay_root/caches" "$replay_root/tmp" \
+			>"$replay_root/state/seam-entry.trace"
+	else
+		fail "unknown production-seam replay mode $mode"
+		return
+	fi
+	head=$(git -C "$replay_repo" rev-parse HEAD)
+	if [[ "$mode" = real && "${ORO_REAL_REPLAY_PREP_ONLY:-}" = 1 ]]; then
+		printf '%s\n' "$head" >"$replay_root/head"
+		return
+	fi
+	(
+		cd "$replay_repo"
+		set --
+		# This exact bundle omits only mutation.sh's final main invocation, preserving
+		# BASH_SOURCE-based mutation_parallel.sh and mutation_exec.sh resolution.
+		# shellcheck disable=SC1090
+		source "$bundle_runner"
+		# shellcheck disable=SC2034 # Consumed dynamically by the sourced run_mutation_shard.
+		mutation_failure_evidence_root="$replay_root/evidence"
+		# shellcheck disable=SC2030 # The sourced runner consumes this subshell-local environment.
+		export GOMODCACHE="$replay_root/mod"
+		if [[ "$mode" = synthetic ]]; then
+			run_path="$replay_repo/bin:$original_path"
+			# shellcheck disable=SC2030 # The sourced runner consumes this subshell-local environment.
+			export MUTATION_REAL_TIMEOUT="$real_timeout" \
+				MUTATION_SEAM_GO_TRACE="$replay_root/state/go.trace" \
+				MUTATION_SEAM_TRACE="$replay_root/state/seam.trace"
+			# shellcheck disable=SC2329,SC2317 # The sourced shard runner resolves this override dynamically.
+			touched_functions_covered() { return 0; }
+		else
+			unset MUTATION_REAL_TIMEOUT MUTATION_SEAM_GO_TRACE MUTATION_SEAM_TRACE
+		fi
+		PATH="$run_path" run_mutation_shard 000000 "$source_file" "$function_match" "$test_pattern" \
+			0 "$head" "$replay_root" "$replay_root/results" 240 60 900
+	)
+	printf '%s\n' "$head" >"$replay_root/head"
+}
+
+assert_heavy_production_seam_replay() {
+	local replay_root="$1"
+	local mode="$2"
+	local source_file="$3"
+	local function_match="$4"
+	local mutant_count="$5"
+	local expected_timeout="${6:-240}"
+	local replay_repo="$repo_root"
+	local evidence_run expected_hash index
+	[[ "$mode" = real ]] || replay_repo="$replay_root/repo"
+
+	jq -e --arg file "$source_file" --arg match "$function_match" \
+		--argjson total "$mutant_count" \
+		'.index == 0 and .file == $file and .match == $match and
+		 .conclusion == "completed" and .exit_code == 0 and
+		 .total == $total and .skipped == 0' \
+		"$replay_root/results/000000.json" >/dev/null ||
+		fail "$mode $function_match replay lost its exact terminal shard result"
+	if [[ "$function_match" = '^(registerWorkerWithProtocol)$' ]]; then
+		jq -e --argjson total "$mutant_count" \
+			'.score == 0 and .passed == 0 and .failed == $total and
+			 .skipped == 0 and .total == $total' \
+			"$replay_root/results/000000.json" >/dev/null ||
+			fail "$mode $function_match replay lost its exact zero-score summary"
+	fi
+	grep -Fxq \
+		"mutation shard capacity: mutants=$mutant_count workers=2 effective_timeout=${expected_timeout}s emergency_cap=${expected_timeout}s" \
+		"$replay_root/logs/000000.log" ||
+		fail "$mode $function_match replay changed bounded shard capacity"
+
+	evidence_run=$(find "$replay_root/evidence/000000" -mindepth 1 -maxdepth 1 \
+		-type d -name 'run.*')
+	[[ "$(wc -l <<<"$evidence_run" | tr -d ' ')" = 1 && -d "$evidence_run" ]] ||
+		fail "$mode $function_match replay did not retain one evidence run"
+	jq -s -e --arg file "$source_file" --arg match "$function_match" \
+		--argjson total "$mutant_count" \
+		'length == $total and
+		 ([.[].mutant_index] | sort) == [range(0; $total)] and
+		 all(.[]; .source_file == $file and .function_match == $match and
+			(.exit_class == "killed" or .exit_class == "survived"))' \
+		"$evidence_run"/mutant-*.json >/dev/null ||
+		fail "$mode $function_match replay lost exact terminal mutant evidence"
+	if [[ "$function_match" = '^(registerWorkerWithProtocol)$' ]]; then
+		jq -s -e \
+			'all(.[]; .exit_class == "survived" and .exit_status == 1)' \
+			"$evidence_run"/mutant-*.json >/dev/null ||
+			fail "$mode $function_match replay lost all-survived register-worker evidence"
+	fi
+
+	expected_hash=$(git -C "$replay_repo" rev-parse "$(<"$replay_root/head"):$source_file")
+	for index in "$replay_repo/$source_file" \
+		"$replay_root/checkouts/000000/$source_file"; do
+		[[ "$(git hash-object "$index")" = "$expected_hash" ]] ||
+			fail "$mode $function_match replay did not restore $index"
+	done
+
+	if [[ "$mode" = synthetic ]]; then
+		grep -Fxq "CONFIG|workers=2|warm=120|base=${expected_timeout}|max=${expected_timeout}|exec=60|margin=5|test_file=" \
+			"$replay_root/state/seam.trace" ||
+			fail "$function_match replay changed the heavy production boundary"
+		[[ "$(grep -c '^PREWARM|' "$replay_root/state/seam.trace")" = 4 ]] ||
+			fail "$function_match replay did not preserve external and inner worker prewarms"
+		[[ "$(grep -c "^OUTER|${expected_timeout} " "$replay_root/state/seam.trace")" = 1 ]] ||
+			fail "$function_match replay did not cross one outer ${expected_timeout}s production seam"
+		local outer_line prewarm_before prewarm_after
+		outer_line=$(grep -n '^OUTER|' "$replay_root/state/seam.trace" | cut -d: -f1)
+		prewarm_before=$(sed -n "1,$((outer_line - 1))p" "$replay_root/state/seam.trace" |
+			grep -c '^PREWARM|' || true)
+		prewarm_after=$(sed -n "$((outer_line + 1)),\$p" "$replay_root/state/seam.trace" |
+			grep -c '^PREWARM|' || true)
+		[[ "$prewarm_before" = 2 && "$prewarm_after" = 2 ]] ||
+			fail "$function_match replay did not place exactly two external prewarms before its outer clock"
+		for index in 0 1; do
+			local worker_trace="$replay_root/caches/0/parallel-$index|$replay_root/tmp/000000/parallel-worker-$index"
+		[[ "$(sed -n "1,$((outer_line - 1))p" "$replay_root/state/seam.trace" | grep -Fc "$worker_trace")" = 1 &&
+				"$(sed -n "$((outer_line + 1)),\$p" "$replay_root/state/seam.trace" | grep -Fc "$worker_trace")" = 1 ]] ||
+				fail "$function_match replay omitted isolated worker $index cache/tmp"
+		done
+	else
+		[[ -f "$replay_root/prepopulate/go-mod-download.log" ]] ||
+			fail "$function_match real replay did not retain module prepopulation evidence"
+		grep -Fxq "fresh|$replay_root/caches|$replay_root/tmp" \
+			"$replay_root/state/seam-entry.trace" ||
+			fail "$function_match real replay did not prove fresh mutation caches at seam entry"
+	fi
+}
+
+TestHeavyMutationProductionSeamReplays() {
+	local mode=synthetic replay_root
+	if [[ "${ORO_REAL_REPLAY:-}" = 1 ]]; then
+		mode=real
+		replay_root=${ORO_REAL_REPLAY_ROOT:?set a fresh retained replay root}
+		mkdir -p "$replay_root"
+		[[ -z "$(find "$replay_root" -mindepth 1 -maxdepth 1 -print -quit)" ]] ||
+			fail 'real production-seam replay root must be fresh and empty'
+	else
+		if [[ -n "${ORO_REAL_REPLAY_ROOT:-}" ]]; then
+			replay_root=$ORO_REAL_REPLAY_ROOT
+			mkdir -p "$replay_root"
+			[[ -z "$(find "$replay_root" -mindepth 1 -maxdepth 1 -print -quit)" ]] ||
+				fail 'synthetic production-seam replay root must be fresh and empty'
+		else
+			replay_root=$(mktemp -d)
+			# shellcheck disable=SC2064 # Bind this fixture before another test replaces the local.
+			trap "rm -rf '$replay_root'" RETURN
+		fi
+	fi
+
+	run_heavy_production_seam_replay "$replay_root/handle" "$mode" \
+		pkg/dispatcher/startup_recovery.go '^(handleConn)$' \
+		'^TestHandleConnLifecycleMatrix$'
+	if [[ "$mode" = real && "${ORO_REAL_REPLAY_PREP_ONLY:-}" = 1 ]]; then
+		run_heavy_production_seam_replay "$replay_root/register" "$mode" \
+			pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocol)$' \
+			'^(TestRegisterWorkerWithProtocolMutationCoverage|TestRegisterWorkerWithProtocolReleasesMutexBoundedMutation)$'
+		local prepared
+		for prepared in handle register; do
+			[[ -f "$replay_root/$prepared/prepopulate/go-mod-download.log" ]] ||
+				fail "$prepared real preparation smoke lost its module log"
+			grep -Fxq "fresh|$replay_root/$prepared/caches|$replay_root/$prepared/tmp" \
+				"$replay_root/$prepared/state/seam-entry.trace" ||
+				fail "$prepared real preparation smoke lost its fresh-cache sentinel"
+			[[ ! -e "$replay_root/$prepared/results/000000.json" &&
+				! -e "$replay_root/$prepared/logs/000000.log" ]] ||
+				fail "$prepared preparation-only smoke started mutation execution"
+		done
+		printf 'retained production-seam preparation smoke: %s\n' "$replay_root"
+		return
+	fi
+	assert_heavy_production_seam_replay "$replay_root/handle" "$mode" \
+		pkg/dispatcher/startup_recovery.go '^(handleConn)$' 17
+
+	run_heavy_production_seam_replay "$replay_root/register" "$mode" \
+		pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocol)$' \
+		'^(TestRegisterWorkerWithProtocolMutationCoverage|TestRegisterWorkerWithProtocolReleasesMutexBoundedMutation)$'
+	assert_heavy_production_seam_replay "$replay_root/register" "$mode" \
+		pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocol)$' 38 360
+	[[ "$mode" = synthetic ]] || printf 'retained production-seam replay: %s\n' "$replay_root"
+}
+
+TestRegisterWorkerMutationAggregateBudget() {
+	local replay_root
+	replay_root=$(mktemp -d)
+	# shellcheck disable=SC2064 # Expand the function-local temporary path before RETURN.
+	trap "rm -rf '$replay_root'" RETURN
+	run_register_worker_budget_negative_fixture "$replay_root/negative"
+	printf 'negative register-worker budget fixture passed at 240s with exact abort evidence\n'
+	run_heavy_production_seam_replay "$replay_root/register" synthetic \
+		pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocol)$' \
+		'^(TestRegisterWorkerWithProtocolMutationCoverage|TestRegisterWorkerWithProtocolReleasesMutexBoundedMutation)$'
+	assert_heavy_production_seam_replay "$replay_root/register" synthetic \
+		pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocol)$' 38 360
+	assert_register_worker_timeout_selector "$replay_root/register/runner/scripts/quality_gate/mutation.sh"
+	test_parallel_abnormal_teardown_evidence "$replay_root/abnormal-teardown"
+}
+
+assert_register_worker_timeout_selector() {
+	local runner_bundle="$1"
+	local actual
+	(
+		set --
+		# shellcheck disable=SC1090 # Test-only bundle omits the production main call.
+		source "$runner_bundle"
+		export MUTATION_BASE_SHARD_TIMEOUT_SECONDS=240 MUTATION_MAX_SHARD_TIMEOUT_SECONDS=900
+		actual=$(mutation_shard_timeout_seconds pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocol)$' 240)
+		[[ "$actual" = 360 ]] || fail "register-worker timeout selector = $actual, want 360"
+		[[ "$(mutation_shard_timeout_seconds pkg/dispatcher/worker_pool.go '^(registerWorker)$' 240)" = 240 ]] ||
+			fail 'register wrapper unexpectedly received the aggregate cap'
+		[[ "$(mutation_shard_timeout_seconds pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocolExtra)$' 240)" = 240 ]] ||
+			fail 'register near-match unexpectedly received the aggregate cap'
+		[[ "$(mutation_shard_timeout_seconds pkg/dispatcher/connection.go '^(handleConn)$' 240)" = 240 ]] ||
+			fail 'handleConn unexpectedly received the aggregate cap'
+		[[ "$(mutation_shard_timeout_seconds pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocol)$' 1800)" = 360 ]] ||
+			fail 'exact register route did not override inherited default'
+		[[ "$(mutation_shard_timeout_seconds pkg/dispatcher/assignment.go '^(assignBeadWithClaim)$' 1800)" = 1800 ]] ||
+			fail 'assignBeadWithClaim changed its existing 1800s default'
+		assert_invalid_timeout_args() {
+			local output status
+			set +e
+			output=$(mutation_shard_timeout_seconds "$@")
+			status=$?
+			set -e
+			[[ "$status" = 2 && -z "$output" ]] ||
+				fail "invalid selector args were accepted: $*"
+		}
+		assert_invalid_timeout_args pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocol)$'
+		assert_invalid_timeout_args pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocol)$' 240 extra
+		assert_invalid_timeout_args pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocol)$' 0
+		assert_invalid_timeout_args pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocol)$' -1
+		assert_invalid_timeout_args pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocol)$' abc
+	) || return
+}
+
+run_register_worker_budget_negative_fixture() {
+	local replay_root="$1"
+	local bundle_runner replay_repo head
+	bundle_runner=$(write_heavy_production_seam_bundle "$replay_root/runner")
+	replay_repo="$replay_root/repo"
+	new_heavy_production_seam_fixture "$replay_repo"
+	head=$(git -C "$replay_repo" rev-parse HEAD)
+	mkdir -p "$replay_root/results" "$replay_root/evidence" "$replay_root/state" "$replay_root/mod"
+	(
+		cd "$replay_repo"
+		set --
+		# shellcheck disable=SC1090 # Test-only bundle omits the production main call.
+		source "$bundle_runner"
+		# shellcheck disable=SC2034 # Consumed dynamically by the sourced run_mutation_shard.
+		mutation_failure_evidence_root="$replay_root/evidence"
+		# shellcheck disable=SC2030,SC2031,SC2155 # The sourced runner consumes this subshell-local environment.
+		local_real_timeout=$(command -v timeout)
+		# shellcheck disable=SC2031 # The sourced runner consumes this subshell-local environment.
+		export GOMODCACHE="$replay_root/mod" \
+			MUTATION_REAL_TIMEOUT="$local_real_timeout" \
+			MUTATION_SEAM_GO_TRACE="$replay_root/state/go.trace" \
+			MUTATION_SEAM_TRACE="$replay_root/state/seam.trace" \
+			MUTATION_SEAM_NEGATIVE=1
+		# Test-only override: the production helper is expected to select 360.
+		# shellcheck disable=SC2329,SC2317 # run_mutation_shard resolves this test seam dynamically.
+		mutation_shard_timeout_seconds() { printf '240\n'; }
+		# shellcheck disable=SC2329,SC2317 # Sourced runner resolves this dynamically.
+		touched_functions_covered() { return 0; }
+		PATH="$replay_repo/bin:$PATH" run_mutation_shard 000000 \
+			pkg/dispatcher/worker_pool.go '^(registerWorkerWithProtocol)$' \
+			'^(TestRegisterWorkerWithProtocolMutationCoverage|TestRegisterWorkerWithProtocolReleasesMutexBoundedMutation)$' \
+			0 "$head" "$replay_root" "$replay_root/results" 240 60 900
+	)
+	jq -e '.conclusion == "infrastructure_failure" and .exit_code == 124 and .score == null and .total == 0' \
+		"$replay_root/results/000000.json" >/dev/null || fail 'negative budget fixture lost zero-denominator shard evidence'
+	grep -Fxq 'ORO_MUTATION_EXEC_TIMEOUT' "$replay_root/logs/000000.log" ||
+		fail 'negative budget fixture lost the timeout marker'
+	grep -Fxq 'CONFIG|workers=2|warm=120|base=240|max=240|exec=60|margin=5|test_file=' \
+		"$replay_root/state/seam.trace" ||
+		fail 'negative budget fixture changed its current 240s worker configuration'
+	[[ "$(grep -c '^OUTER|240 ' "$replay_root/state/seam.trace")" = 1 ]] ||
+		fail 'negative budget fixture did not cross exactly one outer 240s seam'
+	[[ "$(grep -c '^OUTER|360 ' "$replay_root/state/seam.trace" || true)" = 0 ]] ||
+		fail 'negative budget fixture unexpectedly crossed a 360s seam'
+	local evidence_run
+	evidence_run=$(find "$replay_root/evidence/000000" -mindepth 1 -maxdepth 1 -type d -name 'run.*')
+	[[ "$(wc -l <<<"$evidence_run" | tr -d ' ')" = 1 ]] || fail 'negative budget fixture lost its evidence run'
+	jq -s -e 'length == 38 and
+		([.[].mutant_index] | sort) == [range(0;38)] and
+		all(.[] | select(.mutant_index < 36); .exit_class == "survived" and .exit_status == 1) and
+		all(.[] | select(.mutant_index >= 36); .exit_class == "aborted" and .exit_status == null)' \
+		"$evidence_run"/mutant-*.json >/dev/null || fail 'negative budget fixture changed terminal/aborted mutant evidence'
+	local timeout_pid
+	timeout_pid=$(<"$replay_root/state/seam.trace.negative.pid")
+	! kill -0 "$timeout_pid" 2>/dev/null || fail "negative budget fixture left timeout helper $timeout_pid running"
+}
+
 run_parallel_completion_handshake_fixture() {
 	local fixture="$1"
 	local mode="$2"
@@ -4092,6 +5157,9 @@ TestStrictIncrementalMutation() {
 	TestMutationExecInternalDeadline
 	test_parallel_mutant_executor "$tmp/parallel-mutants"
 	TestMutationCapacity
+	TestHeavyMutationPrewarmBeforeOuterTimeout
+	ORO_REAL_REPLAY=0 ORO_REAL_REPLAY_ROOT='' TestHeavyMutationProductionSeamReplays
+	TestRegisterWorkerMutationAggregateBudget
 	run_fixture "$tmp/unknown-exit" unknown-exit infrastructure_failure 2
 	jq -e \
 		'.score == null and .total == 0 and .mutation_exit_code == 2 and
@@ -4107,6 +5175,9 @@ TestStrictIncrementalMutation() {
 		fail 'annotated output did not preserve its score and total'
 	run_missing_base_fixture "$tmp/missing-base"
 	TestStrictIncrementalMutationShards
+	TestMutationCacheSlotRotation
+	TestTargetedMutationListENOSPC
+	TestHeavyMutationShardRouting
 	TestTargetedMutationScope
 	TestDispatcherMutationContractSupplements
 	TestReviewCheckpointMutationMapping
@@ -4130,6 +5201,10 @@ TestStrictIncrementalMutation() {
 	TestQGFlowControlMutationOwnerRouting
 	TestStartupMaintenanceMutationMapping
 	TestStartupMaintenanceMutationSharding
+	TestReviewWorkerLifecycleMutationMapping
+	TestReviewWorkerLifecycleMutationCoverage
+	TestReviewWorkerLifecycleMutationExecutionScopes
+	TestReviewContextMutationExecutionScope
 	TestCmdMutationSharding
 
 	TestIncrementalMutationArtifactRetention "$tmp/workflow-artifact"
@@ -4233,6 +5308,18 @@ main() {
 	TestStartupMaintenanceMutationSharding)
 		TestStartupMaintenanceMutationSharding
 		;;
+	TestReviewWorkerLifecycleMutationMapping)
+		TestReviewWorkerLifecycleMutationMapping
+		;;
+	TestReviewWorkerLifecycleMutationCoverage)
+		TestReviewWorkerLifecycleMutationCoverage
+		;;
+	TestReviewWorkerLifecycleMutationExecutionScopes)
+		TestReviewWorkerLifecycleMutationExecutionScopes
+		;;
+	TestReviewContextMutationExecutionScope)
+		TestReviewContextMutationExecutionScope
+		;;
 	TestCmdMutationSharding)
 		TestCmdMutationSharding
 		;;
@@ -4249,6 +5336,27 @@ main() {
 		;;
 	TestMutationCapacity)
 		TestMutationCapacity
+		;;
+	TestMutationCacheSlotRotation)
+		TestMutationCacheSlotRotation
+		;;
+	TestTargetedMutationListENOSPC)
+		TestTargetedMutationListENOSPC
+		;;
+	TestHeavyMutationShardRouting)
+		TestHeavyMutationShardRouting
+		;;
+	TestHandleConnHeavyMutationRouting)
+		TestHandleConnHeavyMutationRouting
+		;;
+	TestHeavyMutationPrewarmBeforeOuterTimeout)
+		TestHeavyMutationPrewarmBeforeOuterTimeout
+		;;
+	TestHeavyMutationProductionSeamReplays)
+		TestHeavyMutationProductionSeamReplays
+		;;
+	TestRegisterWorkerMutationAggregateBudget)
+		TestRegisterWorkerMutationAggregateBudget
 		;;
 	TestMutationExecInternalDeadline)
 		TestMutationExecInternalDeadline

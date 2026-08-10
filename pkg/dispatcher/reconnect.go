@@ -528,7 +528,7 @@ func (d *Dispatcher) replayReconnectEvents(
 	replayReady protocol.ReadyForReviewPayload,
 ) {
 	for _, buffered := range events {
-		d.handleMessage(ctx, workerID, buffered)
+		d.handleMessageUnchecked(ctx, workerID, buffered)
 	}
 	if canonicalReconnect && !alreadyReviewing && !bufferedCanonicalReady(events, replayReady) {
 		d.handleReadyForReview(ctx, workerID, protocol.Message{

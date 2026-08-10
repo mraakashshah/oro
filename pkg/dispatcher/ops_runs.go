@@ -746,7 +746,7 @@ func (d *Dispatcher) reviewContextForOpsRun(ctx context.Context, rec OpsRunRecor
 }
 
 func (d *Dispatcher) reviewContextFromWorkerLocked(rec OpsRunRecord) reviewOpsRunContext {
-	if w, ok := d.workers[rec.WorkerID]; ok && w != nil && w.beadID == rec.BeadID {
+	if w, ok := d.workers[rec.WorkerID]; ok && w != nil && w.beadID == rec.BeadID && w.reviewReleaseToken == 0 {
 		w.state = protocol.WorkerReviewing
 		return reviewOpsRunContext{worktree: w.worktree, targetBranch: w.targetBranch, workerID: w.id, assignmentID: w.assignmentID}
 	}
@@ -756,7 +756,7 @@ func (d *Dispatcher) reviewContextFromWorkerLocked(rec OpsRunRecord) reviewOpsRu
 func (d *Dispatcher) reviewContextFromAnyWorkerLocked(beadID string) reviewOpsRunContext {
 	var reviewCtx reviewOpsRunContext
 	for _, w := range d.workers {
-		if w == nil || w.beadID != beadID {
+		if w == nil || w.beadID != beadID || w.reviewReleaseToken != 0 {
 			continue
 		}
 		reviewCtx.worktree = firstNonEmpty(reviewCtx.worktree, w.worktree)

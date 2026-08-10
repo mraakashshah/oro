@@ -384,6 +384,155 @@ review_checkpoint_mutation_test_pattern() {
 	esac
 }
 
+review_worker_lifecycle_mutation_test_pattern() {
+	local file="$1"
+	local match="$2"
+	case "$file:$match" in
+	'pkg/dispatcher/directives.go:^(restartWorkerIfStillOnBead)$')
+		printf '^TestRestartWorkerIfStillOnBeadAdmissionAndEffects$'
+		;;
+	'pkg/dispatcher/ops_runs.go:^(reviewContextFromAnyWorkerLocked)$' | \
+		'pkg/dispatcher/ops_runs.go:^(reviewContextFromWorkerLocked)$')
+		printf '^(TestOpsAuthoritativeSurvivorMutationReviewContexts|TestReviewContextWorkerIdentityMatrix|TestReviewReleaseTokenFencesDirectReviewTransitions)$'
+		;;
+	'pkg/dispatcher/qg_flow.go:^(withReservation)$')
+		printf '^(TestReviewReleaseTokenFencesDirectReviewTransitions|TestWithReservationRevalidatesAfterUnlockedIO)$'
+		;;
+	'pkg/dispatcher/review.go:^(claimBlockedReviewAssignment)$' | \
+		'pkg/dispatcher/review.go:^(claimReviewDependencyCheck)$' | \
+		'pkg/dispatcher/review.go:^(reviewingWorkerMatches)$')
+		printf '^(TestDirectReviewTransitionAdmissionMatrix|TestReviewReleaseTokenFencesDirectReviewTransitions)$'
+		;;
+	'pkg/dispatcher/review.go:^(reserveReviewRetryAttempt)$')
+		printf '^(TestReserveReviewRetryAttemptOutcomes|TestReviewReleaseTokenFencesDirectReviewTransitions)$'
+		;;
+	'pkg/dispatcher/review.go:^(sendReviewApproved)$')
+		printf '^TestReviewReleaseTokenFencesDirectReviewTransitions$'
+		;;
+	'pkg/dispatcher/review.go:^(sendPreReviewGitDirtyFeedback)$')
+		printf '^TestSendPreReviewGitDirtyFeedbackRevalidatesAfterPayloadBuild$'
+		;;
+	'pkg/dispatcher/reconnect.go:^(replayReconnectEvents)$')
+		printf '^TestReplayReconnectEventsSyntheticReadyMatrix$'
+		;;
+	'pkg/dispatcher/startup_recovery.go:^(handleConn)$')
+		printf '^TestHandleConnLifecycleMatrix$'
+		;;
+	'pkg/dispatcher/startup_recovery.go:^(handleMessageUnchecked)$')
+		printf '^TestHandleMessageUncheckedRoutingMatrix$'
+		;;
+	'pkg/dispatcher/review.go:^(beginReviewWorkerResult)$')
+		printf '^(TestBeginReviewWorkerResultAdmission|TestCheckpointWorkerReleaseFenceRejectsConcurrentReviewResult)$'
+		;;
+	'pkg/dispatcher/review.go:^(handleReviewResultForAssignment)$')
+		printf '^TestHandleReviewResultForAssignmentOutcomeMatrix$'
+		;;
+	'pkg/dispatcher/review_checkpoint_store.go:^(ReleaseWorker)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(releaseWorkerWithHook)$' | \
+		'pkg/dispatcher/review_checkpoint_store.go:^(runReviewCheckpointWorkerReleaseHook)$')
+		printf '^TestReviewCheckpointStoreReleaseWorkerAtomicity$'
+		;;
+	'pkg/dispatcher/review_checkpoint_store.go:^(loadReviewCheckpointWorkerReleaseTarget)$')
+		printf '^(TestReviewCheckpointStoreReleaseWorkerAtomicity|TestReviewCheckpointWorkerReleaseTargetFailuresAndZeroAssignment)$'
+		;;
+	'pkg/dispatcher/review_worker_release.go:^(releaseCheckpointOwnedWorker)$')
+		printf '^TestReleaseCheckpointOwnedWorkerProductionPath$'
+		;;
+	'pkg/dispatcher/review_worker_release.go:^(releaseCheckpointOwnedWorkerUsing)$')
+		printf '^TestReleaseCheckpointOwnedWorkerUsingUnlocksAllPaths$'
+		;;
+	'pkg/dispatcher/review_worker_release.go:^(releaseCheckpointOwnedWorkerGeneration)$')
+		printf '^(TestReviewWorkerDisconnectDurablyReleasesCurrentCheckpoint|TestReviewWorkerDisconnectReleaseFailurePreservesWorker)$'
+		;;
+	'pkg/dispatcher/review_worker_release.go:^(releaseCheckpointOwnedWorkerGenerationUsing)$')
+		printf '^TestReleaseCheckpointOwnedWorkerRejectsStaleConnectionGeneration$'
+		;;
+	'pkg/dispatcher/review_worker_release.go:^(releaseCheckpointOwnedWorkerGenerationWithActionUsing)$')
+		printf '^TestCheckpointWorkerReleasePanicCleanup$'
+		;;
+	'pkg/dispatcher/review_worker_release.go:^(runCheckpointWorkerReleaseLease)$')
+		printf '^(TestCheckpointWorkerReleaseContextCancelClearsOwnedDrain|TestCheckpointWorkerReleasePanicCleanup|TestCheckpointWorkerReleaseRunLeaseFailureAndStaleMatrix|TestCheckpointWorkerReleaseShutdownAbortsBeforeStore|TestReleaseCheckpointOwnedWorkerDurableBeforeMemory)$'
+		;;
+	'pkg/dispatcher/review_worker_release.go:^(finalizeDurable)$')
+		printf '^TestCheckpointWorkerReleaseFinalizeDurableMatrix$'
+		;;
+	'pkg/dispatcher/review_worker_release.go:^(acquireCheckpointWorkerRelease)$')
+		printf '^TestAcquireCheckpointWorkerReleaseAdmission$'
+		;;
+	'pkg/dispatcher/review_worker_release.go:^(acquireCheckpointWorkerReleaseLocked)$')
+		printf '^(TestCheckpointWorkerReleaseFenceTokenCannotBeClearedBySecondRelease|TestCheckpointWorkerReleaseLeaseAdmission)$'
+		;;
+	'pkg/dispatcher/review_worker_release.go:^(current)$')
+		printf '^TestCheckpointWorkerReleaseLeaseCurrentMatrix$'
+		;;
+	'pkg/dispatcher/review_worker_release.go:^(waitForMessages)$')
+		printf '^(TestCheckpointWorkerReleaseContextCancelClearsOwnedDrain|TestCheckpointWorkerReleaseShutdownAbortsBeforeStore|TestCheckpointWorkerReleaseWaitCurrentFence|TestCheckpointWorkerReleaseWaitsForAllInFlightMessages)$'
+		;;
+	'pkg/dispatcher/review_worker_release.go:^(abort)$')
+		printf '^TestCheckpointWorkerReleaseAbortOwnershipMatrix$'
+		;;
+	'pkg/dispatcher/startup_recovery.go:^(beginReviewWorkerMessage)$')
+		printf '^TestCheckpointWorkerReleaseWaitsForAllInFlightMessages$'
+		;;
+	'pkg/dispatcher/startup_recovery.go:^(finishReviewWorkerMessage)$')
+		printf '^TestFinishReviewWorkerMessageDrainMatrix$'
+		;;
+	'pkg/dispatcher/startup_recovery.go:^(connCloseCleanup)$')
+		printf '^(TestConnCloseCleanupAdmissionAndEffects|TestReviewWorkerDisconnectDurablyReleasesCurrentCheckpoint|TestReviewWorkerDisconnectReleaseFailurePreservesWorker|TestReviewWorkerDisconnectStaleConnectionPreservesReplacement|TestReviewWorkerDisconnectStaleConnectionPreservesSamePointerReconnect)$'
+		;;
+	'pkg/dispatcher/startup_recovery.go:^(checkpointOwnedWorkerForConnection)$')
+		printf '^(TestReviewWorkerDisconnectDurablyReleasesCurrentCheckpoint|TestReviewWorkerDisconnectReleaseFailurePreservesWorker|TestReviewWorkerDisconnectStaleConnectionPreservesReplacement|TestReviewWorkerDisconnectStaleConnectionPreservesSamePointerReconnect)$'
+		;;
+	'pkg/dispatcher/startup_recovery.go:^(handleMessageFromConnection)$')
+		printf '^(TestCheckpointWorkerReleaseFenceRejectsReconnectAndMessages|TestHandleMessageFromConnectionRoutesAcceptedMessage)$'
+		;;
+	'pkg/dispatcher/worker_pool.go:^(registerWorkerWithProtocol)$')
+		printf '^(TestRegisterWorkerWithProtocolMutationCoverage|TestRegisterWorkerWithProtocolReleasesMutexBoundedMutation)$'
+		;;
+	'pkg/dispatcher/worker_pool.go:^(upsertWorker)$')
+		printf '^TestCheckpointWorkerReleaseFenceRejectsReconnectAndMessages$'
+		;;
+	'pkg/dispatcher/worker_directives.go:^(applyKillWorker)$')
+		printf '^TestApplyKillWorkerAdmissionAndEffects$'
+		;;
+	'pkg/dispatcher/worker_directives.go:^(applyRestartWorker)$')
+		printf '^(TestApplyRestartWorkerAdmissionAndEffects|TestApplyRestartWorkerFailureAndRetryEffects)$'
+		;;
+	'pkg/dispatcher/worker_directives.go:^(killCheckpointOwnedWorker)$' | \
+		'pkg/dispatcher/worker_directives.go:^(killCheckpointOwnedWorkerUsing)$')
+		printf '^(TestReviewWorkerDirectiveReleaseFailureDoesNotFallBack|TestReviewWorkerDirectivesDurablyReleaseCheckpoint)$'
+		;;
+	'pkg/dispatcher/worker_directives.go:^(restartCheckpointOwnedWorker)$')
+		printf '^(TestReviewWorkerDirectivesDurablyReleaseCheckpoint|TestReviewWorkerRestartActionErrorsStillFinalizeDurableRelease|TestReviewWorkerRestartFenceSpansStoreKillAndSpawn)$'
+		;;
+	'pkg/dispatcher/worker_directives.go:^(restartCheckpointOwnedWorkerUsing)$')
+		printf '^(TestRestartCheckpointOwnedWorkerUsingBoundedMutation|TestRestartCheckpointOwnedWorkerUsingMutationCoverage)$'
+		;;
+	'pkg/dispatcher/worker_pool.go:^(registerWorker)$')
+		printf '^TestSpawnFor_StopCleanupBeforeReconnectPreservesShutdownState$'
+		;;
+	'pkg/dispatcher/worker_pool.go:^(releaseReviewWorkerAfterSendFailure)$' | \
+		'pkg/dispatcher/worker_pool.go:^(sendToWorker)$')
+		printf '^(TestReviewSendFailureDefersReleaseUntilCurrentMessageExits|TestReviewWorkerSendFailureDurablyReleasesBeforeFallback|TestReviewWorkerSendFailurePreservesSamePointerReconnect|TestReviewWorkerSendFailureReleaseFailurePreservesMemory|TestReviewWorkerSendFailureStaleGenerationPreservesReplacement|TestReviewWorkerSynchronousSendReleasePanicRestoresCallerLock)$'
+		;;
+	'pkg/dispatcher/worker_pool.go:^(releaseReviewWorkerAfterSendFailureUsing)$')
+		printf '^(TestReleaseReviewWorkerAfterSendFailureUsingBoundedMutation|TestReleaseReviewWorkerAfterSendFailureUsingMutationCoverage)$'
+		;;
+	'pkg/dispatcher/worker_pool.go:^(removeDeadWorkersLocked)$')
+		printf '^TestCheckHeartbeats_RemovesDeadBusyWorker$'
+		;;
+	'pkg/dispatcher/worker_pool.go:^(removeStoppedSpawnForWorkersLocked)$')
+		printf '^TestSpawnFor_StoppedWorkerHeartbeatTimeoutDoesNotEscalateCrash$'
+		;;
+	'pkg/dispatcher/worker_pool.go:^(removeStuckWorkersLocked)$')
+		printf '^TestCheckHeartbeats_DetectsStuckWorker$'
+		;;
+	'pkg/dispatcher/worker_pool.go:^(sendShutdownToConnectionWithoutBuffering)$')
+		printf '^TestReviewWorkerDirectivesDurablyReleaseCheckpoint$'
+		;;
+	esac
+}
+
 assignment_bc_mutation_test_pattern() {
 	local file="$1"
 	local match="$2"
@@ -658,11 +807,9 @@ authoritative_mutation_test_pattern() {
 		'pkg/dispatcher/ops_runs.go:^(completeOpsRunFromStatus)$' | \
 		'pkg/dispatcher/ops_runs.go:^(createOpsRun)$' | \
 		'pkg/dispatcher/ops_runs.go:^(findBlockingOpsRun)$' | \
-		'pkg/dispatcher/ops_runs.go:^(isSQLiteUniqueConstraint)$' | \
+	'pkg/dispatcher/ops_runs.go:^(isSQLiteUniqueConstraint)$' | \
 		'pkg/dispatcher/ops_runs.go:^(loadOpsRunByID)$' | \
 		'pkg/dispatcher/ops_runs.go:^(replaceOpsRun)$' | \
-		'pkg/dispatcher/ops_runs.go:^(reviewContextFromAnyWorkerLocked)$' | \
-		'pkg/dispatcher/ops_runs.go:^(reviewContextFromWorkerLocked)$' | \
 		'pkg/dispatcher/ops_runs.go:^(routeOpsRun)$' | \
 		'pkg/dispatcher/ops_runs.go:^(routeReviewOpsRun)$' | \
 		'pkg/dispatcher/ops_runs.go:^(supersedeAndRerouteOpsRun)$' | \
@@ -715,8 +862,6 @@ authoritative_mutation_test_file() {
 		'pkg/dispatcher/ops_runs.go:^(isSQLiteUniqueConstraint)$' | \
 		'pkg/dispatcher/ops_runs.go:^(loadOpsRunByID)$' | \
 		'pkg/dispatcher/ops_runs.go:^(replaceOpsRun)$' | \
-		'pkg/dispatcher/ops_runs.go:^(reviewContextFromAnyWorkerLocked)$' | \
-		'pkg/dispatcher/ops_runs.go:^(reviewContextFromWorkerLocked)$' | \
 		'pkg/dispatcher/ops_runs.go:^(routeOpsRun)$' | \
 		'pkg/dispatcher/ops_runs.go:^(routeReviewOpsRun)$' | \
 		'pkg/dispatcher/ops_runs.go:^(supersedeAndRerouteOpsRun)$' | \
@@ -950,7 +1095,7 @@ targeted_test_pattern() {
 	local head="$2"
 	local file="$3"
 	local match="$4"
-	local assignment_admission_pattern assignment_bc_pattern authoritative_pattern cmd_pattern escalation_survivor_pattern p0_durability_pattern qg_classifier_decision_pattern qg_flow_control_pattern qg_store_lifecycle_pattern qg_target_attribution_pattern review_checkpoint_pattern review_integration_recovery_pattern split_branch_pattern startup_maintenance_pattern
+	local assignment_admission_pattern assignment_bc_pattern authoritative_pattern cmd_pattern escalation_survivor_pattern p0_durability_pattern qg_classifier_decision_pattern qg_flow_control_pattern qg_store_lifecycle_pattern qg_target_attribution_pattern review_checkpoint_pattern review_integration_recovery_pattern review_worker_lifecycle_pattern split_branch_pattern startup_maintenance_pattern
 	p0_durability_pattern=$(p0_durability_mutation_test_pattern "$file" "$match")
 	if [[ -n "$p0_durability_pattern" ]]; then
 		printf '%s' "$p0_durability_pattern"
@@ -984,6 +1129,11 @@ targeted_test_pattern() {
 	startup_maintenance_pattern=$(startup_maintenance_mutation_test_pattern "$file" "$match")
 	if [[ -n "$startup_maintenance_pattern" ]]; then
 		printf '%s' "$startup_maintenance_pattern"
+		return
+	fi
+	review_worker_lifecycle_pattern=$(review_worker_lifecycle_mutation_test_pattern "$file" "$match")
+	if [[ -n "$review_worker_lifecycle_pattern" ]]; then
+		printf '%s' "$review_worker_lifecycle_pattern"
 		return
 	fi
 	cmd_pattern=$(cmd_mutation_test_pattern "$file" "$match")
@@ -1056,6 +1206,116 @@ targeted_test_pattern() {
 	fi
 }
 
+reset_mutation_cache_slot() {
+	local shard_root="$1"
+	local cache_slot="$2"
+	local cache_root
+	[[ -n "$shard_root" && -d "$shard_root" && "$cache_slot" =~ ^[0-9]+$ ]] || return 2
+	cache_root="$shard_root/caches/$cache_slot"
+	case "$cache_root" in
+	"$shard_root"/caches/[0-9]*) ;;
+	*) return 2 ;;
+	esac
+	rm -rf -- "$cache_root"
+	mkdir -p "$cache_root"
+}
+
+prewarm_parallel_mutation_workers() {
+	local checkout="$1"
+	local source_file="$2"
+	local test_file="$3"
+	local cache_root="$4"
+	local tmp_root="$5"
+	local worker_count="$6"
+	local timeout_seconds="$7"
+	local module_path source_path source_dir source_dir_abs test_path test_dir_abs
+	local worker warm_status warm_failure=0
+	local -a test_targets warm_pids=()
+
+	if [[ -z "$checkout" || ! -d "$checkout" || -z "$source_file" || "$source_file" == /* ||
+		! -f "$checkout/$source_file" || -z "$cache_root" || -z "$tmp_root" ||
+		! "$worker_count" =~ ^[1-9][0-9]*$ || ! "$timeout_seconds" =~ ^[1-9][0-9]*$ ]] ||
+		((timeout_seconds <= 5)); then
+		return 2
+	fi
+	module_path=$(awk '$1 == "module" { print $2; exit }' "$checkout/go.mod")
+	[[ -n "$module_path" ]] || return 2
+	source_path="$checkout/$source_file"
+	source_dir=$(dirname -- "$source_path")
+	if ! source_dir_abs=$(cd "$source_dir" && pwd -P); then
+		return 2
+	fi
+	if [[ -n "$test_file" ]]; then
+		[[ "$test_file" != /* ]] || return 2
+		test_path="$checkout/$test_file"
+		if ! test_dir_abs=$(cd "$(dirname -- "$test_path")" 2>/dev/null && pwd -P); then
+			return 2
+		fi
+		if [[ "$test_dir_abs" != "$source_dir_abs" || "$(basename -- "$test_path")" != *_test.go ||
+			! -f "$test_path" ]]; then
+			return 2
+		fi
+		mapfile -t test_targets < <(find "$source_dir_abs" -maxdepth 1 -type f -name '*.go' ! -name '*_test.go' | sort)
+		test_targets+=("$test_path")
+	else
+		test_targets=("$module_path/$(dirname "$source_file")")
+	fi
+
+	mkdir -p "$cache_root" "$tmp_root/prewarm-logs"
+	for ((worker = 0; worker < worker_count; worker++)); do
+		mkdir -p "$cache_root/parallel-$worker" "$tmp_root/parallel-worker-$worker"
+		(
+			cd "$checkout"
+			GOCACHE="$cache_root/parallel-$worker" \
+				GOTMPDIR="$tmp_root/parallel-worker-$worker" \
+				timeout --foreground "$timeout_seconds" \
+				go test -vet=off -count=1 -timeout "$((timeout_seconds - 5))s" \
+				-run '^$' "${test_targets[@]}"
+		) >"$tmp_root/prewarm-logs/$worker.log" 2>&1 &
+		warm_pids+=("$!")
+	done
+	for ((worker = 0; worker < worker_count; worker++)); do
+		warm_status=0
+		if wait "${warm_pids[$worker]}"; then
+			continue
+		else
+			warm_status=$?
+		fi
+		warm_failure=1
+		cat "$tmp_root/prewarm-logs/$worker.log" >&2
+		printf 'mutation worker %d cache prewarm failed: status=%d\n' "$worker" "$warm_status" >&2
+	done
+	((warm_failure == 0))
+}
+
+heavy_parallel_mutation_shard() {
+	local file="$1"
+	local match="$2"
+	case "$file:$match" in
+	'pkg/dispatcher/review_checkpoint_store.go:^(releaseWorkerWithHook)$' | \
+		'pkg/dispatcher/review_worker_release.go:^(acquireCheckpointWorkerReleaseLocked)$' | \
+		'pkg/dispatcher/review_worker_release.go:^(runCheckpointWorkerReleaseLease)$' | \
+		'pkg/dispatcher/worker_directives.go:^(applyKillWorker)$' | \
+		'pkg/dispatcher/worker_directives.go:^(applyRestartWorker)$' | \
+		'pkg/dispatcher/worker_directives.go:^(restartCheckpointOwnedWorkerUsing)$' | \
+		'pkg/dispatcher/startup_recovery.go:^(handleConn)$' | \
+		'pkg/dispatcher/worker_pool.go:^(registerWorkerWithProtocol)$' | \
+		'pkg/dispatcher/worker_pool.go:^(releaseReviewWorkerAfterSendFailureUsing)$')
+		return 0
+		;;
+	esac
+	return 1
+}
+
+mutation_shard_timeout_seconds() {
+	[[ "$#" = 3 && "$3" =~ ^[1-9][0-9]*$ ]] || return 2
+	if [[ "$1:$2" = 'pkg/dispatcher/worker_pool.go:^(registerWorkerWithProtocol)$' ]]; then
+		printf '360\n'
+	else
+		printf '%s\n' "$3"
+	fi
+}
+
 run_mutation_shard() {
 	local index="$1"
 	local file="$2"
@@ -1073,6 +1333,9 @@ run_mutation_shard() {
 	local result="$result_dir/$index.json"
 	local mutation_exit=0
 	local mutation_test_file=""
+	local authoritative_cache_warm_timeout=""
+	local expected_source_hash=""
+	local shard_timeout=""
 	mutation_test_file=$(authoritative_mutation_test_file "$file" "$match")
 	if [[ -z "$mutation_test_file" ]]; then
 		mutation_test_file=$(escalation_mutation_test_file "$file" "$match")
@@ -1128,7 +1391,14 @@ run_mutation_shard() {
 		write_shard_no_mutants "$result" "$index" "$file" "$match" "$test_pattern"
 		return
 	fi
-	mkdir -p "$checkout" "$shard_root/logs" "$shard_root/caches/$cache_slot" "$shard_root/tmp/$index"
+	if [[ "$test_pattern" == *AuthoritativeSurvivorMutation* ]]; then
+		authoritative_cache_warm_timeout=120
+	fi
+	mkdir -p "$checkout" "$shard_root/logs" "$shard_root/tmp/$index"
+	if ! reset_mutation_cache_slot "$shard_root" "$cache_slot"; then
+		write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" 2 'reset isolated mutation cache slot'
+		return
+	fi
 	if ! git archive "$head" | tar -x -C "$checkout"; then
 		write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" 2 'create isolated mutation checkout'
 		return
@@ -1147,15 +1417,22 @@ run_mutation_shard() {
 	if [[ -n "$test_pattern" ]]; then
 		local package
 		package="./$(dirname "$file")"
-		local listed_tests
-		if ! listed_tests=$(
+		local listed_tests list_output_file list_reason
+		list_output_file="$shard_root/logs/$index.list.log"
+		if ! (
 			cd "$checkout"
 			GOCACHE="$shard_root/caches/$cache_slot" GOTMPDIR="$shard_root/tmp/$index" \
 				go test -list "$test_pattern" "$package"
-		); then
-			write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" 2 'list targeted mutation tests'
+		) >"$list_output_file" 2>&1; then
+			cat "$list_output_file" >>"$output_file"
+			list_reason='list targeted mutation tests'
+			if grep -Fqi 'no space left on device' "$list_output_file"; then
+				list_reason='list targeted mutation tests: no space left on device'
+			fi
+			write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" 2 "$list_reason"
 			return
 		fi
+		listed_tests=$(<"$list_output_file")
 		if ! grep -Eq "$test_pattern" <<<"$listed_tests"; then
 			write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" 2 'targeted mutation test pattern matched no tests'
 			return
@@ -1172,11 +1449,33 @@ run_mutation_shard() {
 		if ((baseline_exit != 0)); then
 			local reason='targeted mutation baseline failed'
 			((baseline_exit == 124)) && reason='targeted mutation baseline deadline exceeded'
+			if grep -Fqi 'no space left on device' "$output_file"; then
+				reason='targeted mutation baseline failed: no space left on device'
+			fi
 			write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" "$baseline_exit" "$reason"
 			return
 		fi
 		if [[ "$file" == pkg/dispatcher/*.go ]] && ! touched_functions_covered "$match" "$coverage_file"; then
 			write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" 2 'targeted mutation tests do not cover every touched function'
+			return
+		fi
+	fi
+	if heavy_parallel_mutation_shard "$file" "$match"; then
+		if ! expected_source_hash=$(git rev-parse "$head:$file" 2>/dev/null); then
+			write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" 2 'record archived mutation source identity'
+			return
+		fi
+		if ! prewarm_parallel_mutation_workers "$checkout" "$file" "$mutation_test_file" \
+			"$shard_root/caches/$cache_slot" "$shard_root/tmp/$index" 2 120 >>"$output_file" 2>&1; then
+			write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" 2 'prewarm isolated mutation worker caches'
+			return
+		fi
+		if [[ "$(git hash-object "$checkout/$file" 2>/dev/null || true)" != "$expected_source_hash" ]]; then
+			write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" 2 'mutation source changed during worker cache prewarm'
+			return
+		fi
+		if ! shard_timeout=$(mutation_shard_timeout_seconds "$file" "$match" "$file_timeout"); then
+			write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" 2 'invalid heavy mutation shard timeout'
 			return
 		fi
 	fi
@@ -1198,6 +1497,22 @@ run_mutation_shard() {
 				MUTATION_FAILURE_EVIDENCE_DIR="$mutation_failure_evidence_root/$index" \
 				MUTATION_EXEC_SCRIPT="$mutation_script_dir/mutation_exec.sh" \
 				timeout "$assignment_claim_shard_timeout" bash "$mutation_script_dir/mutation_parallel.sh"
+		elif heavy_parallel_mutation_shard "$file" "$match"; then
+			GOCACHE="$shard_root/caches/$cache_slot" \
+				GOTMPDIR="$shard_root/tmp/$index" \
+				MUTATION_SOURCE_FILE="$file" \
+				MUTATION_FUNCTION_MATCH="$match" \
+				MUTATION_TEST_PATTERN="$test_pattern" \
+				MUTATION_TEST_FILE="$mutation_test_file" \
+				MUTATION_EXEC_TIMEOUT="$exec_timeout" \
+				MUTATION_TEST_TIMEOUT_MARGIN_SECONDS=5 \
+				MUTATION_PARALLEL_WORKERS=2 \
+				MUTATION_WORKER_CACHE_WARM_TIMEOUT_SECONDS=120 \
+				MUTATION_BASE_SHARD_TIMEOUT_SECONDS="$shard_timeout" \
+				MUTATION_MAX_SHARD_TIMEOUT_SECONDS="$shard_timeout" \
+				MUTATION_FAILURE_EVIDENCE_DIR="$mutation_failure_evidence_root/$index" \
+				MUTATION_EXEC_SCRIPT="$mutation_script_dir/mutation_exec.sh" \
+				timeout "$shard_timeout" bash "$mutation_script_dir/mutation_parallel.sh"
 		elif [[ "$test_pattern" == *AuthoritativeSurvivorMutation* ||
 			"$file" == pkg/dispatcher/review_integration_recovery.go ||
 			"$mutation_test_file" == pkg/dispatcher/assignment_reservation_worktree_survivor_mutation_test.go ||
@@ -1212,6 +1527,7 @@ run_mutation_shard() {
 				MUTATION_EXEC_TIMEOUT="$exec_timeout" \
 				MUTATION_TEST_TIMEOUT_MARGIN_SECONDS=5 \
 				MUTATION_PARALLEL_WORKERS=2 \
+				MUTATION_WORKER_CACHE_WARM_TIMEOUT_SECONDS="$authoritative_cache_warm_timeout" \
 				MUTATION_BASE_SHARD_TIMEOUT_SECONDS="$file_timeout" \
 				MUTATION_MAX_SHARD_TIMEOUT_SECONDS="$file_timeout" \
 				MUTATION_FAILURE_EVIDENCE_DIR="$mutation_failure_evidence_root/$index" \
@@ -1351,7 +1667,8 @@ main() {
 		file=${shard_files[$index]}
 		printf -v key '%06d' "$index"
 		cache_slot=$((index % worker_count))
-		if [[ ("$file" == pkg/dispatcher/assignment.go &&
+		if heavy_parallel_mutation_shard "$file" "${match_patterns[$index]}" ||
+			[[ ("$file" == pkg/dispatcher/assignment.go &&
 			("${match_patterns[$index]}" == '^(assignBeadWithClaim)$' ||
 				"${test_patterns[$index]}" == *TestAssignmentBC*)) ||
 			"${test_patterns[$index]}" == *AuthoritativeSurvivorMutation* ||

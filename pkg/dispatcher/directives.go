@@ -287,7 +287,7 @@ func (d *Dispatcher) beadIsFocusedDescendant(ctx context.Context, beadID, focuse
 func (d *Dispatcher) restartWorkerIfStillOnBead(ctx context.Context, workerID, beadID, reason string) bool {
 	d.mu.Lock()
 	worker, ok := d.workers[workerID]
-	if !ok || worker.beadID != beadID || !preemptableWorkerState(worker.state) {
+	if !ok || worker.reviewReleaseToken != 0 || worker.beadID != beadID || !preemptableWorkerState(worker.state) {
 		d.mu.Unlock()
 		return false
 	}

@@ -48,39 +48,43 @@ type WorkerPool struct {
 
 // trackedWorker holds runtime state for a connected worker.
 type trackedWorker struct {
-	id                   string
-	conn                 net.Conn
-	state                protocol.WorkerState
-	assignmentID         int64
-	execution            WorkerExecutionContext
-	beadID               string
-	epicID               string // parent epic ID if the assigned bead is a child of an epic
-	isEpicDecomp         bool   // true when worker is assigned an epic for decomposition (no merge on done)
-	worktree             string
-	baseBranch           string // branch the worktree was created from (main or epic/<epicID>)
-	targetBranch         string // branch the worker's changes should merge into (same as baseBranch)
-	qgEvidenceDir        string // immutable evidence root supplied with the assignment
-	qgEvidencePath       string // canonical evidence artifact restored across reconnects
-	targetSHA            string // immutable target revision supplied with the assignment
-	runtime              string // resolved runtime for the current bead assignment
-	model                string // resolved model for the current bead assignment
-	reasoning            string // resolved Codex reasoning effort for the current bead assignment
-	lastSeen             time.Time
-	lastProgress         time.Time // last time meaningful progress was observed (DONE/READY_FOR_REVIEW/QG/first STATUS)
-	setupReservedAt      time.Time // start of assignment setup; zero for other reserved-worker flows
-	reservationGen       uint64    // increments on every assignment-reservation transition
-	contextPct           int       // context usage percentage from last heartbeat (0-100)
-	encoder              *json.Encoder
-	pendingMsgs          []protocol.Message // buffered messages for disconnected worker
-	shutdownCancel       context.CancelFunc // cancels previous shutdown goroutine (1nf.5)
-	shutdownApproved     bool               // set by handleShutdownApproved; checked by checkShutdownApproved
-	shutdownReason       string             // why graceful shutdown was requested
-	managed              bool               // true if spawned by the dispatcher (vs externally connected)
-	spawnFor             bool               // true for one-shot workers spawned by spawn-for
-	targetBeadID         string             // set for spawn-for workers; only this bead may be assigned
-	prevSession          bool               // true if worker ID predates this dispatcher's startTime (previous session)
-	reviewDeadSince      time.Time          // set when ops review subprocess is detected dead; zero if review is active
-	drainAfterAssignment bool               // legacy protocol worker may finish existing work but receives no new assignment
+	id                       string
+	conn                     net.Conn
+	state                    protocol.WorkerState
+	assignmentID             int64
+	execution                WorkerExecutionContext
+	beadID                   string
+	epicID                   string // parent epic ID if the assigned bead is a child of an epic
+	isEpicDecomp             bool   // true when worker is assigned an epic for decomposition (no merge on done)
+	worktree                 string
+	baseBranch               string // branch the worktree was created from (main or epic/<epicID>)
+	targetBranch             string // branch the worker's changes should merge into (same as baseBranch)
+	qgEvidenceDir            string // immutable evidence root supplied with the assignment
+	qgEvidencePath           string // canonical evidence artifact restored across reconnects
+	targetSHA                string // immutable target revision supplied with the assignment
+	runtime                  string // resolved runtime for the current bead assignment
+	model                    string // resolved model for the current bead assignment
+	reasoning                string // resolved Codex reasoning effort for the current bead assignment
+	lastSeen                 time.Time
+	lastProgress             time.Time // last time meaningful progress was observed (DONE/READY_FOR_REVIEW/QG/first STATUS)
+	setupReservedAt          time.Time // start of assignment setup; zero for other reserved-worker flows
+	reservationGen           uint64    // increments on every assignment-reservation transition
+	contextPct               int       // context usage percentage from last heartbeat (0-100)
+	encoder                  *json.Encoder
+	pendingMsgs              []protocol.Message // buffered messages for disconnected worker
+	shutdownCancel           context.CancelFunc // cancels previous shutdown goroutine (1nf.5)
+	shutdownApproved         bool               // set by handleShutdownApproved; checked by checkShutdownApproved
+	shutdownReason           string             // why graceful shutdown was requested
+	managed                  bool               // true if spawned by the dispatcher (vs externally connected)
+	spawnFor                 bool               // true for one-shot workers spawned by spawn-for
+	targetBeadID             string             // set for spawn-for workers; only this bead may be assigned
+	prevSession              bool               // true if worker ID predates this dispatcher's startTime (previous session)
+	reviewDeadSince          time.Time          // set when ops review subprocess is detected dead; zero if review is active
+	drainAfterAssignment     bool               // legacy protocol worker may finish existing work but receives no new assignment
+	reviewReleaseToken       uint64             // nonzero while this exact connection generation is durably retiring
+	reviewMessagesInFlight   int                // accepted messages whose handlers have not returned
+	reviewMessagesDrained    chan struct{}      // token-owned signal for the current retirement wait
+	reviewMessagesDrainToken uint64             // release token that owns reviewMessagesDrained
 }
 
 func (w *trackedWorker) markShuttingDownWithoutAssignment() {
@@ -109,6 +113,10 @@ func sendToWorkerWithoutBuffering(w *trackedWorker, msg protocol.Message) {
 
 func sendShutdownWithoutBuffering(w *trackedWorker) {
 	sendToWorkerWithoutBuffering(w, protocol.Message{Type: protocol.MsgShutdown})
+}
+
+func sendShutdownToConnectionWithoutBuffering(conn net.Conn) {
+	sendToWorkerWithoutBuffering(&trackedWorker{conn: conn}, protocol.Message{Type: protocol.MsgShutdown})
 }
 
 func sendPrepareShutdownWithoutBuffering(w *trackedWorker, timeout time.Duration) {
@@ -173,7 +181,10 @@ type workerAssignmentSnapshot struct {
 // fields on reconnect. managed is true when the worker was spawned by the
 // dispatcher (consumed from pendingManagedIDs by the caller). Must be called
 // with d.mu held.
-func (d *Dispatcher) upsertWorker(id string, conn net.Conn, managed bool) {
+func (d *Dispatcher) upsertWorker(id string, conn net.Conn, managed bool) bool {
+	if current, exists := d.workers[id]; exists && current.reviewReleaseToken != 0 {
+		return false
+	}
 	if _, exists := d.workers[id]; !exists {
 		prev := false
 		if epoch, ok := parseWorkerEpoch(id); ok && epoch.Before(d.startTime) {
@@ -197,14 +208,20 @@ func (d *Dispatcher) upsertWorker(id string, conn net.Conn, managed bool) {
 			d.workers[id].managed = true
 		}
 	}
+	return true
 }
 
 func (d *Dispatcher) registerWorker(id string, conn net.Conn) {
-	d.registerWorkerWithProtocol(id, conn, false)
+	_ = d.registerWorkerWithProtocol(id, conn, false)
 }
 
-func (d *Dispatcher) registerWorkerWithProtocol(id string, conn net.Conn, drainAfterAssignment bool) {
+func (d *Dispatcher) registerWorkerWithProtocol(id string, conn net.Conn, drainAfterAssignment bool) bool { //nolint:funlen // registration keeps pending-state consumption atomic with release-fence admission
 	d.mu.Lock()
+	if current := d.workers[id]; current != nil && current.reviewReleaseToken != 0 {
+		d.mu.Unlock()
+		_ = conn.Close()
+		return false
+	}
 	// Consume the pending managed ID if present (delete is no-op if absent).
 	managed := d.pendingManagedIDs[id]
 	spawnFor := d.pendingSpawnForWorkers[id]
@@ -215,11 +232,15 @@ func (d *Dispatcher) registerWorkerWithProtocol(id string, conn net.Conn, drainA
 	delete(d.pendingSpawnForWorkers, id)
 	delete(d.pendingExternalIDs, id)
 	delete(d.pendingExternalSince, id)
-	d.upsertWorker(id, conn, managed)
+	if !d.upsertWorker(id, conn, managed) {
+		d.mu.Unlock()
+		_ = conn.Close()
+		return false
+	}
 	w, ok := d.workers[id]
 	if !ok || w == nil {
 		d.mu.Unlock()
-		return
+		return false
 	}
 	w.drainAfterAssignment = drainAfterAssignment
 	applyPendingWorkerRegistration(w, spawnFor, pendingTargetBeadID)
@@ -227,13 +248,13 @@ func (d *Dispatcher) registerWorkerWithProtocol(id string, conn net.Conn, drainA
 		w.markShuttingDownWithoutAssignment()
 		sendShutdownWithoutBuffering(w)
 		d.mu.Unlock()
-		return
+		return true
 	}
 	if w.spawnFor && w.state == protocol.WorkerShuttingDown {
 		w.markShuttingDownWithoutAssignment()
 		sendShutdownWithoutBuffering(w)
 		d.mu.Unlock()
-		return
+		return true
 	}
 	targetBeadID := w.targetBeadID
 
@@ -241,7 +262,7 @@ func (d *Dispatcher) registerWorkerWithProtocol(id string, conn net.Conn, drainA
 
 	if h != nil {
 		d.assignHandoffToWorker(id, handoffBeadID, h)
-		return
+		return true
 	}
 	d.mu.Unlock()
 
@@ -252,6 +273,7 @@ func (d *Dispatcher) registerWorkerWithProtocol(id string, conn net.Conn, drainA
 	case d.workerReadyCh <- struct{}{}:
 	default:
 	}
+	return true
 }
 
 // pendingHandoffForWorkerLocked returns no work for a legacy draining worker.
@@ -907,7 +929,7 @@ func (d *Dispatcher) removeDeadWorkersLocked(ctx context.Context, dead []string)
 	deadWorkers = make([]workerExitInfo, 0, len(dead))
 	for _, id := range dead {
 		w := d.workers[id]
-		if w == nil {
+		if w == nil || w.reviewReleaseToken != 0 {
 			continue
 		}
 		deadWorkers = append(deadWorkers, workerExitInfo{workerID: id, beadID: w.beadID, worktree: w.worktree, baseBranch: w.baseBranch, assignmentID: w.assignmentID, prevSession: w.prevSession, managed: w.managed})
@@ -924,7 +946,7 @@ func (d *Dispatcher) removeDeadWorkersLocked(ctx context.Context, dead []string)
 func (d *Dispatcher) removeStoppedSpawnForWorkersLocked(ctx context.Context, stoppedSpawnFor []string) {
 	for _, id := range stoppedSpawnFor {
 		w := d.workers[id]
-		if w == nil {
+		if w == nil || w.reviewReleaseToken != 0 {
 			continue
 		}
 		_ = d.logEventLocked(ctx, "spawn_for_shutdown_timeout", "dispatcher", "", id, "")
@@ -937,7 +959,7 @@ func (d *Dispatcher) removeStuckWorkersLocked(ctx context.Context, stuck []strin
 	stuckWorkers = make([]workerExitInfo, 0, len(stuck))
 	for _, id := range stuck {
 		w := d.workers[id]
-		if w == nil {
+		if w == nil || w.reviewReleaseToken != 0 {
 			continue
 		}
 		stuckWorkers = append(stuckWorkers, workerExitInfo{workerID: id, beadID: w.beadID, worktree: w.worktree, baseBranch: w.baseBranch, assignmentID: w.assignmentID, managed: w.managed, reviewing: w.state == protocol.WorkerReviewing})
@@ -982,20 +1004,44 @@ const maxPendingMessages = 10
 
 // sendToWorker sends a message to a tracked worker. If the worker is
 // disconnected (write fails), the message is buffered up to maxPendingMessages.
-// If the buffer exceeds maxPendingMessages, the worker is removed from tracking.
+// Checkpoint-owned review workers are durably released instead of entering the
+// ordinary buffer/removal fallback. If an ordinary worker's buffer exceeds
+// maxPendingMessages, the worker is removed from tracking.
 // Caller must hold d.mu.
-func (d *Dispatcher) sendToWorker(w *trackedWorker, msg protocol.Message) error {
+func (d *Dispatcher) sendToWorker(w *trackedWorker, msg protocol.Message) error { //nolint:nestif // ordered durable-release and ordinary buffering fallbacks share the failed write
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("marshal message: %w", err)
 	}
 	data = append(data, '\n')
 
-	if err := w.conn.SetWriteDeadline(time.Now().Add(directWorkerWriteTimeout)); err == nil {
-		defer func() { _ = w.conn.SetWriteDeadline(time.Time{}) }()
+	observedConn := w.conn
+	if err := observedConn.SetWriteDeadline(time.Now().Add(directWorkerWriteTimeout)); err == nil {
+		defer func() { _ = observedConn.SetWriteDeadline(time.Time{}) }()
 	}
-	_, err = w.conn.Write(data)
+	_, err = observedConn.Write(data)
+	//nolint:nestif // durable review release must be resolved before ordinary buffering fallback
 	if err != nil {
+		workerID, beadID := w.id, w.beadID
+		attempted, released, pending, releaseErr := d.releaseReviewWorkerAfterSendFailure(w, observedConn)
+		if attempted {
+			if releaseErr != nil {
+				return fmt.Errorf("release review checkpoint after send failure: %w", releaseErr)
+			}
+			reason := fmt.Sprintf("write failed: %v (review checkpoint release did not commit)", err)
+			if pending {
+				reason = fmt.Sprintf("write failed: %v (review checkpoint release pending)", err)
+			}
+			if released {
+				reason = fmt.Sprintf("write failed: %v (review checkpoint released)", err)
+			}
+			return &protocol.WorkerUnreachableError{
+				WorkerID: workerID,
+				BeadID:   beadID,
+				Reason:   reason,
+			}
+		}
+
 		// Connection is broken — buffer the message
 		w.pendingMsgs = append(w.pendingMsgs, msg)
 
@@ -1019,6 +1065,49 @@ func (d *Dispatcher) sendToWorker(w *trackedWorker, msg protocol.Message) error 
 		}
 	}
 	return nil
+}
+
+// releaseReviewWorkerAfterSendFailure temporarily drops d.mu so the durable
+// checkpoint transaction precedes any in-memory removal. attempted is true for
+// every review-owned send failure, including conflicts and stale generations;
+// callers must not enter the ordinary fallback after such an attempt.
+func (d *Dispatcher) releaseReviewWorkerAfterSendFailure(
+	w *trackedWorker,
+	observedConn net.Conn,
+) (attempted, released, pending bool, err error) {
+	return d.releaseReviewWorkerAfterSendFailureUsing(
+		w, observedConn, NewReviewCheckpointStore(d.db).ReleaseWorker,
+	)
+}
+
+func (d *Dispatcher) releaseReviewWorkerAfterSendFailureUsing(
+	w *trackedWorker,
+	observedConn net.Conn,
+	releaseFn checkpointWorkerReleaseFunc,
+) (attempted, released, pending bool, err error) {
+	if w.state != protocol.WorkerReviewing || w.beadID == "" {
+		return false, false, false, nil
+	}
+	lease, acquired := d.acquireCheckpointWorkerReleaseLocked(w, observedConn)
+	if !acquired {
+		return true, false, true, nil
+	}
+	if lease.drain != nil {
+		d.safeGo(func() {
+			_, _ = d.runCheckpointWorkerReleaseLease(
+				context.Background(), lease, ReviewReleaseCauseSendFailed,
+				releaseFn, nil, nil,
+			)
+		})
+		return true, false, true, nil
+	}
+	d.mu.Unlock()
+	defer d.mu.Lock()
+	released, err = d.runCheckpointWorkerReleaseLease(
+		context.Background(), lease, ReviewReleaseCauseSendFailed,
+		releaseFn, nil, nil,
+	)
+	return true, released, false, err
 }
 
 // --- Graceful shutdown ---

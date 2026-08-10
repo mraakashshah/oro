@@ -283,9 +283,12 @@ func managedQualityGateSnapshotMatches(linkPath, managedPath string) bool {
 
 func (d *Dispatcher) sendPreReviewGitDirtyFeedback(ctx context.Context, workerID, feedback string) {
 	d.mu.Lock()
-	if w, ok := d.workers[workerID]; ok {
-		w.state = protocol.WorkerReserved
+	w, ok := d.workers[workerID]
+	if !ok || w.reviewReleaseToken != 0 {
+		d.mu.Unlock()
+		return
 	}
+	w.state = protocol.WorkerReserved
 	snap := d.opusEscalationSnapshotLocked(workerID)
 	d.mu.Unlock()
 
@@ -293,8 +296,8 @@ func (d *Dispatcher) sendPreReviewGitDirtyFeedback(ctx context.Context, workerID
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	w, ok := d.workers[workerID]
-	if !ok || w.state != protocol.WorkerReserved {
+	w, ok = d.workers[workerID]
+	if !ok || w.state != protocol.WorkerReserved || w.reviewReleaseToken != 0 {
 		return
 	}
 	w.state = protocol.WorkerBusy
@@ -349,6 +352,11 @@ func (d *Dispatcher) handleReviewResultForAssignment(
 	case <-ctx.Done():
 		return
 	case result := <-resultCh:
+		worker, accepted := d.beginReviewWorkerResult(workerID)
+		if !accepted {
+			return
+		}
+		defer d.finishReviewWorkerMessage(worker)
 		switch result.Verdict {
 		case ops.VerdictApproved:
 			d.handleReviewApproved(ctx, workerID, beadID, result)
@@ -368,6 +376,23 @@ func (d *Dispatcher) handleReviewResultForAssignment(
 			d.handleReviewFailed(ctx, workerID, beadID, result)
 		}
 	}
+}
+
+// beginReviewWorkerResult admits stale results for an already-absent worker so
+// legacy stale-event and escalation cleanup still run. A tracked generation is
+// counted as lifecycle activity, while an active durable release rejects it.
+func (d *Dispatcher) beginReviewWorkerResult(workerID string) (*trackedWorker, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	w := d.workers[workerID]
+	if w == nil {
+		return nil, true
+	}
+	if w.reviewReleaseToken != 0 {
+		return nil, false
+	}
+	w.reviewMessagesInFlight++
+	return w, true
 }
 
 func (d *Dispatcher) handleReviewApproved(ctx context.Context, workerID, beadID string, result ops.Result) {
@@ -422,7 +447,7 @@ func (d *Dispatcher) claimReviewDependencyCheck(workerID, beadID string) (int64,
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	w, ok := d.workers[workerID]
-	if !ok || w.beadID != beadID || w.state != protocol.WorkerReviewing {
+	if !ok || w.beadID != beadID || w.state != protocol.WorkerReviewing || w.reviewReleaseToken != 0 {
 		return 0, false
 	}
 	w.state = protocol.WorkerReserved
@@ -502,7 +527,7 @@ func (d *Dispatcher) sendReviewApproved(workerID, feedback string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	w, ok := d.workers[workerID]
-	if !ok {
+	if !ok || w.reviewReleaseToken != 0 {
 		return
 	}
 	_ = d.sendToWorker(w, protocol.Message{
@@ -634,7 +659,7 @@ func (d *Dispatcher) reviewingWorkerMatches(workerID, beadID string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	w, ok := d.workers[workerID]
-	return ok && w != nil && w.beadID == beadID && w.state == protocol.WorkerReviewing
+	return ok && w != nil && w.beadID == beadID && w.state == protocol.WorkerReviewing && w.reviewReleaseToken == 0
 }
 
 func (d *Dispatcher) handleReviewBlocked(ctx context.Context, workerID, beadID string, result ops.Result) {
@@ -704,7 +729,8 @@ func (d *Dispatcher) claimBlockedReviewAssignment(workerID, beadID string, expec
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	w, ok := d.workers[workerID]
-	if !ok || w.beadID != beadID || w.state != protocol.WorkerReviewing || w.assignmentID != expectedAssignmentID {
+	if !ok || w.beadID != beadID || w.state != protocol.WorkerReviewing || w.assignmentID != expectedAssignmentID ||
+		w.reviewReleaseToken != 0 {
 		return 0, false
 	}
 	w.state = protocol.WorkerReserved
@@ -755,6 +781,10 @@ func (d *Dispatcher) reserveReviewRetryAttempt(ctx context.Context, workerID, be
 	w, ok := d.workers[workerID]
 	assignmentID := int64(0)
 	if ok {
+		if w.reviewReleaseToken != 0 {
+			d.mu.Unlock()
+			return false, nil
+		}
 		assignmentID = w.assignmentID
 		w.state = protocol.WorkerReserved
 	}

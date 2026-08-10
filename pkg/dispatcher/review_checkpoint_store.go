@@ -245,6 +245,137 @@ LIMIT 1`, beadID))
 	return &checkpoint, nil
 }
 
+// ReleaseWorker atomically clears one checkpoint's worker ownership and
+// requeues the exact assignment that checkpoint owns. The checkpoint itself,
+// including its lifecycle state and review evidence, remains durable.
+func (s *ReviewCheckpointStore) ReleaseWorker(ctx context.Context, beadID, workerID string) (bool, error) {
+	return s.releaseWorkerWithHook(ctx, beadID, workerID, nil)
+}
+
+func (s *ReviewCheckpointStore) releaseWorkerWithHook(
+	ctx context.Context,
+	beadID, workerID string,
+	beforeCAS func(*sql.Tx) error,
+) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, errors.New("release review checkpoint worker: db is nil")
+	}
+	if beadID == "" || workerID == "" {
+		return false, fmt.Errorf("release review checkpoint worker: invalid identity %q/%q", beadID, workerID)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin review checkpoint worker release: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	target, err := loadReviewCheckpointWorkerReleaseTarget(ctx, tx, beadID, workerID)
+	if err != nil || target == nil {
+		return false, err
+	}
+	if err := runReviewCheckpointWorkerReleaseHook(tx, beforeCAS); err != nil {
+		return false, err
+	}
+
+	result, err := tx.ExecContext(ctx, `
+UPDATE review_checkpoints
+SET worker_id=NULL
+WHERE id=? AND bead_id=? AND current_assignment_id=? AND worker_id=? AND state=?
+  AND state NOT IN ('integrated', 'superseded')`, target.checkpointID, beadID, target.assignmentID, workerID, target.state)
+	if err != nil {
+		return false, fmt.Errorf("clear review checkpoint worker %s for %s: %w", workerID, beadID, err)
+	}
+	if err := requireOneCheckpointRow(result, target.checkpointID, "clear review checkpoint worker"); err != nil {
+		return false, err
+	}
+
+	result, err = tx.ExecContext(ctx, `
+UPDATE assignments
+SET status='requeued', completed_at=datetime('now')
+WHERE id=? AND bead_id=? AND worker_id=?
+  AND status IN ('active', 'quarantined', 'completed')`, target.assignmentID, beadID, workerID)
+	if err != nil {
+		return false, fmt.Errorf("requeue review checkpoint assignment %d: %w", target.assignmentID, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("count requeued review checkpoint assignment %d: %w", target.assignmentID, err)
+	}
+	if rows != 1 {
+		return false, fmt.Errorf("requeue review checkpoint assignment %d affected %d rows: %w",
+			target.assignmentID, rows, ErrCheckpointConflict)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit review checkpoint worker release: %w", err)
+	}
+	return true, nil
+}
+
+type reviewCheckpointWorkerReleaseTarget struct {
+	checkpointID int64
+	assignmentID int64
+	state        ReviewCheckpointState
+}
+
+func loadReviewCheckpointWorkerReleaseTarget(
+	ctx context.Context,
+	tx *sql.Tx,
+	beadID, workerID string,
+) (*reviewCheckpointWorkerReleaseTarget, error) {
+	// Acquire the write reservation before observing ownership so another
+	// connection cannot introduce a second owner between the count and CAS.
+	if _, err := tx.ExecContext(ctx, `UPDATE review_checkpoints SET updated_at=updated_at WHERE 0`); err != nil {
+		return nil, fmt.Errorf("serialize review checkpoint worker release: %w", err)
+	}
+
+	var ownerCount int
+	if err := tx.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM review_checkpoints
+WHERE bead_id=? AND state NOT IN ('integrated', 'superseded')`, beadID).Scan(&ownerCount); err != nil {
+		return nil, fmt.Errorf("count review checkpoint owners for %s: %w", beadID, err)
+	}
+	if ownerCount == 0 {
+		return nil, nil
+	}
+	if ownerCount != 1 {
+		return nil, fmt.Errorf("release review checkpoint worker for %s: found %d owners: %w",
+			beadID, ownerCount, ErrCheckpointOwnershipAmbiguous)
+	}
+
+	var (
+		target      reviewCheckpointWorkerReleaseTarget
+		ownedWorker string
+	)
+	err := tx.QueryRowContext(ctx, `
+SELECT id, COALESCE(current_assignment_id, 0), COALESCE(worker_id, ''), state
+FROM review_checkpoints
+WHERE bead_id=? AND state NOT IN ('integrated', 'superseded')`, beadID).
+		Scan(&target.checkpointID, &target.assignmentID, &ownedWorker, &target.state)
+	if err != nil {
+		return nil, fmt.Errorf("load review checkpoint owner for %s: %w", beadID, err)
+	}
+	if ownedWorker != workerID {
+		return nil, nil
+	}
+	if target.assignmentID <= 0 {
+		return nil, fmt.Errorf("release review checkpoint worker %s for %s: invalid assignment %d: %w",
+			workerID, beadID, target.assignmentID, ErrCheckpointOwnershipCorrupt)
+	}
+	return &target, nil
+}
+
+func runReviewCheckpointWorkerReleaseHook(tx *sql.Tx, beforeCAS func(*sql.Tx) error) error {
+	if beforeCAS == nil {
+		return nil
+	}
+	if err := beforeCAS(tx); err != nil {
+		return fmt.Errorf("prepare review checkpoint worker release: %w", err)
+	}
+	return nil
+}
+
 // LoadForOpsRun returns the checkpoint durably linked to opsRunID.
 func (s *ReviewCheckpointStore) LoadForOpsRun(ctx context.Context, opsRunID int64, beadID string) (*ReviewCheckpoint, error) {
 	if s == nil || s.db == nil {

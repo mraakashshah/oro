@@ -329,6 +329,12 @@ func (d *Dispatcher) connCloseCleanup(workerID string, conn net.Conn) {
 	if workerID == "" {
 		return
 	}
+	if expected, checkpointOwned := d.checkpointOwnedWorkerForConnection(workerID, conn); checkpointOwned {
+		_, _ = d.releaseCheckpointOwnedWorkerGeneration(
+			context.Background(), expected, conn, ReviewReleaseCauseConnectionLost,
+		)
+		return
+	}
 	st, proceed, notify := d.takeConnCloseState(workerID, conn)
 	if !proceed {
 		if notify {
@@ -369,6 +375,16 @@ func (d *Dispatcher) connCloseCleanup(workerID string, conn net.Conn) {
 	// Wake the assign loop so reconcileScale can spawn a replacement immediately
 	// rather than waiting for the next fsnotify event or fallback tick.
 	d.notifyAssignLoop()
+}
+
+// checkpointOwnedWorkerForConnection returns the exact review-worker generation
+// served by conn. Its caller must durably release that generation before using
+// the ordinary disconnect cleanup path.
+func (d *Dispatcher) checkpointOwnedWorkerForConnection(workerID string, conn net.Conn) (*trackedWorker, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	w, ok := d.workers[workerID]
+	return w, ok && w.conn == conn && w.state == protocol.WorkerReviewing && w.beadID != ""
 }
 
 func (d *Dispatcher) quarantineDisconnectedPreservedAssignment(ctx context.Context, workerID, beadID string, assignmentID int64, worktree, baseBranch, cause string) bool {
@@ -489,7 +505,7 @@ func (d *Dispatcher) terminalizePreemptedDisconnect(ctx context.Context, workerI
 }
 
 // handleConn reads line-delimited JSON messages from a worker connection.
-func (d *Dispatcher) handleConn(ctx context.Context, conn net.Conn) {
+func (d *Dispatcher) handleConn(ctx context.Context, conn net.Conn) { //nolint:gocognit,nestif // protocol admission must precede registration and message dispatch in one read loop
 	scanner := bufio.NewScanner(conn)
 	// Configure scanner to accept messages up to MaxMessageSize (1MB).
 	// Default scanner max is 64KB which is too small for large payloads.
@@ -527,6 +543,7 @@ func (d *Dispatcher) handleConn(ctx context.Context, conn net.Conn) {
 		}
 
 		// Extract workerID from the first message that carries one.
+		//nolint:nestif // first-message protocol admission must complete before registration and dispatch
 		if workerID == "" {
 			workerID = extractWorkerID(msg)
 			if workerID != "" {
@@ -534,11 +551,13 @@ func (d *Dispatcher) handleConn(ctx context.Context, conn net.Conn) {
 				if !accepted {
 					return
 				}
-				d.registerWorkerWithProtocol(workerID, conn, drainAfterAssignment)
+				if !d.registerWorkerWithProtocol(workerID, conn, drainAfterAssignment) {
+					return
+				}
 			}
 		}
 
-		d.handleMessage(ctx, workerID, msg)
+		d.handleMessageFromConnection(ctx, workerID, conn, msg)
 		d.shutdownDrainedWorkerIfIdle(workerID)
 	}
 }
@@ -663,6 +682,48 @@ func extractBeadID(msg protocol.Message) string {
 
 // handleMessage dispatches an incoming worker message.
 func (d *Dispatcher) handleMessage(ctx context.Context, workerID string, msg protocol.Message) {
+	d.handleMessageFromConnection(ctx, workerID, nil, msg)
+}
+
+func (d *Dispatcher) handleMessageFromConnection(ctx context.Context, workerID string, conn net.Conn, msg protocol.Message) {
+	w, accepted := d.beginReviewWorkerMessage(workerID, conn)
+	if !accepted {
+		return
+	}
+	defer d.finishReviewWorkerMessage(w)
+	d.handleMessageUnchecked(ctx, workerID, msg)
+}
+
+func (d *Dispatcher) beginReviewWorkerMessage(workerID string, conn net.Conn) (*trackedWorker, bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	w := d.workers[workerID]
+	if w == nil || w.reviewReleaseToken != 0 || (conn != nil && w.conn != conn) {
+		return nil, false
+	}
+	w.reviewMessagesInFlight++
+	return w, true
+}
+
+func (d *Dispatcher) finishReviewWorkerMessage(w *trackedWorker) {
+	if w == nil {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if w.reviewMessagesInFlight <= 0 {
+		return
+	}
+	w.reviewMessagesInFlight--
+	if w.reviewMessagesInFlight == 0 && w.reviewMessagesDrained != nil &&
+		w.reviewReleaseToken != 0 && w.reviewMessagesDrainToken == w.reviewReleaseToken {
+		close(w.reviewMessagesDrained)
+		w.reviewMessagesDrained = nil
+		w.reviewMessagesDrainToken = 0
+	}
+}
+
+func (d *Dispatcher) handleMessageUnchecked(ctx context.Context, workerID string, msg protocol.Message) {
 	// Extract and validate bead ID from message payloads that carry one.
 	beadID := extractBeadID(msg)
 

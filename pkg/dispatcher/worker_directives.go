@@ -28,6 +28,11 @@ func (d *Dispatcher) applyKillWorker(args string) (string, error) {
 		d.mu.Unlock()
 		return "", fmt.Errorf("worker not found")
 	}
+	if w.state == protocol.WorkerReviewing && w.beadID != "" {
+		observedConn := w.conn
+		d.mu.Unlock()
+		return d.killCheckpointOwnedWorker(ctx, w, observedConn)
+	}
 
 	// Capture fields before removing worker.
 	beadID := w.beadID
@@ -73,6 +78,43 @@ func (d *Dispatcher) applyKillWorker(args string) (string, error) {
 	}
 
 	return fmt.Sprintf("worker %s killed", workerID), nil
+}
+
+func (d *Dispatcher) killCheckpointOwnedWorker(
+	ctx context.Context,
+	expected *trackedWorker,
+	observedConn net.Conn,
+) (string, error) {
+	return d.killCheckpointOwnedWorkerUsing(
+		ctx, expected, observedConn, NewReviewCheckpointStore(d.db).ReleaseWorker,
+	)
+}
+
+func (d *Dispatcher) killCheckpointOwnedWorkerUsing(
+	ctx context.Context,
+	expected *trackedWorker,
+	observedConn net.Conn,
+	releaseFn checkpointWorkerReleaseFunc,
+) (string, error) {
+	released, err := d.releaseCheckpointOwnedWorkerGenerationWithActionUsing(
+		ctx, expected, observedConn, ReviewReleaseCauseKilled, releaseFn,
+		func(*checkpointWorkerReleaseLease) error {
+			sendShutdownToConnectionWithoutBuffering(observedConn)
+			return nil
+		},
+		func(lease *checkpointWorkerReleaseLease) {
+			if lease.managed && !lease.spawnFor && d.targetWorkers > 0 {
+				d.targetWorkers--
+			}
+		},
+	)
+	if err != nil {
+		return "", fmt.Errorf("release review checkpoint worker for kill: %w", err)
+	}
+	if !released {
+		return "", fmt.Errorf("release review checkpoint worker for kill: ownership changed")
+	}
+	return fmt.Sprintf("worker %s killed", expected.id), nil
 }
 
 // applySpawnFor spawns a dedicated worker for a specific bead. The bead is
@@ -305,6 +347,18 @@ func (d *Dispatcher) applyRestartWorker(args string) (string, error) {
 
 	workerID := args
 	ctx := context.Background()
+	d.mu.Lock()
+	w, ok := d.workers[workerID]
+	if !ok {
+		d.mu.Unlock()
+		return "", fmt.Errorf("worker not found")
+	}
+	if w.state == protocol.WorkerReviewing && w.beadID != "" {
+		observedConn := w.conn
+		d.mu.Unlock()
+		return d.restartCheckpointOwnedWorker(ctx, w, observedConn)
+	}
+	d.mu.Unlock()
 
 	st, err := d.takeRestartWorkerState(workerID)
 	if err != nil {
@@ -345,6 +399,56 @@ func (d *Dispatcher) applyRestartWorker(args string) (string, error) {
 	}
 
 	return fmt.Sprintf("worker %s restarted", workerID), nil
+}
+
+func (d *Dispatcher) restartCheckpointOwnedWorker(
+	ctx context.Context,
+	expected *trackedWorker,
+	observedConn net.Conn,
+) (string, error) {
+	return d.restartCheckpointOwnedWorkerUsing(
+		ctx, expected, observedConn, NewReviewCheckpointStore(d.db).ReleaseWorker,
+	)
+}
+
+func (d *Dispatcher) restartCheckpointOwnedWorkerUsing(
+	ctx context.Context,
+	expected *trackedWorker,
+	observedConn net.Conn,
+	releaseFn checkpointWorkerReleaseFunc,
+) (string, error) {
+	released, err := d.releaseCheckpointOwnedWorkerGenerationWithActionUsing(
+		ctx, expected, observedConn, ReviewReleaseCauseRestarted, releaseFn,
+		func(lease *checkpointWorkerReleaseLease) error {
+			sendShutdownToConnectionWithoutBuffering(observedConn)
+			if err := d.killManagedWorkerForRestart(ctx, lease.procMgr, lease.workerID, lease.beadID, lease.managed); err != nil {
+				return err
+			}
+			if lease.managed {
+				d.mu.Lock()
+				current := d.workers[lease.workerID]
+				if current == expected && current.reviewReleaseToken == lease.token && current.conn == observedConn {
+					d.pendingManagedIDs[lease.workerID] = true
+					d.pendingManagedSince[lease.workerID] = d.nowFunc()
+				}
+				d.mu.Unlock()
+			}
+			if lease.procMgr != nil {
+				if _, err := lease.procMgr.Spawn(lease.workerID); err != nil {
+					return fmt.Errorf("spawn new worker: %w", err)
+				}
+			}
+			return nil
+		},
+		nil,
+	)
+	if err != nil {
+		return "", fmt.Errorf("release review checkpoint worker for restart: %w", err)
+	}
+	if !released {
+		return "", fmt.Errorf("release review checkpoint worker for restart: ownership changed")
+	}
+	return fmt.Sprintf("worker %s restarted", expected.id), nil
 }
 
 func (d *Dispatcher) killManagedWorkerForRestart(ctx context.Context, procMgr ProcessManager, workerID, beadID string, wasManaged bool) error {
