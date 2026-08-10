@@ -810,6 +810,15 @@ func TestReadyEvidenceValidationBranches(t *testing.T) {
 			t.Fatalf("invalid bead ID returned wrong error: %v", err)
 		}
 	})
+	t.Run("invalid target SHA", func(t *testing.T) {
+		evidence := validEvidence()
+		evidence.TargetSHA = "not-a-target"
+		if err := evidence.Validate(); err == nil {
+			t.Fatal("invalid target SHA unexpectedly validated")
+		} else if !strings.Contains(err.Error(), "head and target SHAs must be lowercase 40-hex commits") {
+			t.Fatalf("invalid target SHA returned wrong error: %v", err)
+		}
+	})
 
 	for _, tc := range []struct {
 		name      string
