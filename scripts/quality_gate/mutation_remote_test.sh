@@ -3631,6 +3631,8 @@ test_mutation_exec_focused_file() {
 	cat >"$fixture/bin/go" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >"${MUTATION_FOCUSED_TRACE:?}"
+printf 'MUTATION_TEST_PATTERN=%s\n' "$MUTATION_TEST_PATTERN" >>"${MUTATION_FOCUSED_TRACE:?}"
+printf 'MUTATION_TEST_FILE=%s\n' "$MUTATION_TEST_FILE" >>"${MUTATION_FOCUSED_TRACE:?}"
 exit 0
 EOF
 	chmod +x "$fixture/bin/go"
@@ -3652,12 +3654,16 @@ EOF
 	status=$?
 	set -e
 	[[ "$status" = 1 ]] || fail "focused surviving mutant exit = $status, want 1"
-	[[ "$(grep -oF 'pkg/dispatcher/review_checkpoint_store.go' "$fixture/focused-args.txt" | wc -l | tr -d ' ')" = 1 ]] ||
-		fail 'focused mutation compile must include the real mutated checkpoint source exactly once'
-	[[ "$(grep -oF 'pkg/dispatcher/review_checkpoint_store_mutation_test.go' "$fixture/focused-args.txt" | wc -l | tr -d ' ')" = 1 ]] ||
-		fail 'focused mutation compile must include the reviewed checkpoint owner exactly once'
-	! grep -q 'pkg/dispatcher/unselected_test.go' "$fixture/focused-args.txt" ||
-		fail 'focused mutation compile included an unselected test file'
+	[[ "$(grep -oF './pkg/dispatcher' "$fixture/focused-args.txt" | wc -l | tr -d ' ')" = 1 ]] ||
+		fail 'focused mutation compile must invoke the dispatcher package exactly once'
+	grep -Fxq 'MUTATION_TEST_PATTERN=TestReviewCheckpointMutationOwnershipLoads' "$fixture/focused-args.txt" ||
+		fail 'focused mutation lost the owner test pattern'
+	grep -Fxq 'MUTATION_TEST_FILE=pkg/dispatcher/review_checkpoint_store_mutation_test.go' "$fixture/focused-args.txt" ||
+		fail 'focused mutation lost the owner test file'
+	! grep -q 'review_checkpoint_store.go' "$fixture/focused-args.txt" ||
+		fail 'focused mutation passed an explicit production source file'
+	! grep -q 'unselected_test.go' "$fixture/focused-args.txt" ||
+		fail 'focused mutation passed an unrelated test file'
 
 	set +e
 	(
@@ -3677,6 +3683,254 @@ EOF
 		fail 'missing focused test directory invoked go test'
 }
 
+test_mutation_exec_package_context_and_classification() {
+	local fixture="$1"
+	local package_dir="$fixture/pkg/example"
+	local test_file="$package_dir/mutation_exec_context_test.go"
+	local original changed compile_changed survivor
+	local output status original_hash changed_hash original_sha original_bytes_b64
+	mkdir -p "$package_dir" "$fixture/bin" "$fixture/cache" "$fixture/tmp"
+	mkdir -p "$fixture/cache"/{semantic,pre-existing,symlink,compile,survivor} \
+		"$fixture/tmp"/{semantic,pre-existing,symlink,compile,survivor}
+	printf 'module mutation.test/context\n\ngo 1.26\n' >"$fixture/go.mod"
+	cat >"$package_dir/value.go" <<'EOF'
+package example
+
+func Value() string { return "original" }
+EOF
+	cat >"$test_file" <<'EOF'
+package example
+
+import (
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"os"
+	"testing"
+)
+
+func TestMutationExecPackageContextAndClassification(t *testing.T) {
+	active, err := os.ReadFile(os.Getenv("MUTATE_ORIGINAL"))
+	if err != nil {
+		t.Fatalf("read active source: %v", err)
+	}
+	sum := sha256.Sum256(active)
+	if got, want := hex.EncodeToString(sum[:]), os.Getenv("MUTATION_EXPECTED_ACTIVE_SHA"); got != want {
+		t.Fatalf("active source SHA = %q, want %q", got, want)
+	}
+	wantBytes, err := base64.StdEncoding.DecodeString(os.Getenv("MUTATION_EXPECTED_ACTIVE_BYTES"))
+	if err != nil {
+		t.Fatalf("decode expected active source bytes: %v", err)
+	}
+	if string(active) != string(wantBytes) {
+		t.Fatalf("active source bytes differ from post-substitution bytes")
+	}
+	if got := Value(); got != "original" {
+		t.Fatalf("Value() = %q, want original", got)
+	}
+}
+
+func TestUnselectedMutationExecCase(t *testing.T) {
+	t.Fatal("unselected test executed")
+}
+
+EOF
+	original="$package_dir/value.go"
+	changed="$fixture/changed.go"
+	compile_changed="$fixture/compile.go"
+	survivor="$fixture/survivor.go"
+	sed 's/return "original"/return "mutated"/' "$original" >"$changed"
+	sed 's/return "original"/return (/' "$original" >"$compile_changed"
+	cp "$original" "$survivor"
+	original_hash=$(git hash-object "$original")
+	changed_hash=$(git hash-object "$changed")
+	active_sha=$(sha256sum "$changed" | awk '{print $1}')
+	active_bytes_b64=$(base64 <"$changed" | tr -d '\n')
+	original_sha=$(sha256sum "$original" | awk '{print $1}')
+	original_bytes_b64=$(base64 <"$original" | tr -d '\n')
+	[[ "$changed_hash" != "$original_hash" ]] || fail 'semantic changed hash was not distinct'
+	cat >"$fixture/bin/go" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"${MUTATION_GO_TRACE:?}"
+printf 'MUTATION_TEST_PATTERN=%s\n' "$MUTATION_TEST_PATTERN" >>"${MUTATION_GO_TRACE:?}"
+printf 'MUTATION_TEST_FILE=%s\n' "$MUTATION_TEST_FILE" >>"${MUTATION_GO_TRACE:?}"
+exec "$MUTATION_REAL_GO" "$@"
+EOF
+	chmod +x "$fixture/bin/go"
+	local real_go
+	real_go=$(command -v go)
+
+	assert_package_trace() {
+		local trace="$1" owner="$2"
+		[[ "$(wc -l <"$trace" | tr -d ' ')" = 3 ]] || fail "go trace has unexpected line count: $trace"
+		if ! grep -Fxq -- 'test -vet=off -count=1 -timeout 55s -run ^TestMutationExecPackageContextAndClassification$ ./pkg/example' "$trace"; then
+			cat "$trace" >&2
+			fail 'mutation go trace did not preserve package context'
+		fi
+		grep -Fxq -- 'MUTATION_TEST_PATTERN=^TestMutationExecPackageContextAndClassification$' "$trace" ||
+			fail 'mutation go trace lost the selected test pattern'
+		grep -Fxq -- "MUTATION_TEST_FILE=$owner" "$trace" ||
+			fail "mutation go trace lost owner path $owner"
+	}
+
+	output="$fixture/semantic.log"
+	local real_trace="$fixture/semantic.trace"
+	set +e
+	(
+		cd "$fixture"
+		PATH="$fixture/bin:$PATH" MUTATION_REAL_GO="$real_go" MUTATION_GO_TRACE="$real_trace" \
+			GOCACHE="$fixture/cache/semantic" GOTMPDIR="$fixture/tmp/semantic" \
+			MUTATE_CHANGED="$changed" MUTATE_ORIGINAL="$original" MUTATE_PACKAGE=./pkg/example \
+			MUTATE_DEBUG=true MUTATE_TIMEOUT=60 MUTATION_TEST_TIMEOUT=55 \
+			MUTATION_EXPECTED_ACTIVE_SHA="$active_sha" MUTATION_EXPECTED_ACTIVE_BYTES="$active_bytes_b64" \
+			MUTATION_TEST_PATTERN='^TestMutationExecPackageContextAndClassification$' \
+			MUTATION_TEST_FILE="./pkg/example/mutation_exec_context_test.go" \
+			bash "$repo_root/scripts/quality_gate/mutation_exec.sh" >"$output" 2>&1
+	)
+	status=$?
+	set -e
+	[[ "$status" = 0 ]] || fail "semantic mutant exit = $status, want 0"
+	if ! grep -q '^--- FAIL: TestMutationExecPackageContextAndClassification' "$output"; then
+		cat "$output" >&2
+		fail 'semantic mutant did not run the named assertion test'
+	fi
+	! grep -q 'redeclared' "$output" || fail 'semantic mutant used explicit source-file compilation'
+	! grep -q '^ORO_MUTATION_EXEC_' "$output" || fail 'semantic assertion failure was classified as infrastructure'
+	assert_package_trace "$real_trace" "./pkg/example/mutation_exec_context_test.go"
+	[[ "$(git hash-object "$original")" = "$original_hash" ]] || fail 'semantic mutant did not restore original source bytes'
+	[[ ! -e "$original.tmp" ]] || fail 'semantic mutant left an original temp file'
+
+	run_classification() {
+		local name="$1" mutant="$2" owner="$3" expected="$4" expected_sha="$5" expected_bytes="$6"
+		local log="$fixture/$name.log" trace="$fixture/$name.trace"
+		set +e
+		(
+			cd "$fixture"
+			PATH="$fixture/bin:$PATH" MUTATION_REAL_GO="$real_go" MUTATION_GO_TRACE="$trace" \
+				GOCACHE="$fixture/cache/$name" GOTMPDIR="$fixture/tmp/$name" \
+				MUTATE_CHANGED="$mutant" MUTATE_ORIGINAL="$original" MUTATE_PACKAGE=./pkg/example \
+				MUTATE_DEBUG=true MUTATE_TIMEOUT=60 MUTATION_TEST_TIMEOUT=55 \
+				MUTATION_EXPECTED_ACTIVE_SHA="$expected_sha" MUTATION_EXPECTED_ACTIVE_BYTES="$expected_bytes" \
+				MUTATION_TEST_PATTERN='^TestMutationExecPackageContextAndClassification$' \
+				MUTATION_TEST_FILE="$owner" \
+				bash "$repo_root/scripts/quality_gate/mutation_exec.sh" >"$log" 2>&1
+		)
+		status=$?
+		set -e
+		[[ "$status" = "$expected" ]] || fail "$name exit = $status, want $expected"
+		assert_package_trace "$trace" "$owner"
+	}
+	run_classification compile "$compile_changed" "$test_file" 2 "$active_sha" "$active_bytes_b64"
+	grep -q '\[build failed\]' "$fixture/compile.log" || fail 'compile failure lost build marker'
+	! grep -q '^--- FAIL:' "$fixture/compile.log" || fail 'compile failure was confused with assertion failure'
+	grep -q '^ORO_MUTATION_EXEC_FAILURE:2$' "$fixture/compile.log" || fail 'compile failure did not emit infrastructure marker'
+	[[ "$(git hash-object "$original")" = "$original_hash" ]] || fail 'compile mutant did not restore original source bytes'
+	[[ ! -e "$original.tmp" ]] || fail 'compile mutant left an original temp file'
+
+	run_classification survivor "$survivor" "$test_file" 1 "$original_sha" "$original_bytes_b64"
+	! grep -q '^ORO_MUTATION_EXEC_' "$fixture/survivor.log" || fail 'survivor emitted an infrastructure marker'
+	grep -q '^ok[[:space:]]' "$fixture/survivor.log" || fail 'survivor did not preserve the passing classification'
+	cmp -s "$original" "$survivor" || fail 'survivor source was not restored identically'
+	[[ ! -e "$original.tmp" ]] || fail 'survivor left an original temp file'
+
+	run_fail_before_go() {
+		local name="$1" original_kind="$2" changed_kind="$3" owner_kind="$4" tmp_kind="$5"
+		local case_dir="$fixture/$name" case_pkg="$fixture/$name/pkg/example"
+		local case_original="$case_pkg/value.go" case_changed="$case_dir/changed.go"
+		local case_owner="$case_pkg/mutation_exec_context_test.go" owner_path trace log before_hash
+		mkdir -p "$case_pkg" "$case_dir/bin"
+		printf 'module mutation.test/context\\n\\ngo 1.26\\n' >"$case_dir/go.mod"
+		printf 'package example\\n\\nfunc Value() string { return "original" }\\n' >"$case_pkg/value.go"
+		printf 'package example\\n\\nfunc TestMutationExecPackageContextAndClassification(t *testing.T) {}\\n' >"$case_owner"
+		printf 'package example\\n\\nfunc Value() string { return "mutated" }\\n' >"$case_dir/changed-source.go"
+		case "$original_kind" in
+			missing) rm -f -- "$case_original" ;;
+			directory) rm -f -- "$case_original"; mkdir -p "$case_original"; printf 'directory\\n' >"$case_original/marker" ;;
+			symlink) mv -- "$case_original" "$case_dir/original-target.go"; ln -s "$case_dir/original-target.go" "$case_original" ;;
+			regular) ;;
+			*) fail "unknown original transition $original_kind" ;;
+		esac
+		case "$changed_kind" in
+			missing) rm -f -- "$case_changed" ;;
+			directory) mkdir -p "$case_changed"; printf 'directory\\n' >"$case_changed/marker" ;;
+			symlink) ln -s "$case_dir/changed-source.go" "$case_changed" ;;
+			regular) cp -- "$case_dir/changed-source.go" "$case_changed" ;;
+			*) fail "unknown changed transition $changed_kind" ;;
+		esac
+		case "$owner_kind" in
+			valid-relative) owner_path="./pkg/example/mutation_exec_context_test.go" ;;
+			valid-absolute) owner_path="$case_owner" ;;
+			invalid) owner_path="./pkg/example/owner.go"; printf 'package example\\n' >"$case_pkg/owner.go" ;;
+			outside) mkdir -p "$case_dir/outside"; owner_path="$case_dir/outside/mutation_exec_context_test.go"; printf 'package example\\n' >"$owner_path" ;;
+			symlink) ln -s "$case_owner" "$case_pkg/owner_link_test.go"; owner_path="./pkg/example/owner_link_test.go" ;;
+			*) fail "unknown owner transition $owner_kind" ;;
+		esac
+		case "$tmp_kind" in
+			none) ;;
+			regular) printf 'regular pre-existing temp\\n' >"$case_original.tmp" ;;
+			broken-symlink) ln -s "$case_dir/no-such-target" "$case_original.tmp" ;;
+			pre-existing) printf 'pre-existing temp\\n' >"$case_original.tmp" ;;
+			*) fail "unknown temp transition $tmp_kind" ;;
+		esac
+		cat >"$case_dir/bin/go" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\\n' "$*" >>"${MUTATION_GO_TRACE:?}"
+EOF
+		chmod +x "$case_dir/bin/go"
+		trace="$case_dir/go.trace"
+		log="$case_dir/exec.log"
+		before_hash=$(git hash-object "$case_original" 2>/dev/null || true)
+		set +e
+		(
+			cd "$case_dir"
+			PATH="$case_dir/bin:$PATH" MUTATION_GO_TRACE="$trace" \
+				MUTATE_CHANGED="$case_changed" MUTATE_ORIGINAL="$case_original" MUTATE_PACKAGE=./pkg/example \
+				MUTATE_TIMEOUT=60 MUTATION_TEST_TIMEOUT=55 \
+				MUTATION_TEST_PATTERN='^TestMutationExecPackageContextAndClassification$' MUTATION_TEST_FILE="$owner_path" \
+				bash "$repo_root/scripts/quality_gate/mutation_exec.sh" >"$log" 2>&1
+		)
+		status=$?
+		set -e
+		[[ "$status" = 2 ]] || fail "$name exit = $status, want 2"
+		grep -Fxq 'ORO_MUTATION_EXEC_FAILURE:2' "$log" || fail "$name did not emit exact infrastructure marker"
+		[[ ! -e "$trace" ]] || fail "$name invoked go before rejecting the transition"
+		if [[ -n "$before_hash" ]]; then
+			[[ "$(git hash-object "$case_original")" = "$before_hash" ]] || fail "$name changed original before rejecting transition"
+		fi
+		case "$original_kind" in
+			directory) [[ -d "$case_original" && ! -L "$case_original" ]] || fail "$name replaced directory original" ;;
+			symlink) [[ -L "$case_original" ]] || fail "$name replaced symlink original" ;;
+		esac
+		case "$changed_kind" in
+			symlink) [[ -L "$case_changed" ]] || fail "$name replaced symlink changed" ;;
+		esac
+		case "$tmp_kind" in
+			broken-symlink) [[ -L "$case_original.tmp" ]] || fail "$name replaced broken symlink temp" ;;
+			regular|pre-existing) [[ -f "$case_original.tmp" ]] || fail "$name replaced regular temp" ;;
+		esac
+	}
+	run_fail_before_go missing-original missing regular valid-relative none
+	run_fail_before_go directory-original directory regular valid-relative none
+	run_fail_before_go symlink-original symlink regular valid-relative none
+	run_fail_before_go missing-changed regular missing valid-relative none
+	run_fail_before_go directory-changed regular directory valid-relative none
+	run_fail_before_go symlink-changed regular symlink valid-relative none
+	run_fail_before_go invalid-owner regular regular invalid none
+	run_fail_before_go outside-owner regular regular outside none
+	run_fail_before_go symlink-owner regular regular symlink none
+	run_fail_before_go regular-temp regular regular valid-relative regular
+	run_fail_before_go broken-symlink-temp regular regular valid-relative broken-symlink
+	run_fail_before_go pre-existing-temp regular regular valid-relative pre-existing
+}
+
+TestMutationExecPackageContextAndClassification() {
+	local tmp
+	tmp=$(mktemp -d)
+	trap 'rm -rf "$tmp"' RETURN
+	test_mutation_exec_package_context_and_classification "$tmp/package-context"
+}
+
 test_review_integration_recovery_mutation_exec_focused_file() {
 	local fixture="$1"
 	local original="$fixture/pkg/dispatcher/review_integration_recovery.go"
@@ -3687,6 +3941,8 @@ test_review_integration_recovery_mutation_exec_focused_file() {
 	cat >"$fixture/bin/go" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >"${MUTATION_FOCUSED_TRACE:?}"
+printf 'MUTATION_TEST_PATTERN=%s\n' "$MUTATION_TEST_PATTERN" >>"${MUTATION_FOCUSED_TRACE:?}"
+printf 'MUTATION_TEST_FILE=%s\n' "$MUTATION_TEST_FILE" >>"${MUTATION_FOCUSED_TRACE:?}"
 exit 0
 EOF
 	chmod +x "$fixture/bin/go"
@@ -3710,12 +3966,16 @@ EOF
 	status=$?
 	set -e
 	[[ "$status" = 1 ]] || fail "integration-recovery focused surviving mutant exit = $status, want 1"
-	[[ "$(grep -oF 'pkg/dispatcher/review_integration_recovery.go' "$fixture/focused-args.txt" | wc -l | tr -d ' ')" = 1 ]] ||
-		fail 'focused mutation compile must include mutated integration-recovery source exactly once'
-	[[ "$(grep -oF 'pkg/dispatcher/review_integration_recovery_mutation_test.go' "$fixture/focused-args.txt" | wc -l | tr -d ' ')" = 1 ]] ||
-		fail 'focused mutation compile must include reviewed integration-recovery owner exactly once'
+	[[ "$(grep -oF './pkg/dispatcher' "$fixture/focused-args.txt" | wc -l | tr -d ' ')" = 1 ]] ||
+		fail 'focused mutation compile must invoke the dispatcher package exactly once'
+	grep -Fxq 'MUTATION_TEST_PATTERN=^TestReviewIntegrationRecoveryMutationFinalize$' "$fixture/focused-args.txt" ||
+		fail 'focused mutation lost the integration-recovery owner test pattern'
+	grep -Fxq 'MUTATION_TEST_FILE=pkg/dispatcher/review_integration_recovery_mutation_test.go' "$fixture/focused-args.txt" ||
+		fail 'focused mutation lost the integration-recovery owner test file'
+	! grep -q 'review_integration_recovery.go' "$fixture/focused-args.txt" ||
+		fail 'focused mutation passed an explicit integration-recovery source file'
 	! grep -q 'review_integration_recovery_unselected_test.go' "$fixture/focused-args.txt" ||
-		fail 'focused mutation compile included an unselected integration-recovery test file'
+		fail 'focused mutation passed an unrelated integration-recovery test file'
 }
 
 TestReviewIntegrationRecoveryMutationFocusedExec() {
@@ -5348,6 +5608,7 @@ TestStrictIncrementalMutation() {
 	run_fixture "$tmp/timeout" timeout infrastructure_failure 2
 	test_mutation_exec_unexpected_exit "$tmp/exec-unexpected"
 	test_mutation_exec_focused_file "$tmp/exec-focused"
+	TestMutationExecPackageContextAndClassification
 	test_review_integration_recovery_mutation_exec_focused_file "$tmp/exec-review-integration-recovery-focused"
 	TestMutationExecInternalDeadline
 	test_parallel_mutant_executor "$tmp/parallel-mutants"
@@ -5561,6 +5822,9 @@ main() {
 		;;
 	TestMutationExecInternalDeadline)
 		TestMutationExecInternalDeadline
+		;;
+	TestMutationExecPackageContextAndClassification)
+		TestMutationExecPackageContextAndClassification
 		;;
 	TestIncrementalMutationArtifactRetention)
 		tmp=$(mktemp -d)
