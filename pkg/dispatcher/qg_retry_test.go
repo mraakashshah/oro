@@ -8,6 +8,7 @@ import (
 	"net"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -39,6 +40,132 @@ func readMsgFromScanner(t *testing.T, scanner *bufio.Scanner, timeout time.Durat
 		return msg, ok
 	case <-time.After(timeout):
 		return protocol.Message{}, false
+	}
+}
+
+func startTestWorkerKeepalive(conn net.Conn, workerID string, interval time.Duration) (stop func() error, err error) {
+	if interval <= 0 {
+		return nil, fmt.Errorf("heartbeat interval must be positive, got %v", interval)
+	}
+
+	stopCh := make(chan struct{})
+	doneCh := make(chan struct{})
+	var stopOnce sync.Once
+	var errMu sync.Mutex
+	var firstErr error
+	recordErr := func(err error) {
+		errMu.Lock()
+		defer errMu.Unlock()
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+
+	go func() {
+		defer close(doneCh)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopCh:
+				return
+			case <-ticker.C:
+				msg := protocol.Message{
+					Type: protocol.MsgHeartbeat,
+					Heartbeat: &protocol.HeartbeatPayload{
+						WorkerID:        workerID,
+						ContextPct:      5,
+						ProtocolVersion: protocol.WorkerProtocolVersion,
+						Capabilities:    []string{protocol.CapabilityReadyEvidenceV1},
+					},
+				}
+				data, err := json.Marshal(msg)
+				if err != nil {
+					recordErr(err)
+					return
+				}
+				data = append(data, '\n')
+				if _, err := conn.Write(data); err != nil {
+					recordErr(err)
+					return
+				}
+			}
+		}
+	}()
+
+	stopFn := func() error {
+		stopOnce.Do(func() { close(stopCh) })
+		<-doneCh
+		errMu.Lock()
+		defer errMu.Unlock()
+		return firstErr
+	}
+	return stopFn, nil
+}
+
+func TestHandleDone_QGStuckDetection_LivenessDuringRetryWait(t *testing.T) {
+	d, beadSrc, _, _, _, _ := newTestDispatcher(t)
+	d.cfg.HeartbeatTimeout = 100 * time.Millisecond
+	d.checkHeartbeatsFn = func(context.Context) {}
+	cancel := startDispatcher(t, d)
+	defer cancel()
+
+	conn, scanner := connectWorker(t, d.cfg.SocketPath)
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgHeartbeat,
+		Heartbeat: &protocol.HeartbeatPayload{
+			WorkerID:   "w1",
+			ContextPct: 5,
+		},
+	})
+	waitForWorkers(t, d, 1, time.Second)
+
+	sendDirective(t, d.cfg.SocketPath, "start")
+	waitForState(t, d, StateRunning, time.Second)
+	beadSrc.SetBeads([]protocol.Bead{{
+		ID:    "bead-qg-liveness",
+		Title: "QG retry liveness",
+		Type:  "task",
+	}})
+
+	if msg, ok := readMsgFromScanner(t, scanner, 2*time.Second); !ok || msg.Type != protocol.MsgAssign {
+		t.Fatalf("expected initial ASSIGN, got ok=%t type=%s", ok, msg.Type)
+	}
+	sendMsg(t, conn, protocol.Message{
+		Type: protocol.MsgDone,
+		Done: &protocol.DonePayload{
+			BeadID:            "bead-qg-liveness",
+			WorkerID:          "w1",
+			QualityGatePassed: false,
+			QGOutput:          "liveness retry output",
+		},
+	})
+	stopKeepalive, err := startTestWorkerKeepalive(conn, "w1", d.cfg.HeartbeatTimeout/3)
+	if err != nil {
+		t.Fatalf("start worker keepalive: %v", err)
+	}
+	t.Cleanup(func() { _ = stopKeepalive() })
+	waitFor(t, func() bool {
+		return eventCount(t, d.db, "qg_retry_assign_sent") == 1
+	}, time.Second)
+
+	time.Sleep(2*d.cfg.HeartbeatTimeout + 20*time.Millisecond)
+	d.checkHeartbeats(context.Background())
+	if _, _, ok := d.WorkerInfo("w1"); !ok {
+		t.Fatalf("worker w1 absent after keepalive retry wait; heartbeat_timeout=%d", eventCount(t, d.db, "heartbeat_timeout"))
+	}
+	if got := eventCount(t, d.db, "heartbeat_timeout"); got != 0 {
+		t.Fatalf("heartbeat_timeout=%d after active keepalive, want 0", got)
+	}
+	msg, ok := readMsgFromScanner(t, scanner, 2*time.Second)
+	if !ok || msg.Type != protocol.MsgAssign || msg.Assign == nil {
+		t.Fatalf("expected retry ASSIGN, got ok=%t type=%s payload=%#v", ok, msg.Type, msg.Assign)
+	}
+	if msg.Assign.Attempt != 1 {
+		t.Fatalf("retry attempt=%d, want 1", msg.Assign.Attempt)
+	}
+	if err := stopKeepalive(); err != nil {
+		t.Fatalf("worker keepalive: %v", err)
 	}
 }
 
@@ -884,13 +1011,24 @@ func TestHandleDone_QGStuckDetection_DifferentOutputsReset(t *testing.T) {
 		})
 
 		if i < maxQGRetries {
-			msg, ok := readMsgFromScanner(t, scanner, 2*time.Second)
-			if !ok {
-				t.Fatalf("expected re-ASSIGN on attempt %d", i)
+			stopKeepalive, err := startTestWorkerKeepalive(conn, "w1", 100*time.Millisecond)
+			if err != nil {
+				t.Fatalf("start worker keepalive: %v", err)
 			}
-			if msg.Type != protocol.MsgAssign {
-				t.Fatalf("attempt %d: expected ASSIGN, got %s", i, msg.Type)
-			}
+			func() {
+				defer func() {
+					if err := stopKeepalive(); err != nil {
+						t.Errorf("worker keepalive: %v", err)
+					}
+				}()
+				msg, ok := readMsgFromScanner(t, scanner, 2*time.Second)
+				if !ok {
+					t.Fatalf("expected re-ASSIGN on attempt %d", i)
+				}
+				if msg.Type != protocol.MsgAssign {
+					t.Fatalf("attempt %d: expected ASSIGN, got %s", i, msg.Type)
+				}
+			}()
 		}
 	}
 
@@ -1015,7 +1153,21 @@ func TestHandleDone_QGStuckDetection_IndependentOfAttemptCount(t *testing.T) {
 			QGOutput:          "unique error",
 		},
 	})
-	readMsgFromScanner(t, scanner, 2*time.Second)
+	stopKeepalive, err := startTestWorkerKeepalive(conn, "w1", 100*time.Millisecond)
+	if err != nil {
+		t.Fatalf("start worker keepalive: %v", err)
+	}
+	func() {
+		defer func() {
+			if err := stopKeepalive(); err != nil {
+				t.Errorf("worker keepalive: %v", err)
+			}
+		}()
+		msg, ok := readMsgFromScanner(t, scanner, 2*time.Second)
+		if !ok || msg.Type != protocol.MsgAssign {
+			t.Fatalf("expected re-ASSIGN after unique output, got ok=%t type=%s", ok, msg.Type)
+		}
+	}()
 
 	for i := 0; i < 2; i++ {
 		sendMsg(t, conn, protocol.Message{
@@ -1028,13 +1180,24 @@ func TestHandleDone_QGStuckDetection_IndependentOfAttemptCount(t *testing.T) {
 			},
 		})
 		if i < 1 {
-			msg, ok := readMsgFromScanner(t, scanner, 2*time.Second)
-			if !ok {
-				t.Fatal("expected re-ASSIGN on attempt 2")
+			stopKeepalive, err := startTestWorkerKeepalive(conn, "w1", 100*time.Millisecond)
+			if err != nil {
+				t.Fatalf("start worker keepalive: %v", err)
 			}
-			if msg.Type != protocol.MsgAssign {
-				t.Fatalf("expected ASSIGN, got %s", msg.Type)
-			}
+			func() {
+				defer func() {
+					if err := stopKeepalive(); err != nil {
+						t.Errorf("worker keepalive: %v", err)
+					}
+				}()
+				msg, ok := readMsgFromScanner(t, scanner, 2*time.Second)
+				if !ok {
+					t.Fatal("expected re-ASSIGN on attempt 2")
+				}
+				if msg.Type != protocol.MsgAssign {
+					t.Fatalf("expected ASSIGN, got %s", msg.Type)
+				}
+			}()
 		}
 	}
 
