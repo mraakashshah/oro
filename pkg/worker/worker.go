@@ -255,6 +255,7 @@ type Worker struct {
 	subprocKilledByUs      bool                   // true if we intentionally killed the subprocess
 	connWriteMu            sync.Mutex             // serializes conn writes so heartbeat deadlines don't leak
 	heartbeatInterval      time.Duration          // minimum time between periodic heartbeats
+	logMu                  sync.Mutex             // serializes output writes and log rotation
 	logFile                *os.File               // per-worker output log file at ~/.oro/workers/<ID>/output.log
 	logWriter              *bufio.Writer          // buffered writer for logFile to prevent blocking
 	streamContextPct       int32                  // atomic: latest context_pct observed from stream output (0 = no signal yet)
@@ -1134,11 +1135,11 @@ func (w *Worker) processOutput(ctx context.Context, stdout io.ReadCloser, genera
 	}
 
 	// Flush log buffer once after all events are processed (not per-event).
-	w.mu.Lock()
+	w.logMu.Lock()
 	if w.logWriter != nil {
 		_ = w.logWriter.Flush()
 	}
-	w.mu.Unlock()
+	w.logMu.Unlock()
 
 	// Subprocess stdout closed — extract implicit memories so learnings from
 	// failed attempts (e.g. QG failure) are persisted regardless of outcome.
@@ -1163,13 +1164,12 @@ func (w *Worker) processStructuredStreamLine(ctx context.Context, line []byte, s
 
 	// Log formatted tool-call activity (best-effort; don't block on I/O errors).
 	if formatted := FormatActivity(activity); formatted != "" {
-		w.mu.Lock()
-		lw := w.logWriter
-		w.mu.Unlock()
-		if lw != nil {
-			_, _ = lw.WriteString(formatted)
-			_, _ = lw.WriteString("\n")
+		w.logMu.Lock()
+		if w.logWriter != nil {
+			_, _ = w.logWriter.WriteString(formatted)
+			_, _ = w.logWriter.WriteString("\n")
 		}
+		w.logMu.Unlock()
 	}
 
 	for _, textLine := range sanitizer.append(activity.Text) {
@@ -1183,13 +1183,12 @@ func (w *Worker) processPlaintextLine(ctx context.Context, line string) {
 
 func (w *Worker) processOutputTextLine(ctx context.Context, line string) {
 	line = redactCredentialAssignments(line)
-	w.mu.Lock()
-	lw := w.logWriter
-	w.mu.Unlock()
-	if lw != nil {
-		_, _ = lw.WriteString(line)
-		_, _ = lw.WriteString("\n")
+	w.logMu.Lock()
+	if w.logWriter != nil {
+		_, _ = w.logWriter.WriteString(line)
+		_, _ = w.logWriter.WriteString("\n")
 	}
+	w.logMu.Unlock()
 	w.processTextLine(ctx, line)
 }
 
@@ -1269,13 +1268,17 @@ func (w *Worker) openLogFile() error {
 		return fmt.Errorf("open log file: %w", err)
 	}
 
+	w.logMu.Lock()
 	w.logFile = f
 	w.logWriter = bufio.NewWriter(f)
+	w.logMu.Unlock()
 	return nil
 }
 
 // closeLogFile flushes and closes the log file. Safe to call multiple times.
 func (w *Worker) closeLogFile() {
+	w.logMu.Lock()
+	defer w.logMu.Unlock()
 	if w.logWriter != nil {
 		_ = w.logWriter.Flush()
 		w.logWriter = nil
