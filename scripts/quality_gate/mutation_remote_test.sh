@@ -4084,13 +4084,13 @@ EOF
 		# the empty source-only invocation after defining them.
 		# shellcheck disable=SC1090
 		source "$runner" >/dev/null 2>&1 || true
-		# shellcheck disable=SC2329 # run_mutation_shard resolves this override dynamically.
+		# shellcheck disable=SC2329,SC2317 # run_mutation_shard resolves this override dynamically.
 		touched_functions_covered() { return 0; }
 		# shellcheck disable=SC2034 # Consumed by the sourced run_mutation_shard function.
 		mutation_failure_evidence_root="$fixture/failures"
-		# shellcheck disable=SC2329 # Sourced functions resolve these fixture commands dynamically.
+		# shellcheck disable=SC2329,SC2317 # Sourced functions resolve these fixture commands dynamically.
 		go() { "$fixture/bin/go" "$@"; }
-		# shellcheck disable=SC2329 # Sourced functions resolve these fixture commands dynamically.
+		# shellcheck disable=SC2329,SC2317 # Sourced functions resolve these fixture commands dynamically.
 		timeout() { "$fixture/bin/timeout" "$@"; }
 		# shellcheck disable=SC2030,SC2031 # Fixture variables are intentionally subshell-local.
 		export MUTATION_FAKE_GO="$fixture/bin/go" MUTATION_PREWARM_MODE="$fake_mode" \
@@ -4140,9 +4140,9 @@ TestHeavyMutationPrewarmBeforeOuterTimeout() {
 		set --
 		# shellcheck disable=SC1090
 		source "$runner" >/dev/null 2>&1 || true
-		# shellcheck disable=SC2329 # Sourced functions resolve these fixture commands dynamically.
+		# shellcheck disable=SC2329,SC2317 # Sourced functions resolve these fixture commands dynamically.
 		go() { "$fixture/success/bin/go" "$@"; }
-		# shellcheck disable=SC2329 # Sourced functions resolve these fixture commands dynamically.
+		# shellcheck disable=SC2329,SC2317 # Sourced functions resolve these fixture commands dynamically.
 		timeout() { "$fixture/success/bin/timeout" "$@"; }
 		# shellcheck disable=SC2030,SC2031 # Fixture variables are intentionally subshell-local.
 		export MUTATION_FAKE_GO="$fixture/success/bin/go" MUTATION_PREWARM_MODE=success \
@@ -4166,9 +4166,9 @@ TestHeavyMutationPrewarmBeforeOuterTimeout() {
 		set --
 		# shellcheck disable=SC1090
 		source "$runner" >/dev/null 2>&1 || true
-		# shellcheck disable=SC2329 # Sourced functions resolve these fixture commands dynamically.
+		# shellcheck disable=SC2329,SC2317 # Sourced functions resolve these fixture commands dynamically.
 		go() { "$fixture/success/bin/go" "$@"; }
-		# shellcheck disable=SC2329 # Sourced functions resolve these fixture commands dynamically.
+		# shellcheck disable=SC2329,SC2317 # Sourced functions resolve these fixture commands dynamically.
 		timeout() { "$fixture/success/bin/timeout" "$@"; }
 		# shellcheck disable=SC2030,SC2031 # Fixture variables are intentionally subshell-local.
 		export MUTATION_FAKE_GO="$fixture/success/bin/go" MUTATION_PREWARM_MODE=success \
@@ -4371,7 +4371,7 @@ run_heavy_production_seam_replay() {
 			export MUTATION_REAL_TIMEOUT="$real_timeout" \
 				MUTATION_SEAM_GO_TRACE="$replay_root/state/go.trace" \
 				MUTATION_SEAM_TRACE="$replay_root/state/seam.trace"
-			# shellcheck disable=SC2329 # The sourced shard runner resolves this override dynamically.
+			# shellcheck disable=SC2329,SC2317 # The sourced shard runner resolves this override dynamically.
 			touched_functions_covered() { return 0; }
 		else
 			unset MUTATION_REAL_TIMEOUT MUTATION_SEAM_GO_TRACE MUTATION_SEAM_TRACE
