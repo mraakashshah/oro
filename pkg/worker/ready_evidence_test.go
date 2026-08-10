@@ -528,6 +528,35 @@ func runReadyEvidenceMutationOwnerCases(t *testing.T) {
 			evidence.FinishedAt != finishedAt.Format(time.RFC3339Nano) || !evidence.Passed {
 			t.Fatalf("evidence identity = %#v", evidence)
 		}
+
+		for _, test := range []struct {
+			name    string
+			wantErr string
+			mutate  func(*Worker, *qgEvidenceOptions)
+		}{
+			{name: "assignment identity", wantErr: "assignment ID, evidence directory, and target SHA are required", mutate: func(w *Worker, _ *qgEvidenceOptions) { w.targetSHA = "" }},
+			{name: "target branch", wantErr: "target branch is required", mutate: func(w *Worker, _ *qgEvidenceOptions) { w.targetBranch = "" }},
+			{name: "evidence validation", wantErr: "validate QG evidence", mutate: func(_ *Worker, opts *qgEvidenceOptions) { opts.RunID = "" }},
+		} {
+			t.Run(test.name+" fails closed", func(t *testing.T) {
+				owner := NewWithConn("owner-build-invalid", nil, nil)
+				owner.beadID = "owner-bead"
+				owner.assignmentID = 31
+				owner.qgEvidenceDir = t.TempDir()
+				owner.targetBranch = "main"
+				owner.targetSHA = targetSHA
+				opts := qgEvidenceOptions{
+					RunID: "31:2", HeadSHA: targetSHA, ScriptHash: strings.Repeat("a", 64),
+					StartedAt: startedAt, FinishedAt: finishedAt,
+				}
+				test.mutate(owner, &opts)
+				if _, err := callReadyEvidenceWithTimeout(t, "invalid buildQGEvidence", func() (protocol.QGEvidence, error) {
+					return owner.buildQGEvidence(opts)
+				}); err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("invalid evidence build error = %v, want %q", err, test.wantErr)
+				}
+			})
+		}
 	})
 
 	t.Run("writeQGEvidence", func(t *testing.T) {
@@ -584,6 +613,49 @@ func runReadyEvidenceMutationOwnerCases(t *testing.T) {
 		}
 		if info.Mode().Perm() != 0o600 {
 			t.Fatalf("evidence mode = %o, want 600", info.Mode().Perm())
+		}
+		if w.qgEvidencePath != ref.Path || w.qgEvidence == nil || *w.qgEvidence != evidence ||
+			w.qgEvidenceRef == nil || *w.qgEvidenceRef != ref {
+			t.Fatalf("published worker evidence state = path %q evidence %#v ref %#v",
+				w.qgEvidencePath, w.qgEvidence, w.qgEvidenceRef)
+		}
+		if !w.mu.TryLock() {
+			t.Fatal("writeQGEvidence retained the worker mutex")
+		}
+		w.mu.Unlock()
+
+		for _, test := range []struct {
+			name    string
+			wantErr string
+			mutate  func(*Worker, *protocol.QGEvidence)
+		}{
+			{name: "assignment identity", wantErr: "assignment ID, evidence directory, and target SHA are required", mutate: func(w *Worker, _ *protocol.QGEvidence) { w.targetSHA = "" }},
+			{name: "target branch", wantErr: "target branch is required", mutate: func(w *Worker, _ *protocol.QGEvidence) { w.targetBranch = "" }},
+			{name: "assignment ID mismatch", wantErr: "does not match", mutate: func(_ *Worker, e *protocol.QGEvidence) { e.AssignmentID++ }},
+			{name: "bead mismatch", wantErr: "does not match", mutate: func(_ *Worker, e *protocol.QGEvidence) { e.BeadID = "other-bead" }},
+			{name: "worker mismatch", wantErr: "does not match", mutate: func(_ *Worker, e *protocol.QGEvidence) { e.WorkerID = "other-worker" }},
+			{name: "branch mismatch", wantErr: "does not match", mutate: func(_ *Worker, e *protocol.QGEvidence) { e.TargetBranch = "other" }},
+			{name: "target mismatch", wantErr: "does not match", mutate: func(_ *Worker, e *protocol.QGEvidence) { e.TargetSHA = strings.Repeat("9", 40) }},
+			{name: "invalid evidence", wantErr: "validate QG evidence", mutate: func(_ *Worker, e *protocol.QGEvidence) { e.RunID = "" }},
+		} {
+			t.Run(test.name+" fails closed", func(t *testing.T) {
+				owner := NewWithConn(w.ID, nil, nil)
+				owner.beadID = w.beadID
+				owner.assignmentID = w.assignmentID
+				owner.qgEvidenceDir = t.TempDir()
+				owner.targetBranch = w.targetBranch
+				owner.targetSHA = w.targetSHA
+				candidate := evidence
+				test.mutate(owner, &candidate)
+				if _, err := callReadyEvidenceWithTimeout(t, "invalid writeQGEvidence", func() (protocol.QGEvidenceRef, error) {
+					return owner.writeQGEvidence(candidate)
+				}); err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("invalid evidence write error = %v, want %q", err, test.wantErr)
+				}
+				if owner.qgEvidencePath != "" || owner.qgEvidence != nil || owner.qgEvidenceRef != nil {
+					t.Fatal("failed write published evidence state")
+				}
+			})
 		}
 
 		t.Run("symlinked parent fails closed", func(t *testing.T) {
@@ -642,6 +714,36 @@ func runReadyEvidenceMutationOwnerCases(t *testing.T) {
 				t.Fatal("non-directory evidence root accepted")
 			}
 		})
+	})
+
+	t.Run("gitHeadSHA", func(t *testing.T) {
+		if _, err := gitHeadSHA(context.Background(), filepath.Join(t.TempDir(), "missing")); err == nil || strings.Contains(err.Error(), "empty result") {
+			t.Fatalf("missing repository error = %v", err)
+		}
+
+		bin := t.TempDir()
+		git := filepath.Join(bin, "git")
+		if err := os.WriteFile(git, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+			t.Fatalf("write empty git fixture: %v", err)
+		}
+		t.Setenv("PATH", bin)
+		if _, err := gitHeadSHA(context.Background(), t.TempDir()); err == nil || !strings.Contains(err.Error(), "empty result") {
+			t.Fatalf("empty HEAD error = %v", err)
+		}
+	})
+
+	t.Run("loadQualityGateScript", func(t *testing.T) {
+		if _, _, err := loadQualityGateScript(context.Background(), t.TempDir()); err == nil || !strings.Contains(err.Error(), "quality gate script not found") {
+			t.Fatalf("missing script error = %v", err)
+		}
+
+		worktree := t.TempDir()
+		if err := os.Mkdir(filepath.Join(worktree, "quality_gate.sh"), 0o700); err != nil {
+			t.Fatalf("create unreadable script fixture: %v", err)
+		}
+		if _, _, err := loadQualityGateScript(context.Background(), worktree); err == nil {
+			t.Fatal("directory accepted as quality gate script")
+		}
 	})
 
 	t.Run("SendReadyForReview", func(t *testing.T) {
