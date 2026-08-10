@@ -618,10 +618,12 @@ func runReadyEvidenceMutationOwnerCases(t *testing.T) {
 		w.assignmentID = 33
 		w.targetSHA = targetSHA
 		w.qgEvidencePath = filepath.Join(t.TempDir(), "evidence.json")
-		evidence := protocol.QGEvidence{RunID: "33:1", AssignmentID: 33, BeadID: w.beadID, WorkerID: w.ID,
+		evidence := protocol.QGEvidence{
+			RunID: "33:1", AssignmentID: 33, BeadID: w.beadID, WorkerID: w.ID,
 			HeadSHA: targetSHA, TargetBranch: "main", TargetSHA: targetSHA,
 			ScriptHash: strings.Repeat("c", 64), OutputHash: sha256Hex([]byte("passed\n")),
-			Mode: "worker", Passed: true, StartedAt: "2026-08-10T03:00:00Z", FinishedAt: "2026-08-10T03:01:00Z"}
+			Mode: "worker", Passed: true, StartedAt: "2026-08-10T03:00:00Z", FinishedAt: "2026-08-10T03:01:00Z",
+		}
 		ref := protocol.QGEvidenceRef{RunID: evidence.RunID, Path: w.qgEvidencePath, SHA256: strings.Repeat("d", 64)}
 		w.qgEvidence = &evidence
 		w.qgEvidenceRef = &ref
