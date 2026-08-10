@@ -1,6 +1,7 @@
 package dispatcher //nolint:testpackage // mutation owners exercise directive internals
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -10,6 +11,125 @@ import (
 )
 
 const workerDirectiveTestTimeout = 500 * time.Millisecond
+
+func TestKillCheckpointOwnedWorkerUsingMutationGuards(t *testing.T) {
+	cases := []struct {
+		name             string
+		managed          bool
+		spawnFor         bool
+		targetStart      int
+		releaseErr       error
+		ownershipChanged bool
+		wantErr          string
+		wantShutdown     bool
+		wantTarget       int
+	}{
+		{
+			name:         "managed worker releases and decrements target",
+			managed:      true,
+			targetStart:  2,
+			wantShutdown: true,
+			wantTarget:   1,
+		},
+		{
+			name:         "unmanaged worker preserves target",
+			targetStart:  2,
+			wantShutdown: true,
+			wantTarget:   2,
+		},
+		{
+			name:         "spawn-for worker preserves target",
+			managed:      true,
+			spawnFor:     true,
+			targetStart:  2,
+			wantShutdown: true,
+			wantTarget:   2,
+		},
+		{
+			name:         "managed worker at zero preserves target",
+			managed:      true,
+			targetStart:  0,
+			wantShutdown: true,
+			wantTarget:   0,
+		},
+		{
+			name:        "release failure is wrapped and does not shut down",
+			managed:     true,
+			targetStart: 2,
+			releaseErr:  errors.New("release failed"),
+			wantErr:     "release review checkpoint worker for kill: release failed",
+			wantTarget:  2,
+		},
+		{
+			name:             "ownership change is rejected",
+			managed:          true,
+			targetStart:      2,
+			ownershipChanged: true,
+			wantErr:          "release review checkpoint worker for kill: ownership changed",
+			wantTarget:       2,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			d, _, _, _, _, _ := newTestDispatcher(t)
+			_, _, worker := seedCheckpointOwnedEdgeWorker(
+				t, d, "kill-using-"+strings.ReplaceAll(tc.name, " ", "-"), ReviewCheckpointStateReviewRunning, "active",
+			)
+			worker.managed = tc.managed
+			worker.spawnFor = tc.spawnFor
+			d.targetWorkers = tc.targetStart
+
+			releaseCalls := 0
+			releaseFn := func(_ context.Context, beadID, workerID string) (bool, error) {
+				releaseCalls++
+				if beadID != worker.beadID || workerID != worker.id {
+					t.Fatalf("release identity = bead=%q worker=%q, want bead=%q worker=%q",
+						beadID, workerID, worker.beadID, worker.id)
+				}
+				if tc.releaseErr != nil {
+					return false, tc.releaseErr
+				}
+				return true, nil
+			}
+
+			observedConn := worker.conn
+			if tc.ownershipChanged {
+				observedConn = newMockConn()
+			}
+			message, err := d.killCheckpointOwnedWorkerUsing(
+				context.Background(), worker, observedConn, releaseFn,
+			)
+			if tc.wantErr != "" {
+				if err == nil || err.Error() != tc.wantErr {
+					t.Fatalf("kill result = (%q, %v), want error %q", message, err, tc.wantErr)
+				}
+			} else if err != nil || !strings.Contains(message, worker.id) {
+				t.Fatalf("kill result = (%q, %v), want worker success", message, err)
+			}
+			wantReleaseCalls := 1
+			if tc.ownershipChanged {
+				wantReleaseCalls = 0
+			}
+			if releaseCalls != wantReleaseCalls {
+				t.Fatalf("release calls = %d, want %d", releaseCalls, wantReleaseCalls)
+			}
+			if d.targetWorkers != tc.wantTarget {
+				t.Fatalf("targetWorkers = %d, want %d", d.targetWorkers, tc.wantTarget)
+			}
+			conn := worker.conn.(*mockConn)
+			conn.mu.Lock()
+			writes := len(conn.written)
+			conn.mu.Unlock()
+			if tc.wantShutdown {
+				assertWorkerDirectiveShutdown(t, conn)
+			} else if writes != 0 {
+				t.Fatalf("worker shutdown writes = %d, want zero", writes)
+			}
+		})
+	}
+}
 
 type workerDirectiveTestResult struct {
 	detail string
