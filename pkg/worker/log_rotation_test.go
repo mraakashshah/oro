@@ -9,9 +9,11 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"oro/pkg/cards"
 	"oro/pkg/protocol"
 )
 
@@ -26,6 +28,36 @@ type rotationBlockingWriter struct {
 	once    sync.Once
 	mu      sync.Mutex
 	data    bytes.Buffer
+}
+
+type rotationTrackingReadCloser struct {
+	io.Reader
+	closed chan struct{}
+	once   sync.Once
+}
+
+type logScoreExtractSpawner struct {
+	calls  int
+	output string
+}
+
+func (s *logScoreExtractSpawner) Spawn(_ context.Context, _, _ string) (io.ReadCloser, error) {
+	s.calls++
+	return io.NopCloser(strings.NewReader(s.output)), nil
+}
+
+type logScoreMemorySink struct {
+	calls int
+}
+
+func (s *logScoreMemorySink) AppendLearningPending(_ context.Context, _ string, _ cards.CardCandidate) (int64, error) {
+	s.calls++
+	return int64(s.calls), nil
+}
+
+func (r *rotationTrackingReadCloser) Close() error {
+	r.once.Do(func() { close(r.closed) })
+	return nil
 }
 
 func newRotationBlockingWriter() *rotationBlockingWriter {
@@ -143,8 +175,14 @@ func TestWorkerLogOutputMutationOwners(t *testing.T) {
 			t.Fatalf("open log: %v", err)
 		}
 		assertLogMuReusable(t, w, "openLogFile")
-		w.processOutputTextLine(context.Background(), "OPENAI_API_KEY=secret")
-		assertLogMuReusable(t, w, "processOutputTextLine")
+		w.processPlaintextLine(context.Background(), "OPENAI_API_KEY=secret")
+		assertLogMuReusable(t, w, "processPlaintextLine")
+		if got, want := w.SessionText(), "OPENAI_API_KEY=[REDACTED]\n"; got != want {
+			t.Fatalf("session text = %q, want %q", got, want)
+		}
+		if w.lastSubprocOutputAt.IsZero() {
+			t.Fatal("lastSubprocOutputAt was not updated")
+		}
 		w.closeLogFile()
 		w.closeLogFile()
 
@@ -161,10 +199,22 @@ func TestWorkerLogOutputMutationOwners(t *testing.T) {
 		var sink bytes.Buffer
 		w := &Worker{logWriter: bufio.NewWriter(&sink)}
 		var sanitizer credentialLineSanitizer
-		w.processStructuredStreamLine(
-			context.Background(),
+		runStructured := func(line []byte, what string) {
+			done := make(chan struct{})
+			go func() {
+				w.processStructuredStreamLine(context.Background(), line, &sanitizer)
+				close(done)
+			}()
+			waitRotationRecoverLogMu(t, w, done, what)
+			assertLogMuReusable(t, w, what)
+		}
+		runStructured(
 			[]byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","id":"toolu_01","input":{}}]}}`),
-			&sanitizer,
+			"structured activity",
+		)
+		runStructured(
+			[]byte(`{"type":"content_block_delta","delta":{"type":"text_delta","text":"structured payload\n"}}`),
+			"structured text",
 		)
 		if err := w.logWriter.Flush(); err != nil {
 			t.Fatalf("flush log: %v", err)
@@ -172,17 +222,62 @@ func TestWorkerLogOutputMutationOwners(t *testing.T) {
 		if got := sink.String(); !strings.Contains(got, "-> Read\n") {
 			t.Fatalf("structured log = %q, want Read activity", got)
 		}
+		if got := sink.String(); !strings.Contains(got, "structured payload\n") {
+			t.Fatalf("structured log = %q, want forwarded text", got)
+		}
 	})
 
 	t.Run("output stream", func(t *testing.T) {
 		var sink bytes.Buffer
 		w := &Worker{
-			logWriter:    bufio.NewWriter(&sink),
-			streamFormat: StreamFormatClaudeJSON,
+			logWriter:            bufio.NewWriter(&sink),
+			streamFormat:         StreamFormatClaudeJSON,
+			assignmentGeneration: 42,
 		}
-		stdout := io.NopCloser(strings.NewReader(
-			`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","id":"toolu_02","input":{}}]}}` + "\n",
-		))
+		stdout := &rotationTrackingReadCloser{
+			Reader: strings.NewReader(
+				`{"event":"turn_end","context_pct":42}` + "\n" +
+					`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","id":"toolu_02","input":{}}]}}` + "\n",
+			),
+			closed: make(chan struct{}),
+		}
+		w.outputWg.Add(1)
+		go w.processOutput(context.Background(), stdout, 42)
+		outputDone := make(chan struct{})
+		go func() {
+			w.outputWg.Wait()
+			close(outputDone)
+		}()
+		waitRotation(t, outputDone, "output stream")
+		waitRotationClosed(t, stdout.closed, "output stream stdout")
+		assertLogMuReusable(t, w, "output stream")
+		if got := sink.String(); !strings.Contains(got, "-> Bash\n") {
+			t.Fatalf("output log = %q, want Bash activity", got)
+		}
+		if got := atomic.LoadInt32(&w.streamContextPct); got != 42 {
+			t.Fatalf("stream context pct = %d, want 42", got)
+		}
+	})
+
+	t.Run("structured EOF flushes trailing text", func(t *testing.T) {
+		var sink bytes.Buffer
+		extract := &logScoreExtractSpawner{
+			output: "[MEMORY] type=lesson: EOF extraction reached\n",
+		}
+		memory := &logScoreMemorySink{}
+		w := &Worker{
+			beadID:         "log-score-bead",
+			logWriter:      bufio.NewWriter(&sink),
+			streamFormat:   StreamFormatClaudeJSON,
+			memStore:       memory,
+			extractSpawner: extract,
+		}
+		stdout := &rotationTrackingReadCloser{
+			Reader: strings.NewReader(
+				`{"type":"content_block_delta","delta":{"type":"text_delta","text":"trailing text"}}` + "\n",
+			),
+			closed: make(chan struct{}),
+		}
 		w.outputWg.Add(1)
 		go w.processOutput(context.Background(), stdout, 0)
 		outputDone := make(chan struct{})
@@ -190,10 +285,33 @@ func TestWorkerLogOutputMutationOwners(t *testing.T) {
 			w.outputWg.Wait()
 			close(outputDone)
 		}()
-		waitRotation(t, outputDone, "output stream")
-		if got := sink.String(); !strings.Contains(got, "-> Bash\n") {
-			t.Fatalf("output log = %q, want Bash activity", got)
+		waitRotation(t, outputDone, "structured trailing output")
+		waitRotationClosed(t, stdout.closed, "structured trailing stdout")
+		assertLogMuReusable(t, w, "structured trailing output")
+		if got := sink.String(); got != "trailing text\n" {
+			t.Fatalf("trailing structured log = %q, want %q", got, "trailing text\n")
 		}
+		if extract.calls != 1 || memory.calls != 1 {
+			t.Fatalf("EOF extraction calls = spawner:%d store:%d, want 1 each", extract.calls, memory.calls)
+		}
+	})
+
+	t.Run("nil writer and file still drain stdout", func(t *testing.T) {
+		w := &Worker{streamFormat: StreamFormatLineText}
+		stdout := &rotationTrackingReadCloser{
+			Reader: strings.NewReader("plain output without a log\n"),
+			closed: make(chan struct{}),
+		}
+		w.outputWg.Add(1)
+		go w.processOutput(context.Background(), stdout, 0)
+		outputDone := make(chan struct{})
+		go func() {
+			w.outputWg.Wait()
+			close(outputDone)
+		}()
+		waitRotation(t, outputDone, "nil-writer output")
+		waitRotationClosed(t, stdout.closed, "nil-writer stdout")
+		assertLogMuReusable(t, w, "nil-writer output")
 	})
 }
 
@@ -203,6 +321,15 @@ func waitRotation(t *testing.T, done <-chan struct{}, what string) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatalf("%s did not finish", what)
+	}
+}
+
+func waitRotationClosed(t *testing.T, closed <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatalf("%s was not closed", what)
 	}
 }
 
