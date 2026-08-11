@@ -3714,6 +3714,13 @@ func TestMutationExecPackageContextAndClassification(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read active source: %v", err)
 	}
+	originalBytes, err := base64.StdEncoding.DecodeString(os.Getenv("MUTATION_EXPECTED_ORIGINAL_BYTES"))
+	if err != nil {
+		t.Fatalf("decode expected original source bytes: %v", err)
+	}
+	if string(active) == string(originalBytes) {
+		return
+	}
 	sum := sha256.Sum256(active)
 	if got, want := hex.EncodeToString(sum[:]), os.Getenv("MUTATION_EXPECTED_ACTIVE_SHA"); got != want {
 		t.Fatalf("active source SHA = %q, want %q", got, want)
@@ -3763,14 +3770,14 @@ EOF
 
 	assert_package_trace() {
 		local trace="$1" owner="$2"
-		[[ "$(wc -l <"$trace" | tr -d ' ')" = 3 ]] || fail "go trace has unexpected line count: $trace"
-		if ! grep -Fxq -- 'test -vet=off -count=1 -timeout 55s -run ^TestMutationExecPackageContextAndClassification$ ./pkg/example' "$trace"; then
+		[[ "$(wc -l <"$trace" | tr -d ' ')" = 6 ]] || fail "go trace has unexpected line count: $trace"
+		if [[ "$(grep -Fxc -- 'test -vet=off -count=1 -timeout 55s -run ^TestMutationExecPackageContextAndClassification$ ./pkg/example' "$trace")" != 2 ]]; then
 			cat "$trace" >&2
-			fail 'mutation go trace did not preserve package context'
+			fail 'mutation go trace did not preserve both baseline and mutant package contexts'
 		fi
-		grep -Fxq -- 'MUTATION_TEST_PATTERN=^TestMutationExecPackageContextAndClassification$' "$trace" ||
+		[[ "$(grep -Fxc -- 'MUTATION_TEST_PATTERN=^TestMutationExecPackageContextAndClassification$' "$trace")" = 2 ]] ||
 			fail 'mutation go trace lost the selected test pattern'
-		grep -Fxq -- "MUTATION_TEST_FILE=$owner" "$trace" ||
+		[[ "$(grep -Fxc -- "MUTATION_TEST_FILE=$owner" "$trace")" = 2 ]] ||
 			fail "mutation go trace lost owner path $owner"
 	}
 
@@ -3784,6 +3791,7 @@ EOF
 			MUTATE_CHANGED="$changed" MUTATE_ORIGINAL="$original" MUTATE_PACKAGE=./pkg/example \
 			MUTATE_DEBUG=true MUTATE_TIMEOUT=60 MUTATION_TEST_TIMEOUT=55 \
 			MUTATION_EXPECTED_ACTIVE_SHA="$active_sha" MUTATION_EXPECTED_ACTIVE_BYTES="$active_bytes_b64" \
+			MUTATION_EXPECTED_ORIGINAL_BYTES="$original_bytes_b64" \
 			MUTATION_TEST_PATTERN='^TestMutationExecPackageContextAndClassification$' \
 			MUTATION_TEST_FILE="./pkg/example/mutation_exec_context_test.go" \
 			bash "$repo_root/scripts/quality_gate/mutation_exec.sh" >"$output" 2>&1
@@ -3812,6 +3820,7 @@ EOF
 				MUTATE_CHANGED="$mutant" MUTATE_ORIGINAL="$original" MUTATE_PACKAGE=./pkg/example \
 				MUTATE_DEBUG=true MUTATE_TIMEOUT=60 MUTATION_TEST_TIMEOUT=55 \
 				MUTATION_EXPECTED_ACTIVE_SHA="$expected_sha" MUTATION_EXPECTED_ACTIVE_BYTES="$expected_bytes" \
+				MUTATION_EXPECTED_ORIGINAL_BYTES="$original_bytes_b64" \
 				MUTATION_TEST_PATTERN='^TestMutationExecPackageContextAndClassification$' \
 				MUTATION_TEST_FILE="$owner" \
 				bash "$repo_root/scripts/quality_gate/mutation_exec.sh" >"$log" 2>&1
@@ -3821,10 +3830,12 @@ EOF
 		[[ "$status" = "$expected" ]] || fail "$name exit = $status, want $expected"
 		assert_package_trace "$trace" "$owner"
 	}
-	run_classification compile "$compile_changed" "$test_file" 2 "$active_sha" "$active_bytes_b64"
+	run_classification compile "$compile_changed" "$test_file" 0 "$active_sha" "$active_bytes_b64"
 	grep -q '\[build failed\]' "$fixture/compile.log" || fail 'compile failure lost build marker'
 	! grep -q '^--- FAIL:' "$fixture/compile.log" || fail 'compile failure was confused with assertion failure'
-	grep -q '^ORO_MUTATION_EXEC_FAILURE:2$' "$fixture/compile.log" || fail 'compile failure did not emit infrastructure marker'
+	[[ "$(grep -Fxc 'ORO_MUTATION_KILLED_REASON:mutant_compile_failure' "$fixture/compile.log")" = 1 ]] ||
+		fail 'compile failure did not emit exactly one causal killed reason'
+	! grep -q '^ORO_MUTATION_EXEC_FAILURE:' "$fixture/compile.log" || fail 'compile failure remained infrastructure'
 	[[ "$(git hash-object "$original")" = "$original_hash" ]] || fail 'compile mutant did not restore original source bytes'
 	[[ ! -e "$original.tmp" ]] || fail 'compile mutant left an original temp file'
 
@@ -3931,6 +3942,265 @@ TestMutationExecPackageContextAndClassification() {
 	test_mutation_exec_package_context_and_classification "$tmp/package-context"
 }
 
+test_mutation_exec_baseline_and_mutant_compile_classification() {
+	local fixture="$1"
+	local real_go
+	real_go=$(command -v go)
+
+	run_case() {
+		local name="$1" original_body="$2" changed_body="$3" expected_status="$4"
+		local expected_trace_count="$5" expected_first_sha="$6" expected_second_sha="${7:-}"
+		local case_dir="$fixture/$name" package_dir
+		package_dir="$case_dir/pkg/example"
+		local original="$package_dir/value.go" changed="$case_dir/changed.go"
+		local owner="$package_dir/mutation_exec_baseline_test.go"
+		local cache="$case_dir/cache" tmp="$case_dir/tmp"
+		local log="$case_dir/executor.log" trace="$case_dir/go.trace" original_hash status
+		mkdir -p "$package_dir" "$case_dir/bin" "$cache" "$tmp"
+		printf 'module mutation.test/baseline\n\ngo 1.26\n' >"$case_dir/go.mod"
+		printf 'package example\n\nfunc Value() string { %s }\n' "$original_body" >"$original"
+		printf 'package example\n\nfunc Value() string { %s }\n' "$changed_body" >"$changed"
+		original_hash=$(git hash-object "$original")
+		cat >"$package_dir/selected.go" <<'EOF'
+//go:build selected
+
+package example
+
+const buildSelected = true
+EOF
+		cat >"$package_dir/excluded.go" <<'EOF'
+//go:build !selected
+
+package example
+
+const buildSelected = false
+EOF
+		cat >"$owner" <<'EOF'
+package example
+
+import (
+	"os"
+	"testing"
+)
+
+func TestMutationExecBaselineAndMutantCompileClassification(t *testing.T) {
+	if !buildSelected {
+		t.Fatal("selected build tag was not preserved")
+	}
+	if os.Getenv("MUTATION_BASELINE_CASE") == "baseline-assertion" {
+		if got := Value(); got != "mutated" {
+			t.Fatalf("Value() = %q, want mutated", got)
+		}
+		return
+	}
+	if got := Value(); got != "original" {
+		t.Fatalf("Value() = %q, want original", got)
+	}
+}
+
+func TestUnselectedMutationExecBaselineCase(t *testing.T) {
+	t.Fatal("unselected owner test executed")
+}
+EOF
+		cat >"$case_dir/bin/go" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+active_sha=$(sha256sum "${MUTATE_ORIGINAL:?}" | awk '{print $1}')
+printf 'SHA=%s|GOFLAGS=%s|GOCACHE=%s|GOTMPDIR=%s|%s\n' \
+	"$active_sha" "${GOFLAGS:-}" "${GOCACHE:-}" "${GOTMPDIR:-}" "$*" \
+	>>"${MUTATION_BASELINE_TRACE:?}"
+exec "${MUTATION_REAL_GO:?}" "$@"
+EOF
+		chmod +x "$case_dir/bin/go"
+		set +e
+		(
+			cd "$case_dir"
+			PATH="$case_dir/bin:$PATH" MUTATION_REAL_GO="$real_go" MUTATION_BASELINE_TRACE="$trace" \
+				MUTATION_BASELINE_CASE="$name" GOFLAGS=-tags=selected \
+				GOCACHE="$cache" GOTMPDIR="$tmp" \
+				MUTATE_CHANGED="$changed" MUTATE_ORIGINAL="$original" MUTATE_PACKAGE=./pkg/example \
+				MUTATE_TIMEOUT=20 MUTATION_TEST_TIMEOUT=15 \
+				MUTATION_TEST_PATTERN='^TestMutationExecBaselineAndMutantCompileClassification$' \
+				MUTATION_TEST_FILE=pkg/example/mutation_exec_baseline_test.go \
+				bash "$repo_root/scripts/quality_gate/mutation_exec.sh" >"$log" 2>&1
+		)
+		status=$?
+		set -e
+		[[ "$status" = "$expected_status" ]] || fail "$name executor status = $status, want $expected_status"
+		[[ "$(wc -l <"$trace" | tr -d ' ')" = "$expected_trace_count" ]] ||
+			fail "$name Go phase count changed"
+		sed -n '1p' "$trace" | grep -Fq "SHA=$expected_first_sha|GOFLAGS=-tags=selected|GOCACHE=$cache|GOTMPDIR=$tmp|test -vet=off -count=1 -timeout 15s -run ^TestMutationExecBaselineAndMutantCompileClassification$ ./pkg/example" ||
+			fail "$name did not execute the original baseline first with exact package context"
+		if [[ -n "$expected_second_sha" ]]; then
+			sed -n '2p' "$trace" | grep -Fq "SHA=$expected_second_sha|GOFLAGS=-tags=selected|GOCACHE=$cache|GOTMPDIR=$tmp|test -vet=off -count=1 -timeout 15s -run ^TestMutationExecBaselineAndMutantCompileClassification$ ./pkg/example" ||
+				fail "$name did not execute the changed mutant second with exact package context"
+		fi
+		[[ "$(grep -c '^ORO_MUTATION_EXEC_FAILURE:2$' "$log" || true)" = "$([[ "$expected_status" = 2 ]] && printf 1 || printf 0)" ]] ||
+			fail "$name generic infrastructure marker count changed"
+		[[ "$(git hash-object "$original")" = "$original_hash" ]] ||
+			fail "$name did not restore original source bytes"
+		[[ ! -e "$original.tmp" ]] || fail "$name left source restoration residue"
+	}
+
+	run_shared_deadline_case() {
+		local name="$1" executor="$2" expected_status="$3"
+		local case_dir="$fixture/$name" original="$fixture/$name/pkg/example/value.go"
+		local changed="$fixture/$name/changed.go" trace="$fixture/$name/go.trace"
+		local output="$fixture/$name/executor.log" original_hash status
+		mkdir -p "$(dirname "$original")" "$case_dir/bin" "$case_dir/cache" "$case_dir/tmp"
+		printf 'package example\n\nfunc Value() int { return 1 }\n' >"$original"
+		printf 'package example\n\nfunc Value() int { return 2 }\n' >"$changed"
+		original_hash=$(git hash-object "$original")
+		cat >"$case_dir/bin/go" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$(sha256sum "${MUTATE_ORIGINAL:?}" | awk '{print $1}')" >>"${MUTATION_DEADLINE_TRACE:?}"
+sleep 2
+exit 0
+EOF
+		chmod +x "$case_dir/bin/go"
+		SECONDS=0
+		set +e
+		(
+			cd "$case_dir"
+			PATH="$case_dir/bin:$PATH" MUTATION_DEADLINE_TRACE="$trace" \
+				GOCACHE="$case_dir/cache" GOTMPDIR="$case_dir/tmp" \
+				MUTATE_CHANGED="$changed" MUTATE_ORIGINAL="$original" MUTATE_PACKAGE=./pkg/example \
+				MUTATE_TIMEOUT=3 MUTATION_TEST_TIMEOUT=10 MUTATION_TEST_PATTERN='^TestDeadline$' \
+				bash "$executor" >"$output" 2>&1
+		)
+		status=$?
+		set -e
+		[[ "$status" = "$expected_status" ]] ||
+			fail "$name shared-deadline status = $status, want $expected_status"
+		[[ "$(wc -l <"$trace" | tr -d ' ')" = 2 ]] || fail "$name did not execute exactly two phases"
+		[[ "$(git hash-object "$original")" = "$original_hash" ]] || fail "$name did not restore source bytes"
+		[[ ! -e "$original.tmp" ]] || fail "$name left source residue"
+		if [[ "$expected_status" = 124 ]]; then
+			[[ "$(grep -Fxc 'ORO_MUTATION_EXEC_TIMEOUT' "$output")" = 1 ]] ||
+				fail "$name did not emit exactly one timeout marker"
+		else
+			! grep -q '^ORO_MUTATION_EXEC_' "$output" || fail "$name negative control emitted an executor marker"
+		fi
+	}
+
+	local selected_case="${MUTATION_BASELINE_RED_CASE:-all}"
+	if [[ "$selected_case" = all || "$selected_case" = mutant-compile ]]; then
+		local mutant_case="$fixture/mutant-compile"
+		mkdir -p "$mutant_case"
+		local mutant_original_sha mutant_changed_sha
+		mutant_original_sha=$(printf 'package example\n\nfunc Value() string { return "original" }\n' | sha256sum | awk '{print $1}')
+		mutant_changed_sha=$(printf 'package example\n\nfunc Value() string { return ( }\n' | sha256sum | awk '{print $1}')
+		run_case mutant-compile 'return "original"' 'return (' 0 2 "$mutant_original_sha" "$mutant_changed_sha"
+		[[ "$(grep -c '^ORO_MUTATION_KILLED_REASON:mutant_compile_failure$' "$mutant_case/executor.log" || true)" = 1 ]] ||
+			fail 'mutant compile failure did not emit exactly one causal killed reason'
+		! grep -q '^ORO_MUTATION_EXEC_FAILURE:' "$mutant_case/executor.log" ||
+			fail 'mutant compile failure remained infrastructure'
+	fi
+
+	if [[ "$selected_case" = all || "$selected_case" = baseline-compile ]]; then
+		local baseline_compile="$fixture/baseline-compile"
+		local baseline_compile_sha
+		baseline_compile_sha=$(printf 'package example\n\nfunc Value() string { return ( }\n' | sha256sum | awk '{print $1}')
+		run_case baseline-compile 'return (' 'return "original"' 2 1 "$baseline_compile_sha"
+		! grep -q '^ORO_MUTATION_KILLED_REASON:' "$baseline_compile/executor.log" ||
+			fail 'broken baseline compile was counted as a killed mutant'
+	fi
+
+	if [[ "$selected_case" = all || "$selected_case" = baseline-assertion ]]; then
+		local baseline_assertion="$fixture/baseline-assertion"
+		local baseline_assertion_sha
+		baseline_assertion_sha=$(printf 'package example\n\nfunc Value() string { return "original" }\n' | sha256sum | awk '{print $1}')
+		run_case baseline-assertion 'return "original"' 'return "mutated"' 2 1 "$baseline_assertion_sha"
+		! grep -q '^ORO_MUTATION_KILLED_REASON:' "$baseline_assertion/executor.log" ||
+			fail 'broken baseline assertion was counted as a killed mutant'
+	fi
+
+	if [[ "$selected_case" = all ]]; then
+		local per_phase_executor="$fixture/per-phase-mutation-exec.sh"
+		awk '
+			$0 == "\tlocal remaining_seconds=$((mutation_expires_at - SECONDS))" {
+				print "\tlocal remaining_seconds=$MUTATE_TIMEOUT"
+				replaced++
+				next
+			}
+			{ print }
+			END { if (replaced != 1) exit 2 }
+		' "$repo_root/scripts/quality_gate/mutation_exec.sh" >"$per_phase_executor" ||
+			fail 'shared-deadline negative control did not replace exactly one remaining-budget calculation'
+		run_shared_deadline_case per-phase-negative "$per_phase_executor" 1
+		run_shared_deadline_case shared-deadline "$repo_root/scripts/quality_gate/mutation_exec.sh" 124
+
+		local seam="$fixture/parallel-seam" seam_package="$fixture/parallel-seam/pkg/example"
+		local seam_log="$fixture/parallel-seam/mutation.log" seam_evidence seam_original_hash
+		mkdir -p "$seam_package" "$seam/bin" "$seam/cache" "$seam/tmp" "$seam/evidence"
+		printf 'module mutation.test/parallel\n\ngo 1.26\n' >"$seam/go.mod"
+		printf 'package example\n\nfunc Value() string { return "original" }\n' >"$seam_package/value.go"
+		seam_original_hash=$(git hash-object "$seam_package/value.go")
+		cat >"$seam_package/value_mutation_test.go" <<'EOF'
+package example
+
+import "testing"
+
+func TestMutationCompileOwner(t *testing.T) {
+	if got := Value(); got != "original" {
+		t.Fatalf("Value() = %q, want original", got)
+	}
+}
+EOF
+		cat >"$seam/bin/go" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" = tool && "${2:-}" = go-mutesting ]]; then
+	source_file="${!#}"
+	generation=$(mktemp -d "${GOTMPDIR:?}/go-mutesting.XXXXXX")
+	prefix="$generation/$source_file"
+	mkdir -p "$(dirname "$prefix")"
+	cp -- "$source_file" "$prefix.original"
+	printf 'package example\n\nfunc Value() string { return ( }\n' >"$prefix.0"
+	printf 'Save mutations into "%s"\n' "$generation"
+	printf 'Save mutation into "%s" with checksum compile-invalid\n' "$prefix.0"
+	exit 0
+fi
+exec "${MUTATION_REAL_GO:?}" "$@"
+EOF
+		chmod +x "$seam/bin/go"
+		(
+			cd "$seam"
+			PATH="$seam/bin:$PATH" MUTATION_REAL_GO="$real_go" \
+				GOCACHE="$seam/cache" GOTMPDIR="$seam/tmp" MUTATION_FAILURE_EVIDENCE_DIR="$seam/evidence" \
+				MUTATION_SOURCE_FILE=pkg/example/value.go MUTATION_FUNCTION_MATCH='^(Value)$' \
+				MUTATION_TEST_PATTERN='^TestMutationCompileOwner$' \
+				MUTATION_TEST_FILE=pkg/example/value_mutation_test.go \
+				MUTATION_EXEC_TIMEOUT=20 MUTATION_TEST_TIMEOUT_MARGIN_SECONDS=5 \
+				MUTATION_PARALLEL_WORKERS=1 MUTATION_BASE_SHARD_TIMEOUT_SECONDS=60 \
+				MUTATION_MAX_SHARD_TIMEOUT_SECONDS=60 \
+				bash "$repo_root/scripts/quality_gate/mutation_parallel.sh" >"$seam_log" 2>&1
+		)
+		[[ "$(grep -Fxc 'ORO_MUTATION_KILLED_REASON:mutant_compile_failure' "$seam_log")" = 1 ]] ||
+			fail 'production parallel seam lost or duplicated the executor compile-kill reason'
+		grep -Fq 'The mutation score is 1.000000 (1 passed, 0 failed, 0 duplicated, 0 skipped, total is 1)' "$seam_log" ||
+			fail 'production parallel seam did not classify the compile-invalid mutant as killed'
+		seam_evidence=$(find "$seam/evidence" -mindepth 1 -maxdepth 1 -type d -name 'run.*')
+		[[ "$(wc -l <<<"$seam_evidence" | tr -d ' ')" = 1 && -d "$seam_evidence" ]] ||
+			fail 'production parallel seam did not retain exactly one evidence run'
+		jq -e '.mutant_index == 0 and .exit_class == "killed" and .exit_status == 0' \
+			"$seam_evidence/mutant-0.json" >/dev/null ||
+			fail 'production parallel seam evidence lost killed/status0 classification'
+		[[ "$(git hash-object "$seam_package/value.go")" = "$seam_original_hash" ]] ||
+			fail 'production parallel seam did not restore source bytes'
+		[[ ! -e "$seam_package/value.go.tmp" ]] || fail 'production parallel seam left source residue'
+		printf 'PASS: baseline compile/assert infrastructure, mutant compile killed, shared deadline bounded, parallel evidence killed/status0\n'
+	fi
+}
+
+TestMutationExecBaselineAndMutantCompileClassification() {
+	local tmp
+	tmp=$(mktemp -d)
+	trap 'rm -rf "$tmp"' RETURN
+	test_mutation_exec_baseline_and_mutant_compile_classification "$tmp/baseline-classification"
+}
+
 test_mutation_exec_signal_cleanup() {
 	local fixture="$1"
 	local package_dir="$fixture/pkg/example"
@@ -3984,7 +4254,9 @@ func TestMutationExecSignalCleanup(t *testing.T) {
 }
 
 func TestMutationExecNearDeadlinePass(*testing.T) {
-	time.Sleep(750 * time.Millisecond)
+	if Value() == "mutated" {
+		time.Sleep(750 * time.Millisecond)
+	}
 }
 EOF
 	cat >"$fixture/bin/go" <<'EOF'
@@ -4159,16 +4431,26 @@ EOF
 
 	run_near_deadline_pass() {
 		local case_dir="$fixture/near-deadline" cache_dir="$fixture/cache/near-deadline" tmp_dir="$fixture/tmp/near-deadline"
-		local output="$case_dir/executor.log" status
-		mkdir -p "$case_dir" "$cache_dir" "$tmp_dir"
-		(
-			cd "$fixture"
-			GOCACHE="$cache_dir" GOTMPDIR="$tmp_dir" "$real_go" test -vet=off -run '^$' ./pkg/example >/dev/null
-		)
+		local output="$case_dir/executor.log" trace="$case_dir/go.trace" status
+		local original_sha changed_sha
+		mkdir -p "$case_dir/bin" "$cache_dir" "$tmp_dir"
+		original_sha=$(sha256sum "$original" | awk '{print $1}')
+		changed_sha=$(sha256sum "$changed" | awk '{print $1}')
+		cat >"$case_dir/bin/go" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$(sha256sum "${MUTATE_ORIGINAL:?}" | awk '{print $1}')" >>"${MUTATION_NEAR_DEADLINE_TRACE:?}"
+if [[ "$(wc -l <"$MUTATION_NEAR_DEADLINE_TRACE" | tr -d ' ')" = 2 ]]; then
+	sleep 0.75
+fi
+exit 0
+EOF
+		chmod +x "$case_dir/bin/go"
 		set +e
 		(
 			cd "$fixture"
-			GOCACHE="$cache_dir" GOTMPDIR="$tmp_dir" MUTATE_CHANGED="$changed" MUTATE_ORIGINAL="$original" \
+			PATH="$case_dir/bin:$PATH" MUTATION_NEAR_DEADLINE_TRACE="$trace" \
+				GOCACHE="$cache_dir" GOTMPDIR="$tmp_dir" MUTATE_CHANGED="$changed" MUTATE_ORIGINAL="$original" \
 				MUTATE_PACKAGE=./pkg/example MUTATE_TIMEOUT=2 MUTATION_TEST_TIMEOUT=12 \
 				MUTATION_TEST_PATTERN='^TestMutationExecNearDeadlinePass$' \
 				MUTATION_TEST_FILE=pkg/example/mutation_exec_signal_test.go \
@@ -4178,6 +4460,9 @@ EOF
 		set -e
 		[[ "$status" = 1 ]] || fail "near-deadline passing mutant exit = $status, want survived status 1"
 		! grep -Fq 'ORO_MUTATION_EXEC_TIMEOUT' "$output" || fail 'near-deadline passing mutant emitted a timeout marker'
+		[[ "$(sed -n '1p' "$trace")" = "$original_sha" && "$(sed -n '2p' "$trace")" = "$changed_sha" &&
+			"$(wc -l <"$trace" | tr -d ' ')" = 2 ]] ||
+			fail 'near-deadline pass did not execute exactly original then changed source phases'
 		[[ "$(git hash-object "$original")" = "$original_hash" ]] || fail 'near-deadline pass did not restore original bytes'
 		[[ ! -e "$original.tmp" ]] || fail 'near-deadline pass left an original temp file'
 	}
@@ -4280,7 +4565,11 @@ import (
 	"time"
 )
 
-func TestHungMutant(*testing.T) { time.Sleep(time.Hour) }
+func TestHungMutant(*testing.T) {
+	if Value() == 2 {
+		time.Sleep(time.Hour)
+	}
+}
 EOF
 
 	SECONDS=0
@@ -5886,6 +6175,7 @@ TestStrictIncrementalMutation() {
 	test_mutation_exec_unexpected_exit "$tmp/exec-unexpected"
 	test_mutation_exec_focused_file "$tmp/exec-focused"
 	TestMutationExecPackageContextAndClassification
+	TestMutationExecBaselineAndMutantCompileClassification
 	TestMutationExecSignalCleanup
 	test_review_integration_recovery_mutation_exec_focused_file "$tmp/exec-review-integration-recovery-focused"
 	TestMutationExecInternalDeadline
@@ -6103,6 +6393,9 @@ main() {
 		;;
 	TestMutationExecPackageContextAndClassification)
 		TestMutationExecPackageContextAndClassification
+		;;
+	TestMutationExecBaselineAndMutantCompileClassification)
+		TestMutationExecBaselineAndMutantCompileClassification
 		;;
 	TestMutationExecSignalCleanup)
 		TestMutationExecSignalCleanup

@@ -14,6 +14,8 @@ mutation_test_pid=''
 mutation_test_pgid=''
 mutation_test_output=''
 mutation_timed_out=false
+mutation_test_exit=0
+mutation_expires_at=$((SECONDS + MUTATE_TIMEOUT))
 
 mutation_test_group_alive() {
 	[[ "$mutation_test_pgid" =~ ^[0-9]+$ ]] || return 1
@@ -72,6 +74,37 @@ mutation_setup_failure() {
 	exit 2
 }
 
+run_mutation_test_phase() {
+	local remaining_seconds=$((mutation_expires_at - SECONDS))
+	if ((remaining_seconds <= 0)); then
+		mutation_test_exit=124
+		return 0
+	fi
+	: >"$mutation_test_output"
+	mutation_test_exit=0
+	set +e
+	set -m
+	timeout "$remaining_seconds" go test -vet=off -count=1 -timeout "${MUTATION_TEST_TIMEOUT}s" \
+		-run "$MUTATION_TEST_PATTERN" "$MUTATE_PACKAGE" >"$mutation_test_output" 2>&1 &
+	mutation_test_pid=$!
+	set +m
+	mutation_test_pgid=$(ps -o pgid= -p "$mutation_test_pid" 2>/dev/null | tr -d ' ')
+	if [[ ! "$mutation_test_pgid" =~ ^[0-9]+$ || "$mutation_test_pgid" != "$mutation_test_pid" ]]; then
+		kill -TERM "$mutation_test_pid" 2>/dev/null || true
+		sleep 0.05
+		kill -KILL "$mutation_test_pid" 2>/dev/null || true
+		wait "$mutation_test_pid" 2>/dev/null || true
+		mutation_test_pid=''
+		mutation_test_pgid=''
+		set -e
+		mutation_setup_failure
+	fi
+	wait "$mutation_test_pid"
+	mutation_test_exit=$?
+	set -e
+	mutation_cleanup_test_tree
+}
+
 trap cleanup_mutation EXIT
 trap 'exit 124' HUP INT TERM
 
@@ -89,6 +122,22 @@ if [[ -n "$MUTATION_TEST_FILE" ]]; then
 		"$(basename -- "$MUTATION_TEST_FILE")" = *_test.go &&
 		-f "$MUTATION_TEST_FILE" && ! -L "$MUTATION_TEST_FILE" ]] || mutation_setup_failure
 fi
+
+mutation_test_output=$(mktemp "${TMPDIR:-/tmp}/oro-mutation-exec.XXXXXX") || mutation_setup_failure
+run_mutation_test_phase
+baseline_output=$(<"$mutation_test_output")
+case "$mutation_test_exit" in
+0) ;;
+124)
+	mutation_timed_out=true
+	exit 124
+	;;
+*)
+	printf '%s\n' "$baseline_output"
+	printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
+	exit 2
+	;;
+esac
 
 mutation_diff=$(diff -u "$MUTATE_ORIGINAL" "$MUTATE_CHANGED" || true)
 mv -- "$MUTATE_ORIGINAL" "$MUTATE_ORIGINAL.tmp" || mutation_setup_failure
@@ -111,30 +160,8 @@ if [[ "${MUTATE_DEBUG:-false}" == true ]]; then
 	printf 'ORO_MUTATION_ACTIVE_SHA:%s\n' "$active_sha"
 fi
 
-test_targets=("$MUTATE_PACKAGE")
-
-test_exit=0
-mutation_test_output=$(mktemp "${TMPDIR:-/tmp}/oro-mutation-exec.XXXXXX") || mutation_setup_failure
-set +e
-set -m
-timeout "$MUTATE_TIMEOUT" go test -vet=off -count=1 -timeout "${MUTATION_TEST_TIMEOUT}s" \
-	-run "$MUTATION_TEST_PATTERN" "${test_targets[@]}" >"$mutation_test_output" 2>&1 &
-mutation_test_pid=$!
-set +m
-mutation_test_pgid=$(ps -o pgid= -p "$mutation_test_pid" 2>/dev/null | tr -d ' ')
-if [[ ! "$mutation_test_pgid" =~ ^[0-9]+$ || "$mutation_test_pgid" != "$mutation_test_pid" ]]; then
-	kill -TERM "$mutation_test_pid" 2>/dev/null || true
-	sleep 0.05
-	kill -KILL "$mutation_test_pid" 2>/dev/null || true
-	wait "$mutation_test_pid" 2>/dev/null || true
-	mutation_test_pid=''
-	mutation_test_pgid=''
-	mutation_setup_failure
-fi
-wait "$mutation_test_pid"
-test_exit=$?
-set -e
-mutation_cleanup_test_tree
+run_mutation_test_phase
+test_exit=$mutation_test_exit
 test_output=$(<"$mutation_test_output")
 
 if [[ "${MUTATE_DEBUG:-false}" == true ]]; then
@@ -149,8 +176,8 @@ case "$test_exit" in
 1)
 	if grep -q '\[build failed\]' <<<"$test_output"; then
 		printf '%s\n' "$test_output"
-		printf 'ORO_MUTATION_EXEC_FAILURE:2\n'
-		exit 2
+		printf 'ORO_MUTATION_KILLED_REASON:mutant_compile_failure\n'
+		exit 0
 	fi
 	if [[ "${MUTATE_DEBUG:-false}" == true ]]; then
 		printf '%s\n' "$mutation_diff"
