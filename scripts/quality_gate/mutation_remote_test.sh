@@ -4848,13 +4848,33 @@ TestMutationExecInternalDeadline() {
 test_parallel_mutant_executor() {
 	local fixture="$1"
 	local output="$fixture/parallel.log"
-	local status
+	local combined_restoration="$fixture/state/restorations.tsv" combined_trace="$fixture/state/executions.tsv"
+	local expected_sha execution_file original_sha pid status value
+	local -a execution_files restoration_files
 	mkdir -p "$fixture/bin" "$fixture/pkg/example" "$fixture/scripts/quality_gate" \
 		"$fixture/cache" "$fixture/tmp" "$fixture/state"
 	cp "$repo_root/scripts/quality_gate/mutation_exec.sh" "$fixture/scripts/quality_gate/mutation_exec.sh"
+	cat >"$fixture/scripts/quality_gate/mutation-exec-wrapper" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+set +e
+bash "$(dirname "$0")/mutation_exec.sh"
+exec_status=$?
+set -e
+checkout_id=$(printf '%s' "${MUTATE_ORIGINAL:?}" | cksum | awk '{print $1}')
+active_sha=$(git hash-object "$MUTATE_ORIGINAL")
+backup=absent
+[[ ! -e "$MUTATE_ORIGINAL.tmp" ]] || backup=present
+printf '%s\t%s\t%s\n' "$MUTATE_ORIGINAL" "$active_sha" "$backup" \
+	>>"${MUTATION_FAKE_STATE:?}/restorations.$checkout_id.tsv"
+exit "$exec_status"
+EOF
+	chmod +x "$fixture/scripts/quality_gate/mutation-exec-wrapper"
 	printf 'module example.test/parallel\n\ngo 1.26\n' >"$fixture/go.mod"
 	printf 'package example\n\nfunc Value() int { return 1 }\n' >"$fixture/pkg/example/value.go"
 	printf 'package example\n\nfunc TestValue() {}\n' >"$fixture/pkg/example/value_test.go"
+	original_sha=$(git hash-object "$fixture/pkg/example/value.go")
+	printf '%s\n' "$original_sha" >"$fixture/state/original.sha"
 	cat >"$fixture/bin/go" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -4890,7 +4910,18 @@ trap 'rmdir "$MUTATION_FAKE_STATE/slot-$slot"' EXIT
 if [[ -d "$MUTATION_FAKE_STATE/slot-1" && -d "$MUTATION_FAKE_STATE/slot-2" ]]; then
 	: >"$MUTATION_FAKE_STATE/reached-two-workers"
 fi
-printf '%s\t%s\n' "$MUTATE_ORIGINAL" "$slot" >>"$MUTATION_FAKE_STATE/executions.tsv"
+phase=baseline
+backup=absent
+if [[ -e "${MUTATE_ORIGINAL:?}.tmp" ]]; then
+	phase=mutant
+	backup=present
+fi
+active_sha=$(git hash-object "$MUTATE_ORIGINAL")
+value=$(sed -n 's/.*return \([0-9][0-9]*\).*/\1/p' "$MUTATE_ORIGINAL")
+checkout_id=$(printf '%s' "$MUTATE_ORIGINAL" | cksum | awk '{print $1}')
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+	"$MUTATE_ORIGINAL" "$phase" "$active_sha" "$backup" "$value" "$BASHPID" "$slot" \
+	>>"$MUTATION_FAKE_STATE/executions.$checkout_id.tsv"
 sleep 0.1
 if grep -q 'return 3' "$MUTATE_ORIGINAL"; then
 	exit 1
@@ -4907,6 +4938,7 @@ EOF
 			MUTATION_SOURCE_FILE=pkg/example/value.go MUTATION_FUNCTION_MATCH='^(Value)$' \
 			MUTATION_TEST_PATTERN='^TestValue$' MUTATION_TEST_FILE=pkg/example/value_test.go \
 			MUTATION_EXEC_TIMEOUT=6 MUTATION_PARALLEL_WORKERS=2 \
+			MUTATION_EXEC_SCRIPT="$fixture/scripts/quality_gate/mutation-exec-wrapper" \
 			bash "$repo_root/scripts/quality_gate/mutation_parallel.sh" >"$output" 2>&1
 	)
 	status=$?
@@ -4914,14 +4946,60 @@ EOF
 	[[ "$status" = 0 ]] || fail "parallel mutant executor exit = $status, want 0"
 	grep -q '^The mutation score is 0.333333 (1 passed, 2 failed, 1 duplicated, 0 skipped, total is 3)$' "$output" ||
 		fail 'parallel mutant aggregation diverged from its sequential-equivalent counts'
-	[[ "$(wc -l <"$fixture/state/executions.tsv" | tr -d ' ')" = 3 ]] ||
-		fail 'parallel mutant executor omitted or duplicated a frozen unique mutant'
-	[[ "$(cut -f1 "$fixture/state/executions.tsv" | sort -u | wc -l | tr -d ' ')" = 2 ]] ||
+	execution_files=("$fixture"/state/executions.*.tsv)
+	[[ "${#execution_files[@]}" = 2 ]] || fail 'parallel mutant executor did not isolate two worker traces'
+	cat "${execution_files[@]}" >"$combined_trace"
+	[[ "$(wc -l <"$combined_trace" | tr -d ' ')" = 6 ]] ||
+		fail 'parallel mutant executor lost baseline or mutant phase records'
+	[[ "$(cut -f1 "$combined_trace" | sort -u | wc -l | tr -d ' ')" = 2 ]] ||
 		fail 'parallel mutant executor did not isolate source mutation across two checkouts'
+	[[ "$(awk -F '\t' -v sha="$original_sha" \
+		'$2 == "baseline" && $3 == sha && $4 == "absent" && $5 == 1 { count++ } END { print count + 0 }' \
+		"$combined_trace")" = 3 ]] || fail 'parallel mutant executor lost exact original baseline phases'
+	for value in 2 3 4; do
+		expected_sha=$(printf 'package example\n\nfunc Value() int { return %s }\n' "$value" | git hash-object --stdin)
+		[[ "$(awk -F '\t' -v sha="$expected_sha" -v value="$value" \
+			'$2 == "mutant" && $3 == sha && $4 == "present" && $5 == value { count++ } END { print count + 0 }' \
+			"$combined_trace")" = 1 ]] || fail "parallel mutant executor lost exact changed phase $value"
+	done
+	for execution_file in "${execution_files[@]}"; do
+		awk -F '\t' -v original_sha="$original_sha" '
+			NR % 2 == 1 {
+				if ($2 != "baseline" || $3 != original_sha || $4 != "absent" || $5 != 1) exit 1
+			}
+			NR % 2 == 0 {
+				if ($2 != "mutant" || $3 == original_sha || $4 != "present" || $5 !~ /^[234]$/) exit 1
+			}
+			END { if (NR == 0 || NR % 2 != 0) exit 1 }
+		' "$execution_file" || fail 'parallel worker trace lost baseline then mutant ordering'
+	done
 	[[ -f "$fixture/state/reached-two-workers" ]] ||
 		fail 'parallel mutant executor did not use both reserved workers'
 	grep -q 'return 1' "$fixture/pkg/example/value.go" ||
 		fail 'parallel mutant executor leaked a mutation into the source checkout'
+	restoration_files=("$fixture"/state/restorations.*.tsv)
+	[[ "${#restoration_files[@]}" = 2 ]] || fail 'parallel mutant executor lost per-checkout restoration evidence'
+	cat "${restoration_files[@]}" >"$combined_restoration"
+	[[ "$(wc -l <"$combined_restoration" | tr -d ' ')" = 3 ]] ||
+		fail 'parallel mutant executor lost a post-mutant restoration record'
+	awk -F '\t' -v original_sha="$original_sha" \
+		'$2 != original_sha || $3 != "absent" { exit 1 } END { if (NR != 3) exit 1 }' \
+		"$combined_restoration" || fail 'parallel mutant executor did not restore checkout bytes and remove residue'
+	while IFS= read -r checkout_source; do
+		[[ ! -e "$checkout_source" && ! -e "$checkout_source.tmp" ]] ||
+			fail "parallel mutant executor did not remove checkout $checkout_source"
+	done < <(cut -f1 "$combined_restoration" | sort -u)
+	while IFS= read -r pid; do
+		! kill -0 "$pid" 2>/dev/null || fail "parallel mutant executor orphaned fake Go process $pid"
+	done < <(cut -f6 "$combined_trace" | sort -u)
+	! compgen -G "$fixture/state/slot-*" >/dev/null || fail 'parallel mutant executor left worker slot residue'
+}
+
+TestParallelMutantExecutor() {
+	local parallel_tmp
+	parallel_tmp=$(mktemp -d)
+	test_parallel_mutant_executor "$parallel_tmp/parallel-mutants"
+	rm -rf -- "$parallel_tmp"
 }
 
 run_parallel_capacity_fixture() {
@@ -6825,6 +6903,9 @@ main() {
 		;;
 	TestMutationExecFocusedPhaseContexts)
 		TestMutationExecFocusedPhaseContexts
+		;;
+	TestParallelMutantExecutor)
+		TestParallelMutantExecutor
 		;;
 	TestTargetedMutationScope)
 		tmp=$(mktemp -d)
