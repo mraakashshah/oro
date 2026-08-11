@@ -6034,6 +6034,234 @@ EOF
 		fail 'worker mutation shards unexpectedly selected MUTATION_TEST_FILE'
 }
 
+TestStorageMutationOwnerRouting() {
+	local fixture base head unknown_head status
+	fixture=$(mktemp -d)
+	# shellcheck disable=SC2064 # Capture the unique path before the local goes out of scope on RETURN.
+	trap "rm -rf -- '$fixture'" RETURN
+	mkdir -p "$fixture/bin" "$fixture/pkg/storage"
+	git -C "$fixture" init -q
+	git -C "$fixture" config user.email mutation@example.test
+	git -C "$fixture" config user.name mutation-test
+	printf 'module mutation.test/storage\n\ngo 1.26\n' >"$fixture/go.mod"
+	git -C "$fixture" add go.mod
+	git -C "$fixture" commit -qm base
+	base=$(git -C "$fixture" rev-parse HEAD)
+
+	cat >"$fixture/pkg/storage/catalog.go" <<'EOF'
+package storage
+
+func catalogTables() {}
+EOF
+	cat >"$fixture/pkg/storage/runtime_identity.go" <<'EOF'
+package storage
+
+type RuntimeIdentity struct{}
+
+func (RuntimeIdentity) MatchesObserved() {}
+func (RuntimeIdentity) Validate() {}
+func isUTCTimestamp() {}
+func validateProcessIdentity() {}
+EOF
+	cat >"$fixture/pkg/storage/runtime_budget.go" <<'EOF'
+package storage
+
+type RuntimeBudgetError struct{}
+
+func CheckRuntimeBudget() {}
+func (RuntimeBudgetError) Error() {}
+func (RuntimeBudgetError) Unwrap() {}
+func deniedRuntimeBudgetError() {}
+func validateDiskUsage() {}
+func validateRuntimeBudgetRequest() {}
+func validateRuntimeBudgetRoot() {}
+EOF
+	cat >"$fixture/pkg/storage/runtime_manifest.go" <<'EOF'
+package storage
+
+func ReadRuntimeManifest() {}
+func WriteRuntimeManifestAtomic() {}
+func knownManifestState() {}
+func newRuntimeManifestAtomicOps() {}
+func publishRuntimeManifestAtomic() {}
+func rejectSymlinkComponents() {}
+func sameRuntimeManifestIdentity() {}
+func validManifestTransition() {}
+func validateManagedRoot() {}
+func validateManagedRoots() {}
+func validateManifestEvidence() {}
+func validateManifestPath() {}
+func validateManifestReplacement() {}
+func validateRuntimeManifest() {}
+func writeRuntimeManifestAtomic() {}
+EOF
+	cat >"$fixture/pkg/storage/runtime_reservation.go" <<'EOF'
+package storage
+
+type RuntimeReservationError struct{}
+
+func AcquireRuntimeReservation() {}
+func (RuntimeReservationError) Error() {}
+func ReleaseRuntimeReservation() {}
+func ReserveRuntime() {}
+func TransitionRuntimeReservation() {}
+func (RuntimeReservationError) Unwrap() {}
+func ensureRuntimeReservationRootsAbsent() {}
+func newRuntimeReservationHooks() {}
+func reserveRuntimeWithHooks() {}
+func runtimeReservationCatalogFromContext() {}
+func runtimeReservationError() {}
+func validateRuntimeReservationHooks() {}
+func validateRuntimeReservationRequest() {}
+EOF
+	for test_file in \
+		catalog_foundation_test.go \
+		runtime_budget_test.go \
+		runtime_identity_test.go \
+		runtime_manifest_test.go \
+		runtime_reservation_test.go; do
+		printf 'package storage\n' >"$fixture/pkg/storage/$test_file"
+	done
+	git -C "$fixture" add pkg/storage
+	git -C "$fixture" commit -qm head
+	head=$(git -C "$fixture" rev-parse HEAD)
+
+	cat >"$fixture/bin/go" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" = test ]]; then
+	for arg in "$@"; do
+		case "$arg" in
+		-coverprofile=*) : >"${arg#-coverprofile=}" ;;
+		esac
+	done
+	printf '%s\n' \
+		TestOpenCatalogMigratesFoundationAndRuntimeSchema \
+		TestRuntimeBudgetAdmissionBoundaries \
+		TestRuntimeIdentityContract \
+		TestRuntimeManifestAtomicRoundTrip \
+		TestRuntimeReservationRequestMutationOwner \
+		TestRuntimeReservationJournalMutationOwner \
+		TestRuntimeReservationCatalogMutationOwner
+	exit 0
+fi
+if [[ "$1" = tool && "$2" = go-mutesting ]]; then
+	match=''
+	for arg in "$@"; do
+		case "$arg" in
+		--match=*) match=${arg#--match=} ;;
+		esac
+	done
+	source_file=${*: -1}
+	printf '%s\t%s\t%s\t%s\n' "$source_file" "$match" "${MUTATION_TEST_PATTERN:-}" "${MUTATION_TEST_FILE:-}" >>"${MUTATION_OWNER_TRACE:?}"
+	if [[ "$source_file" = pkg/storage/catalog.go ]]; then
+		printf 'The mutation score is 0.000000 (0 passed, 0 failed, 0 duplicated, 0 skipped, total is 0)\n'
+	else
+		printf 'The mutation score is 1.000000 (1 passed, 0 failed, 0 duplicated, 0 skipped, total is 1)\n'
+	fi
+	exit 0
+fi
+exit 64
+EOF
+	chmod +x "$fixture/bin/go"
+	(
+		cd "$fixture"
+		MUTATION_MAX_WORKERS=1 \
+			MUTATION_FILE_TIMEOUT_SECONDS=240 \
+			MUTATION_EXEC_TIMEOUT_SECONDS=60 \
+			MUTATION_OWNER_TRACE="$fixture/owners.tsv" \
+			PATH="$fixture/bin:$PATH" \
+			bash "$runner" --base "$base" --head "$head" --evidence "$fixture/mutation-evidence.json"
+	)
+	jq -e '
+		.conclusion == "pass" and .mutation_exit_code == 0 and .total == 39 and
+		(.shards | length) == 40 and
+		([.shards[] | [.file, .match]] | unique | length) == 40 and
+		([.shards[] | select(
+			(.conclusion != "completed" and .conclusion != "no_mutation_sites") or
+			.exit_code != 0 or .test_pattern == "" or
+			(.test_pattern | startswith("^") | not) or (.test_pattern | endswith("$") | not)
+		)] | length) == 0 and
+		([.shards[] | select(.file == "pkg/storage/catalog.go")] | length) == 1 and
+		([.shards[] | select(.file == "pkg/storage/runtime_budget.go")] | length) == 7 and
+		([.shards[] | select(.file == "pkg/storage/runtime_identity.go")] | length) == 4 and
+		([.shards[] | select(.file == "pkg/storage/runtime_manifest.go")] | length) == 15 and
+		([.shards[] | select(.file == "pkg/storage/runtime_reservation.go")] | length) == 13' \
+		"$fixture/mutation-evidence.json" >/dev/null ||
+		fail 'actual storage mutation runner did not emit forty terminal owned shards'
+	[[ "$(jq -r '.shards[] | [.file, .match, .test_pattern] | @tsv' "$fixture/mutation-evidence.json" | sort)" = "$(cat <<'EOF' | sort
+pkg/storage/catalog.go	^(catalogTables)$	^TestOpenCatalogMigratesFoundationAndRuntimeSchema$
+pkg/storage/runtime_budget.go	^(CheckRuntimeBudget)$	^TestRuntimeBudgetAdmissionBoundaries$
+pkg/storage/runtime_budget.go	^(Error)$	^TestRuntimeBudgetAdmissionBoundaries$
+pkg/storage/runtime_budget.go	^(Unwrap)$	^TestRuntimeBudgetAdmissionBoundaries$
+pkg/storage/runtime_budget.go	^(deniedRuntimeBudgetError)$	^TestRuntimeBudgetAdmissionBoundaries$
+pkg/storage/runtime_budget.go	^(validateDiskUsage)$	^TestRuntimeBudgetAdmissionBoundaries$
+pkg/storage/runtime_budget.go	^(validateRuntimeBudgetRequest)$	^TestRuntimeBudgetAdmissionBoundaries$
+pkg/storage/runtime_budget.go	^(validateRuntimeBudgetRoot)$	^TestRuntimeBudgetAdmissionBoundaries$
+pkg/storage/runtime_identity.go	^(MatchesObserved)$	^TestRuntimeIdentityContract$
+pkg/storage/runtime_identity.go	^(Validate)$	^TestRuntimeIdentityContract$
+pkg/storage/runtime_identity.go	^(isUTCTimestamp)$	^TestRuntimeIdentityContract$
+pkg/storage/runtime_identity.go	^(validateProcessIdentity)$	^TestRuntimeIdentityContract$
+pkg/storage/runtime_manifest.go	^(ReadRuntimeManifest)$	^TestRuntimeManifestAtomicRoundTrip$
+pkg/storage/runtime_manifest.go	^(WriteRuntimeManifestAtomic)$	^TestRuntimeManifestAtomicRoundTrip$
+pkg/storage/runtime_manifest.go	^(knownManifestState)$	^TestRuntimeManifestAtomicRoundTrip$
+pkg/storage/runtime_manifest.go	^(newRuntimeManifestAtomicOps)$	^TestRuntimeManifestAtomicRoundTrip$
+pkg/storage/runtime_manifest.go	^(publishRuntimeManifestAtomic)$	^TestRuntimeManifestAtomicRoundTrip$
+pkg/storage/runtime_manifest.go	^(rejectSymlinkComponents)$	^TestRuntimeManifestAtomicRoundTrip$
+pkg/storage/runtime_manifest.go	^(sameRuntimeManifestIdentity)$	^TestRuntimeManifestAtomicRoundTrip$
+pkg/storage/runtime_manifest.go	^(validManifestTransition)$	^TestRuntimeManifestAtomicRoundTrip$
+pkg/storage/runtime_manifest.go	^(validateManagedRoot)$	^TestRuntimeManifestAtomicRoundTrip$
+pkg/storage/runtime_manifest.go	^(validateManagedRoots)$	^TestRuntimeManifestAtomicRoundTrip$
+pkg/storage/runtime_manifest.go	^(validateManifestEvidence)$	^TestRuntimeManifestAtomicRoundTrip$
+pkg/storage/runtime_manifest.go	^(validateManifestPath)$	^TestRuntimeManifestAtomicRoundTrip$
+pkg/storage/runtime_manifest.go	^(validateManifestReplacement)$	^TestRuntimeManifestAtomicRoundTrip$
+pkg/storage/runtime_manifest.go	^(validateRuntimeManifest)$	^TestRuntimeManifestAtomicRoundTrip$
+pkg/storage/runtime_manifest.go	^(writeRuntimeManifestAtomic)$	^TestRuntimeManifestAtomicRoundTrip$
+pkg/storage/runtime_reservation.go	^(AcquireRuntimeReservation)$	^TestRuntimeReservation(Request|Journal|Catalog)MutationOwner$
+pkg/storage/runtime_reservation.go	^(Error)$	^TestRuntimeReservation(Request|Journal|Catalog)MutationOwner$
+pkg/storage/runtime_reservation.go	^(ReleaseRuntimeReservation)$	^TestRuntimeReservation(Request|Journal|Catalog)MutationOwner$
+pkg/storage/runtime_reservation.go	^(ReserveRuntime)$	^TestRuntimeReservation(Request|Journal|Catalog)MutationOwner$
+pkg/storage/runtime_reservation.go	^(TransitionRuntimeReservation)$	^TestRuntimeReservation(Request|Journal|Catalog)MutationOwner$
+pkg/storage/runtime_reservation.go	^(Unwrap)$	^TestRuntimeReservation(Request|Journal|Catalog)MutationOwner$
+pkg/storage/runtime_reservation.go	^(ensureRuntimeReservationRootsAbsent)$	^TestRuntimeReservation(Request|Journal|Catalog)MutationOwner$
+pkg/storage/runtime_reservation.go	^(newRuntimeReservationHooks)$	^TestRuntimeReservation(Request|Journal|Catalog)MutationOwner$
+pkg/storage/runtime_reservation.go	^(reserveRuntimeWithHooks)$	^TestRuntimeReservation(Request|Journal|Catalog)MutationOwner$
+pkg/storage/runtime_reservation.go	^(runtimeReservationCatalogFromContext)$	^TestRuntimeReservation(Request|Journal|Catalog)MutationOwner$
+pkg/storage/runtime_reservation.go	^(runtimeReservationError)$	^TestRuntimeReservation(Request|Journal|Catalog)MutationOwner$
+pkg/storage/runtime_reservation.go	^(validateRuntimeReservationHooks)$	^TestRuntimeReservation(Request|Journal|Catalog)MutationOwner$
+pkg/storage/runtime_reservation.go	^(validateRuntimeReservationRequest)$	^TestRuntimeReservation(Request|Journal|Catalog)MutationOwner$
+EOF
+)" ]] || fail 'actual storage mutation runner emitted an unexpected owner matrix'
+	[[ "$(sort "$fixture/owners.tsv")" = "$(jq -r '.shards[] | [.file, .match, .test_pattern,
+		(if .file == "pkg/storage/catalog.go" then "pkg/storage/catalog_foundation_test.go"
+		 elif .file == "pkg/storage/runtime_budget.go" then "pkg/storage/runtime_budget_test.go"
+		 elif .file == "pkg/storage/runtime_identity.go" then "pkg/storage/runtime_identity_test.go"
+		 elif .file == "pkg/storage/runtime_manifest.go" then "pkg/storage/runtime_manifest_test.go"
+		 else "pkg/storage/runtime_reservation_test.go" end)] | @tsv' "$fixture/mutation-evidence.json" | sort)" ]] ||
+		fail 'storage mutation shards did not execute their exact owner test files'
+
+	cat >>"$fixture/pkg/storage/runtime_budget.go" <<'EOF'
+
+func unmappedStorageFunction() {}
+EOF
+	git -C "$fixture" add pkg/storage/runtime_budget.go
+	git -C "$fixture" commit -qm unknown
+	unknown_head=$(git -C "$fixture" rev-parse HEAD)
+	: >"$fixture/owners.tsv"
+	set +e
+	(
+		cd "$fixture"
+		MUTATION_MAX_WORKERS=1 MUTATION_OWNER_TRACE="$fixture/owners.tsv" PATH="$fixture/bin:$PATH" \
+			bash "$runner" --base "$head" --head "$unknown_head" --evidence "$fixture/unknown-evidence.json"
+	)
+	status=$?
+	set -e
+	[[ "$status" = 2 ]] || fail "unknown storage owner exit = $status, want 2"
+	jq -e '.conclusion == "infrastructure_failure" and .mutation_exit_code == 2 and .total == 0' \
+		"$fixture/unknown-evidence.json" >/dev/null || fail 'unknown storage owner did not fail closed with zero mutants'
+	[[ ! -s "$fixture/owners.tsv" ]] || fail 'unknown storage owner reached go-mutesting'
+}
+
 run_parallel_marker_fixture() {
 	local fixture="$1"
 	local mode="$2"
@@ -6538,6 +6766,9 @@ main() {
 		;;
 	TestWorkerMutationOwnerRouting)
 		TestWorkerMutationOwnerRouting
+		;;
+	TestStorageMutationOwnerRouting)
+		TestStorageMutationOwnerRouting
 		;;
 	TestHandleConnHeavyMutationRouting)
 		TestHandleConnHeavyMutationRouting
