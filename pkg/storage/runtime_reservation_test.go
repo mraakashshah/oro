@@ -7,6 +7,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -191,6 +193,249 @@ func isRuntimeReservationError(err error) bool {
 func isReservationTransitionError(err error) bool {
 	var typed *ReservationTransitionError
 	return err != nil && errors.As(err, &typed)
+}
+
+type runtimeReservationRequestProbe struct {
+	acquireCalls int
+}
+
+func (probe *runtimeReservationRequestProbe) AcquireRuntimeReservation(context.Context, RuntimeReservationRequest) (RuntimeReservation, error) {
+	probe.acquireCalls++
+	return RuntimeReservation{ID: "probe-reservation", State: ManifestAllocating}, nil
+}
+
+func (*runtimeReservationRequestProbe) TransitionRuntimeReservation(context.Context, string, ManifestState, ManifestState, ProcessIdentity) error {
+	return nil
+}
+
+func (*runtimeReservationRequestProbe) ReleaseRuntimeReservation(context.Context, string, ProcessIdentity) error {
+	return nil
+}
+
+func TestRuntimeReservationRequestMutationOwner(t *testing.T) {
+	now := time.Date(2026, time.August, 10, 17, 0, 0, 0, time.UTC)
+	fixture := newRuntimeReservationFixture(t, now)
+
+	t.Run("runtime reservation errors preserve nil, cause, stage, and typed identity", func(t *testing.T) {
+		cause := errors.New("request cause")
+		if got := runtimeReservationError("nil", nil); got != nil {
+			t.Fatalf("nil error wrapper = %v, want nil", got)
+		}
+		wrapped := runtimeReservationError("request", cause)
+		var typed *RuntimeReservationError
+		if !errors.As(wrapped, &typed) || typed.Stage != "request" || !errors.Is(wrapped, cause) {
+			t.Fatalf("wrapped error lost stage or cause: %v", wrapped)
+		}
+		got := runtimeReservationError("other", typed)
+		var preserved *RuntimeReservationError
+		if !errors.As(got, &preserved) || preserved != typed || reflect.ValueOf(got).Pointer() != reflect.ValueOf(typed).Pointer() {
+			t.Fatal("typed runtime reservation error was wrapped a second time")
+		}
+	})
+
+	t.Run("default transition hook requires catalog context", func(t *testing.T) {
+		hook := newRuntimeReservationHooks().transition
+		if err := hook(context.Background(), "reservation", ManifestAllocating, ManifestActive, fixture.request.Identity.Process); err == nil || err.Error() != "runtime reservation catalog missing from context" {
+			t.Fatalf("missing catalog context error = %v", err)
+		}
+	})
+
+	t.Run("request failures are typed, staged, and side-effect free", func(t *testing.T) {
+		cases := []struct {
+			name         string
+			mutate       func(*RuntimeReservationRequest)
+			wantContains string
+			wantIs       error
+		}{
+			{
+				name:         "invalid runtime identity",
+				mutate:       func(request *RuntimeReservationRequest) { request.Identity.TaskID = "" },
+				wantContains: "task_id is required",
+				wantIs:       ErrInvalidRuntimeIdentity,
+			},
+			{
+				name: "invalid identity precedes invalid lease",
+				mutate: func(request *RuntimeReservationRequest) {
+					request.Identity.TaskID = ""
+					request.Lease.Namespace = ""
+				},
+				wantContains: "task_id is required",
+				wantIs:       ErrInvalidRuntimeIdentity,
+			},
+			{
+				name:         "invalid lease",
+				mutate:       func(request *RuntimeReservationRequest) { request.Lease.Namespace = "" },
+				wantContains: "invalid lease request",
+			},
+			{
+				name:         "pid mismatch",
+				mutate:       func(request *RuntimeReservationRequest) { request.Lease.PID++ },
+				wantContains: "lease PID does not match process identity",
+			},
+			{
+				name:         "missing lease ID",
+				mutate:       func(request *RuntimeReservationRequest) { request.Lease.ID = " " },
+				wantContains: "lease and workdir are required",
+			},
+			{
+				name:         "missing workdir",
+				mutate:       func(request *RuntimeReservationRequest) { request.Workdir = "" },
+				wantContains: "lease and workdir are required",
+			},
+			{
+				name:         "relative workdir",
+				mutate:       func(request *RuntimeReservationRequest) { request.Workdir = "relative" },
+				wantContains: "workdir is not canonical",
+			},
+			{
+				name:         "noncanonical workdir",
+				mutate:       func(request *RuntimeReservationRequest) { request.Workdir += string(filepath.Separator) + ".." },
+				wantContains: "workdir is not canonical",
+			},
+			{
+				name: "workdir is missing",
+				mutate: func(request *RuntimeReservationRequest) {
+					request.Workdir = filepath.Join(request.Workdir, "missing")
+				},
+				wantContains: "workdir is not a directory",
+			},
+			{
+				name: "workdir is not a directory",
+				mutate: func(request *RuntimeReservationRequest) {
+					request.Workdir = filepath.Join(request.Workdir, "catalog.db")
+				},
+				wantContains: "workdir is not a directory",
+			},
+			{
+				name:         "negative retention",
+				mutate:       func(request *RuntimeReservationRequest) { request.Retention = -time.Nanosecond },
+				wantContains: "retention must not be negative",
+			},
+			{
+				name:         "roots required",
+				mutate:       func(request *RuntimeReservationRequest) { request.Roots = nil },
+				wantContains: "roots are required",
+			},
+		}
+		for _, testCase := range cases {
+			t.Run(testCase.name, func(t *testing.T) {
+				request := fixture.request
+				testCase.mutate(&request)
+				directErr := validateRuntimeReservationRequest(request)
+				if directErr == nil || !strings.Contains(directErr.Error(), testCase.wantContains) {
+					t.Fatalf("validation error = %v, want containing %q", directErr, testCase.wantContains)
+				}
+				if testCase.wantIs != nil && !errors.Is(directErr, testCase.wantIs) {
+					t.Fatalf("validation error = %v, want errors.Is(%v)", directErr, testCase.wantIs)
+				}
+				probe := &runtimeReservationRequestProbe{}
+				_, err := reserveRuntimeWithHooks(context.Background(), probe, request, runtimeReservationHooks{
+					writeManifest: func(string, RuntimeManifest) error { return nil },
+					mkdir:         func(string, os.FileMode) error { return nil },
+					transition:    func(context.Context, string, ManifestState, ManifestState, ProcessIdentity) error { return nil },
+				})
+				if err == nil {
+					t.Fatal("invalid request unexpectedly succeeded")
+				}
+				var typed *RuntimeReservationError
+				if !errors.As(err, &typed) {
+					t.Fatalf("error = %v, want RuntimeReservationError", err)
+				}
+				if typed.Stage != "validate" || !strings.Contains(typed.Err.Error(), testCase.wantContains) || probe.acquireCalls != 0 {
+					t.Fatalf("error stage/cause/calls = %q/%v/%d", typed.Stage, typed.Err, probe.acquireCalls)
+				}
+				if testCase.wantIs != nil && !errors.Is(err, testCase.wantIs) {
+					t.Fatalf("wrapped error = %v, want errors.Is(%v)", err, testCase.wantIs)
+				}
+			})
+		}
+
+		t.Run("canceled context", func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			probe := &runtimeReservationRequestProbe{}
+			_, err := reserveRuntimeWithHooks(ctx, probe, fixture.request, runtimeReservationHooks{
+				writeManifest: func(string, RuntimeManifest) error { return nil },
+				mkdir:         func(string, os.FileMode) error { return nil },
+				transition:    func(context.Context, string, ManifestState, ManifestState, ProcessIdentity) error { return nil },
+			})
+			var typed *RuntimeReservationError
+			if !errors.As(err, &typed) || typed.Stage != "context" || !errors.Is(err, context.Canceled) || probe.acquireCalls != 0 {
+				t.Fatalf("canceled context error/calls = %v/%d", err, probe.acquireCalls)
+			}
+		})
+
+		t.Run("nil catalog", func(t *testing.T) {
+			_, err := reserveRuntimeWithHooks(context.Background(), nil, fixture.request, runtimeReservationHooks{})
+			var typed *RuntimeReservationError
+			if !errors.As(err, &typed) || typed.Stage != "catalog" || !strings.Contains(err.Error(), "catalog is nil") {
+				t.Fatalf("nil catalog error = %v", err)
+			}
+		})
+	})
+
+	t.Run("each incomplete hook is rejected before acquisition", func(t *testing.T) {
+		cases := []struct {
+			name   string
+			mutate func(*runtimeReservationHooks)
+		}{
+			{name: "write manifest", mutate: func(hooks *runtimeReservationHooks) { hooks.writeManifest = nil }},
+			{name: "mkdir", mutate: func(hooks *runtimeReservationHooks) { hooks.mkdir = nil }},
+			{name: "transition", mutate: func(hooks *runtimeReservationHooks) { hooks.transition = nil }},
+		}
+		for _, testCase := range cases {
+			t.Run(testCase.name, func(t *testing.T) {
+				probe := &runtimeReservationRequestProbe{}
+				hooks := runtimeReservationHooks{
+					writeManifest: func(string, RuntimeManifest) error { return nil },
+					mkdir:         func(string, os.FileMode) error { return nil },
+					transition:    func(context.Context, string, ManifestState, ManifestState, ProcessIdentity) error { return nil },
+				}
+				testCase.mutate(&hooks)
+				_, err := reserveRuntimeWithHooks(context.Background(), probe, fixture.request, hooks)
+				var typed *RuntimeReservationError
+				if !errors.As(err, &typed) || typed.Stage != "hooks" || probe.acquireCalls != 0 {
+					t.Fatalf("incomplete hook error/calls = %v/%d", err, probe.acquireCalls)
+				}
+			})
+		}
+	})
+
+	t.Run("root absence distinguishes existing and non-ENOENT paths", func(t *testing.T) {
+		existing := fixture.request.Roots[0].Path
+		if err := os.Mkdir(existing, 0o750); err != nil {
+			t.Fatalf("create existing root fixture: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Remove(existing) })
+		if err := ensureRuntimeReservationRootsAbsent([]ManagedRoot{{Path: existing}}); err == nil || !strings.Contains(err.Error(), "already exists") {
+			t.Fatalf("existing root error = %v", err)
+		}
+		nulPath := string([]byte{'n', 0, 'u', 'l'})
+		err := ensureRuntimeReservationRootsAbsent([]ManagedRoot{{Path: nulPath}})
+		if err == nil || errors.Is(err, os.ErrNotExist) || !strings.Contains(err.Error(), "inspect managed root") {
+			t.Fatalf("NUL root error = %v", err)
+		}
+	})
+
+	t.Run("zero retention is accepted", func(t *testing.T) {
+		request := fixture.request
+		request.Retention = 0
+		if err := validateRuntimeReservationRequest(request); err != nil {
+			t.Fatalf("zero retention rejected: %v", err)
+		}
+	})
+
+	t.Run("valid request completes reservation", func(t *testing.T) {
+		probe := &runtimeReservationRequestProbe{}
+		reservation, err := reserveRuntimeWithHooks(context.Background(), probe, fixture.request, runtimeReservationHooks{
+			writeManifest: func(string, RuntimeManifest) error { return nil },
+			mkdir:         func(string, os.FileMode) error { return nil },
+			transition:    func(context.Context, string, ManifestState, ManifestState, ProcessIdentity) error { return nil },
+		})
+		if err != nil || probe.acquireCalls != 1 || reservation.State != ManifestActive || reservation.ManifestPath == "" {
+			t.Fatalf("valid reservation/error/calls = %#v/%v/%d", reservation, err, probe.acquireCalls)
+		}
+	})
 }
 
 type runtimeReservationFixture struct {
