@@ -4346,7 +4346,6 @@ test_mutation_exec_signal_cleanup() {
 	local test_file="$package_dir/mutation_exec_signal_test.go"
 	local original="$package_dir/value.go"
 	local changed="$fixture/changed.go"
-	local real_go
 	mkdir -p "$package_dir" "$fixture/bin" "$fixture/cache" "$fixture/tmp"
 	printf 'module mutation.test/signal\n\ngo 1.26\n' >"$fixture/go.mod"
 	cat >"$original" <<'EOF'
@@ -4402,10 +4401,22 @@ EOF
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >"${MUTATION_GO_TRACE:?}"
-exec "$MUTATION_REAL_GO" "$@"
+printf 'MUTATE_PACKAGE=%s\nMUTATION_TEST_PATTERN=%s\nMUTATION_TEST_FILE=%s\nMUTATE_TIMEOUT=%s\nMUTATION_TEST_TIMEOUT=%s\nGOCACHE=%s\nGOTMPDIR=%s\n' \
+	"${MUTATE_PACKAGE:-}" "${MUTATION_TEST_PATTERN:-}" "${MUTATION_TEST_FILE:-}" \
+	"${MUTATE_TIMEOUT:-}" "${MUTATION_TEST_TIMEOUT:-}" "${GOCACHE:-}" "${GOTMPDIR:-}" \
+	>"${MUTATION_SIGNAL_TEST_TRACE:?}"
+printf 'NO_REAL_GO\n' >"${MUTATION_SIGNAL_DELEGATION:?}"
+(
+	trap '' TERM INT
+	printf '%s\n' "$BASHPID" >"${MUTATION_SIGNAL_PID:?}"
+	printf 'ready\n' >"${MUTATION_SIGNAL_READY:?}"
+	while :; do
+		sleep 1
+	done
+) &
+wait "$!"
 EOF
 	chmod +x "$fixture/bin/go"
-	real_go=$(command -v go)
 
 	pid_exists() {
 		kill -0 "$1" 2>/dev/null
@@ -4472,14 +4483,12 @@ EOF
 		local case_dir="$fixture/$name" cache_dir="$fixture/cache/$name" tmp_dir="$fixture/tmp/$name"
 		local output="$case_dir/executor.log" trace="$case_dir/go.trace" env_trace="$case_dir/test.trace"
 		local pid_file="$case_dir/test.pid" ready_file="$case_dir/ready" sentinel_pid executor_pid='' child_pid='' rc
+		local delegation_trace="$case_dir/delegation.trace"
 		local timeout_pid='' timeout_pgid child_pgid sentinel_pgid child_state candidate command
 		mkdir -p "$case_dir" "$cache_dir" "$tmp_dir"
-		(
-			cd "$fixture"
-			GOCACHE="$cache_dir" GOTMPDIR="$tmp_dir" "$real_go" test -vet=off -run '^$' ./pkg/example >/dev/null
-		)
-		: >"$trace"
-		: >"$env_trace"
+		for path in "$trace" "$env_trace" "$pid_file" "$ready_file" "$delegation_trace"; do
+			[[ ! -e "$path" ]] || fail "$name reused stale $(basename "$path")"
+		done
 		bash -c 'trap "" TERM INT; while :; do read -r -t 1 _ </dev/null || :; done' >/dev/null 2>&1 &
 		sentinel_pid=$!
 		signal_sentinel_pids+=("$sentinel_pid")
@@ -4490,8 +4499,9 @@ EOF
 		}
 		set -m
 		(
-			cd "$fixture" && exec env PATH="$fixture/bin:$PATH" MUTATION_REAL_GO="$real_go" MUTATION_GO_TRACE="$trace" \
+			cd "$fixture" && exec env PATH="$fixture/bin:$PATH" MUTATION_GO_TRACE="$trace" \
 				MUTATION_SIGNAL_TEST_TRACE="$env_trace" MUTATION_SIGNAL_PID="$pid_file" MUTATION_SIGNAL_READY="$ready_file" \
+				MUTATION_SIGNAL_DELEGATION="$delegation_trace" \
 				GOCACHE="$cache_dir" GOTMPDIR="$tmp_dir" MUTATE_CHANGED="$changed" MUTATE_ORIGINAL="$original" \
 				MUTATE_PACKAGE=./pkg/example MUTATE_DEBUG=true MUTATE_TIMEOUT="$outer_timeout" MUTATION_TEST_TIMEOUT=12 \
 				MUTATION_TEST_PATTERN='^TestMutationExecSignalCleanup$' MUTATION_TEST_FILE=pkg/example/mutation_exec_signal_test.go \
@@ -4513,6 +4523,11 @@ EOF
 		fi
 		child_pid=$(tr -d '[:space:]' <"$pid_file")
 		[[ "$child_pid" =~ ^[0-9]+$ ]] || { cleanup_case; fail "$name wrote an invalid child PID"; }
+		[[ "$(wc -l <"$pid_file" | tr -d ' ')" = 1 && "$(wc -l <"$ready_file" | tr -d ' ')" = 1 ]] || {
+			cleanup_case
+			fail "$name readiness identity was not written exactly once"
+		}
+		pid_exists "$child_pid" || { cleanup_case; fail "$name ready child was not live"; }
 		is_descendant "$child_pid" "$executor_pid" || { cleanup_case; fail "$name ready child is not an executor descendant"; }
 		while read -r candidate; do
 			command=$(ps -o command= -p "$candidate" 2>/dev/null || true)
@@ -4557,6 +4572,10 @@ EOF
 			cleanup_case
 			fail "$name signal trace assertions failed"
 		fi
+		[[ "$(cat "$delegation_trace")" = NO_REAL_GO && "$(wc -l <"$delegation_trace" | tr -d ' ')" = 1 ]] || {
+			cleanup_case
+			fail "$name fake go delegated to the real compiler"
+		}
 		[[ "$(git hash-object "$original")" = "$original_hash" ]] || { cleanup_case; fail "$name did not restore original bytes"; }
 		[[ ! -e "$original.tmp" ]] || { cleanup_case; fail "$name left an original temp file"; }
 		pid_exists "$sentinel_pid" || { cleanup_case; fail "$name collateral-killed unrelated sentinel"; }
