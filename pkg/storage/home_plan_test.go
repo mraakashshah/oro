@@ -101,6 +101,102 @@ func TestOroHomeCleanupPlanIsAllowlisted(t *testing.T) {
 	assertOroHomeFilesExist(t, home, "index.db", "config.yaml", "unknown/keep.txt")
 }
 
+func TestCleanOroHomeMutationGuards(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(t *testing.T, home string)
+	}{
+		{
+			name: "dry-run and apply evidence",
+			run: func(t *testing.T, home string) {
+				t.Helper()
+				old := time.Now().Add(-8 * 24 * time.Hour)
+				writeOroHomeFile(t, home, "logs/expired.log", "old log", old)
+				writeOroHomeFile(t, home, "tmp/oro-failed.tmp", "temporary", old)
+				writeOroHomeFile(t, home, "unknown/keep.txt", "unknown", old)
+
+				dryRun, err := storage.CleanOroHome(context.Background(), home, false)
+				if err != nil {
+					t.Fatalf("dry-run: %v", err)
+				}
+				if !dryRun.DryRun || len(dryRun.Entries) != 2 {
+					t.Fatalf("dry-run result = %#v", dryRun)
+				}
+				assertOroHomePaths(t, dryRun.Entries, []string{"logs/expired.log", "tmp/oro-failed.tmp"})
+				assertOroHomeFilesExist(t, home, "logs/expired.log", "tmp/oro-failed.tmp", "unknown/keep.txt")
+
+				applied, err := storage.CleanOroHome(context.Background(), home, true)
+				if err != nil {
+					t.Fatalf("apply: %v", err)
+				}
+				if applied.DryRun || len(applied.Entries) != 2 {
+					t.Fatalf("apply result = %#v", applied)
+				}
+				for _, entry := range applied.Entries {
+					if !entry.Changed || entry.BeforeBytes <= 0 || entry.AfterBytes != 0 {
+						t.Errorf("entry %q evidence = %#v", entry.Path, entry)
+					}
+				}
+				assertOroHomeFilesAbsent(t, home, "logs/expired.log", "tmp/oro-failed.tmp")
+				assertOroHomeFilesExist(t, home, "unknown/keep.txt")
+			},
+		},
+		{
+			name: "canceled lock",
+			run: func(t *testing.T, home string) {
+				t.Helper()
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				if _, err := storage.CleanOroHome(ctx, home, true); err == nil {
+					t.Fatal("canceled cleanup unexpectedly succeeded")
+				}
+			},
+		},
+		{
+			name: "walk failure",
+			run: func(t *testing.T, home string) {
+				t.Helper()
+				blocked := filepath.Join(home, "logs")
+				if err := os.Mkdir(blocked, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(blocked, 0); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.Chmod(blocked, 0o700) })
+				if _, err := storage.CleanOroHome(context.Background(), home, false); err == nil {
+					t.Fatal("inaccessible child unexpectedly planned successfully")
+				}
+			},
+		},
+		{
+			name: "remove failure",
+			run: func(t *testing.T, home string) {
+				t.Helper()
+				old := time.Now().Add(-8 * 24 * time.Hour)
+				logs := filepath.Join(home, "logs")
+				if err := os.Mkdir(logs, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				writeOroHomeFile(t, home, "logs/expired.log", "old log", old)
+				if err := os.Chmod(logs, 0o500); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.Chmod(logs, 0o700) })
+				if _, err := storage.CleanOroHome(context.Background(), home, true); err == nil {
+					t.Fatal("read-only logs directory unexpectedly allowed removal")
+				}
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			test.run(t, t.TempDir())
+		})
+	}
+}
+
 func writeOroHomeFile(t *testing.T, home, relativePath, contents string, modifiedAt time.Time) {
 	t.Helper()
 	path := filepath.Join(home, relativePath)
