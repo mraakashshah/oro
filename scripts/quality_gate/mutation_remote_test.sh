@@ -2729,11 +2729,21 @@ if [[ "$1" = test ]]; then
 		phase_trace_file="${MUTATION_TARGETED_PHASE_TRACE_DIR:?}/phase.tsv"
 		if [[ "${MUTATION_TARGETED_PHASE_WORKER_TRACES:-}" = 1 ]]; then
 			worker=${GOCACHE##*/parallel-}
-			phase_trace_file="$MUTATION_TARGETED_PHASE_TRACE_DIR/$worker.tsv"
+			if [[ "${MUTATION_TARGETED_PHASE_CONTEXT:-}" = 1 ]]; then
+				phase_trace_file="$MUTATION_TARGETED_PHASE_TRACE_DIR/parallel-$worker.tsv"
+			else
+				phase_trace_file="$MUTATION_TARGETED_PHASE_TRACE_DIR/$worker.tsv"
+			fi
 		fi
-		printf '%s\t%s\t%s\t%s\t%s\n' \
-			"$phase" "$active_hash" "$changed_hash" "$backup" "$test_exit" \
-			>>"$phase_trace_file"
+		if [[ "${MUTATION_TARGETED_PHASE_CONTEXT:-}" = 1 ]]; then
+			printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+				"$phase" "$active_hash" "$changed_hash" "$backup" "$test_exit" \
+				"${GOCACHE:-}" "${GOTMPDIR:-}" "$MUTATE_ORIGINAL" >>"$phase_trace_file"
+		else
+			printf '%s\t%s\t%s\t%s\t%s\n' \
+				"$phase" "$active_hash" "$changed_hash" "$backup" "$test_exit" \
+				>>"$phase_trace_file"
+		fi
 		exit "$test_exit"
 	fi
 	if [[ -n "${MUTATE_ORIGINAL:-}" ]]; then
@@ -6626,13 +6636,23 @@ test_parallel_marker_fail_fast() {
 
 test_parallel_emergency_ceiling() {
 	local fixture="$1"
-	local base evidence head real_timeout status
+	local base combined_trace="$fixture/phase-trace/combined.tsv" evidence head index original_hash phase_file real_timeout status
+	local -a changed_hashes phase_files
 	mapfile -t refs < <(new_targeted_fixture "$fixture" false assignment-claim)
 	base=${refs[0]}
 	head=${refs[1]}
 	evidence="$fixture/mutation-evidence.json"
 	real_timeout=$(command -v timeout)
 	write_fake_go "$fixture/bin/go"
+	for path in "$fixture/phase-trace" "$fixture/mutation-args.txt" "$fixture/mutation-list.txt" \
+		"$fixture/mutation-timeouts.txt" "$evidence" "$fixture/runner.log"; do
+		[[ ! -e "$path" ]] || {
+			fail 'capacity phase artifacts must be absent before runner launch'
+			return 1
+		}
+	done
+	mkdir -p "$fixture/phase-trace"
+	original_hash=$(git hash-object "$fixture/pkg/dispatcher/assignment.go")
 	cat >"$fixture/bin/timeout" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -6647,6 +6667,10 @@ EOF
 		PATH="$fixture/bin:$PATH" MUTATION_FIXTURE=targeted \
 			MUTATION_ARGS_TRACE="$fixture/mutation-args.txt" \
 			MUTATION_LIST_TRACE="$fixture/mutation-list.txt" \
+			MUTATION_TARGETED_PHASE_MODE=1 \
+			MUTATION_TARGETED_PHASE_CONTEXT=1 \
+			MUTATION_TARGETED_PHASE_TRACE_DIR="$fixture/phase-trace" \
+			MUTATION_TARGETED_PHASE_WORKER_TRACES=1 \
 			MUTATION_TIMEOUT_TRACE="$fixture/mutation-timeouts.txt" \
 			MUTATION_REAL_TIMEOUT="$real_timeout" \
 			MUTATION_FILE_TIMEOUT_SECONDS=240 MUTATION_MAX_SHARD_TIMEOUT_SECONDS=900 \
@@ -6659,11 +6683,72 @@ EOF
 		cat "$fixture/runner.log" >&2
 		fail "capacity ceiling fixture exit = $status, want 0"
 	fi
-	grep -Fxq 1800 "$fixture/mutation-timeouts.txt" ||
+	[[ "$(grep -Fxc 1800 "$fixture/mutation-timeouts.txt")" = 1 ]] ||
 		fail 'parallel shard outer boundary did not reserve its 1800s claim-specific emergency ceiling'
 	grep -Fxq 'mutation shard capacity: mutants=2 workers=2 effective_timeout=1800s emergency_cap=1800s' \
 		"$fixture/runner.log" ||
 		fail 'claim shard did not reserve its emergency ceiling as effective capacity'
+	grep -Fxq 'The mutation score is 1.000000 (2 passed, 0 failed, 0 duplicated, 0 skipped, total is 2)' \
+		"$fixture/runner.log" || fail 'claim shard phase model changed its exact mutation score'
+	jq -e '.conclusion == "pass" and .score == 1 and .total == 2 and
+		.shards[0].conclusion == "completed" and .shards[0].exit_code == 0' \
+		"$evidence" >/dev/null || fail 'claim shard phase model lost completed evidence'
+	phase_files=("$fixture/phase-trace"/*.tsv)
+	[[ "${#phase_files[@]}" = 2 && -f "$fixture/phase-trace/parallel-0.tsv" &&
+		-f "$fixture/phase-trace/parallel-1.tsv" ]] ||
+		fail 'claim shard phase model did not emit exactly two worker traces'
+	cat "${phase_files[@]}" >"$combined_trace"
+	for index in 0 1; do
+		phase_file="$fixture/phase-trace/parallel-$index.tsv"
+		awk -F '\t' -v original="$original_hash" -v cache="parallel-$index" -v tmp="parallel-worker-$index" '
+			NR == 1 {
+				if ($1 != "baseline" || $2 != original || $3 == original || $4 != "absent" || $5 != 0 ||
+					$6 !~ ("/" cache "$") || $7 !~ ("/" tmp "$") || $8 !~ /\/pkg\/dispatcher\/assignment.go$/) exit 1
+				changed = $3; source = $8; worker_cache = $6; worker_tmp = $7
+			}
+			NR == 2 {
+				if ($1 != "mutant" || $2 != changed || $3 != changed || $4 != "present" || $5 != 1 ||
+					$6 != worker_cache || $7 != worker_tmp || $8 != source) exit 1
+			}
+			END { if (NR != 2) exit 1 }
+		' "$phase_file" || fail "claim shard worker $index lost exact baseline then mutant context"
+		changed_hashes+=("$(awk -F '\t' 'NR == 2 { print $2 }' "$phase_file")")
+	done
+	[[ "${changed_hashes[0]}" != "$original_hash" && "${changed_hashes[1]}" != "$original_hash" &&
+		"${changed_hashes[0]}" != "${changed_hashes[1]}" ]] || fail 'claim shard mutants lost distinct changed hashes'
+	for field in 6 7 8; do
+		[[ "$(cut -f"$field" "$combined_trace" | sort -u | wc -l | tr -d ' ')" = 2 ]] ||
+			fail "claim shard workers reused phase context field $field"
+	done
+	while IFS= read -r worker_source; do
+		[[ ! -e "$worker_source" && ! -e "$worker_source.tmp" ]] ||
+			fail "claim shard left worker source residue at $worker_source"
+	done < <(cut -f8 "$combined_trace" | sort -u)
+	[[ "$(git hash-object "$fixture/pkg/dispatcher/assignment.go")" = "$original_hash" ]] ||
+		fail 'claim shard changed the fixture source checkout'
+	[[ ! -e "$fixture/pkg/dispatcher/assignment.go.tmp" ]] || fail 'claim shard left fixture source residue'
+}
+
+TestParallelEmergencyCeilingPhaseModel() {
+	local ceiling_tmp stale_fixture stale_log stale_status
+	ceiling_tmp=$(mktemp -d)
+	test_parallel_emergency_ceiling "$ceiling_tmp/ceiling"
+	stale_fixture="$ceiling_tmp/stale"
+	stale_log="$ceiling_tmp/stale.log"
+	mkdir -p "$stale_fixture/phase-trace"
+	printf 'stale\n' >"$stale_fixture/phase-trace/parallel-0.tsv"
+	set +e
+	(test_parallel_emergency_ceiling "$stale_fixture") >"$stale_log" 2>&1
+	stale_status=$?
+	set -e
+	[[ "$stale_status" = 1 ]] || fail "stale capacity phase exit = $stale_status, want 1"
+	grep -Fxq 'FAIL: capacity phase artifacts must be absent before runner launch' "$stale_log" ||
+		fail 'stale capacity phase trace did not fail before runner launch'
+	[[ "$(cat "$stale_fixture/phase-trace/parallel-0.tsv")" = stale ]] ||
+		fail 'stale capacity phase trace reached the runner'
+	[[ ! -e "$stale_fixture/runner.log" && ! -e "$stale_fixture/mutation-timeouts.txt" &&
+		! -e "$stale_fixture/mutation-evidence.json" ]] || fail 'stale capacity phase fixture launched the runner'
+	rm -rf -- "$ceiling_tmp"
 }
 
 TestMutationCapacity() {
@@ -6919,6 +7004,9 @@ main() {
 		;;
 	TestMutationCapacity)
 		TestMutationCapacity
+		;;
+	TestParallelEmergencyCeilingPhaseModel)
+		TestParallelEmergencyCeilingPhaseModel
 		;;
 	TestMutationCacheSlotRotation)
 		TestMutationCacheSlotRotation
