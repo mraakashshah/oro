@@ -4077,6 +4077,7 @@ test_mutation_exec_baseline_and_mutant_compile_classification() {
 	local fixture="$1"
 	local real_go
 	real_go=$(command -v go)
+	mkdir -p "$fixture"
 
 	run_case() {
 		local name="$1" original_body="$2" changed_body="$3" expected_status="$4"
@@ -4177,16 +4178,19 @@ EOF
 		local name="$1" executor="$2" expected_status="$3"
 		local case_dir="$fixture/$name" original="$fixture/$name/pkg/example/value.go"
 		local changed="$fixture/$name/changed.go" trace="$fixture/$name/go.trace"
-		local output="$fixture/$name/executor.log" original_hash status
+		local output="$fixture/$name/executor.log" original_hash original_sha changed_sha status
 		mkdir -p "$(dirname "$original")" "$case_dir/bin" "$case_dir/cache" "$case_dir/tmp"
 		printf 'package example\n\nfunc Value() int { return 1 }\n' >"$original"
 		printf 'package example\n\nfunc Value() int { return 2 }\n' >"$changed"
+		[[ ! -e "$trace" ]] || fail "$name reused a stale shared-deadline trace"
 		original_hash=$(git hash-object "$original")
+		original_sha=$(sha256sum "$original" | awk '{print $1}')
+		changed_sha=$(sha256sum "$changed" | awk '{print $1}')
 		cat >"$case_dir/bin/go" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$(sha256sum "${MUTATE_ORIGINAL:?}" | awk '{print $1}')" >>"${MUTATION_DEADLINE_TRACE:?}"
-sleep 2
+sleep 3
 exit 0
 EOF
 		chmod +x "$case_dir/bin/go"
@@ -4197,14 +4201,16 @@ EOF
 			PATH="$case_dir/bin:$PATH" MUTATION_DEADLINE_TRACE="$trace" \
 				GOCACHE="$case_dir/cache" GOTMPDIR="$case_dir/tmp" \
 				MUTATE_CHANGED="$changed" MUTATE_ORIGINAL="$original" MUTATE_PACKAGE=./pkg/example \
-				MUTATE_TIMEOUT=3 MUTATION_TEST_TIMEOUT=10 MUTATION_TEST_PATTERN='^TestDeadline$' \
+				MUTATE_TIMEOUT=5 MUTATION_TEST_TIMEOUT=10 MUTATION_TEST_PATTERN='^TestDeadline$' \
 				bash "$executor" >"$output" 2>&1
 		)
 		status=$?
 		set -e
 		[[ "$status" = "$expected_status" ]] ||
 			fail "$name shared-deadline status = $status, want $expected_status"
-		[[ "$(wc -l <"$trace" | tr -d ' ')" = 2 ]] || fail "$name did not execute exactly two phases"
+		[[ "$(wc -l <"$trace" | tr -d ' ')" = 2 && "$(sed -n '1p' "$trace")" = "$original_sha" &&
+			"$(sed -n '2p' "$trace")" = "$changed_sha" ]] ||
+			fail "$name did not execute exact original then changed phases"
 		[[ "$(git hash-object "$original")" = "$original_hash" ]] || fail "$name did not restore source bytes"
 		[[ ! -e "$original.tmp" ]] || fail "$name left source residue"
 		if [[ "$expected_status" = 124 ]]; then
@@ -4247,7 +4253,7 @@ EOF
 			fail 'broken baseline assertion was counted as a killed mutant'
 	fi
 
-	if [[ "$selected_case" = all ]]; then
+	if [[ "$selected_case" = all || "$selected_case" = shared-deadline ]]; then
 		local per_phase_executor="$fixture/per-phase-mutation-exec.sh"
 		awk '
 			$0 == "\tlocal remaining_seconds=$((mutation_expires_at - SECONDS))" {
@@ -4261,7 +4267,9 @@ EOF
 			fail 'shared-deadline negative control did not replace exactly one remaining-budget calculation'
 		run_shared_deadline_case per-phase-negative "$per_phase_executor" 1
 		run_shared_deadline_case shared-deadline "$repo_root/scripts/quality_gate/mutation_exec.sh" 124
+	fi
 
+	if [[ "$selected_case" = all ]]; then
 		local seam="$fixture/parallel-seam" seam_package="$fixture/parallel-seam/pkg/example"
 		local seam_log="$fixture/parallel-seam/mutation.log" seam_evidence seam_original_hash
 		mkdir -p "$seam_package" "$seam/bin" "$seam/cache" "$seam/tmp" "$seam/evidence"
