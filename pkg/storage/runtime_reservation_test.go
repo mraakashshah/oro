@@ -7,10 +7,12 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -465,11 +467,23 @@ type runtimeReservationFaultPlan struct {
 	failBegin     bool
 	failExec      int32
 	failCommit    bool
+	queryErr      error
+	queryNoRows   bool
+	queryState    ManifestState
+	queryIdentity ProcessIdentity
+	queryLeaseID  LeaseID
+	resultRows    int64
+	resultRowsSet bool
+	resultErr     error
+	operationsMu  sync.Mutex
+	operations    []string
+	queryCalls    atomic.Int32
 	execCalls     atomic.Int32
 	commitCalls   atomic.Int32
 	rollbackCalls atomic.Int32
 	pendingRows   atomic.Int32
 	committedRows atomic.Int32
+	transactional atomic.Bool
 }
 
 type runtimeReservationFaultDriver struct {
@@ -503,16 +517,107 @@ func (conn *runtimeReservationFaultConn) begin() (driver.Tx, error) {
 		return nil, conn.plan.err
 	}
 	conn.plan.pendingRows.Store(0)
+	conn.plan.transactional.Store(true)
 	return &runtimeReservationFaultTx{plan: conn.plan}, nil
 }
 
-func (conn *runtimeReservationFaultConn) ExecContext(context.Context, string, []driver.NamedValue) (driver.Result, error) {
+func (conn *runtimeReservationFaultConn) ExecContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Result, error) {
 	call := conn.plan.execCalls.Add(1)
+	conn.plan.recordOperation(runtimeReservationOperation(query))
 	if conn.plan.failExec == call {
 		return nil, conn.plan.err
 	}
-	conn.plan.pendingRows.Add(1)
-	return driver.RowsAffected(1), nil
+	if conn.plan.transactional.Load() {
+		conn.plan.pendingRows.Add(1)
+	} else {
+		conn.plan.committedRows.Add(1)
+	}
+	if conn.plan.resultRowsSet {
+		return runtimeReservationFaultResult{rows: conn.plan.resultRows, err: conn.plan.resultErr}, nil
+	}
+	return runtimeReservationFaultResult{rows: 1}, nil
+}
+
+func runtimeReservationOperation(query string) string {
+	switch {
+	case strings.Contains(query, "INSERT INTO runtime_leases"):
+		return "insert lease"
+	case strings.Contains(query, "INSERT INTO runtime_reservations"):
+		return "insert reservation"
+	case strings.Contains(query, "INSERT INTO runtime_reservation_roots"):
+		return "insert root"
+	case strings.Contains(query, "UPDATE runtime_leases SET released_at"):
+		return "release lease"
+	case strings.Contains(query, "UPDATE runtime_reservations SET state") && strings.Contains(query, "process_start_marker"):
+		return "release reservation"
+	case strings.Contains(query, "UPDATE runtime_reservations SET state"):
+		return "transition reservation"
+	default:
+		return "unknown"
+	}
+}
+
+func (plan *runtimeReservationFaultPlan) recordOperation(operation string) {
+	plan.operationsMu.Lock()
+	defer plan.operationsMu.Unlock()
+	plan.operations = append(plan.operations, operation)
+}
+
+func (plan *runtimeReservationFaultPlan) operationSnapshot() []string {
+	plan.operationsMu.Lock()
+	defer plan.operationsMu.Unlock()
+	return append([]string(nil), plan.operations...)
+}
+
+func (conn *runtimeReservationFaultConn) QueryContext(context.Context, string, []driver.NamedValue) (driver.Rows, error) {
+	conn.plan.queryCalls.Add(1)
+	if conn.plan.queryErr != nil {
+		return nil, conn.plan.queryErr
+	}
+	if conn.plan.queryNoRows {
+		return &runtimeReservationFaultRows{}, nil
+	}
+	values := []driver.Value{
+		string(conn.plan.queryState),
+		int64(conn.plan.queryIdentity.PID),
+		conn.plan.queryIdentity.StartMarker,
+		conn.plan.queryIdentity.Executable,
+		int64(conn.plan.queryIdentity.ProcessGroup),
+	}
+	columns := []string{"state", "pid", "process_start_marker", "executable", "process_group"}
+	if conn.plan.queryLeaseID != "" {
+		values = append(values, string(conn.plan.queryLeaseID))
+		columns = append(columns, "lease_id")
+	}
+	return &runtimeReservationFaultRows{columns: columns, values: values}, nil
+}
+
+type runtimeReservationFaultRows struct {
+	columns []string
+	values  []driver.Value
+	read    bool
+}
+
+func (rows *runtimeReservationFaultRows) Columns() []string { return rows.columns }
+func (*runtimeReservationFaultRows) Close() error           { return nil }
+
+func (rows *runtimeReservationFaultRows) Next(dest []driver.Value) error {
+	if rows.read || len(rows.values) == 0 {
+		return io.EOF
+	}
+	copy(dest, rows.values)
+	rows.read = true
+	return nil
+}
+
+type runtimeReservationFaultResult struct {
+	rows int64
+	err  error
+}
+
+func (result runtimeReservationFaultResult) LastInsertId() (int64, error) { return 0, nil }
+func (result runtimeReservationFaultResult) RowsAffected() (int64, error) {
+	return result.rows, result.err
 }
 
 type runtimeReservationFaultTx struct {
@@ -521,6 +626,7 @@ type runtimeReservationFaultTx struct {
 
 func (tx *runtimeReservationFaultTx) Commit() error {
 	tx.plan.commitCalls.Add(1)
+	tx.plan.transactional.Store(false)
 	if tx.plan.failCommit {
 		tx.plan.pendingRows.Store(0)
 		return tx.plan.err
@@ -531,6 +637,7 @@ func (tx *runtimeReservationFaultTx) Commit() error {
 
 func (tx *runtimeReservationFaultTx) Rollback() error {
 	tx.plan.rollbackCalls.Add(1)
+	tx.plan.transactional.Store(false)
 	tx.plan.pendingRows.Store(0)
 	return nil
 }
@@ -754,6 +861,277 @@ func TestRuntimeReservationJournalMutationOwner(t *testing.T) {
 				_, err := catalog.AcquireRuntimeReservation(context.Background(), fixture.request)
 				if !errors.Is(err, cause) || !strings.Contains(err.Error(), testCase.wantStage) || plan.execCalls.Load() != testCase.wantExec || plan.commitCalls.Load() != testCase.wantCommit || plan.rollbackCalls.Load() != testCase.wantRollback || plan.pendingRows.Load() != 0 || plan.committedRows.Load() != 0 {
 					t.Fatalf("transaction error/exec/commit/rollback/pending/committed = %v/%d/%d/%d/%d/%d", err, plan.execCalls.Load(), plan.commitCalls.Load(), plan.rollbackCalls.Load(), plan.pendingRows.Load(), plan.committedRows.Load())
+				}
+			})
+		}
+	})
+}
+
+func TestRuntimeReservationCatalogMutationOwner(t *testing.T) {
+	now := time.Date(2026, time.August, 10, 19, 0, 0, 0, time.UTC)
+	fixture := newRuntimeReservationFixture(t, now)
+	identity := fixture.request.Identity.Process
+
+	assertTransitionError := func(t *testing.T, err error, id string, expected, actual ManifestState, reason string) {
+		t.Helper()
+		var typed *ReservationTransitionError
+		if !errors.As(err, &typed) {
+			t.Fatalf("error = %v, want *ReservationTransitionError", err)
+		}
+		if typed.ReservationID != id || typed.Expected != expected || typed.Actual != actual || typed.Reason != reason {
+			t.Fatalf("transition error = %+v, want id=%q expected=%q actual=%q reason=%q", typed, id, expected, actual, reason)
+		}
+	}
+	assertReleaseError := func(t *testing.T, err error, id string, expected, actual ManifestState, reason string) {
+		t.Helper()
+		var staged *RuntimeReservationError
+		if !errors.As(err, &staged) || staged.Stage != "release" {
+			t.Fatalf("release error = %v, want release stage", err)
+		}
+		assertTransitionError(t, err, id, expected, actual, reason)
+	}
+
+	t.Run("transition rejects invalid identity and stale state before update", func(t *testing.T) {
+		cases := []struct {
+			name       string
+			id         string
+			expected   ManifestState
+			next       ManifestState
+			observed   ProcessIdentity
+			plan       *runtimeReservationFaultPlan
+			wantReason string
+			wantActual ManifestState
+			wantCause  error
+		}{
+			{name: "empty ID", id: " ", expected: ManifestAllocating, next: ManifestActive, observed: identity, wantReason: "reservation ID is required"},
+			{name: "invalid observed identity", id: "reservation-lease-1", expected: ManifestAllocating, next: ManifestActive, observed: ProcessIdentity{}, wantCause: errors.New("invalid process identity: pid must be positive")},
+			{name: "not found", id: "missing", expected: ManifestAllocating, next: ManifestActive, observed: identity, plan: &runtimeReservationFaultPlan{queryNoRows: true}, wantReason: "reservation not found"},
+			{name: "stale state", id: "reservation-lease-1", expected: ManifestAllocating, next: ManifestActive, observed: identity, plan: &runtimeReservationFaultPlan{queryState: ManifestActive, queryIdentity: identity}, wantReason: "state compare-and-swap failed", wantActual: ManifestActive},
+			{name: "identity mismatch", id: "reservation-lease-1", expected: ManifestActive, next: ManifestInterrupted, observed: identity, plan: &runtimeReservationFaultPlan{queryState: ManifestActive, queryIdentity: ProcessIdentity{PID: identity.PID + 1, StartMarker: identity.StartMarker, Executable: identity.Executable, ProcessGroup: identity.ProcessGroup}}, wantReason: "process identity mismatch", wantActual: ManifestActive},
+			{name: "invalid transition", id: "reservation-lease-1", expected: ManifestActive, next: ManifestAllocating, observed: identity, plan: &runtimeReservationFaultPlan{queryState: ManifestActive, queryIdentity: identity}, wantReason: "invalid transition to allocating", wantActual: ManifestActive},
+		}
+		for _, testCase := range cases {
+			t.Run(testCase.name, func(t *testing.T) {
+				plan := testCase.plan
+				if plan == nil {
+					plan = &runtimeReservationFaultPlan{}
+				}
+				catalog := newRuntimeReservationFaultCatalog(t, plan)
+				err := catalog.TransitionRuntimeReservation(context.Background(), testCase.id, testCase.expected, testCase.next, testCase.observed)
+				if testCase.wantCause != nil {
+					if err == nil || !strings.Contains(err.Error(), testCase.wantCause.Error()) {
+						t.Fatalf("identity error = %v, want %q", err, testCase.wantCause)
+					}
+				} else {
+					assertTransitionError(t, err, testCase.id, testCase.expected, testCase.wantActual, testCase.wantReason)
+				}
+				if plan.execCalls.Load() != 0 {
+					t.Fatalf("update calls = %d, want 0", plan.execCalls.Load())
+				}
+			})
+		}
+	})
+
+	t.Run("transition exposes load update and result failures", func(t *testing.T) {
+		loadCause := errors.New("injected transition load failure")
+		loadPlan := &runtimeReservationFaultPlan{queryErr: loadCause}
+		loadCatalog := newRuntimeReservationFaultCatalog(t, loadPlan)
+		if err := loadCatalog.TransitionRuntimeReservation(context.Background(), "reservation-lease-1", ManifestAllocating, ManifestActive, identity); !errors.Is(err, loadCause) || !strings.Contains(err.Error(), "load runtime reservation reservation-lease-1") || loadPlan.execCalls.Load() != 0 {
+			t.Fatalf("load error/update calls = %v/%d", err, loadPlan.execCalls.Load())
+		}
+
+		cases := []struct {
+			name       string
+			configure  func(*runtimeReservationFaultPlan, error)
+			wantText   string
+			wantReason string
+		}{
+			{name: "update", configure: func(plan *runtimeReservationFaultPlan, cause error) { plan.err, plan.failExec = cause, 1 }, wantText: "transition runtime reservation reservation-lease-1"},
+			{name: "rows affected", configure: func(plan *runtimeReservationFaultPlan, cause error) {
+				plan.resultRowsSet, plan.resultRows, plan.resultErr = true, 1, cause
+			}, wantText: "transition runtime reservation reservation-lease-1 rows affected"},
+			{name: "zero rows", configure: func(plan *runtimeReservationFaultPlan, _ error) { plan.resultRowsSet = true }, wantReason: "state compare-and-swap changed no rows"},
+		}
+		for _, testCase := range cases {
+			t.Run(testCase.name, func(t *testing.T) {
+				cause := errors.New("injected transition " + testCase.name + " failure")
+				plan := &runtimeReservationFaultPlan{queryState: ManifestAllocating, queryIdentity: identity}
+				testCase.configure(plan, cause)
+				catalog := newRuntimeReservationFaultCatalog(t, plan)
+				err := catalog.TransitionRuntimeReservation(context.Background(), "reservation-lease-1", ManifestAllocating, ManifestActive, identity)
+				if testCase.wantReason != "" {
+					assertTransitionError(t, err, "reservation-lease-1", ManifestAllocating, ManifestAllocating, testCase.wantReason)
+				} else if !errors.Is(err, cause) || !strings.Contains(err.Error(), testCase.wantText) {
+					t.Fatalf("transition error = %v, want cause and %q", err, testCase.wantText)
+				}
+				if plan.execCalls.Load() != 1 {
+					t.Fatalf("update calls = %d, want 1", plan.execCalls.Load())
+				}
+				if operations := plan.operationSnapshot(); !reflect.DeepEqual(operations, []string{"transition reservation"}) {
+					t.Fatalf("transition operations = %v", operations)
+				}
+			})
+		}
+	})
+
+	t.Run("transition preserves real state at authorization boundaries", func(t *testing.T) {
+		for name, mutate := range map[string]func(*ProcessIdentity){
+			"pid":           func(observed *ProcessIdentity) { observed.PID++ },
+			"start marker":  func(observed *ProcessIdentity) { observed.StartMarker = "linux:other" },
+			"executable":    func(observed *ProcessIdentity) { observed.Executable = "/bin/other" },
+			"process group": func(observed *ProcessIdentity) { observed.ProcessGroup++ },
+		} {
+			t.Run(name, func(t *testing.T) {
+				fixture := newRuntimeReservationFixture(t, now)
+				reservation, err := ReserveRuntime(context.Background(), fixture.catalog, fixture.request)
+				if err != nil {
+					t.Fatalf("reserve runtime: %v", err)
+				}
+				observed := fixture.request.Identity.Process
+				mutate(&observed)
+				err = fixture.catalog.TransitionRuntimeReservation(context.Background(), reservation.ID, ManifestActive, ManifestFinalizing, observed)
+				assertTransitionError(t, err, reservation.ID, ManifestActive, ManifestActive, "process identity mismatch")
+				assertReservationState(t, fixture.catalog.DB(), reservation.ID, ManifestActive)
+			})
+		}
+
+		fixture := newRuntimeReservationFixture(t, now)
+		reservation, err := ReserveRuntime(context.Background(), fixture.catalog, fixture.request)
+		if err != nil {
+			t.Fatalf("reserve transition fixture: %v", err)
+		}
+		err = fixture.catalog.TransitionRuntimeReservation(context.Background(), reservation.ID, ManifestAllocating, ManifestActive, fixture.request.Identity.Process)
+		assertTransitionError(t, err, reservation.ID, ManifestAllocating, ManifestActive, "state compare-and-swap failed")
+		assertReservationState(t, fixture.catalog.DB(), reservation.ID, ManifestActive)
+		err = fixture.catalog.TransitionRuntimeReservation(context.Background(), reservation.ID, ManifestActive, ManifestAllocating, fixture.request.Identity.Process)
+		assertTransitionError(t, err, reservation.ID, ManifestActive, ManifestActive, "invalid transition to allocating")
+		assertReservationState(t, fixture.catalog.DB(), reservation.ID, ManifestActive)
+		if err := fixture.catalog.TransitionRuntimeReservation(context.Background(), reservation.ID, ManifestActive, ManifestFinalizing, fixture.request.Identity.Process); err != nil {
+			t.Fatalf("valid transition: %v", err)
+		}
+		assertReservationState(t, fixture.catalog.DB(), reservation.ID, ManifestFinalizing)
+	})
+
+	t.Run("release rejects invalid load identity and state before transaction", func(t *testing.T) {
+		invalidPlan := &runtimeReservationFaultPlan{}
+		invalidCatalog := newRuntimeReservationFaultCatalog(t, invalidPlan)
+		err := invalidCatalog.ReleaseRuntimeReservation(context.Background(), "reservation-lease-1", ProcessIdentity{})
+		assertReleaseError(t, err, "reservation-lease-1", "", "", "invalid process identity: pid must be positive")
+		if invalidPlan.queryCalls.Load() != 0 {
+			t.Fatalf("invalid identity query calls = %d, want 0", invalidPlan.queryCalls.Load())
+		}
+
+		loadCause := errors.New("injected release load failure")
+		loadPlan := &runtimeReservationFaultPlan{queryErr: loadCause}
+		loadCatalog := newRuntimeReservationFaultCatalog(t, loadPlan)
+		err = loadCatalog.ReleaseRuntimeReservation(context.Background(), "reservation-lease-1", identity)
+		assertReleaseError(t, err, "reservation-lease-1", "", "", "load reservation: "+loadCause.Error())
+
+		for name, mutate := range map[string]func(*ProcessIdentity){
+			"pid":           func(persisted *ProcessIdentity) { persisted.PID++ },
+			"start marker":  func(persisted *ProcessIdentity) { persisted.StartMarker = "linux:other" },
+			"executable":    func(persisted *ProcessIdentity) { persisted.Executable = "/bin/other" },
+			"process group": func(persisted *ProcessIdentity) { persisted.ProcessGroup++ },
+		} {
+			t.Run(name, func(t *testing.T) {
+				persisted := identity
+				mutate(&persisted)
+				plan := &runtimeReservationFaultPlan{queryState: ManifestActive, queryIdentity: persisted, queryLeaseID: "lease-1"}
+				catalog := newRuntimeReservationFaultCatalog(t, plan)
+				err := catalog.ReleaseRuntimeReservation(context.Background(), "reservation-lease-1", identity)
+				assertReleaseError(t, err, "reservation-lease-1", "", ManifestActive, "process identity mismatch")
+				if plan.execCalls.Load() != 0 {
+					t.Fatalf("release update calls = %d, want 0", plan.execCalls.Load())
+				}
+			})
+		}
+
+		cases := []struct {
+			name       string
+			state      ManifestState
+			persisted  ProcessIdentity
+			wantReason string
+		}{
+			{name: "allocating state", state: ManifestAllocating, persisted: identity, wantReason: "only active or finalizing reservations can be interrupted"},
+			{name: "interrupted state", state: ManifestInterrupted, persisted: identity, wantReason: "only active or finalizing reservations can be interrupted"},
+			{name: "finalized state", state: ManifestFinalized, persisted: identity, wantReason: "only active or finalizing reservations can be interrupted"},
+			{name: "reclaimable state", state: ManifestReclaimable, persisted: identity, wantReason: "only active or finalizing reservations can be interrupted"},
+		}
+		for _, testCase := range cases {
+			t.Run(testCase.name, func(t *testing.T) {
+				plan := &runtimeReservationFaultPlan{queryState: testCase.state, queryIdentity: testCase.persisted, queryLeaseID: "lease-1"}
+				catalog := newRuntimeReservationFaultCatalog(t, plan)
+				err := catalog.ReleaseRuntimeReservation(context.Background(), "reservation-lease-1", identity)
+				assertReleaseError(t, err, "reservation-lease-1", "", testCase.state, testCase.wantReason)
+				if plan.execCalls.Load() != 0 || plan.commitCalls.Load() != 0 {
+					t.Fatalf("exec/commit calls = %d/%d, want 0/0", plan.execCalls.Load(), plan.commitCalls.Load())
+				}
+			})
+		}
+	})
+
+	t.Run("release transaction failures roll back all pending rows", func(t *testing.T) {
+		cases := []struct {
+			name         string
+			configure    func(*runtimeReservationFaultPlan, error)
+			wantText     string
+			wantReason   string
+			wantExec     int32
+			wantCommit   int32
+			wantRollback int32
+			wantOps      []string
+		}{
+			{name: "begin", configure: func(plan *runtimeReservationFaultPlan, cause error) { plan.err, plan.failBegin = cause, true }, wantText: "begin release runtime reservation"},
+			{name: "reservation update", configure: func(plan *runtimeReservationFaultPlan, cause error) { plan.err, plan.failExec = cause, 1 }, wantText: "release runtime reservation reservation-lease-1", wantExec: 1, wantRollback: 1, wantOps: []string{"release reservation"}},
+			{name: "rows affected", configure: func(plan *runtimeReservationFaultPlan, cause error) {
+				plan.resultRowsSet, plan.resultRows, plan.resultErr = true, 1, cause
+			}, wantReason: "release compare-and-swap changed no rows", wantExec: 1, wantRollback: 1, wantOps: []string{"release reservation"}},
+			{name: "zero rows", configure: func(plan *runtimeReservationFaultPlan, _ error) { plan.resultRowsSet = true }, wantReason: "release compare-and-swap changed no rows", wantExec: 1, wantRollback: 1, wantOps: []string{"release reservation"}},
+			{name: "lease update", configure: func(plan *runtimeReservationFaultPlan, cause error) { plan.err, plan.failExec = cause, 2 }, wantText: "release runtime lease lease-1", wantExec: 2, wantRollback: 1, wantOps: []string{"release reservation", "release lease"}},
+			{name: "commit", configure: func(plan *runtimeReservationFaultPlan, cause error) { plan.err, plan.failCommit = cause, true }, wantText: "commit release runtime reservation reservation-lease-1", wantExec: 2, wantCommit: 1, wantOps: []string{"release reservation", "release lease"}},
+		}
+		for _, testCase := range cases {
+			t.Run(testCase.name, func(t *testing.T) {
+				cause := errors.New("injected release " + testCase.name + " failure")
+				plan := &runtimeReservationFaultPlan{queryState: ManifestActive, queryIdentity: identity, queryLeaseID: "lease-1"}
+				testCase.configure(plan, cause)
+				catalog := newRuntimeReservationFaultCatalog(t, plan)
+				err := catalog.ReleaseRuntimeReservation(context.Background(), "reservation-lease-1", identity)
+				if testCase.wantReason != "" {
+					assertReleaseError(t, err, "reservation-lease-1", ManifestActive, ManifestActive, testCase.wantReason)
+				} else if !errors.Is(err, cause) || !strings.Contains(err.Error(), testCase.wantText) {
+					t.Fatalf("release error = %v, want cause and %q", err, testCase.wantText)
+				}
+				if plan.execCalls.Load() != testCase.wantExec || plan.commitCalls.Load() != testCase.wantCommit || plan.rollbackCalls.Load() != testCase.wantRollback || plan.pendingRows.Load() != 0 || plan.committedRows.Load() != 0 {
+					t.Fatalf("exec/commit/rollback/pending/committed = %d/%d/%d/%d/%d", plan.execCalls.Load(), plan.commitCalls.Load(), plan.rollbackCalls.Load(), plan.pendingRows.Load(), plan.committedRows.Load())
+				}
+				if operations := plan.operationSnapshot(); !reflect.DeepEqual(operations, testCase.wantOps) {
+					t.Fatalf("release operations = %v, want %v", operations, testCase.wantOps)
+				}
+			})
+		}
+	})
+
+	t.Run("release admits active and finalizing states", func(t *testing.T) {
+		for _, state := range []ManifestState{ManifestActive, ManifestFinalizing} {
+			t.Run(string(state), func(t *testing.T) {
+				fixture := newRuntimeReservationFixture(t, now)
+				reservation, err := ReserveRuntime(context.Background(), fixture.catalog, fixture.request)
+				if err != nil {
+					t.Fatalf("reserve runtime: %v", err)
+				}
+				if state == ManifestFinalizing {
+					if _, err := fixture.catalog.DB().Exec(`UPDATE runtime_reservations SET state=? WHERE id=?`, state, reservation.ID); err != nil {
+						t.Fatalf("set finalizing state: %v", err)
+					}
+				}
+				if err := fixture.catalog.ReleaseRuntimeReservation(context.Background(), reservation.ID, fixture.request.Identity.Process); err != nil {
+					t.Fatalf("release %s reservation: %v", state, err)
+				}
+				assertReservationState(t, fixture.catalog.DB(), reservation.ID, ManifestInterrupted)
+				var releasedAt sql.NullString
+				if err := fixture.catalog.DB().QueryRow(`SELECT released_at FROM runtime_leases WHERE id=?`, fixture.request.Lease.ID).Scan(&releasedAt); err != nil || !releasedAt.Valid {
+					t.Fatalf("released_at = %+v, error = %v", releasedAt, err)
 				}
 			})
 		}
