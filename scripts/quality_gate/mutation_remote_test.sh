@@ -3752,18 +3752,58 @@ EOF
 		fail 'mutation exec did not restore the original source after unexpected test exit'
 }
 
+assert_mutation_exec_focused_phase_trace() {
+	local trace="$1" original_sha="$2" changed_sha="$3" package="$4" pattern="$5"
+	local test_file="$6" source_file="$7" unselected_file="$8" cache="$9" tmp="${10}"
+	awk -F '\t' \
+		-v original_sha="$original_sha" -v changed_sha="$changed_sha" \
+		-v package="$package" -v pattern="$pattern" -v test_file="$test_file" \
+		-v cache="$cache" -v tmp="$tmp" '
+		NR == 1 {
+			if ($1 != "baseline" || $2 != original_sha || $3 != "absent" ||
+				$4 != package || $5 != pattern || $6 != test_file ||
+				$7 != cache || $8 != tmp) exit 1
+		}
+		NR == 2 {
+			if ($1 != "mutant" || $2 != changed_sha || $3 != "present" ||
+				$4 != package || $5 != pattern || $6 != test_file ||
+				$7 != cache || $8 != tmp) exit 1
+		}
+		END { if (NR != 2) exit 1 }
+	' "$trace" || fail 'focused mutation lost exact original then changed package-context phases'
+	[[ "$(grep -Fxc -- "$package" <(cut -f4 "$trace"))" = 2 ]] ||
+		fail 'focused mutation compile must invoke the dispatcher package in both phases'
+	[[ "$(grep -Fxc -- "$pattern" <(cut -f5 "$trace"))" = 2 ]] ||
+		fail 'focused mutation lost the owner test pattern in either phase'
+	[[ "$(grep -Fxc -- "$test_file" <(cut -f6 "$trace"))" = 2 ]] ||
+		fail 'focused mutation lost the owner test file in either phase'
+	! cut -f9- "$trace" | grep -Fq "$source_file" ||
+		fail 'focused mutation passed an explicit production source file'
+	! cut -f9- "$trace" | grep -Fq "$unselected_file" ||
+		fail 'focused mutation passed an unrelated test file'
+}
+
 test_mutation_exec_focused_file() {
 	local fixture="$1"
 	local original="$fixture/pkg/dispatcher/review_checkpoint_store.go"
 	local changed="$fixture/changed.go"
 	local output="$fixture/exec.log"
-	local status
-	mkdir -p "$fixture/bin" "$fixture/pkg/dispatcher"
+	local original_sha changed_sha status
+	mkdir -p "$fixture/bin" "$fixture/pkg/dispatcher" "$fixture/cache" "$fixture/tmp"
 	cat >"$fixture/bin/go" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >"${MUTATION_FOCUSED_TRACE:?}"
-printf 'MUTATION_TEST_PATTERN=%s\n' "$MUTATION_TEST_PATTERN" >>"${MUTATION_FOCUSED_TRACE:?}"
-printf 'MUTATION_TEST_FILE=%s\n' "$MUTATION_TEST_FILE" >>"${MUTATION_FOCUSED_TRACE:?}"
+set -euo pipefail
+phase=baseline
+backup=absent
+if [[ -e "${MUTATE_ORIGINAL:?}.tmp" ]]; then
+	phase=mutant
+	backup=present
+fi
+active_sha=$(git hash-object "$MUTATE_ORIGINAL")
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+	"$phase" "$active_sha" "$backup" "${MUTATE_PACKAGE:-}" \
+	"${MUTATION_TEST_PATTERN:-}" "${MUTATION_TEST_FILE:-}" \
+	"${GOCACHE:-}" "${GOTMPDIR:-}" "$*" >>"${MUTATION_FOCUSED_TRACE:?}"
 exit 0
 EOF
 	chmod +x "$fixture/bin/go"
@@ -3772,11 +3812,18 @@ EOF
 	printf 'package dispatcher\n\nfunc TestReviewCheckpointMutationOwnershipLoads() {}\n' \
 		>"$fixture/pkg/dispatcher/review_checkpoint_store_mutation_test.go"
 	printf 'package dispatcher\n\nfunc TestUnselected() {}\n' >"$fixture/pkg/dispatcher/unselected_test.go"
+	original_sha=$(git hash-object "$original")
+	changed_sha=$(git hash-object "$changed")
+	[[ ! -e "$fixture/focused-args.txt" ]] || {
+		fail 'focused mutation trace must be absent before launch'
+		return 1
+	}
 
 	set +e
 	(
 		cd "$fixture"
 		PATH="$fixture/bin:$PATH" MUTATION_FOCUSED_TRACE="$fixture/focused-args.txt" \
+			GOCACHE="$fixture/cache" GOTMPDIR="$fixture/tmp" \
 			MUTATE_CHANGED="$changed" MUTATE_ORIGINAL="$original" MUTATE_PACKAGE=./pkg/dispatcher \
 			MUTATE_TIMEOUT=5 MUTATION_TEST_PATTERN=TestReviewCheckpointMutationOwnershipLoads \
 			MUTATION_TEST_FILE=pkg/dispatcher/review_checkpoint_store_mutation_test.go \
@@ -3785,21 +3832,18 @@ EOF
 	status=$?
 	set -e
 	[[ "$status" = 1 ]] || fail "focused surviving mutant exit = $status, want 1"
-	[[ "$(grep -oF './pkg/dispatcher' "$fixture/focused-args.txt" | wc -l | tr -d ' ')" = 1 ]] ||
-		fail 'focused mutation compile must invoke the dispatcher package exactly once'
-	grep -Fxq 'MUTATION_TEST_PATTERN=TestReviewCheckpointMutationOwnershipLoads' "$fixture/focused-args.txt" ||
-		fail 'focused mutation lost the owner test pattern'
-	grep -Fxq 'MUTATION_TEST_FILE=pkg/dispatcher/review_checkpoint_store_mutation_test.go' "$fixture/focused-args.txt" ||
-		fail 'focused mutation lost the owner test file'
-	! grep -q 'review_checkpoint_store.go' "$fixture/focused-args.txt" ||
-		fail 'focused mutation passed an explicit production source file'
-	! grep -q 'unselected_test.go' "$fixture/focused-args.txt" ||
-		fail 'focused mutation passed an unrelated test file'
+	assert_mutation_exec_focused_phase_trace "$fixture/focused-args.txt" "$original_sha" "$changed_sha" \
+		./pkg/dispatcher TestReviewCheckpointMutationOwnershipLoads \
+		pkg/dispatcher/review_checkpoint_store_mutation_test.go review_checkpoint_store.go \
+		unselected_test.go "$fixture/cache" "$fixture/tmp"
+	[[ "$(git hash-object "$original")" = "$original_sha" ]] || fail 'focused mutation did not restore original bytes'
+	[[ ! -e "$original.tmp" ]] || fail 'focused mutation left source residue'
 
 	set +e
 	(
 		cd "$fixture"
 		PATH="$fixture/bin:$PATH" MUTATION_FOCUSED_TRACE="$fixture/unexpected-args.txt" \
+			GOCACHE="$fixture/cache" GOTMPDIR="$fixture/tmp" \
 			MUTATE_CHANGED="$changed" MUTATE_ORIGINAL="$original" MUTATE_PACKAGE=./pkg/dispatcher \
 			MUTATE_TIMEOUT=5 MUTATION_TEST_PATTERN=TestReviewCheckpointMutationOwnershipLoads \
 			MUTATION_TEST_FILE=pkg/missing/review_checkpoint_store_mutation_test.go \
@@ -4656,13 +4700,22 @@ test_review_integration_recovery_mutation_exec_focused_file() {
 	local original="$fixture/pkg/dispatcher/review_integration_recovery.go"
 	local changed="$fixture/changed.go"
 	local output="$fixture/exec.log"
-	local status
-	mkdir -p "$fixture/bin" "$fixture/pkg/dispatcher"
+	local original_sha changed_sha status
+	mkdir -p "$fixture/bin" "$fixture/pkg/dispatcher" "$fixture/cache" "$fixture/tmp"
 	cat >"$fixture/bin/go" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >"${MUTATION_FOCUSED_TRACE:?}"
-printf 'MUTATION_TEST_PATTERN=%s\n' "$MUTATION_TEST_PATTERN" >>"${MUTATION_FOCUSED_TRACE:?}"
-printf 'MUTATION_TEST_FILE=%s\n' "$MUTATION_TEST_FILE" >>"${MUTATION_FOCUSED_TRACE:?}"
+set -euo pipefail
+phase=baseline
+backup=absent
+if [[ -e "${MUTATE_ORIGINAL:?}.tmp" ]]; then
+	phase=mutant
+	backup=present
+fi
+active_sha=$(git hash-object "$MUTATE_ORIGINAL")
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+	"$phase" "$active_sha" "$backup" "${MUTATE_PACKAGE:-}" \
+	"${MUTATION_TEST_PATTERN:-}" "${MUTATION_TEST_FILE:-}" \
+	"${GOCACHE:-}" "${GOTMPDIR:-}" "$*" >>"${MUTATION_FOCUSED_TRACE:?}"
 exit 0
 EOF
 	chmod +x "$fixture/bin/go"
@@ -4672,11 +4725,18 @@ EOF
 		>"$fixture/pkg/dispatcher/review_integration_recovery_mutation_test.go"
 	printf 'package dispatcher\n\nfunc TestUnselectedReviewIntegrationRecovery() {}\n' \
 		>"$fixture/pkg/dispatcher/review_integration_recovery_unselected_test.go"
+	original_sha=$(git hash-object "$original")
+	changed_sha=$(git hash-object "$changed")
+	[[ ! -e "$fixture/focused-args.txt" ]] || {
+		fail 'focused mutation trace must be absent before launch'
+		return 1
+	}
 
 	set +e
 	(
 		cd "$fixture"
 		PATH="$fixture/bin:$PATH" MUTATION_FOCUSED_TRACE="$fixture/focused-args.txt" \
+			GOCACHE="$fixture/cache" GOTMPDIR="$fixture/tmp" \
 			MUTATE_CHANGED="$changed" MUTATE_ORIGINAL="$original" MUTATE_PACKAGE=./pkg/dispatcher \
 			MUTATE_TIMEOUT=60 MUTATION_TEST_TIMEOUT=55 \
 			MUTATION_TEST_PATTERN='^TestReviewIntegrationRecoveryMutationFinalize$' \
@@ -4686,22 +4746,46 @@ EOF
 	status=$?
 	set -e
 	[[ "$status" = 1 ]] || fail "integration-recovery focused surviving mutant exit = $status, want 1"
-	[[ "$(grep -oF './pkg/dispatcher' "$fixture/focused-args.txt" | wc -l | tr -d ' ')" = 1 ]] ||
-		fail 'focused mutation compile must invoke the dispatcher package exactly once'
-	grep -Fxq 'MUTATION_TEST_PATTERN=^TestReviewIntegrationRecoveryMutationFinalize$' "$fixture/focused-args.txt" ||
-		fail 'focused mutation lost the integration-recovery owner test pattern'
-	grep -Fxq 'MUTATION_TEST_FILE=pkg/dispatcher/review_integration_recovery_mutation_test.go' "$fixture/focused-args.txt" ||
-		fail 'focused mutation lost the integration-recovery owner test file'
-	! grep -q 'review_integration_recovery.go' "$fixture/focused-args.txt" ||
-		fail 'focused mutation passed an explicit integration-recovery source file'
-	! grep -q 'review_integration_recovery_unselected_test.go' "$fixture/focused-args.txt" ||
-		fail 'focused mutation passed an unrelated integration-recovery test file'
+	assert_mutation_exec_focused_phase_trace "$fixture/focused-args.txt" "$original_sha" "$changed_sha" \
+		./pkg/dispatcher '^TestReviewIntegrationRecoveryMutationFinalize$' \
+		pkg/dispatcher/review_integration_recovery_mutation_test.go review_integration_recovery.go \
+		review_integration_recovery_unselected_test.go "$fixture/cache" "$fixture/tmp"
+	[[ "$(git hash-object "$original")" = "$original_sha" ]] ||
+		fail 'integration-recovery focused mutation did not restore original bytes'
+	[[ ! -e "$original.tmp" ]] || fail 'integration-recovery focused mutation left source residue'
 }
 
 TestReviewIntegrationRecoveryMutationFocusedExec() {
 	local focused_tmp
 	focused_tmp=$(mktemp -d)
 	test_review_integration_recovery_mutation_exec_focused_file "$focused_tmp/exec-review-integration-recovery-focused"
+	rm -rf -- "$focused_tmp"
+}
+
+TestMutationExecFocusedPhaseContexts() {
+	local focused_case focused_tmp stale_fixture stale_log stale_status
+	local -a focused_cases=(
+		test_mutation_exec_focused_file
+		test_review_integration_recovery_mutation_exec_focused_file
+	)
+	[[ "${#focused_cases[@]}" = 2 ]] || fail 'focused phase table must contain exactly two owner rows'
+	focused_tmp=$(mktemp -d)
+	for focused_case in "${focused_cases[@]}"; do
+		"$focused_case" "$focused_tmp/$focused_case"
+	done
+	stale_fixture="$focused_tmp/stale-trace"
+	stale_log="$focused_tmp/stale-trace.log"
+	mkdir -p "$stale_fixture"
+	printf 'stale\n' >"$stale_fixture/focused-args.txt"
+	set +e
+	(test_mutation_exec_focused_file "$stale_fixture") >"$stale_log" 2>&1
+	stale_status=$?
+	set -e
+	[[ "$stale_status" = 1 ]] || fail "stale focused trace exit = $stale_status, want 1"
+	grep -Fxq 'FAIL: focused mutation trace must be absent before launch' "$stale_log" ||
+		fail 'stale focused trace did not fail before launch'
+	[[ "$(cat "$stale_fixture/focused-args.txt")" = stale ]] ||
+		fail 'stale focused trace reached fake Go before rejection'
 	rm -rf -- "$focused_tmp"
 }
 
@@ -6738,6 +6822,9 @@ main() {
 		;;
 	TestReviewIntegrationRecoveryMutationFocusedExec)
 		TestReviewIntegrationRecoveryMutationFocusedExec
+		;;
+	TestMutationExecFocusedPhaseContexts)
+		TestMutationExecFocusedPhaseContexts
 		;;
 	TestTargetedMutationScope)
 		tmp=$(mktemp -d)
