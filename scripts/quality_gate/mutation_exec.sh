@@ -36,7 +36,9 @@ mutation_cleanup_owned_processes() {
 			mutation_test_leader_exited && break
 			sleep 0.05
 		done
-		mutation_test_group_alive && kill -KILL -- "-$mutation_test_pgid" 2>/dev/null || true
+		if mutation_test_group_alive; then
+			kill -KILL -- "-$mutation_test_pgid" 2>/dev/null || true
+		fi
 	fi
 	if [[ "$mutation_test_pid" =~ ^[0-9]+$ ]]; then
 		wait "$mutation_test_pid" 2>/dev/null || true
