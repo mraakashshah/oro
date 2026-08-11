@@ -2632,7 +2632,13 @@ if [[ "$1" = tool && "$2" = go-mutesting && " $* " == *" --no-exec "* ]]; then
 	cp "$source_file" "$generation/$source_file.original"
 	mutant_count=${MUTATION_FAKE_MUTANT_COUNT:-2}
 	for ((index = 0; index < mutant_count; index++)); do
-		sed "0,/return true/s//return $((index % 2 == 0 ? 0 : 1)) == 1/" "$source_file" >"$generation/$source_file.$index"
+		if [[ "${MUTATION_TARGETED_PHASE_MODE:-}" = 1 ]]; then
+			sed "1,/return true/s/return true/return $((index % 2 == 0 ? 0 : 1)) == 1/" \
+				"$source_file" >"$generation/$source_file.$index"
+		else
+			sed "0,/return true/s//return $((index % 2 == 0 ? 0 : 1)) == 1/" \
+				"$source_file" >"$generation/$source_file.$index"
+		fi
 	done
 	printf 'Save mutations into "%s"\n' "$generation"
 	for ((index = 0; index < mutant_count; index++)); do
@@ -2708,6 +2714,22 @@ if [[ "$1" = test ]]; then
 		*TestSecondOwner*) printf 'TestSecondOwner\n' ;;
 		*) printf 'TestIsOroDistributedHookRecognizesFastPrePush\n' ;;
 		esac
+	fi
+	if [[ "${MUTATION_TARGETED_PHASE_MODE:-}" = 1 && -n "${MUTATE_ORIGINAL:-}" ]]; then
+		phase=baseline
+		backup=absent
+		test_exit=0
+		if [[ -e "$MUTATE_ORIGINAL.tmp" ]]; then
+			phase=mutant
+			backup=present
+			test_exit=1
+		fi
+		active_hash=$(git hash-object "$MUTATE_ORIGINAL")
+		changed_hash=$(git hash-object "$MUTATE_CHANGED")
+		printf '%s\t%s\t%s\t%s\t%s\n' \
+			"$phase" "$active_hash" "$changed_hash" "$backup" "$test_exit" \
+			>>"${MUTATION_TARGETED_PHASE_TRACE_DIR:?}/phase.tsv"
+		exit "$test_exit"
 	fi
 	if [[ -n "${MUTATE_ORIGINAL:-}" ]]; then
 		exit 1
@@ -3163,6 +3185,88 @@ TestStrictIncrementalMutationShards() {
 		 .shards[0].score == null and .shards[0].total == 0 and
 		 .shards[1].conclusion == "completed" and .shards[1].total == 10' \
 		"$evidence" >/dev/null || fail 'a validated zero-site function must remain visible without altering the scored denominator'
+}
+
+TestTargetedMutationFixturePhaseModel() {
+	local fixture="$tmp/targeted-phase-model"
+	local generation index legacy_trace original_hash phase_trace test_status
+	local -a mutant_hashes mutant_paths refs
+	mapfile -t refs < <(new_targeted_fixture "$fixture" false assignment-claim)
+	write_fake_go "$fixture/bin/go"
+	mkdir -p "$fixture/phases" "$fixture/cache" "$fixture/go-tmp"
+	(
+		cd "$fixture"
+		PATH="$fixture/bin:$PATH" MUTATION_FIXTURE=targeted \
+			MUTATION_ARGS_TRACE="$fixture/mutation-args.txt" \
+			MUTATION_TARGETED_PHASE_MODE=1 \
+			go tool go-mutesting --no-exec --match='^(assignBeadWithClaim)$' \
+			pkg/dispatcher/assignment.go
+	) >"$fixture/generation.log"
+	generation=$(sed -n 's/^Save mutations into "\(.*\)"$/\1/p' "$fixture/generation.log")
+	mapfile -t mutant_paths < <(sed -n 's/^Save mutation into "\(.*\)" with checksum .*$/\1/p' \
+		"$fixture/generation.log")
+	[[ -n "$generation" && -d "$generation" && "${#mutant_paths[@]}" = 2 ]] ||
+		fail 'targeted phase fixture did not generate exactly two mutants'
+	original_hash=$(git hash-object "$fixture/pkg/dispatcher/assignment.go")
+	mapfile -t mutant_hashes < <(git hash-object "${mutant_paths[@]}")
+	[[ "${mutant_hashes[0]}" != "$original_hash" && "${mutant_hashes[1]}" != "$original_hash" &&
+		"${mutant_hashes[0]}" != "${mutant_hashes[1]}" ]] ||
+		fail 'targeted phase fixture mutants must differ from the original and each other'
+
+	for index in 0 1; do
+		phase_trace="$fixture/phases/$index"
+		mkdir -p "$phase_trace" "$fixture/cache/parallel-$index" "$fixture/go-tmp/$index"
+		set +e
+		(
+			cd "$fixture"
+			PATH="$fixture/bin:$PATH" MUTATION_FIXTURE=targeted \
+				MUTATION_ARGS_TRACE="$fixture/mutation-args.txt" \
+				MUTATION_LIST_TRACE="$fixture/mutation-list.txt" \
+				MUTATION_TARGETED_PHASE_MODE=1 MUTATION_TARGETED_PHASE_TRACE_DIR="$phase_trace" \
+				GOCACHE="$fixture/cache/parallel-$index" GOTMPDIR="$fixture/go-tmp/$index" \
+				MUTATE_CHANGED="${mutant_paths[$index]}" \
+				MUTATE_ORIGINAL="$fixture/pkg/dispatcher/assignment.go" \
+				MUTATE_PACKAGE=mutation.test/targeted/pkg/dispatcher MUTATE_TIMEOUT=10 \
+				MUTATION_TEST_TIMEOUT=5 \
+				MUTATION_TEST_PATTERN='^(TestAssignmentClaimAuthoritativeSurvivorMutation|TestAssignmentBehaviorMutation|TestStandaloneAssignmentBehaviorHarnessCaseIsolation)$' \
+				bash "$repo_root/scripts/quality_gate/mutation_exec.sh"
+		) >"$fixture/executor-$index.log" 2>&1
+		test_status=$?
+		set -e
+		[[ "$test_status" = 0 ]] || fail "targeted phase mutant $index executor exit = $test_status, want killed 0"
+		[[ "$(git hash-object "$fixture/pkg/dispatcher/assignment.go")" = "$original_hash" &&
+			! -e "$fixture/pkg/dispatcher/assignment.go.tmp" ]] ||
+			fail "targeted phase mutant $index left source residue"
+		awk -F '\t' -v original="$original_hash" -v changed="${mutant_hashes[$index]}" '
+			NR == 1 { if ($1 != "baseline" || $2 != original || $3 != changed || $4 != "absent" || $5 != 0) exit 1 }
+			NR == 2 { if ($1 != "mutant" || $2 != changed || $3 != changed || $4 != "present" || $5 != 1) exit 1 }
+			END { if (NR != 2) exit 1 }
+		' "$phase_trace/phase.tsv" || fail "targeted phase mutant $index lost baseline/substitution evidence"
+	done
+
+	legacy_trace="$fixture/legacy-phase.tsv"
+	for index in absent present; do
+		if [[ "$index" = present ]]; then
+			: >"$fixture/pkg/dispatcher/assignment.go.tmp"
+		else
+			rm -f "$fixture/pkg/dispatcher/assignment.go.tmp"
+		fi
+		set +e
+		(
+			cd "$fixture"
+			PATH="$fixture/bin:$PATH" MUTATION_FIXTURE=targeted \
+				MUTATION_LIST_TRACE="$fixture/mutation-list.txt" \
+				MUTATION_TARGETED_PHASE_TRACE_DIR="$legacy_trace" \
+				MUTATE_CHANGED="${mutant_paths[0]}" MUTATE_ORIGINAL="$fixture/pkg/dispatcher/assignment.go" \
+				MUTATE_PACKAGE=mutation.test/targeted/pkg/dispatcher \
+				MUTATION_TEST_PATTERN='^TestAssignmentBehaviorMutation$' go test ./pkg/dispatcher
+		) >/dev/null 2>&1
+		test_status=$?
+		set -e
+		[[ "$test_status" = 1 ]] || fail "mode-absent fake Go $index backup exit = $test_status, want legacy 1"
+	done
+	rm -f "$fixture/pkg/dispatcher/assignment.go.tmp"
+	[[ ! -e "$legacy_trace" ]] || fail 'mode-absent fake Go emitted a phase trace'
 }
 
 TestTargetedMutationScope() {
@@ -6357,6 +6461,11 @@ main() {
 		tmp=$(mktemp -d)
 		trap 'rm -rf "$tmp"' RETURN
 		TestTargetedMutationScope
+		;;
+	TestTargetedMutationFixturePhaseModel)
+		tmp=$(mktemp -d)
+		trap 'rm -rf "$tmp"' RETURN
+		TestTargetedMutationFixturePhaseModel
 		;;
 	TestMutationCapacity)
 		TestMutationCapacity
