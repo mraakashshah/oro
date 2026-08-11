@@ -5496,7 +5496,7 @@ if [[ "$1" = tool && "$2" = go-mutesting ]]; then
 	mkdir -p "$generation/$(dirname "$source_file")"
 	cp "$source_file" "$generation/$source_file.original"
 	for ((index = 0; index < mutant_count; index++)); do
-		sed '0,/return true/s//return false/' "$source_file" >"$generation/$source_file.$index"
+		sed 's/return true/return false/' "$source_file" >"$generation/$source_file.$index"
 	done
 	printf 'Save mutations into "%s"\n' "$generation"
 	for ((index = 0; index < mutant_count; index++)); do
@@ -5530,10 +5530,25 @@ if [[ " $* " == *" -run ^$ "* ]]; then
 	printf 'PREWARM|%s|%s\n' "$GOCACHE" "$GOTMPDIR" >>"${MUTATION_SEAM_TRACE:?}"
 fi
 if [[ -n "${MUTATE_CHANGED:-}" ]]; then
-	case "${MUTATE_ORIGINAL:-}" in
-	*worker_pool.go) exit 0 ;;
-	*) exit 1 ;;
-	esac
+	phase=baseline
+	backup=absent
+	phase_exit=0
+	if [[ -e "${MUTATE_ORIGINAL:?}.tmp" ]]; then
+		phase=mutant
+		backup=present
+		if [[ "${MUTATION_FUNCTION_MATCH:?}" = '^(handleConn)$' ]]; then
+			phase_exit=1
+		fi
+	fi
+	active_hash=$(git hash-object "$MUTATE_ORIGINAL")
+	changed_hash=$(git hash-object "$MUTATE_CHANGED")
+	worker=${GOCACHE##*/parallel-}
+	mutant_index=${MUTATE_CHANGED##*.}
+	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+		"$mutant_index" "$MUTATE_CHANGED" "$worker" "$phase" "$active_hash" \
+		"$changed_hash" "$backup" "$phase_exit" "$MUTATE_ORIGINAL" "$GOCACHE" "$GOTMPDIR" \
+		>>"${MUTATION_SEAM_PHASE_TRACE_DIR:?}/parallel-$worker.tsv"
+	exit "$phase_exit"
 fi
 exit 0
 EOF
@@ -5598,6 +5613,10 @@ run_heavy_production_seam_replay() {
 	local test_pattern="$5"
 	local replay_repo="$repo_root"
 	local head bundle_runner original_path="$PATH" real_timeout run_path="$PATH"
+	if [[ "$mode" = synthetic && -e "$replay_root/state/phase-trace" ]]; then
+		fail "$source_file synthetic replay phase trace must be absent before runner launch"
+		return 1
+	fi
 	real_timeout=$(command -v timeout)
 	mkdir -p "$replay_root/results" "$replay_root/evidence" "$replay_root/state" \
 		"$replay_root/mod"
@@ -5605,6 +5624,7 @@ run_heavy_production_seam_replay() {
 	if [[ "$mode" = synthetic ]]; then
 		replay_repo="$replay_root/repo"
 		new_heavy_production_seam_fixture "$replay_repo"
+		mkdir -p "$replay_root/state/phase-trace"
 	elif [[ "$mode" = real ]]; then
 		mkdir -p "$replay_root/prepopulate/cache" "$replay_root/prepopulate/tmp"
 		(
@@ -5643,7 +5663,8 @@ run_heavy_production_seam_replay() {
 			# shellcheck disable=SC2030 # The sourced runner consumes this subshell-local environment.
 			export MUTATION_REAL_TIMEOUT="$real_timeout" \
 				MUTATION_SEAM_GO_TRACE="$replay_root/state/go.trace" \
-				MUTATION_SEAM_TRACE="$replay_root/state/seam.trace"
+				MUTATION_SEAM_TRACE="$replay_root/state/seam.trace" \
+				MUTATION_SEAM_PHASE_TRACE_DIR="$replay_root/state/phase-trace"
 			# shellcheck disable=SC2329,SC2317 # The sourced shard runner resolves this override dynamically.
 			touched_functions_covered() { return 0; }
 		else
@@ -5663,7 +5684,9 @@ assert_heavy_production_seam_replay() {
 	local mutant_count="$5"
 	local expected_timeout="${6:-240}"
 	local replay_repo="$repo_root"
-	local evidence_run expected_hash index
+	local combined_trace="$replay_root/state/phase-trace/combined.tsv"
+	local evidence_run expected_class expected_hash expected_phase_exit index phase_file
+	local -a phase_files
 	[[ "$mode" = real ]] || replay_repo="$replay_root/repo"
 
 	jq -e --arg file "$source_file" --arg match "$function_match" \
@@ -5697,7 +5720,11 @@ assert_heavy_production_seam_replay() {
 			(.exit_class == "killed" or .exit_class == "survived"))' \
 		"$evidence_run"/mutant-*.json >/dev/null ||
 		fail "$mode $function_match replay lost exact terminal mutant evidence"
+	expected_class=killed
+	expected_phase_exit=1
 	if [[ "$function_match" = '^(registerWorkerWithProtocol)$' ]]; then
+		expected_class=survived
+		expected_phase_exit=0
 		jq -s -e \
 			'all(.[]; .exit_class == "survived" and .exit_status == 1)' \
 			"$evidence_run"/mutant-*.json >/dev/null ||
@@ -5705,6 +5732,50 @@ assert_heavy_production_seam_replay() {
 	fi
 
 	expected_hash=$(git -C "$replay_repo" rev-parse "$(<"$replay_root/head"):$source_file")
+	if [[ "$mode" = synthetic ]]; then
+		mapfile -t phase_files < <(find "$replay_root/state/phase-trace" -maxdepth 1 \
+			-type f -name 'parallel-*.tsv' | sort)
+		[[ "${#phase_files[@]}" = 2 && -f "$replay_root/state/phase-trace/parallel-0.tsv" &&
+			-f "$replay_root/state/phase-trace/parallel-1.tsv" ]] ||
+			fail "$function_match replay lost its exact two-worker phase inventory"
+		: >"$combined_trace"
+		for phase_file in "${phase_files[@]}"; do
+			local expected_worker=${phase_file##*/parallel-}
+			expected_worker=${expected_worker%.tsv}
+			cat "$phase_file" >>"$combined_trace"
+			awk -F '\t' -v original="$expected_hash" -v expected_exit="$expected_phase_exit" \
+				-v expected_worker="$expected_worker" '
+				NR % 2 == 1 {
+					if ($3 != expected_worker || $4 != "baseline" || $5 != original || $6 == original ||
+						$7 != "absent" || $8 != 0) exit 1
+					mutant_index = $1; mutant = $2; worker = $3; changed = $6; source = $9; cache = $10; tmp = $11
+				}
+				NR % 2 == 0 {
+					if ($1 != mutant_index || $2 != mutant || $3 != worker || $4 != "mutant" || $5 != changed ||
+						$6 != changed || $7 != "present" || $8 != expected_exit || $9 != source ||
+						$10 != cache || $11 != tmp) exit 1
+				}
+				END { if (NR == 0 || NR % 2 != 0) exit 1 }
+			' "$phase_file" || fail "$function_match replay lost contiguous baseline then mutant phases"
+		done
+		[[ "$(wc -l <"$combined_trace" | tr -d ' ')" = "$((mutant_count * 2))" ]] ||
+			fail "$function_match replay changed its exact phase cardinality"
+		awk -F '\t' 'NR % 2 == 1 { print $1 }' "$combined_trace" | sort -n >"$replay_root/state/phase-trace/indices"
+		cmp -s "$replay_root/state/phase-trace/indices" <(seq 0 $((mutant_count - 1))) ||
+			fail "$function_match replay lost its exact mutant phase index set"
+		[[ "$(cut -f10 "$combined_trace" | sort -u | wc -l | tr -d ' ')" = 2 &&
+			"$(cut -f11 "$combined_trace" | sort -u | wc -l | tr -d ' ')" = 2 &&
+			"$(cut -f9 "$combined_trace" | sort -u | wc -l | tr -d ' ')" = 2 ]] ||
+			fail "$function_match replay reused worker source/cache/tmp context"
+		while IFS= read -r worker_source; do
+			[[ ! -e "$worker_source" && ! -e "$worker_source.tmp" ]] ||
+				fail "$function_match replay left worker source residue at $worker_source"
+		done < <(cut -f9 "$combined_trace" | sort -u)
+		jq -s -e --arg class "$expected_class" --argjson total "$mutant_count" \
+			'length == $total and all(.[]; .exit_class == $class)' \
+			"$evidence_run"/mutant-*.json >/dev/null ||
+			fail "$function_match replay phase behavior diverged from terminal evidence classes"
+	fi
 	for index in "$replay_repo/$source_file" \
 		"$replay_root/checkouts/000000/$source_file"; do
 		[[ "$(git hash-object "$index")" = "$expected_hash" ]] ||
@@ -5743,7 +5814,7 @@ assert_heavy_production_seam_replay() {
 }
 
 TestHeavyMutationProductionSeamReplays() {
-	local mode=synthetic replay_root
+	local mode=synthetic replay_root stale_log stale_root stale_status
 	if [[ "${ORO_REAL_REPLAY:-}" = 1 ]]; then
 		mode=real
 		replay_root=${ORO_REAL_REPLAY_ROOT:?set a fresh retained replay root}
@@ -5761,6 +5832,26 @@ TestHeavyMutationProductionSeamReplays() {
 			# shellcheck disable=SC2064 # Bind this fixture before another test replaces the local.
 			trap "rm -rf '$replay_root'" RETURN
 		fi
+	fi
+	if [[ "$mode" = synthetic ]]; then
+		stale_root=$(mktemp -d)
+		stale_log="$stale_root/stale.log"
+		mkdir -p "$stale_root/handle/state/phase-trace"
+		printf 'stale\n' >"$stale_root/handle/state/phase-trace/parallel-0.tsv"
+		set +e
+		run_heavy_production_seam_replay "$stale_root/handle" synthetic \
+			pkg/dispatcher/startup_recovery.go '^(handleConn)$' \
+			'^TestHandleConnLifecycleMatrix$' >"$stale_log" 2>&1
+		stale_status=$?
+		set -e
+		[[ "$stale_status" = 1 ]] || fail "stale heavy phase replay exit = $stale_status, want 1"
+		grep -Fq 'synthetic replay phase trace must be absent before runner launch' "$stale_log" ||
+			fail 'stale heavy phase trace did not fail before runner launch'
+		[[ "$(cat "$stale_root/handle/state/phase-trace/parallel-0.tsv")" = stale ]] ||
+			fail 'stale heavy phase trace reached the runner'
+		[[ ! -e "$stale_root/handle/results" && ! -e "$stale_root/handle/repo" ]] ||
+			fail 'stale heavy phase replay created runner artifacts'
+		rm -rf -- "$stale_root"
 	fi
 
 	run_heavy_production_seam_replay "$replay_root/handle" "$mode" \
