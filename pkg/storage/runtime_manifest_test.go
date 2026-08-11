@@ -2,6 +2,7 @@
 package storage
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -238,16 +239,45 @@ func TestRuntimeManifestAtomicRoundTrip(t *testing.T) {
 		})
 	}
 
+	assertRuntimeManifestPathAndStateOwners(t, root)
+	assertRuntimeManifestIdentityOwners(t, root, cacheRoot, tmpRoot, evidenceRoot, evidencePath)
+
 	malformedPath := filepath.Join(root, "malformed.json")
 	if err := os.WriteFile(malformedPath, []byte("{\"schema_version\":1"), 0o600); err != nil {
 		t.Fatalf("write malformed manifest: %v", err)
 	}
-	if _, err := ReadRuntimeManifest(malformedPath); err == nil {
-		t.Fatal("ReadRuntimeManifest accepted truncated JSON")
+	if _, err := ReadRuntimeManifest(malformedPath); err == nil || !strings.Contains(err.Error(), "decode runtime manifest") {
+		t.Fatalf("ReadRuntimeManifest truncated JSON error = %v", err)
+	}
+	invalidDecodedPath := filepath.Join(root, "invalid-decoded.json")
+	invalidDecoded := validRuntimeManifest(invalidDecodedPath, cacheRoot, tmpRoot, evidenceRoot)
+	invalidDecoded.SchemaVersion = 0
+	invalidContents, err := json.Marshal(invalidDecoded)
+	if err != nil {
+		t.Fatalf("marshal invalid decoded fixture: %v", err)
+	}
+	if err := os.WriteFile(invalidDecodedPath, invalidContents, 0o600); err != nil {
+		t.Fatalf("write invalid decoded fixture: %v", err)
+	}
+	if _, err := ReadRuntimeManifest(invalidDecodedPath); err == nil {
+		t.Fatal("ReadRuntimeManifest accepted invalid decoded manifest")
+	} else if !strings.Contains(err.Error(), "unsupported runtime manifest schema") {
+		t.Fatalf("ReadRuntimeManifest invalid decoded error = %v", err)
 	}
 
 	t.Run("atomic operation order and failures", func(t *testing.T) {
-		stages := []string{"success", "file sync", "file close", "rename", "directory sync"}
+		stages := []string{
+			"success",
+			"create temp",
+			"chmod",
+			"write",
+			"file sync",
+			"file close",
+			"rename",
+			"directory open",
+			"directory sync",
+			"directory close",
+		}
 		for index, stage := range stages {
 			t.Run(stage, func(t *testing.T) {
 				path := filepath.Join(root, "atomic-"+string(rune('a'+index))+".json")
@@ -259,34 +289,44 @@ func TestRuntimeManifestAtomicRoundTrip(t *testing.T) {
 				candidate.State = ManifestFinalizing
 				candidate.EvidencePath = evidencePath
 				candidate.EvidenceSHA256 = strings.Repeat("a", 64)
+				stageError := errors.New("injected " + stage + " failure")
 
 				operations := make([]string, 0, 9)
 				ops := newRuntimeManifestAtomicOps()
 				originalCreate, originalChmod, originalWrite := ops.createTemp, ops.chmod, ops.write
 				originalSync, originalClose := ops.sync, ops.close
-				originalRename, originalOpen := ops.rename, ops.open
+				originalRename, originalOpen, originalRemove := ops.rename, ops.open, ops.remove
 				ops.createTemp = func(dir, pattern string) (*os.File, error) {
 					operations = append(operations, "create")
+					if stage == "create temp" {
+						return nil, stageError
+					}
 					return originalCreate(dir, pattern)
 				}
 				ops.chmod = func(file *os.File, mode os.FileMode) error {
 					operations = append(operations, "chmod")
+					if stage == "chmod" {
+						return stageError
+					}
 					return originalChmod(file, mode)
 				}
 				ops.write = func(file *os.File, contents []byte) error {
 					operations = append(operations, "write")
+					if stage == "write" {
+						return stageError
+					}
 					return originalWrite(file, contents)
 				}
 				ops.sync = func(file *os.File) error {
 					if file.Name() == filepath.Dir(path) {
 						operations = append(operations, "sync-directory")
 						if stage == "directory sync" {
-							return errors.New("injected directory sync failure")
+							return stageError
 						}
 					} else {
 						operations = append(operations, "sync-file")
 						if stage == "file sync" {
-							return errors.New("injected file sync failure")
+							return stageError
 						}
 					}
 					return originalSync(file)
@@ -294,11 +334,15 @@ func TestRuntimeManifestAtomicRoundTrip(t *testing.T) {
 				ops.close = func(file *os.File) error {
 					if file.Name() == filepath.Dir(path) {
 						operations = append(operations, "close-directory")
+						if stage == "directory close" {
+							_ = originalClose(file)
+							return stageError
+						}
 					} else {
 						operations = append(operations, "close-file")
 						if stage == "file close" {
 							_ = originalClose(file)
-							return errors.New("injected file close failure")
+							return stageError
 						}
 					}
 					return originalClose(file)
@@ -306,13 +350,20 @@ func TestRuntimeManifestAtomicRoundTrip(t *testing.T) {
 				ops.rename = func(oldPath, newPath string) error {
 					operations = append(operations, "rename")
 					if stage == "rename" {
-						return errors.New("injected rename failure")
+						return stageError
 					}
 					return originalRename(oldPath, newPath)
 				}
 				ops.open = func(dir string) (*os.File, error) {
 					operations = append(operations, "open-directory")
+					if stage == "directory open" {
+						return nil, stageError
+					}
 					return originalOpen(dir)
+				}
+				ops.remove = func(path string) error {
+					operations = append(operations, "remove-temporary")
+					return originalRemove(path)
 				}
 
 				err := writeRuntimeManifestAtomic(path, candidate, ops)
@@ -320,12 +371,23 @@ func TestRuntimeManifestAtomicRoundTrip(t *testing.T) {
 					if err != nil {
 						t.Fatalf("atomic success error = %v", err)
 					}
-					want := []string{"create", "chmod", "write", "sync-file", "close-file", "rename", "open-directory", "sync-directory", "close-directory"}
-					if !reflect.DeepEqual(operations, want) {
-						t.Fatalf("atomic operations = %v, want %v", operations, want)
-					}
-				} else if err == nil {
-					t.Fatal("injected atomic failure returned nil")
+				} else if !errors.Is(err, stageError) {
+					t.Fatalf("atomic %s error = %v, want injected cause", stage, err)
+				}
+				wantOperations := map[string][]string{
+					"success":         {"create", "chmod", "write", "sync-file", "close-file", "rename", "open-directory", "sync-directory", "close-directory"},
+					"create temp":     {"create"},
+					"chmod":           {"create", "chmod", "close-file", "remove-temporary"},
+					"write":           {"create", "chmod", "write", "close-file", "remove-temporary"},
+					"file sync":       {"create", "chmod", "write", "sync-file", "close-file", "remove-temporary"},
+					"file close":      {"create", "chmod", "write", "sync-file", "close-file", "remove-temporary"},
+					"rename":          {"create", "chmod", "write", "sync-file", "close-file", "rename", "remove-temporary"},
+					"directory open":  {"create", "chmod", "write", "sync-file", "close-file", "rename", "open-directory"},
+					"directory sync":  {"create", "chmod", "write", "sync-file", "close-file", "rename", "open-directory", "sync-directory", "close-directory"},
+					"directory close": {"create", "chmod", "write", "sync-file", "close-file", "rename", "open-directory", "sync-directory", "close-directory"},
+				}[stage]
+				if !reflect.DeepEqual(operations, wantOperations) {
+					t.Fatalf("atomic operations = %v, want %v", operations, wantOperations)
 				}
 
 				got, readErr := ReadRuntimeManifest(path)
@@ -333,7 +395,7 @@ func TestRuntimeManifestAtomicRoundTrip(t *testing.T) {
 					t.Fatalf("read after atomic operation: %v", readErr)
 				}
 				want := preserved
-				if stage == "success" || stage == "directory sync" {
+				if stage == "success" || strings.HasPrefix(stage, "directory ") {
 					want = candidate
 				}
 				if !reflect.DeepEqual(got, want) {
@@ -343,6 +405,155 @@ func TestRuntimeManifestAtomicRoundTrip(t *testing.T) {
 			})
 		}
 	})
+}
+
+func assertRuntimeManifestPathAndStateOwners(t *testing.T, root string) {
+	t.Helper()
+	for _, test := range []struct {
+		name string
+		path string
+	}{
+		{name: "relative", path: "runtime-manifest.json"},
+		{name: "non-clean", path: root + string(filepath.Separator) + "nested" + string(filepath.Separator) + ".." + string(filepath.Separator) + "runtime-manifest.json"},
+		{name: "filesystem root", path: filepath.VolumeName(root) + string(filepath.Separator)},
+	} {
+		t.Run("manifest path "+test.name, func(t *testing.T) {
+			if err := validateManifestPath(test.path); err == nil {
+				t.Fatal("noncanonical manifest path accepted")
+			}
+		})
+	}
+
+	knownStates := map[ManifestState]bool{
+		ManifestAllocating:       true,
+		ManifestActive:           true,
+		ManifestFinalizing:       true,
+		ManifestFinalized:        true,
+		ManifestInterrupted:      true,
+		ManifestReclaimable:      true,
+		ManifestState(""):        false,
+		ManifestState("unknown"): false,
+	}
+	for state, want := range knownStates {
+		if got := knownManifestState(state); got != want {
+			t.Errorf("knownManifestState(%q) = %t, want %t", state, got, want)
+		}
+	}
+
+	validTransitions := map[[2]ManifestState]bool{
+		{ManifestAllocating, ManifestActive}:      true,
+		{ManifestActive, ManifestFinalizing}:      true,
+		{ManifestActive, ManifestInterrupted}:     true,
+		{ManifestFinalizing, ManifestFinalized}:   true,
+		{ManifestFinalizing, ManifestInterrupted}: true,
+		{ManifestFinalized, ManifestReclaimable}:  true,
+	}
+	states := []ManifestState{
+		ManifestAllocating,
+		ManifestActive,
+		ManifestFinalizing,
+		ManifestFinalized,
+		ManifestInterrupted,
+		ManifestReclaimable,
+		ManifestState("unknown"),
+	}
+	for _, from := range states {
+		for _, to := range states {
+			want := validTransitions[[2]ManifestState{from, to}]
+			if got := validManifestTransition(from, to); got != want {
+				t.Errorf("validManifestTransition(%q, %q) = %t, want %t", from, to, got, want)
+			}
+		}
+	}
+}
+
+func assertRuntimeManifestIdentityOwners(
+	t *testing.T,
+	root, cacheRoot, tmpRoot, evidenceRoot, evidencePath string,
+) {
+	t.Helper()
+	directPath := filepath.Join(root, "direct-identity.json")
+	direct := validRuntimeManifest(directPath, cacheRoot, tmpRoot, evidenceRoot)
+	if !sameRuntimeManifestIdentity(direct, direct) {
+		t.Fatal("identical runtime manifests do not have the same identity")
+	}
+	directMutations := []struct {
+		name   string
+		mutate func(*RuntimeManifest)
+	}{
+		{name: "schema", mutate: func(m *RuntimeManifest) { m.SchemaVersion++ }},
+		{name: "identity", mutate: func(m *RuntimeManifest) { m.Identity.TaskID = "other-task" }},
+		{name: "reservation", mutate: func(m *RuntimeManifest) { m.ReservationID = "other-reservation" }},
+		{name: "lease", mutate: func(m *RuntimeManifest) { m.LeaseID = "other-lease" }},
+		{name: "manifest path", mutate: func(m *RuntimeManifest) { m.ManifestPath = filepath.Join(root, "other.json") }},
+		{name: "roots", mutate: func(m *RuntimeManifest) { m.Roots[0].Disposition = RootShared }},
+	}
+	for _, test := range directMutations {
+		t.Run("different identity "+test.name, func(t *testing.T) {
+			candidate := direct
+			candidate.Roots = append([]ManagedRoot(nil), direct.Roots...)
+			test.mutate(&candidate)
+			if sameRuntimeManifestIdentity(direct, candidate) {
+				t.Fatal("different runtime manifest identity reported equal")
+			}
+		})
+	}
+
+	mutations := []struct {
+		name   string
+		mutate func(*RuntimeManifest)
+	}{
+		{name: "identity", mutate: func(m *RuntimeManifest) { m.Identity.TaskID = "other-task" }},
+		{name: "reservation", mutate: func(m *RuntimeManifest) { m.ReservationID = "other-reservation" }},
+		{name: "lease", mutate: func(m *RuntimeManifest) { m.LeaseID = "other-lease" }},
+		{name: "roots", mutate: func(m *RuntimeManifest) { m.Roots[0].Disposition = RootShared }},
+	}
+	for index, test := range mutations {
+		t.Run("immutable identity "+test.name, func(t *testing.T) {
+			path := filepath.Join(root, "immutable-identity-"+string(rune('a'+index))+".json")
+			candidate := validRuntimeManifest(path, cacheRoot, tmpRoot, evidenceRoot)
+			writeAndExpect(t, path, candidate)
+			candidate.State = ManifestActive
+			writeAndExpect(t, path, candidate)
+			preserved := candidate
+			preserved.Roots = append([]ManagedRoot(nil), candidate.Roots...)
+			candidate.Roots = append([]ManagedRoot(nil), candidate.Roots...)
+			candidate.State = ManifestFinalizing
+			candidate.EvidencePath = evidencePath
+			candidate.EvidenceSHA256 = strings.Repeat("a", 64)
+			test.mutate(&candidate)
+			if err := WriteRuntimeManifestAtomic(path, candidate); err == nil {
+				t.Fatal("manifest identity mutation accepted")
+			} else if !strings.Contains(err.Error(), "identity and roots are immutable") {
+				t.Fatalf("manifest identity mutation error = %v", err)
+			}
+			got, err := ReadRuntimeManifest(path)
+			if err != nil || !reflect.DeepEqual(got, preserved) {
+				t.Fatalf("identity mutation changed manifest: got=%#v err=%v", got, err)
+			}
+		})
+	}
+
+	initialPath := filepath.Join(root, "initial-active.json")
+	initial := validRuntimeManifest(initialPath, cacheRoot, tmpRoot, evidenceRoot)
+	initial.State = ManifestActive
+	if err := WriteRuntimeManifestAtomic(initialPath, initial); err == nil {
+		t.Fatal("initial non-allocating manifest accepted")
+	}
+
+	corruptPath := filepath.Join(root, "corrupt-prior.json")
+	corruptContents := []byte("not a runtime manifest")
+	if err := os.WriteFile(corruptPath, corruptContents, 0o600); err != nil {
+		t.Fatalf("write corrupt prior manifest: %v", err)
+	}
+	replacement := validRuntimeManifest(corruptPath, cacheRoot, tmpRoot, evidenceRoot)
+	if err := WriteRuntimeManifestAtomic(corruptPath, replacement); err == nil || !strings.Contains(err.Error(), "read prior runtime manifest") {
+		t.Fatalf("replace corrupt prior error = %v", err)
+	}
+	gotContents, err := os.ReadFile(corruptPath)
+	if err != nil || !reflect.DeepEqual(gotContents, corruptContents) {
+		t.Fatalf("corrupt prior changed: contents=%q err=%v", gotContents, err)
+	}
 }
 
 func manifestAtState(t *testing.T, path, cacheRoot, tmpRoot, evidenceRoot, evidencePath string, target ManifestState) RuntimeManifest {
@@ -384,6 +595,18 @@ func writeAndExpect(t *testing.T, path string, manifest RuntimeManifest) {
 	}
 	if !reflect.DeepEqual(got, manifest) {
 		t.Fatalf("manifest round trip mismatch:\n got: %#v\nwant: %#v", got, manifest)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read raw runtime manifest: %v", err)
+	}
+	wantContents, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal expected runtime manifest: %v", err)
+	}
+	wantContents = append(wantContents, '\n')
+	if !reflect.DeepEqual(contents, wantContents) {
+		t.Fatalf("raw runtime manifest mismatch:\n got: %q\nwant: %q", contents, wantContents)
 	}
 }
 
