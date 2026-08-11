@@ -6624,6 +6624,13 @@ func validateManifestReplacement() {}
 func validateRuntimeManifest() {}
 func writeRuntimeManifestAtomic() {}
 EOF
+	cat >"$fixture/pkg/storage/home_plan.go" <<'EOF'
+package storage
+
+func cleanOroHome() {}
+func removeOroHomeEntry() {}
+func validateOroHomeEntryPath() {}
+EOF
 	cat >"$fixture/pkg/storage/runtime_reservation.go" <<'EOF'
 package storage
 
@@ -6648,7 +6655,9 @@ EOF
 		runtime_budget_test.go \
 		runtime_identity_test.go \
 		runtime_manifest_test.go \
-		runtime_reservation_test.go; do
+		runtime_reservation_test.go \
+		home_plan_test.go \
+		export_test.go; do
 		printf 'package storage\n' >"$fixture/pkg/storage/$test_file"
 	done
 	git -C "$fixture" add pkg/storage
@@ -6671,7 +6680,9 @@ if [[ "$1" = test ]]; then
 		TestRuntimeManifestAtomicRoundTrip \
 		TestRuntimeReservationRequestMutationOwner \
 		TestRuntimeReservationJournalMutationOwner \
-		TestRuntimeReservationCatalogMutationOwner
+		TestRuntimeReservationCatalogMutationOwner \
+		TestCleanOroHomeMutationGuards \
+		TestOroHomeCleanupOpenedRootConfinement
 	exit 0
 fi
 if [[ "$1" = tool && "$2" = go-mutesting ]]; then
@@ -6703,9 +6714,9 @@ EOF
 			bash "$runner" --base "$base" --head "$head" --evidence "$fixture/mutation-evidence.json"
 	)
 	jq -e '
-		.conclusion == "pass" and .mutation_exit_code == 0 and .total == 39 and
-		(.shards | length) == 40 and
-		([.shards[] | [.file, .match]] | unique | length) == 40 and
+		.conclusion == "pass" and .mutation_exit_code == 0 and .total == 42 and
+		(.shards | length) == 43 and
+		([.shards[] | [.file, .match]] | unique | length) == 43 and
 		([.shards[] | select(
 			(.conclusion != "completed" and .conclusion != "no_mutation_sites") or
 			.exit_code != 0 or .test_pattern == "" or
@@ -6715,9 +6726,10 @@ EOF
 		([.shards[] | select(.file == "pkg/storage/runtime_budget.go")] | length) == 7 and
 		([.shards[] | select(.file == "pkg/storage/runtime_identity.go")] | length) == 4 and
 		([.shards[] | select(.file == "pkg/storage/runtime_manifest.go")] | length) == 15 and
-		([.shards[] | select(.file == "pkg/storage/runtime_reservation.go")] | length) == 13' \
+		([.shards[] | select(.file == "pkg/storage/runtime_reservation.go")] | length) == 13 and
+		([.shards[] | select(.file == "pkg/storage/home_plan.go")] | length) == 3' \
 		"$fixture/mutation-evidence.json" >/dev/null ||
-		fail 'actual storage mutation runner did not emit forty terminal owned shards'
+		fail 'actual storage mutation runner did not emit forty-three terminal owned shards'
 	[[ "$(jq -r '.shards[] | [.file, .match, .test_pattern] | @tsv' "$fixture/mutation-evidence.json" | sort)" = "$(cat <<'EOF' | sort
 pkg/storage/catalog.go	^(catalogTables)$	^TestOpenCatalogMigratesFoundationAndRuntimeSchema$
 pkg/storage/runtime_budget.go	^(CheckRuntimeBudget)$	^TestRuntimeBudgetAdmissionBoundaries$
@@ -6746,6 +6758,9 @@ pkg/storage/runtime_manifest.go	^(validateManifestPath)$	^TestRuntimeManifestAto
 pkg/storage/runtime_manifest.go	^(validateManifestReplacement)$	^TestRuntimeManifestAtomicRoundTrip$
 pkg/storage/runtime_manifest.go	^(validateRuntimeManifest)$	^TestRuntimeManifestAtomicRoundTrip$
 pkg/storage/runtime_manifest.go	^(writeRuntimeManifestAtomic)$	^TestRuntimeManifestAtomicRoundTrip$
+pkg/storage/home_plan.go	^(cleanOroHome)$	^TestCleanOroHomeMutationGuards$
+pkg/storage/home_plan.go	^(removeOroHomeEntry)$	^TestOroHomeCleanupOpenedRootConfinement$
+pkg/storage/home_plan.go	^(validateOroHomeEntryPath)$	^TestOroHomeCleanupOpenedRootConfinement$
 pkg/storage/runtime_reservation.go	^(AcquireRuntimeReservation)$	^TestRuntimeReservation(Request|Journal|Catalog)MutationOwner$
 pkg/storage/runtime_reservation.go	^(Error)$	^TestRuntimeReservation(Request|Journal|Catalog)MutationOwner$
 pkg/storage/runtime_reservation.go	^(ReleaseRuntimeReservation)$	^TestRuntimeReservation(Request|Journal|Catalog)MutationOwner$
@@ -6766,6 +6781,8 @@ EOF
 		 elif .file == "pkg/storage/runtime_budget.go" then "pkg/storage/runtime_budget_test.go"
 		 elif .file == "pkg/storage/runtime_identity.go" then "pkg/storage/runtime_identity_test.go"
 		 elif .file == "pkg/storage/runtime_manifest.go" then "pkg/storage/runtime_manifest_test.go"
+		 elif .file == "pkg/storage/home_plan.go" and .match == "^(cleanOroHome)$" then "pkg/storage/home_plan_test.go"
+		 elif .file == "pkg/storage/home_plan.go" then "pkg/storage/export_test.go"
 		 else "pkg/storage/runtime_reservation_test.go" end)] | @tsv' "$fixture/mutation-evidence.json" | sort)" ]] ||
 		fail 'storage mutation shards did not execute their exact owner test files'
 

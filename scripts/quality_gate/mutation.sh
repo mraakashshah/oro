@@ -827,6 +827,7 @@ storage_runtime_mutation_target() {
 		pkg/storage/runtime_budget.go | \
 		pkg/storage/runtime_identity.go | \
 		pkg/storage/runtime_manifest.go | \
+		pkg/storage/home_plan.go | \
 		pkg/storage/runtime_reservation.go)
 		return 0
 		;;
@@ -873,6 +874,13 @@ storage_runtime_mutation_test_pattern() {
 		'pkg/storage/runtime_manifest.go:^(writeRuntimeManifestAtomic)$')
 		printf '^TestRuntimeManifestAtomicRoundTrip$'
 		;;
+	'pkg/storage/home_plan.go:^(cleanOroHome)$')
+		printf '^TestCleanOroHomeMutationGuards$'
+		;;
+	'pkg/storage/home_plan.go:^(removeOroHomeEntry)$' | \
+	'pkg/storage/home_plan.go:^(validateOroHomeEntryPath)$')
+		printf '^TestOroHomeCleanupOpenedRootConfinement$'
+		;;
 	'pkg/storage/runtime_reservation.go:^(AcquireRuntimeReservation)$' | \
 		'pkg/storage/runtime_reservation.go:^(Error)$' | \
 		'pkg/storage/runtime_reservation.go:^(ReleaseRuntimeReservation)$' | \
@@ -909,6 +917,16 @@ storage_runtime_mutation_test_file() {
 		;;
 	pkg/storage/runtime_manifest.go)
 		printf 'pkg/storage/runtime_manifest_test.go'
+		;;
+	pkg/storage/home_plan.go)
+		case "$match" in
+		'^(cleanOroHome)$')
+			printf 'pkg/storage/home_plan_test.go'
+			;;
+		'^(removeOroHomeEntry)$' | '^(validateOroHomeEntryPath)$')
+			printf 'pkg/storage/export_test.go'
+			;;
+		esac
 		;;
 	pkg/storage/runtime_reservation.go)
 		printf 'pkg/storage/runtime_reservation_test.go'
@@ -1234,7 +1252,7 @@ targeted_test_pattern() {
 	local match="$4"
 	local assignment_admission_pattern assignment_bc_pattern authoritative_pattern cmd_pattern escalation_survivor_pattern p0_durability_pattern qg_classifier_decision_pattern qg_flow_control_pattern qg_store_lifecycle_pattern qg_target_attribution_pattern review_checkpoint_pattern review_integration_recovery_pattern review_worker_lifecycle_pattern split_branch_pattern startup_maintenance_pattern storage_runtime_pattern worker_ready_evidence_pattern
 	case "$file" in
-	pkg/storage/catalog.go | pkg/storage/runtime_budget.go | pkg/storage/runtime_identity.go | pkg/storage/runtime_manifest.go | pkg/storage/runtime_reservation.go)
+	pkg/storage/catalog.go | pkg/storage/home_plan.go | pkg/storage/runtime_budget.go | pkg/storage/runtime_identity.go | pkg/storage/runtime_manifest.go | pkg/storage/runtime_reservation.go)
 		storage_runtime_pattern=$(storage_runtime_mutation_test_pattern "$file" "$match")
 		if [[ -n "$storage_runtime_pattern" ]]; then
 			printf '%s' "$storage_runtime_pattern"
