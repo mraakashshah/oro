@@ -2726,9 +2726,14 @@ if [[ "$1" = test ]]; then
 		fi
 		active_hash=$(git hash-object "$MUTATE_ORIGINAL")
 		changed_hash=$(git hash-object "$MUTATE_CHANGED")
+		phase_trace_file="${MUTATION_TARGETED_PHASE_TRACE_DIR:?}/phase.tsv"
+		if [[ "${MUTATION_TARGETED_PHASE_WORKER_TRACES:-}" = 1 ]]; then
+			worker=${GOCACHE##*/parallel-}
+			phase_trace_file="$MUTATION_TARGETED_PHASE_TRACE_DIR/$worker.tsv"
+		fi
 		printf '%s\t%s\t%s\t%s\t%s\n' \
 			"$phase" "$active_hash" "$changed_hash" "$backup" "$test_exit" \
-			>>"${MUTATION_TARGETED_PHASE_TRACE_DIR:?}/phase.tsv"
+			>>"$phase_trace_file"
 		exit "$test_exit"
 	fi
 	if [[ -n "${MUTATE_ORIGINAL:-}" ]]; then
@@ -2971,13 +2976,15 @@ run_targeted_fixture() {
 	local expected_exit="$4"
 	local expanded="${5:-false}"
 	local target="${6:-hooks}"
-	local base head evidence status args_trace list_trace
+	local base head evidence status args_trace list_trace phase_trace_dir
 	mapfile -t refs < <(new_targeted_fixture "$fixture" "$expanded" "$target")
 	base=${refs[0]}
 	head=${refs[1]}
 	evidence="$fixture/mutation-evidence.json"
 	args_trace="$fixture/mutation-args.txt"
 	list_trace="$fixture/mutation-list.txt"
+	phase_trace_dir="$fixture/phase-trace"
+	mkdir -p "$phase_trace_dir"
 	write_fake_go "$fixture/bin/go"
 
 	set +e
@@ -2985,6 +2992,9 @@ run_targeted_fixture() {
 		cd "$fixture"
 		PATH="$fixture/bin:$PATH" MUTATION_FIXTURE="$outcome" \
 			MUTATION_ARGS_TRACE="$args_trace" MUTATION_LIST_TRACE="$list_trace" \
+			MUTATION_TARGETED_PHASE_MODE=1 \
+			MUTATION_TARGETED_PHASE_TRACE_DIR="$phase_trace_dir" \
+			MUTATION_TARGETED_PHASE_WORKER_TRACES=1 \
 			bash "$runner" --base "$base" --head "$head" --evidence "$evidence" \
 			>"$fixture/runner.log" 2>&1
 	)
@@ -3269,8 +3279,30 @@ TestTargetedMutationFixturePhaseModel() {
 	[[ ! -e "$legacy_trace" ]] || fail 'mode-absent fake Go emitted a phase trace'
 }
 
+assert_targeted_package_context_invocations() {
+	local trace="$1"
+	local pattern="$2"
+	local source_file="$3"
+	local selected_test_file="$4"
+	local unselected_test_file="$5"
+	local label="$6"
+	local focused_line focused_lines
+	focused_lines=$(grep -F -- "-timeout 55s -run $pattern mutation.test/targeted/pkg/dispatcher" "$trace" || true)
+	[[ "$(wc -l <<<"$focused_lines" | tr -d ' ')" = 4 ]] ||
+		fail "$label must run baseline and mutant package context in both workers"
+	while IFS= read -r focused_line; do
+		! grep -Fq "$source_file" <<<"$focused_line" ||
+			fail "$label focused argv included its production source explicitly"
+		! grep -Fq "$selected_test_file" <<<"$focused_line" ||
+			fail "$label focused argv included its selected test explicitly"
+		! grep -Fq "$unselected_test_file" <<<"$focused_line" ||
+			fail "$label focused argv included an unselected test file"
+	done <<<"$focused_lines"
+}
+
 TestTargetedMutationScope() {
-	local apply_health_pattern checkpoint_pattern claim_focused_line claim_focused_lines claim_pattern escalation_pattern evidence fixture args_trace history_pattern list_trace release_pattern review_context_pattern scheduling_pattern start_pattern
+	local apply_health_pattern checkpoint_pattern claim_focused_line claim_focused_lines claim_pattern escalation_pattern evidence fixture args_trace history_pattern list_trace original_hash phase_trace release_pattern review_context_pattern scheduling_pattern start_pattern
+	local -a changed_hashes phase_traces
 	fixture="$tmp/targeted"
 	evidence=$(run_targeted_fixture "$fixture" targeted pass 0)
 	args_trace="$fixture/mutation-args.txt"
@@ -3364,6 +3396,37 @@ TestTargetedMutationScope() {
 
 	claim_pattern='^(TestAssignmentClaimAuthoritativeSurvivorMutation|TestAssignmentBehaviorMutation|TestStandaloneAssignmentBehaviorHarnessCaseIsolation)$'
 	evidence=$(run_targeted_fixture "$tmp/targeted-assignment-claim" targeted pass 0 false assignment-claim)
+	fixture="$tmp/targeted-assignment-claim"
+	phase_traces=("$fixture"/phase-trace/*.tsv)
+	[[ "${#phase_traces[@]}" = 2 && -f "${phase_traces[0]}" && -f "${phase_traces[1]}" ]] ||
+		fail 'assignBeadWithClaim fixture did not retain exactly two worker phase traces'
+	original_hash=$(git -C "$fixture" rev-parse HEAD:pkg/dispatcher/assignment.go)
+	for phase_trace in "${phase_traces[@]}"; do
+		awk -F '\t' -v original="$original_hash" '
+			NR == 1 {
+				if ($1 != "baseline" || $2 != original || $2 == $3 || $4 != "absent" || $5 != 0) exit 1
+			}
+			NR == 2 {
+				if ($1 != "mutant" || $2 != $3 || $2 == original || $4 != "present" || $5 != 1) exit 1
+			}
+			END { if (NR != 2) exit 1 }
+		' "$phase_trace" || fail "invalid assignBeadWithClaim phase trace $phase_trace"
+	done
+	mapfile -t changed_hashes < <(awk -F '\t' '$1 == "mutant" { print $2 }' "${phase_traces[@]}" | sort -u)
+	[[ "${#changed_hashes[@]}" = 2 ]] || fail 'assignBeadWithClaim mutants did not retain distinct changed hashes'
+	jq -e --arg pattern "$claim_pattern" '
+		.conclusion == "pass" and .mutation_exit_code == 0 and .score == 1 and .total == 2 and
+		(.shards | length) == 1 and .shards[0].file == "pkg/dispatcher/assignment.go" and
+		.shards[0].match == "^(assignBeadWithClaim)$" and .shards[0].test_pattern == $pattern and
+		.shards[0].conclusion == "completed" and .shards[0].exit_code == 0 and
+		.shards[0].passed == 2 and .shards[0].failed == 0 and .shards[0].duplicated == 0 and
+		.shards[0].skipped == 0 and .shards[0].total == 2
+	' "$evidence" >/dev/null || fail 'assignBeadWithClaim fixture lost exact terminal mutant evidence'
+	! grep -Eq '^ORO_MUTATION_EXEC_(FAILURE|TIMEOUT)' "$fixture/runner.log" ||
+		fail 'assignBeadWithClaim fixture emitted an executor failure marker'
+	[[ "$(git hash-object "$fixture/pkg/dispatcher/assignment.go")" = "$original_hash" &&
+		! -e "$fixture/pkg/dispatcher/assignment.go.tmp" ]] ||
+		fail 'assignBeadWithClaim fixture did not restore its original source without residue'
 	grep -Fq -- "-list $claim_pattern ./pkg/dispatcher" "$tmp/targeted-assignment-claim/mutation-list.txt" ||
 		fail 'assignBeadWithClaim mutations must preflight authoritative and bounded callback contracts'
 	grep -F -- "-run $claim_pattern ./pkg/dispatcher" "$tmp/targeted-assignment-claim/mutation-list.txt" |
@@ -3411,7 +3474,7 @@ TestTargetedMutationScope() {
 	! grep -q '^WORKER_CACHE_WARM_TIMEOUT=' "$tmp/targeted-assignment-release/mutation-args.txt" ||
 		fail 'non-claim dispatcher mutations must not opt into worker cache prewarming'
 
-	local assignment_bc_function assignment_bc_target assignment_bc_test_file focused_line focused_lines
+	local assignment_bc_function assignment_bc_target assignment_bc_test_file
 	assignment_bc_test_file=pkg/dispatcher/assignment_reservation_worktree_survivor_mutation_test.go
 	while IFS=$'\t' read -r assignment_bc_target assignment_bc_function assignment_bc_pattern; do
 		fixture="$tmp/targeted-$assignment_bc_target"
@@ -3437,18 +3500,9 @@ TestTargetedMutationScope() {
 			grep -Fxq "$expected_limit" "$fixture/mutation-args.txt" ||
 				fail "$assignment_bc_function mutation boundary omitted $expected_limit"
 		done
-		focused_lines=$(grep -F "$assignment_bc_test_file" "$list_trace")
-		[[ -n "$focused_lines" ]] || fail "$assignment_bc_function emitted no focused mutation argv"
-		while IFS= read -r focused_line; do
-			[[ "$(grep -oF 'pkg/dispatcher/assignment.go' <<<"$focused_line" | wc -l | tr -d ' ')" = 1 ]] ||
-				fail "$assignment_bc_function focused argv must include the mutated source exactly once"
-			[[ "$(grep -oF "$assignment_bc_test_file" <<<"$focused_line" | wc -l | tr -d ' ')" = 1 ]] ||
-				fail "$assignment_bc_function focused argv must include the reviewed test file exactly once"
-			grep -Fq -- '-timeout 55s' <<<"$focused_line" ||
-				fail "$assignment_bc_function focused argv must enforce the 55s internal Go deadline"
-			! grep -Fq 'assignment_bc_unselected_test.go' <<<"$focused_line" ||
-				fail "$assignment_bc_function focused argv included an unselected test file"
-		done <<<"$focused_lines"
+		assert_targeted_package_context_invocations "$list_trace" "$assignment_bc_pattern" \
+			pkg/dispatcher/assignment.go "$assignment_bc_test_file" \
+			pkg/dispatcher/assignment_bc_unselected_test.go "$assignment_bc_function"
 	done <<'EOF'
 assignment-bc-prepare	prepareAssignmentWorktree	^TestAssignmentBCPrepareWorktreeOutcomes$
 assignment-bc-validate	validateExistingWorktreeForReuse	^(TestAssignmentBCValidateDivergedRecoveryOutcomes|TestAssignmentBCValidateCurrentBranchError)$
@@ -3482,18 +3536,9 @@ EOF
 			grep -Fxq "$expected_limit" "$fixture/mutation-args.txt" ||
 				fail "$admission_function mutation boundary omitted $expected_limit"
 		done
-		focused_lines=$(grep -F "$admission_test_file" "$list_trace")
-		[[ -n "$focused_lines" ]] || fail "$admission_function emitted no focused mutation argv"
-		while IFS= read -r focused_line; do
-			[[ "$(grep -oF 'pkg/dispatcher/assignment_admission.go' <<<"$focused_line" | wc -l | tr -d ' ')" = 1 ]] ||
-				fail "$admission_function focused argv must include the mutated source exactly once"
-			[[ "$(grep -oF "$admission_test_file" <<<"$focused_line" | wc -l | tr -d ' ')" = 1 ]] ||
-				fail "$admission_function focused argv must include the buffer test file exactly once"
-			grep -Fq -- '-timeout 55s' <<<"$focused_line" ||
-				fail "$admission_function focused argv must enforce the 55s internal Go deadline"
-			! grep -Fq 'buffer_unselected_test.go' <<<"$focused_line" ||
-				fail "$admission_function focused argv included an unselected test file"
-		done <<<"$focused_lines"
+		assert_targeted_package_context_invocations "$list_trace" "$admission_pattern" \
+			pkg/dispatcher/assignment_admission.go "$admission_test_file" \
+			pkg/dispatcher/buffer_unselected_test.go "$admission_function"
 	done <<'EOF'
 buffer-admission-begin	beginAssignmentAdmission	^TestBufferAssignmentAdmissionBeginOutcomes$
 buffer-admission-close	close	^TestBufferAssignmentAdmissionCloseOutcomes$
@@ -3523,18 +3568,9 @@ EOF
 		grep -Fxq "$expected_limit" "$fixture/mutation-args.txt" ||
 			fail "integration-recovery mutation boundary omitted $expected_limit"
 	done
-	focused_lines=$(grep -F "$integration_test_file" "$list_trace")
-	[[ -n "$focused_lines" ]] || fail 'integration-recovery emitted no focused mutation argv'
-	while IFS= read -r focused_line; do
-		[[ "$(grep -oF "$integration_file" <<<"$focused_line" | wc -l | tr -d ' ')" = 1 ]] ||
-			fail 'integration-recovery focused argv must include source exactly once'
-		[[ "$(grep -oF "$integration_test_file" <<<"$focused_line" | wc -l | tr -d ' ')" = 1 ]] ||
-			fail 'integration-recovery focused argv must include owner exactly once'
-		grep -Fq -- '-timeout 55s' <<<"$focused_line" ||
-			fail 'integration-recovery focused argv must enforce the 55s Go deadline'
-		! grep -Fq 'review_integration_recovery_unselected_test.go' <<<"$focused_line" ||
-			fail 'integration-recovery focused argv included an unselected test file'
-	done <<<"$focused_lines"
+	assert_targeted_package_context_invocations "$list_trace" "$integration_pattern" \
+		"$integration_file" "$integration_test_file" \
+		pkg/dispatcher/review_integration_recovery_unselected_test.go integration-recovery
 
 	local escalation_survivor_pattern escalation_survivor_test_file
 	escalation_survivor_pattern='^TestEscalationSurvivorMutation'
@@ -3561,18 +3597,9 @@ EOF
 		grep -Fxq "$expected_limit" "$fixture/mutation-args.txt" ||
 			fail "escalation survivor mutation boundary omitted $expected_limit"
 	done
-	focused_lines=$(grep -F "$escalation_survivor_test_file" "$list_trace")
-	[[ -n "$focused_lines" ]] || fail 'escalation survivor emitted no focused mutation argv'
-	while IFS= read -r focused_line; do
-		[[ "$(grep -oF 'pkg/dispatcher/escalation.go' <<<"$focused_line" | wc -l | tr -d ' ')" = 1 ]] ||
-			fail 'escalation survivor focused argv must include source exactly once'
-		[[ "$(grep -oF "$escalation_survivor_test_file" <<<"$focused_line" | wc -l | tr -d ' ')" = 1 ]] ||
-			fail 'escalation survivor focused argv must include owner exactly once'
-		grep -Fq -- '-timeout 55s' <<<"$focused_line" ||
-			fail 'escalation survivor focused argv must enforce the 55s Go deadline'
-		! grep -Fq 'escalation_unselected_test.go' <<<"$focused_line" ||
-			fail 'escalation survivor focused argv included an unselected test file'
-	done <<<"$focused_lines"
+	assert_targeted_package_context_invocations "$list_trace" "$escalation_survivor_pattern" \
+		pkg/dispatcher/escalation.go "$escalation_survivor_test_file" \
+		pkg/dispatcher/escalation_unselected_test.go escalation-survivor
 
 	escalation_pattern='^TestSpawnEscalationOneShotReturnsAfterReadingWorktree$'
 	evidence=$(run_targeted_fixture "$tmp/targeted-escalation-one-shot" targeted pass 0 false escalation-one-shot)
