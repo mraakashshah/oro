@@ -4931,49 +4931,187 @@ test_mutation_exec_internal_deadline_kills_hung_mutant() {
 	local fixture="$1"
 	local original="$fixture/pkg/example/value.go"
 	local changed="$fixture/changed.go"
-	local output="$fixture/exec.log"
-	local status
-	mkdir -p "$fixture/cache" "$fixture/pkg/example" "$fixture/tmp"
+	local test_file="$fixture/pkg/example/value_test.go"
+	local original_sha changed_sha
+	mkdir -p "$fixture/bin" "$fixture/pkg/example"
 	printf 'module example.test/hung\n\ngo 1.26\n' >"$fixture/go.mod"
 	printf 'package example\n\nfunc Value() int { return 1 }\n' >"$original"
 	printf 'package example\n\nfunc Value() int { return 2 }\n' >"$changed"
-	cat >"$fixture/pkg/example/value_test.go" <<'EOF'
-package example
-
-import (
-	"testing"
-	"time"
-)
-
-func TestHungMutant(*testing.T) {
-	if Value() == 2 {
-		time.Sleep(time.Hour)
-	}
-}
+	printf 'package example\n' >"$test_file"
+	original_sha=$(sha256sum "$original" | awk '{print $1}')
+	changed_sha=$(sha256sum "$changed" | awk '{print $1}')
+	cat >"$fixture/bin/go" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+active_sha=$(sha256sum "${MUTATE_ORIGINAL:?}" | awk '{print $1}')
+printf 'SHA=%s|MUTATE_PACKAGE=%s|MUTATION_TEST_PATTERN=%s|MUTATION_TEST_FILE=%s|GOCACHE=%s|GOTMPDIR=%s|%s\n' \
+	"$active_sha" "${MUTATE_PACKAGE:-}" "${MUTATION_TEST_PATTERN:-}" "${MUTATION_TEST_FILE:-}" \
+	"${GOCACHE:-}" "${GOTMPDIR:-}" "$*" >>"${MUTATION_INTERNAL_TRACE:?}"
+if [[ "$active_sha" = "${MUTATION_INTERNAL_ORIGINAL_SHA:?}" ]]; then
+	exit 0
+fi
+if [[ "${MUTATION_INTERNAL_MODE:?}" = inner ]]; then
+	printf 'panic: test timed out after 1s\n' >&2
+	exit 1
+fi
+(
+	trap '' TERM INT
+	printf '%s\n' "$BASHPID" >"${MUTATION_INTERNAL_PID:?}"
+	printf 'ready\n' >"${MUTATION_INTERNAL_READY:?}"
+	while :; do
+		sleep 1
+	done
+) &
+wait "$!"
 EOF
+	chmod +x "$fixture/bin/go"
 
-	SECONDS=0
-	set +e
-	(
-		cd "$fixture"
-		GOCACHE="$fixture/cache" GOTMPDIR="$fixture/tmp" \
-			MUTATE_CHANGED="$changed" MUTATE_ORIGINAL="$original" MUTATE_PACKAGE=./pkg/example \
-			MUTATE_DEBUG=true MUTATE_TIMEOUT=5 MUTATION_TEST_TIMEOUT=1 MUTATION_TEST_PATTERN='^TestHungMutant$' \
-			MUTATION_TEST_FILE="$fixture/pkg/example/value_test.go" \
-			bash "$repo_root/scripts/quality_gate/mutation_exec.sh" >"$output" 2>&1
-	)
-	status=$?
-	set -e
-	[[ "$status" = 0 ]] || fail "hung mutant internal deadline exit = $status, want killed status 0"
-	((SECONDS < 5)) || fail 'hung mutant reached the outer mutation execution timeout'
-	grep -q '^panic: test timed out after 1s$' "$output" || {
-		cat "$output" >&2
-		fail 'hung mutant did not fail at its internal Go test deadline'
+	pid_exists() {
+		kill -0 "$1" 2>/dev/null
 	}
-	! grep -Eq '^ORO_MUTATION_EXEC_(TIMEOUT|FAILURE):?' "$output" ||
-		fail 'hung mutant was classified as mutation infrastructure'
-	grep -q 'Value() int { return 1 }' "$original" ||
-		fail 'hung mutant internal deadline did not restore the original source'
+
+	is_descendant() {
+		local child="$1" ancestor="$2" parent
+		while [[ "$child" =~ ^[0-9]+$ && "$child" != 1 ]]; do
+			[[ "$child" = "$ancestor" ]] && return 0
+			parent=$(ps -o ppid= -p "$child" 2>/dev/null | tr -d ' ')
+			[[ "$parent" =~ ^[0-9]+$ && "$parent" != "$child" ]] || return 1
+			child="$parent"
+		done
+		return 1
+	}
+
+	wait_for_file() {
+		local path="$1"
+		for _ in $(seq 1 100); do
+			[[ -s "$path" ]] && return 0
+			sleep 0.05
+		done
+		return 1
+	}
+
+	wait_for_exit() {
+		local pid="$1" state
+		for _ in $(seq 1 200); do
+			state=$(ps -o state= -p "$pid" 2>/dev/null | tr -d ' ')
+			[[ -z "$state" || "$state" = Z* ]] && return 0
+			sleep 0.05
+		done
+		return 1
+	}
+
+	run_case() {
+		local name="$1" mode="$2" expected_status="$3"
+		local case_dir="$fixture/$name" cache="$fixture/$name/cache" tmp="$fixture/$name/tmp"
+		local output="$case_dir/executor.log" trace="$case_dir/go.trace"
+		local pid_file="$case_dir/child.pid" ready_file="$case_dir/ready"
+		local executor_pid='' child_pid='' timeout_pid='' timeout_pgid child_pgid status candidate command state
+		mkdir -p "$cache" "$tmp"
+		for path in "$output" "$trace" "$pid_file" "$ready_file"; do
+			[[ ! -e "$path" ]] || fail "$name reused stale $(basename "$path")"
+		done
+		if [[ "$mode" = inner ]]; then
+			set +e
+			(
+				cd "$fixture"
+				PATH="$fixture/bin:$PATH" MUTATION_INTERNAL_MODE="$mode" \
+					MUTATION_INTERNAL_TRACE="$trace" MUTATION_INTERNAL_ORIGINAL_SHA="$original_sha" \
+					MUTATION_INTERNAL_PID="$pid_file" MUTATION_INTERNAL_READY="$ready_file" \
+					GOCACHE="$cache" GOTMPDIR="$tmp" MUTATE_CHANGED="$changed" MUTATE_ORIGINAL="$original" \
+					MUTATE_PACKAGE=./pkg/example MUTATE_DEBUG=true MUTATE_TIMEOUT=5 MUTATION_TEST_TIMEOUT=1 \
+					MUTATION_TEST_PATTERN='^TestHungMutant$' MUTATION_TEST_FILE="$test_file" \
+					bash "$repo_root/scripts/quality_gate/mutation_exec.sh" >"$output" 2>&1
+			)
+			status=$?
+			set -e
+		else
+			cleanup_outer_case() {
+				if [[ "$executor_pid" =~ ^[0-9]+$ ]] && pid_exists "$executor_pid"; then
+					kill -TERM "$executor_pid" 2>/dev/null || true
+					wait_for_exit "$executor_pid" || true
+					wait "$executor_pid" 2>/dev/null || true
+				fi
+				if [[ "$child_pid" =~ ^[0-9]+$ ]] && pid_exists "$child_pid"; then
+					kill -KILL "$child_pid" 2>/dev/null || true
+				fi
+			}
+			set -m
+			(
+				cd "$fixture"
+				exec env PATH="$fixture/bin:$PATH" MUTATION_INTERNAL_MODE="$mode" \
+					MUTATION_INTERNAL_TRACE="$trace" MUTATION_INTERNAL_ORIGINAL_SHA="$original_sha" \
+					MUTATION_INTERNAL_PID="$pid_file" MUTATION_INTERNAL_READY="$ready_file" \
+					GOCACHE="$cache" GOTMPDIR="$tmp" MUTATE_CHANGED="$changed" MUTATE_ORIGINAL="$original" \
+					MUTATE_PACKAGE=./pkg/example MUTATE_DEBUG=true MUTATE_TIMEOUT=5 MUTATION_TEST_TIMEOUT=1 \
+					MUTATION_TEST_PATTERN='^TestHungMutant$' MUTATION_TEST_FILE="$test_file" \
+					bash "$repo_root/scripts/quality_gate/mutation_exec.sh" >"$output" 2>&1
+			) &
+			executor_pid=$!
+			set +m
+			if ! wait_for_file "$ready_file" || ! wait_for_file "$pid_file"; then
+				cleanup_outer_case
+				fail 'outer deadline did not reach resistant child readiness'
+				return 1
+			fi
+			child_pid=$(tr -d '[:space:]' <"$pid_file")
+			if [[ ! "$child_pid" =~ ^[0-9]+$ ]] || ! pid_exists "$child_pid" ||
+				! is_descendant "$child_pid" "$executor_pid"; then
+				cleanup_outer_case
+				fail 'outer deadline child was not a live executor descendant'
+				return 1
+			fi
+			while read -r candidate; do
+				command=$(ps -o command= -p "$candidate" 2>/dev/null || true)
+				if [[ "$command" == timeout\ *go\ test* ]]; then
+					timeout_pid="$candidate"
+					break
+				fi
+			done < <(pgrep -P "$executor_pid" 2>/dev/null || true)
+			if [[ ! "$timeout_pid" =~ ^[0-9]+$ ]]; then
+				cleanup_outer_case
+				fail 'outer deadline did not expose its timeout leader'
+				return 1
+			fi
+			timeout_pgid=$(ps -o pgid= -p "$timeout_pid" 2>/dev/null | tr -d ' ')
+			child_pgid=$(ps -o pgid= -p "$child_pid" 2>/dev/null | tr -d ' ')
+			if [[ "$timeout_pgid" != "$timeout_pid" || "$child_pgid" != "$timeout_pgid" ]]; then
+				cleanup_outer_case
+				fail 'outer deadline child did not share the owned timeout PGID'
+				return 1
+			fi
+			if ! wait_for_exit "$executor_pid"; then
+				cleanup_outer_case
+				fail 'outer deadline executor exceeded bounded harness wait'
+				return 1
+			fi
+			set +e
+			wait "$executor_pid"
+			status=$?
+			set -e
+		fi
+
+		[[ "$status" = "$expected_status" ]] || fail "$name executor status = $status, want $expected_status"
+		[[ "$(wc -l <"$trace" | tr -d ' ')" = 2 ]] || fail "$name did not execute exactly two phases"
+		grep -Fq "SHA=$original_sha|MUTATE_PACKAGE=./pkg/example|MUTATION_TEST_PATTERN=^TestHungMutant$|MUTATION_TEST_FILE=$test_file|GOCACHE=$cache|GOTMPDIR=$tmp|test -vet=off -count=1 -timeout 1s -run ^TestHungMutant$ ./pkg/example" < <(sed -n '1p' "$trace") ||
+			fail "$name baseline lost exact package context"
+		grep -Fq "SHA=$changed_sha|MUTATE_PACKAGE=./pkg/example|MUTATION_TEST_PATTERN=^TestHungMutant$|MUTATION_TEST_FILE=$test_file|GOCACHE=$cache|GOTMPDIR=$tmp|test -vet=off -count=1 -timeout 1s -run ^TestHungMutant$ ./pkg/example" < <(sed -n '2p' "$trace") ||
+			fail "$name changed phase lost exact package context"
+		[[ "$(git hash-object "$original")" = "$(printf 'package example\n\nfunc Value() int { return 1 }\n' | git hash-object --stdin)" ]] ||
+			fail "$name did not restore original source"
+		[[ ! -e "$original.tmp" ]] || fail "$name left source residue"
+		if [[ "$mode" = inner ]]; then
+			[[ "$(grep -Fxc 'panic: test timed out after 1s' "$output")" = 1 ]] || fail 'inner deadline panic cardinality changed'
+			! grep -Eq '^ORO_MUTATION_EXEC_(TIMEOUT|FAILURE):?' "$output" || fail 'inner deadline became executor infrastructure'
+			[[ ! -e "$ready_file" && ! -e "$pid_file" ]] || fail 'inner deadline unexpectedly launched a blocking child'
+		else
+			[[ "$(grep -Fxc 'ORO_MUTATION_EXEC_TIMEOUT' "$output")" = 1 ]] || fail 'outer deadline timeout marker cardinality changed'
+			state=$(ps -o state= -p "$child_pid" 2>/dev/null | tr -d ' ' || true)
+			[[ -z "$state" ]] || fail "outer deadline child remained with state $state"
+		fi
+	}
+
+	run_case inner inner 0
+	run_case outer outer 124
 }
 
 TestMutationExecInternalDeadline() {
