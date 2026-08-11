@@ -3931,6 +3931,283 @@ TestMutationExecPackageContextAndClassification() {
 	test_mutation_exec_package_context_and_classification "$tmp/package-context"
 }
 
+test_mutation_exec_signal_cleanup() {
+	local fixture="$1"
+	local package_dir="$fixture/pkg/example"
+	local test_file="$package_dir/mutation_exec_signal_test.go"
+	local original="$package_dir/value.go"
+	local changed="$fixture/changed.go"
+	local real_go
+	mkdir -p "$package_dir" "$fixture/bin" "$fixture/cache" "$fixture/tmp"
+	printf 'module mutation.test/signal\n\ngo 1.26\n' >"$fixture/go.mod"
+	cat >"$original" <<'EOF'
+package example
+
+func Value() string { return "original" }
+EOF
+	cat >"$changed" <<'EOF'
+package example
+
+func Value() string { return "mutated" }
+EOF
+	cat >"$test_file" <<'EOF'
+package example
+
+import (
+	"fmt"
+	"os"
+	"os/signal"
+	"strconv"
+	"syscall"
+	"testing"
+	"time"
+)
+
+func TestMutationExecSignalCleanup(t *testing.T) {
+	trace := os.Getenv("MUTATION_SIGNAL_TEST_TRACE")
+	traceFile, err := os.OpenFile(trace, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatalf("open trace: %v", err)
+	}
+	_, _ = fmt.Fprintf(traceFile, "MUTATE_PACKAGE=%s\nMUTATION_TEST_PATTERN=%s\nMUTATION_TEST_FILE=%s\nMUTATE_TIMEOUT=%s\nMUTATION_TEST_TIMEOUT=%s\nGOCACHE=%s\nGOTMPDIR=%s\n",
+		os.Getenv("MUTATE_PACKAGE"), os.Getenv("MUTATION_TEST_PATTERN"), os.Getenv("MUTATION_TEST_FILE"),
+		os.Getenv("MUTATE_TIMEOUT"), os.Getenv("MUTATION_TEST_TIMEOUT"), os.Getenv("GOCACHE"), os.Getenv("GOTMPDIR"))
+	_ = traceFile.Close()
+	if err := os.WriteFile(os.Getenv("MUTATION_SIGNAL_PID"), []byte(strconv.Itoa(os.Getpid())+"\n"), 0o600); err != nil {
+		t.Fatalf("write pid: %v", err)
+	}
+	if err := os.WriteFile(os.Getenv("MUTATION_SIGNAL_READY"), []byte("ready\n"), 0o600); err != nil {
+		t.Fatalf("write ready sentinel: %v", err)
+	}
+	signal.Ignore(syscall.SIGTERM, syscall.SIGINT)
+	select {}
+}
+
+func TestMutationExecNearDeadlinePass(*testing.T) {
+	time.Sleep(750 * time.Millisecond)
+}
+EOF
+	cat >"$fixture/bin/go" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >"${MUTATION_GO_TRACE:?}"
+exec "$MUTATION_REAL_GO" "$@"
+EOF
+	chmod +x "$fixture/bin/go"
+	real_go=$(command -v go)
+
+	pid_exists() {
+		kill -0 "$1" 2>/dev/null
+	}
+
+	cleanup_pid() {
+		local pid="$1"
+		[[ "$pid" =~ ^[0-9]+$ ]] || return 0
+		if pid_exists "$pid"; then
+			kill -KILL "$pid" 2>/dev/null || true
+		fi
+		wait "$pid" 2>/dev/null || true
+	}
+
+	wait_for_file() {
+		local path="$1"
+		for _ in $(seq 1 100); do
+			[[ -s "$path" ]] && return 0
+			sleep 0.05
+		done
+		return 1
+	}
+
+	wait_for_exit() {
+		local pid="$1" state
+		for _ in $(seq 1 100); do
+			state=$(ps -o state= -p "$pid" 2>/dev/null | tr -d ' ')
+			if [[ -z "$state" || "$state" = Z* ]]; then
+				return 0
+			fi
+			sleep 0.05
+		done
+		return 1
+	}
+
+	is_descendant() {
+		local child="$1" ancestor="$2" parent
+		while [[ "$child" =~ ^[0-9]+$ && "$child" != 1 ]]; do
+			[[ "$child" = "$ancestor" ]] && return 0
+			parent=$(ps -o ppid= -p "$child" 2>/dev/null | tr -d ' ')
+			[[ "$parent" =~ ^[0-9]+$ && "$parent" != "$child" ]] || return 1
+			child="$parent"
+		done
+		return 1
+	}
+
+	assert_trace() {
+		local trace="$1" env_trace="$2" timeout_seconds="$3" cache_dir="$4" tmp_dir="$5"
+		grep -Fxq -- 'test -vet=off -count=1 -timeout 12s -run ^TestMutationExecSignalCleanup$ ./pkg/example' "$trace" ||
+			{ fail 'signal fixture changed the package/pattern/test timeout command'; return 1; }
+		! grep -q -- '-timeout 55s\|-timeout 30s\|-timeout 60s' "$trace" ||
+			{ fail 'signal fixture trace showed an unexpected test timeout cap'; return 1; }
+		grep -Fxq -- 'MUTATE_PACKAGE=./pkg/example' "$env_trace" || { fail 'signal trace lost package context'; return 1; }
+		grep -Fxq -- 'MUTATION_TEST_PATTERN=^TestMutationExecSignalCleanup$' "$env_trace" || { fail 'signal trace lost test pattern'; return 1; }
+		grep -Fxq -- 'MUTATION_TEST_FILE=pkg/example/mutation_exec_signal_test.go' "$env_trace" || { fail 'signal trace lost test file'; return 1; }
+		grep -Fxq -- "MUTATE_TIMEOUT=$timeout_seconds" "$env_trace" || { fail 'signal trace changed outer timeout'; return 1; }
+		grep -Fxq -- 'MUTATION_TEST_TIMEOUT=12' "$env_trace" || { fail 'signal trace changed test timeout'; return 1; }
+		grep -Fxq -- "GOCACHE=$cache_dir" "$env_trace" || { fail 'signal trace changed GOCACHE'; return 1; }
+		grep -Fxq -- "GOTMPDIR=$tmp_dir" "$env_trace" || { fail 'signal trace changed GOTMPDIR'; return 1; }
+	}
+
+	run_case() {
+		local name="$1" signal_name="$2" outer_timeout="$3" expected_marker="$4"
+		local case_dir="$fixture/$name" cache_dir="$fixture/cache/$name" tmp_dir="$fixture/tmp/$name"
+		local output="$case_dir/executor.log" trace="$case_dir/go.trace" env_trace="$case_dir/test.trace"
+		local pid_file="$case_dir/test.pid" ready_file="$case_dir/ready" sentinel_pid executor_pid='' child_pid='' rc
+		local timeout_pid='' timeout_pgid child_pgid sentinel_pgid child_state candidate command
+		mkdir -p "$case_dir" "$cache_dir" "$tmp_dir"
+		(
+			cd "$fixture"
+			GOCACHE="$cache_dir" GOTMPDIR="$tmp_dir" "$real_go" test -vet=off -run '^$' ./pkg/example >/dev/null
+		)
+		: >"$trace"
+		: >"$env_trace"
+		bash -c 'trap "" TERM INT; while :; do read -r -t 1 _ </dev/null || :; done' >/dev/null 2>&1 &
+		sentinel_pid=$!
+		signal_sentinel_pids+=("$sentinel_pid")
+		cleanup_case() {
+			cleanup_pid "$executor_pid"
+			cleanup_pid "$child_pid"
+			cleanup_pid "$sentinel_pid"
+		}
+		set -m
+		(
+			cd "$fixture" && exec env PATH="$fixture/bin:$PATH" MUTATION_REAL_GO="$real_go" MUTATION_GO_TRACE="$trace" \
+				MUTATION_SIGNAL_TEST_TRACE="$env_trace" MUTATION_SIGNAL_PID="$pid_file" MUTATION_SIGNAL_READY="$ready_file" \
+				GOCACHE="$cache_dir" GOTMPDIR="$tmp_dir" MUTATE_CHANGED="$changed" MUTATE_ORIGINAL="$original" \
+				MUTATE_PACKAGE=./pkg/example MUTATE_DEBUG=true MUTATE_TIMEOUT="$outer_timeout" MUTATION_TEST_TIMEOUT=12 \
+				MUTATION_TEST_PATTERN='^TestMutationExecSignalCleanup$' MUTATION_TEST_FILE=pkg/example/mutation_exec_signal_test.go \
+				bash "$repo_root/scripts/quality_gate/mutation_exec.sh" >"$output" 2>&1
+		) &
+		executor_pid=$!
+		set +m
+		for _ in $(seq 1 100); do
+			grep -Fq 'scripts/quality_gate/mutation_exec.sh' <(ps -o command= -p "$executor_pid" 2>/dev/null) && break
+			sleep 0.01
+		done
+		if ! grep -Fq 'scripts/quality_gate/mutation_exec.sh' <(ps -o command= -p "$executor_pid" 2>/dev/null); then
+			cleanup_case
+			fail "$name did not launch the exact mutation executor PID"
+		fi
+		if ! wait_for_file "$ready_file" || ! wait_for_file "$pid_file"; then
+			cleanup_case
+			fail "$name did not reach the blocking test readiness barrier"
+		fi
+		child_pid=$(tr -d '[:space:]' <"$pid_file")
+		[[ "$child_pid" =~ ^[0-9]+$ ]] || { cleanup_case; fail "$name wrote an invalid child PID"; }
+		is_descendant "$child_pid" "$executor_pid" || { cleanup_case; fail "$name ready child is not an executor descendant"; }
+		while read -r candidate; do
+			command=$(ps -o command= -p "$candidate" 2>/dev/null || true)
+			if [[ "$command" == timeout\ *go\ test* ]]; then
+				timeout_pid="$candidate"
+				break
+			fi
+		done < <(pgrep -P "$executor_pid" 2>/dev/null || true)
+		[[ "$timeout_pid" =~ ^[0-9]+$ ]] || { cleanup_case; fail "$name did not expose its owned timeout leader"; }
+		timeout_pgid=$(ps -o pgid= -p "$timeout_pid" 2>/dev/null | tr -d ' ')
+		child_pgid=$(ps -o pgid= -p "$child_pid" 2>/dev/null | tr -d ' ')
+		sentinel_pgid=$(ps -o pgid= -p "$sentinel_pid" 2>/dev/null | tr -d ' ')
+		[[ "$timeout_pgid" = "$timeout_pid" && "$child_pgid" = "$timeout_pgid" ]] || {
+			cleanup_case
+			fail "$name timeout leader and resistant child did not share the owned PGID"
+		}
+		[[ "$sentinel_pgid" != "$timeout_pgid" ]] || {
+			cleanup_case
+			fail "$name unrelated sentinel was placed in the owned PGID"
+		}
+		if [[ "$signal_name" != NONE ]]; then
+			kill -s "$signal_name" "$executor_pid" 2>/dev/null || { cleanup_case; fail "$name could not signal executor"; }
+		fi
+		if ! wait_for_exit "$executor_pid"; then
+			cleanup_case
+			fail "$name executor exceeded bounded harness deadline"
+		fi
+		set +e
+		wait "$executor_pid"
+		rc=$?
+		set -e
+		[[ "$rc" = 124 ]] || { cleanup_case; fail "$name executor exit = $rc, want 124"; }
+		if [[ "$expected_marker" = timeout ]]; then
+			[[ "$(grep -Fxc 'ORO_MUTATION_EXEC_TIMEOUT' "$output")" = 1 ]] || {
+				cleanup_case
+				fail "$name timeout marker count was not exactly one"
+			}
+		else
+			! grep -Fxq 'ORO_MUTATION_EXEC_TIMEOUT' "$output" || { cleanup_case; fail "$name unexpectedly emitted timeout marker"; }
+		fi
+		if ! assert_trace "$trace" "$env_trace" "$outer_timeout" "$cache_dir" "$tmp_dir"; then
+			cleanup_case
+			fail "$name signal trace assertions failed"
+		fi
+		[[ "$(git hash-object "$original")" = "$original_hash" ]] || { cleanup_case; fail "$name did not restore original bytes"; }
+		[[ ! -e "$original.tmp" ]] || { cleanup_case; fail "$name left an original temp file"; }
+		pid_exists "$sentinel_pid" || { cleanup_case; fail "$name collateral-killed unrelated sentinel"; }
+		child_state=$(ps -o state= -p "$child_pid" 2>/dev/null | tr -d ' ' || true)
+		if [[ -n "$child_state" ]]; then
+			cleanup_case
+			fail "$name resistant child PID $child_pid remained with state $child_state"
+		fi
+		cleanup_case
+	}
+
+	run_near_deadline_pass() {
+		local case_dir="$fixture/near-deadline" cache_dir="$fixture/cache/near-deadline" tmp_dir="$fixture/tmp/near-deadline"
+		local output="$case_dir/executor.log" status
+		mkdir -p "$case_dir" "$cache_dir" "$tmp_dir"
+		(
+			cd "$fixture"
+			GOCACHE="$cache_dir" GOTMPDIR="$tmp_dir" "$real_go" test -vet=off -run '^$' ./pkg/example >/dev/null
+		)
+		set +e
+		(
+			cd "$fixture"
+			GOCACHE="$cache_dir" GOTMPDIR="$tmp_dir" MUTATE_CHANGED="$changed" MUTATE_ORIGINAL="$original" \
+				MUTATE_PACKAGE=./pkg/example MUTATE_TIMEOUT=2 MUTATION_TEST_TIMEOUT=12 \
+				MUTATION_TEST_PATTERN='^TestMutationExecNearDeadlinePass$' \
+				MUTATION_TEST_FILE=pkg/example/mutation_exec_signal_test.go \
+				bash "$repo_root/scripts/quality_gate/mutation_exec.sh" >"$output" 2>&1
+		)
+		status=$?
+		set -e
+		[[ "$status" = 1 ]] || fail "near-deadline passing mutant exit = $status, want survived status 1"
+		! grep -Fq 'ORO_MUTATION_EXEC_TIMEOUT' "$output" || fail 'near-deadline passing mutant emitted a timeout marker'
+		[[ "$(git hash-object "$original")" = "$original_hash" ]] || fail 'near-deadline pass did not restore original bytes'
+		[[ ! -e "$original.tmp" ]] || fail 'near-deadline pass left an original temp file'
+	}
+
+	original_hash=$(git hash-object "$original")
+	[[ "$(grep -Fc "printf 'ORO_MUTATION_EXEC_TIMEOUT" "$repo_root/scripts/quality_gate/mutation_exec.sh")" = 1 ]] ||
+		fail 'mutation executor must have exactly one timeout marker emission site'
+	! grep -Eq 'USR1|mutation_deadline' "$repo_root/scripts/quality_gate/mutation_exec.sh" ||
+		fail 'mutation executor has an independent deadline signal that can race normal completion'
+	run_near_deadline_pass
+	run_case outer-timeout NONE 1 timeout
+	run_case direct-term TERM 30 direct
+	run_case direct-int INT 30 direct
+}
+
+TestMutationExecSignalCleanup() {
+	local tmp pid
+	local -a signal_sentinel_pids=()
+	tmp=$(mktemp -d)
+	cleanup_signal_fixture() {
+		for pid in "${signal_sentinel_pids[@]}"; do
+			kill -KILL "$pid" 2>/dev/null || true
+			wait "$pid" 2>/dev/null || true
+		done
+		rm -rf "$tmp"
+	}
+	trap cleanup_signal_fixture RETURN
+	test_mutation_exec_signal_cleanup "$tmp/signal-cleanup"
+}
+
 test_review_integration_recovery_mutation_exec_focused_file() {
 	local fixture="$1"
 	local original="$fixture/pkg/dispatcher/review_integration_recovery.go"
@@ -5609,6 +5886,7 @@ TestStrictIncrementalMutation() {
 	test_mutation_exec_unexpected_exit "$tmp/exec-unexpected"
 	test_mutation_exec_focused_file "$tmp/exec-focused"
 	TestMutationExecPackageContextAndClassification
+	TestMutationExecSignalCleanup
 	test_review_integration_recovery_mutation_exec_focused_file "$tmp/exec-review-integration-recovery-focused"
 	TestMutationExecInternalDeadline
 	test_parallel_mutant_executor "$tmp/parallel-mutants"
@@ -5825,6 +6103,9 @@ main() {
 		;;
 	TestMutationExecPackageContextAndClassification)
 		TestMutationExecPackageContextAndClassification
+		;;
+	TestMutationExecSignalCleanup)
+		TestMutationExecSignalCleanup
 		;;
 	TestIncrementalMutationArtifactRetention)
 		tmp=$(mktemp -d)
