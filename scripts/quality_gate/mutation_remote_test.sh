@@ -1254,11 +1254,93 @@ EOF
 		fail 'reviewContextForOpsRun mutation owner omitted its bounded mutex contract'
 }
 
+assert_authoritative_targeted_phase_context() {
+	local fixture="$1" source="$2" pattern="$3" test_file="$4" label="$5"
+	local cache checkout_root expected_file="$test_file" expected_owner original_sha owner_path phase_file shard_root source_path tmp worker
+	local -a phase_files
+	[[ "$expected_file" != - ]] || expected_file=''
+	original_sha=$(git -C "$fixture" rev-parse "HEAD:$source")
+	phase_files=("$fixture"/phase-trace/parallel-*.tsv)
+	[[ "${#phase_files[@]}" = 2 && -f "${phase_files[0]}" && -f "${phase_files[1]}" ]] ||
+		fail "$label must retain exactly two authoritative worker phase traces"
+	for phase_file in "${phase_files[@]}"; do
+		worker=${phase_file##*/parallel-}
+		worker=${worker%.tsv}
+		awk -F '\t' -v original="$original_sha" -v package=mutation.test/targeted/pkg/dispatcher \
+			-v pattern="$pattern" -v test_file="$expected_file" -v source_file="$source" -v worker="$worker" '
+			NR == 1 {
+				if ($1 != "baseline" || $2 != original || $3 == original || $4 != "absent" || $5 != 0 ||
+					$6 != package || $7 != pattern ||
+					(test_file == "" ? $8 != "" : substr($8, length($8) - length(test_file) + 1) != test_file) ||
+					$9 !~ ("/parallel-" worker "$") || $10 !~ ("/parallel-worker-" worker "$") ||
+					substr($11, length($11) - length(source_file) + 1) != source_file || $12 == "") exit 1
+				changed = $3; cache = $9; tmp = $10; source_path = $11; owner_path = $8
+			}
+			NR == 2 {
+				if ($1 != "mutant" || $2 != changed || $3 != changed || $4 != "present" || $5 != 1 ||
+					$6 != package || $7 != pattern || $9 != cache || $10 != tmp ||
+					$8 != owner_path || $11 != source_path) exit 1
+			}
+			END { if (NR != 2) exit 1 }
+		' "$phase_file" || fail "$label lost exact baseline then mutant package context"
+		cache=$(awk -F '\t' 'NR == 1 { print $9 }' "$phase_file")
+		tmp=$(awk -F '\t' 'NR == 1 { print $10 }' "$phase_file")
+		source_path=$(awk -F '\t' 'NR == 1 { print $11 }' "$phase_file")
+		owner_path=$(awk -F '\t' 'NR == 1 { print $8 }' "$phase_file")
+		shard_root=${cache%/caches/*}
+		checkout_root=${source_path%/"$source"}
+		[[ "$cache" = "$shard_root/caches/0/parallel-$worker" &&
+			"$tmp" = "$shard_root/tmp/000000/parallel-worker-$worker" &&
+			"$checkout_root" == "$shard_root/tmp/000000/parallel-mutants."*/workers/"$worker"/repo &&
+			"$source_path" = "$checkout_root/$source" ]] ||
+			fail "$label worker $worker used an inexact source, cache, or tmp path"
+		expected_owner=''
+		[[ -z "$expected_file" ]] || expected_owner="$checkout_root/$expected_file"
+		[[ "$owner_path" = "$expected_owner" ]] || fail "$label worker $worker used an inexact owner path"
+		[[ ! -e "$source_path" && ! -e "$source_path.tmp" ]] ||
+			fail "$label worker $worker left source or .tmp residue after runner cleanup"
+		cut -f12- "$phase_file" | while IFS= read -r argv; do
+			grep -Fq -- "-timeout 55s -run $pattern mutation.test/targeted/pkg/dispatcher" <<<"$argv" ||
+				fail "$label focused argv lost exact timeout, pattern, or package"
+			! grep -Fq "$source" <<<"$argv" || fail "$label focused argv included production source"
+			[[ -z "$expected_file" ]] || ! grep -Fq "$expected_file" <<<"$argv" ||
+				fail "$label focused argv included standalone owner file"
+		done
+	done
+	[[ "$(git hash-object "$fixture/$source")" = "$original_sha" && ! -e "$fixture/$source.tmp" ]] ||
+		fail "$label did not restore its authoritative source or left .tmp residue"
+}
+
+assert_authoritative_targeted_context_rejects_invalid() {
+	local fixture="$1" evidence mode name status
+	run_invalid() {
+		name="$1"
+		mode="$2"
+		set +e
+		evidence=$(run_targeted_fixture "$fixture/$name" targeted infrastructure_failure 2 false \
+			authoritative-assignment true "$mode")
+		status=$?
+		set -e
+		[[ "$status" = 0 ]] || fail "$name invalid authoritative context did not fail closed through the runner"
+		jq -e '.conclusion == "infrastructure_failure" and .score == null and .total == 0 and
+			.shards[0].exit_code == 2' "$evidence" >/dev/null ||
+			fail "$name invalid authoritative context produced scored mutation evidence"
+		[[ "$(wc -l <"$fixture/$name/phase-trace/rejected.tsv" | tr -d ' ')" = 1 &&
+			! -e "$fixture/$name/phase-trace/parallel-0.tsv" &&
+			! -e "$fixture/$name/phase-trace/parallel-1.tsv" &&
+			! -e "$fixture/$name/pkg/dispatcher/assignment.go.tmp" ]] ||
+			fail "$name invalid authoritative context reached mutant activation or lost rejection evidence"
+	}
+	run_invalid missing-context missing-context
+	run_invalid explicit-source explicit-source
+}
+
 TestAuthoritativeMutationTargetedScope() {
-	local evidence fixture focused_line focused_lines function pattern prewarm_line prewarm_lines source target test_file
+	local evidence fixture focused_line focused_lines function pattern prewarm_line prewarm_lines row_count=0 source stale_fixture stale_status target test_file
 	while IFS=$'\t' read -r target source function pattern test_file; do
+		((row_count += 1))
 		fixture="$tmp/targeted-$target"
-		evidence=$(run_targeted_fixture "$fixture" targeted pass 0 false "$target")
+		evidence=$(run_targeted_fixture "$fixture" targeted pass 0 false "$target" true)
 		grep -Fq -- "-list $pattern ./pkg/dispatcher" "$fixture/mutation-list.txt" ||
 			fail "$function authoritative mutations omitted exact list preflight"
 		grep -F -- "-run $pattern ./pkg/dispatcher" "$fixture/mutation-list.txt" |
@@ -1276,6 +1358,7 @@ TestAuthoritativeMutationTargetedScope() {
 			grep -Fxq "$expected_limit" "$fixture/mutation-args.txt" ||
 				fail "$function authoritative boundary omitted $expected_limit"
 		done
+		assert_authoritative_targeted_phase_context "$fixture" "$source" "$pattern" "$test_file" "$function"
 		if [[ "$test_file" == - ]]; then
 			! grep -q '^MUTATION_TEST_FILE=' "$fixture/mutation-args.txt" ||
 				fail "$function additive owner conflict silently selected one focused file"
@@ -1286,23 +1369,17 @@ TestAuthoritativeMutationTargetedScope() {
 		fi
 		grep -Fxq "MUTATION_TEST_FILE=$test_file" "$fixture/mutation-args.txt" ||
 			fail "$function authoritative mutation omitted standalone owner file"
-		focused_lines=$(grep -F -- "-run $pattern" "$fixture/mutation-list.txt" | grep -F "$test_file")
-		[[ -n "$focused_lines" ]] || fail "$function emitted no focused authoritative argv"
-		while IFS= read -r focused_line; do
-			[[ "$(grep -oF "$source" <<<"$focused_line" | wc -l | tr -d ' ')" = 1 ]] ||
-				fail "$function focused argv must include source exactly once"
-			[[ "$(grep -oF "$test_file" <<<"$focused_line" | wc -l | tr -d ' ')" = 1 ]] ||
-				fail "$function focused argv must include owner exactly once"
-			grep -Fq -- '-timeout 55s' <<<"$focused_line" ||
-				fail "$function focused argv omitted internal Go deadline"
-			! grep -Fq authoritative_unselected_test.go <<<"$focused_line" ||
-				fail "$function focused argv included an unselected test file"
-		done <<<"$focused_lines"
+		assert_targeted_package_context_invocations "$fixture/mutation-list.txt" "$pattern" \
+			"$source" "$test_file" authoritative_unselected_test.go "$function authoritative owner"
 		prewarm_lines=$(grep -F -- '-run ^$' "$fixture/mutation-list.txt" | grep -F "$test_file")
-		[[ -n "$prewarm_lines" ]] || fail "$function emitted no authoritative cache-prewarm argv"
+		[[ "$(wc -l <<<"$prewarm_lines" | tr -d ' ')" = 2 ]] ||
+			fail "$function emitted an inexact authoritative cache-prewarm cardinality"
 		while IFS= read -r prewarm_line; do
 			grep -Fq -- '-timeout 115s' <<<"$prewarm_line" ||
 				fail "$function cache-prewarm argv omitted bounded internal Go deadline"
+			[[ "$(grep -oF "$source" <<<"$prewarm_line" | wc -l | tr -d ' ')" = 1 &&
+				"$(grep -oF "$test_file" <<<"$prewarm_line" | wc -l | tr -d ' ')" = 1 ]] ||
+				fail "$function cache-prewarm argv lost exact source or owner"
 		done <<<"$prewarm_lines"
 	done <<'EOF'
 authoritative-assignment	pkg/dispatcher/assignment.go	assignmentInsertFailureAllowsReopen	^TestAssignmentAuthoritativeSurvivorMutation	pkg/dispatcher/assignment_authoritative_survivor_mutation_test.go
@@ -1312,8 +1389,24 @@ authoritative-health	pkg/dispatcher/health.go	evaluateFactoryHealth	^TestHealthA
 authoritative-health-conflict	pkg/dispatcher/health.go	applyHealth	^(TestHealthAuthoritativeSurvivorMutation|TestApplyHealthReturnsAndReleasesDispatcherMutex$)	-
 authoritative-review	pkg/dispatcher/review_checkpoint_store.go	AdvanceIntegrationStep	^TestReviewCheckpointAuthoritativeSurvivorMutation	pkg/dispatcher/review_checkpoint_authoritative_survivor_mutation_test.go
 authoritative-review-block	pkg/dispatcher/review_checkpoint_store.go	BlockIntegration	^(TestReviewCheckpointAuthoritativeSurvivorMutation|TestReviewCheckpointMutationIntegrationDurability$)	-
-authoritative-review-legacy	pkg/dispatcher/review_checkpoint_store.go	legacyUnlinkedCheckpointIDs	^(TestReviewCheckpointAuthoritativeSurvivorMutation|TestReviewCheckpointMutationLegacyBinding$)	-
+	authoritative-review-legacy	pkg/dispatcher/review_checkpoint_store.go	legacyUnlinkedCheckpointIDs	^(TestReviewCheckpointAuthoritativeSurvivorMutation|TestReviewCheckpointMutationLegacyBinding$)	-
 EOF
+	[[ "$row_count" = 8 ]] || fail "authoritative targeted table exercised $row_count rows, want 8"
+	stale_fixture="$tmp/targeted-authoritative-stale"
+	mkdir -p "$stale_fixture/phase-trace"
+	printf 'stale\n' >"$stale_fixture/phase-trace/parallel-0.tsv"
+	set +e
+	(run_targeted_fixture "$stale_fixture" targeted pass 0 false authoritative-assignment true) \
+		>"$stale_fixture/stale.log" 2>&1
+	stale_status=$?
+	set -e
+	[[ "$stale_status" = 1 ]] || fail "stale authoritative phase trace exit = $stale_status, want 1"
+	grep -Fq 'authoritative targeted phase trace must be fresh before runner launch' "$stale_fixture/stale.log" ||
+		fail 'stale authoritative phase trace did not fail at the freshness guard'
+	[[ "$(cat "$stale_fixture/phase-trace/parallel-0.tsv")" = stale &&
+		! -e "$stale_fixture/runner.log" && ! -e "$stale_fixture/mutation-evidence.json" ]] ||
+		fail 'stale authoritative phase trace reached the runner or changed stale bytes'
+	assert_authoritative_targeted_context_rejects_invalid "$tmp/targeted-authoritative-invalid-context"
 }
 
 TestAuthoritativeMutationCoverage() {
@@ -2735,7 +2828,28 @@ if [[ "$1" = test ]]; then
 				phase_trace_file="$MUTATION_TARGETED_PHASE_TRACE_DIR/$worker.tsv"
 			fi
 		fi
-		if [[ "${MUTATION_TARGETED_PHASE_CONTEXT:-}" = 1 ]]; then
+		if [[ "${MUTATION_AUTHORITATIVE_CONTEXT_TRACE:-}" = 1 ]]; then
+			observed_package=${MUTATE_PACKAGE:-}
+			observed_argv="$*"
+			case "${MUTATION_AUTHORITATIVE_INVALID_CONTEXT:-}" in
+			missing-context) observed_package='' ;;
+			explicit-source) observed_argv="$observed_argv $MUTATE_ORIGINAL" ;;
+			'') ;;
+			*) exit 2 ;;
+			esac
+			if [[ -z "$observed_package" || -z "${MUTATION_TEST_PATTERN:-}" ||
+				" $observed_argv " == *" $MUTATE_ORIGINAL "* ||
+				( -n "${MUTATION_TEST_FILE:-}" && " $observed_argv " == *" $MUTATION_TEST_FILE "* ) ]]; then
+				printf '%s\t%s\t%s\t%s\t%s\n' "${MUTATION_AUTHORITATIVE_INVALID_CONTEXT:-invalid}" \
+					"$observed_package" "${MUTATION_TEST_PATTERN:-}" "${MUTATION_TEST_FILE:-}" "$observed_argv" \
+					>>"${MUTATION_TARGETED_PHASE_TRACE_DIR:?}/rejected.tsv"
+				exit 2
+			fi
+			printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+				"$phase" "$active_hash" "$changed_hash" "$backup" "$test_exit" \
+				"${MUTATE_PACKAGE:-}" "${MUTATION_TEST_PATTERN:-}" "${MUTATION_TEST_FILE:-}" \
+				"${GOCACHE:-}" "${GOTMPDIR:-}" "$MUTATE_ORIGINAL" "$*" >>"$phase_trace_file"
+		elif [[ "${MUTATION_TARGETED_PHASE_CONTEXT:-}" = 1 ]]; then
 			printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
 				"$phase" "$active_hash" "$changed_hash" "$backup" "$test_exit" \
 				"${GOCACHE:-}" "${GOTMPDIR:-}" "$MUTATE_ORIGINAL" >>"$phase_trace_file"
@@ -2986,7 +3100,9 @@ run_targeted_fixture() {
 	local expected_exit="$4"
 	local expanded="${5:-false}"
 	local target="${6:-hooks}"
-	local base head evidence status args_trace list_trace phase_trace_dir
+	local authoritative_context="${7:-false}"
+	local invalid_context="${8:-}"
+	local base context_flag=0 fake_mutant_count=2 head evidence status args_trace list_trace phase_trace_dir
 	mapfile -t refs < <(new_targeted_fixture "$fixture" "$expanded" "$target")
 	base=${refs[0]}
 	head=${refs[1]}
@@ -2995,6 +3111,14 @@ run_targeted_fixture() {
 	list_trace="$fixture/mutation-list.txt"
 	phase_trace_dir="$fixture/phase-trace"
 	mkdir -p "$phase_trace_dir"
+	if [[ "$authoritative_context" = true ]]; then
+		context_flag=1
+		[[ -z "$invalid_context" ]] || fake_mutant_count=1
+		if compgen -G "$phase_trace_dir/*" >/dev/null; then
+			fail 'authoritative targeted phase trace must be fresh before runner launch'
+			return 1
+		fi
+	fi
 	write_fake_go "$fixture/bin/go"
 
 	set +e
@@ -3003,6 +3127,10 @@ run_targeted_fixture() {
 		PATH="$fixture/bin:$PATH" MUTATION_FIXTURE="$outcome" \
 			MUTATION_ARGS_TRACE="$args_trace" MUTATION_LIST_TRACE="$list_trace" \
 			MUTATION_TARGETED_PHASE_MODE=1 \
+			MUTATION_TARGETED_PHASE_CONTEXT="$context_flag" \
+			MUTATION_AUTHORITATIVE_CONTEXT_TRACE="$context_flag" \
+			MUTATION_AUTHORITATIVE_INVALID_CONTEXT="$invalid_context" \
+			MUTATION_FAKE_MUTANT_COUNT="$fake_mutant_count" \
 			MUTATION_TARGETED_PHASE_TRACE_DIR="$phase_trace_dir" \
 			MUTATION_TARGETED_PHASE_WORKER_TRACES=1 \
 			bash "$runner" --base "$base" --head "$head" --evidence "$evidence" \
