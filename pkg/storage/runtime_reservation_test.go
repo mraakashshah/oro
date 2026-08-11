@@ -4,11 +4,14 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -434,6 +437,325 @@ func TestRuntimeReservationRequestMutationOwner(t *testing.T) {
 		})
 		if err != nil || probe.acquireCalls != 1 || reservation.State != ManifestActive || reservation.ManifestPath == "" {
 			t.Fatalf("valid reservation/error/calls = %#v/%v/%d", reservation, err, probe.acquireCalls)
+		}
+	})
+}
+
+type runtimeReservationJournalProbe struct {
+	reservation  RuntimeReservation
+	err          error
+	acquireCalls int
+}
+
+func (probe *runtimeReservationJournalProbe) AcquireRuntimeReservation(context.Context, RuntimeReservationRequest) (RuntimeReservation, error) {
+	probe.acquireCalls++
+	return probe.reservation, probe.err
+}
+
+func (*runtimeReservationJournalProbe) TransitionRuntimeReservation(context.Context, string, ManifestState, ManifestState, ProcessIdentity) error {
+	return nil
+}
+
+func (*runtimeReservationJournalProbe) ReleaseRuntimeReservation(context.Context, string, ProcessIdentity) error {
+	return nil
+}
+
+type runtimeReservationFaultPlan struct {
+	err           error
+	failBegin     bool
+	failExec      int32
+	failCommit    bool
+	execCalls     atomic.Int32
+	commitCalls   atomic.Int32
+	rollbackCalls atomic.Int32
+	pendingRows   atomic.Int32
+	committedRows atomic.Int32
+}
+
+type runtimeReservationFaultDriver struct {
+	plan *runtimeReservationFaultPlan
+}
+
+func (faultDriver *runtimeReservationFaultDriver) Open(string) (driver.Conn, error) {
+	return &runtimeReservationFaultConn{plan: faultDriver.plan}, nil
+}
+
+type runtimeReservationFaultConn struct {
+	plan *runtimeReservationFaultPlan
+}
+
+func (*runtimeReservationFaultConn) Prepare(string) (driver.Stmt, error) {
+	return nil, driver.ErrSkip
+}
+
+func (*runtimeReservationFaultConn) Close() error { return nil }
+
+func (conn *runtimeReservationFaultConn) Begin() (driver.Tx, error) {
+	return conn.begin()
+}
+
+func (conn *runtimeReservationFaultConn) BeginTx(context.Context, driver.TxOptions) (driver.Tx, error) {
+	return conn.begin()
+}
+
+func (conn *runtimeReservationFaultConn) begin() (driver.Tx, error) {
+	if conn.plan.failBegin {
+		return nil, conn.plan.err
+	}
+	conn.plan.pendingRows.Store(0)
+	return &runtimeReservationFaultTx{plan: conn.plan}, nil
+}
+
+func (conn *runtimeReservationFaultConn) ExecContext(context.Context, string, []driver.NamedValue) (driver.Result, error) {
+	call := conn.plan.execCalls.Add(1)
+	if conn.plan.failExec == call {
+		return nil, conn.plan.err
+	}
+	conn.plan.pendingRows.Add(1)
+	return driver.RowsAffected(1), nil
+}
+
+type runtimeReservationFaultTx struct {
+	plan *runtimeReservationFaultPlan
+}
+
+func (tx *runtimeReservationFaultTx) Commit() error {
+	tx.plan.commitCalls.Add(1)
+	if tx.plan.failCommit {
+		tx.plan.pendingRows.Store(0)
+		return tx.plan.err
+	}
+	tx.plan.committedRows.Add(tx.plan.pendingRows.Swap(0))
+	return nil
+}
+
+func (tx *runtimeReservationFaultTx) Rollback() error {
+	tx.plan.rollbackCalls.Add(1)
+	tx.plan.pendingRows.Store(0)
+	return nil
+}
+
+var runtimeReservationFaultDriverSequence atomic.Uint64
+
+func newRuntimeReservationFaultCatalog(t *testing.T, plan *runtimeReservationFaultPlan) *Catalog {
+	t.Helper()
+	driverName := fmt.Sprintf("runtime-reservation-fault-%d", runtimeReservationFaultDriverSequence.Add(1))
+	sql.Register(driverName, &runtimeReservationFaultDriver{plan: plan})
+	db, err := sql.Open(driverName, "")
+	if err != nil {
+		t.Fatalf("open fault catalog: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+	return &Catalog{db: db}
+}
+
+func TestRuntimeReservationJournalMutationOwner(t *testing.T) {
+	now := time.Date(2026, time.August, 10, 18, 0, 0, 0, time.UTC)
+
+	t.Run("pre-journal failures preserve exact stage and cause", func(t *testing.T) {
+		cases := []struct {
+			name      string
+			ctx       func() context.Context
+			catalog   func(*runtimeReservationJournalProbe) RuntimeReservationCatalog
+			mutate    func(*RuntimeReservationRequest)
+			hooks     func() runtimeReservationHooks
+			wantStage string
+			wantCause string
+		}{
+			{
+				name: "canceled context", ctx: func() context.Context {
+					ctx, cancel := context.WithCancel(context.Background())
+					cancel()
+					return ctx
+				},
+				wantStage: "context", wantCause: context.Canceled.Error(),
+			},
+			{name: "nil catalog", catalog: func(*runtimeReservationJournalProbe) RuntimeReservationCatalog { return nil }, wantStage: "catalog", wantCause: "catalog is nil"},
+			{name: "invalid request", mutate: func(request *RuntimeReservationRequest) { request.Retention = -time.Nanosecond }, wantStage: "validate", wantCause: "retention must not be negative"},
+			{name: "incomplete hooks", hooks: func() runtimeReservationHooks { return runtimeReservationHooks{} }, wantStage: "hooks", wantCause: "hooks are incomplete"},
+		}
+		for _, testCase := range cases {
+			t.Run(testCase.name, func(t *testing.T) {
+				fixture := newRuntimeReservationFixture(t, now)
+				request := fixture.request
+				if testCase.mutate != nil {
+					testCase.mutate(&request)
+				}
+				probe := &runtimeReservationJournalProbe{}
+				var catalog RuntimeReservationCatalog = probe
+				if testCase.catalog != nil {
+					catalog = testCase.catalog(probe)
+				}
+				hooks := newRuntimeReservationHooks()
+				if testCase.hooks != nil {
+					hooks = testCase.hooks()
+				}
+				ctx := context.Background()
+				if testCase.ctx != nil {
+					ctx = testCase.ctx()
+				}
+				_, err := reserveRuntimeWithHooks(ctx, catalog, request, hooks)
+				var typed *RuntimeReservationError
+				if !errors.As(err, &typed) {
+					t.Fatalf("error = %v, want *RuntimeReservationError", err)
+				}
+				if typed.Stage != testCase.wantStage || !strings.Contains(typed.Err.Error(), testCase.wantCause) || probe.acquireCalls != 0 {
+					t.Fatalf("error/stage/calls = %v/%q/%d, want cause %q", err, typed.Stage, probe.acquireCalls, testCase.wantCause)
+				}
+			})
+		}
+	})
+
+	t.Run("root inspection and catalog allocation fail before manifest writes", func(t *testing.T) {
+		fixture := newRuntimeReservationFixture(t, now)
+		existing := fixture.request.Roots[0].Path
+		if err := os.Mkdir(existing, 0o750); err != nil {
+			t.Fatalf("create existing root: %v", err)
+		}
+		probe := &runtimeReservationJournalProbe{}
+		writes := 0
+		hooks := newRuntimeReservationHooks()
+		hooks.writeManifest = func(string, RuntimeManifest) error { writes++; return nil }
+		_, err := reserveRuntimeWithHooks(context.Background(), probe, fixture.request, hooks)
+		var typed *RuntimeReservationError
+		if !errors.As(err, &typed) || typed.Stage != "inspect roots" || probe.acquireCalls != 0 || writes != 0 {
+			t.Fatalf("root inspection error/calls/writes = %v/%d/%d", err, probe.acquireCalls, writes)
+		}
+
+		fixture = newRuntimeReservationFixture(t, now)
+		cause := errors.New("injected catalog allocation failure")
+		probe = &runtimeReservationJournalProbe{err: cause}
+		writes = 0
+		hooks.writeManifest = func(string, RuntimeManifest) error { writes++; return nil }
+		_, err = reserveRuntimeWithHooks(context.Background(), probe, fixture.request, hooks)
+		if !errors.As(err, &typed) || typed.Stage != "catalog allocating" || !errors.Is(err, cause) || probe.acquireCalls != 1 || writes != 0 {
+			t.Fatalf("catalog allocation error/calls/writes = %v/%d/%d", err, probe.acquireCalls, writes)
+		}
+	})
+
+	t.Run("journal hook failures retain allocating ownership", func(t *testing.T) {
+		cases := []struct {
+			name      string
+			configure func(*runtimeReservationHooks, error)
+			wantStage string
+			wantRoots int
+		}{
+			{
+				name: "allocating manifest", wantStage: "write allocating manifest",
+				configure: func(hooks *runtimeReservationHooks, cause error) {
+					hooks.writeManifest = func(_ string, manifest RuntimeManifest) error {
+						if manifest.State == ManifestAllocating {
+							return cause
+						}
+						return nil
+					}
+				},
+			},
+			{
+				name: "mkdir", wantStage: "create roots", wantRoots: 1,
+				configure: func(hooks *runtimeReservationHooks, cause error) {
+					calls := 0
+					hooks.mkdir = func(path string, mode os.FileMode) error {
+						calls++
+						if calls == 2 {
+							return cause
+						}
+						return os.Mkdir(path, mode)
+					}
+				},
+			},
+			{
+				name: "active manifest", wantStage: "write active manifest", wantRoots: 3,
+				configure: func(hooks *runtimeReservationHooks, cause error) {
+					hooks.writeManifest = func(_ string, manifest RuntimeManifest) error {
+						if manifest.State == ManifestActive {
+							return cause
+						}
+						return nil
+					}
+				},
+			},
+			{
+				name: "activation", wantStage: "activate", wantRoots: 3,
+				configure: func(hooks *runtimeReservationHooks, cause error) {
+					hooks.transition = func(context.Context, string, ManifestState, ManifestState, ProcessIdentity) error { return cause }
+				},
+			},
+		}
+		for _, testCase := range cases {
+			t.Run(testCase.name, func(t *testing.T) {
+				fixture := newRuntimeReservationFixture(t, now)
+				cause := errors.New("injected " + testCase.name + " failure")
+				hooks := newRuntimeReservationHooks()
+				testCase.configure(&hooks, cause)
+				reservation, err := reserveRuntimeWithHooks(context.Background(), fixture.catalog, fixture.request, hooks)
+				var typed *RuntimeReservationError
+				if !errors.As(err, &typed) || typed.Stage != testCase.wantStage || !errors.Is(err, cause) || reservation.State != ManifestAllocating {
+					t.Fatalf("journal failure reservation/error = %+v/%v", reservation, err)
+				}
+				assertReservationState(t, fixture.catalog.DB(), reservation.ID, ManifestAllocating)
+				assertOwnedRootCount(t, fixture.catalog.DB(), reservation.ID, len(fixture.request.Roots))
+				assertPhysicalRootCount(t, fixture.request.Roots, testCase.wantRoots)
+				assertNoUnownedRoots(t, fixture.catalog.DB(), fixture.request.Roots)
+			})
+		}
+	})
+
+	t.Run("successful orchestration exposes active manifest and reservation", func(t *testing.T) {
+		fixture := newRuntimeReservationFixture(t, now)
+		probe := &runtimeReservationJournalProbe{reservation: RuntimeReservation{ID: "probe-reservation", State: ManifestAllocating}}
+		var states []ManifestState
+		hooks := runtimeReservationHooks{
+			writeManifest: func(_ string, manifest RuntimeManifest) error { states = append(states, manifest.State); return nil },
+			mkdir:         func(string, os.FileMode) error { return nil },
+			transition:    func(context.Context, string, ManifestState, ManifestState, ProcessIdentity) error { return nil },
+		}
+		reservation, err := reserveRuntimeWithHooks(context.Background(), probe, fixture.request, hooks)
+		if err != nil || probe.acquireCalls != 1 || !reflect.DeepEqual(states, []ManifestState{ManifestAllocating, ManifestActive}) || reservation.State != ManifestActive || reservation.ManifestPath != filepath.Join(fixture.request.Workdir, "runtime-manifest.json") {
+			t.Fatalf("successful journal reservation/states/calls/error = %+v/%v/%d/%v", reservation, states, probe.acquireCalls, err)
+		}
+	})
+
+	t.Run("catalog transaction failures preserve exact cause and rollback", func(t *testing.T) {
+		t.Run("invalid request does not begin a transaction", func(t *testing.T) {
+			fixture := newRuntimeReservationFixture(t, now)
+			fixture.request.Retention = -time.Nanosecond
+			plan := &runtimeReservationFaultPlan{err: errors.New("transaction must not begin")}
+			catalog := newRuntimeReservationFaultCatalog(t, plan)
+			_, err := catalog.AcquireRuntimeReservation(context.Background(), fixture.request)
+			if err == nil || !strings.Contains(err.Error(), "retention must not be negative") || plan.execCalls.Load() != 0 || plan.commitCalls.Load() != 0 || plan.rollbackCalls.Load() != 0 {
+				t.Fatalf("invalid request error/exec/commit/rollback = %v/%d/%d/%d", err, plan.execCalls.Load(), plan.commitCalls.Load(), plan.rollbackCalls.Load())
+			}
+		})
+
+		cases := []struct {
+			name         string
+			wantStage    string
+			failBegin    bool
+			failExec     int32
+			failCommit   bool
+			wantExec     int32
+			wantCommit   int32
+			wantRollback int32
+		}{
+			{name: "begin", wantStage: "begin runtime reservation", failBegin: true},
+			{name: "lease insert", wantStage: "insert runtime lease", failExec: 1, wantExec: 1, wantRollback: 1},
+			{name: "reservation insert", wantStage: "insert runtime reservation", failExec: 2, wantExec: 2, wantRollback: 1},
+			{name: "root insert", wantStage: "insert runtime reservation root", failExec: 3, wantExec: 3, wantRollback: 1},
+			{name: "commit", wantStage: "commit runtime reservation", failCommit: true, wantExec: 5, wantCommit: 1},
+		}
+		for _, testCase := range cases {
+			t.Run(testCase.name, func(t *testing.T) {
+				fixture := newRuntimeReservationFixture(t, now)
+				cause := errors.New("injected " + testCase.name + " failure")
+				plan := &runtimeReservationFaultPlan{err: cause, failBegin: testCase.failBegin, failExec: testCase.failExec, failCommit: testCase.failCommit}
+				catalog := newRuntimeReservationFaultCatalog(t, plan)
+				_, err := catalog.AcquireRuntimeReservation(context.Background(), fixture.request)
+				if !errors.Is(err, cause) || !strings.Contains(err.Error(), testCase.wantStage) || plan.execCalls.Load() != testCase.wantExec || plan.commitCalls.Load() != testCase.wantCommit || plan.rollbackCalls.Load() != testCase.wantRollback || plan.pendingRows.Load() != 0 || plan.committedRows.Load() != 0 {
+					t.Fatalf("transaction error/exec/commit/rollback/pending/committed = %v/%d/%d/%d/%d/%d", err, plan.execCalls.Load(), plan.commitCalls.Load(), plan.rollbackCalls.Load(), plan.pendingRows.Load(), plan.committedRows.Load())
+				}
+			})
 		}
 	})
 }
