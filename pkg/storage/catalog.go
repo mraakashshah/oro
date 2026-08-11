@@ -13,7 +13,7 @@ import (
 )
 
 // CatalogSchemaVersion is the newest storage catalog schema understood by this binary.
-const CatalogSchemaVersion = 4
+const CatalogSchemaVersion = 5
 
 var (
 	// ErrCatalogCorrupt reports a catalog SQLite database that cannot be read safely.
@@ -516,6 +516,8 @@ func catalogTables() []catalogTable {
 	return []catalogTable{
 		{"weekly_dev_cache_schedule", `CREATE TABLE weekly_dev_cache_schedule (id TEXT PRIMARY KEY, due_at TEXT NOT NULL, updated_at TEXT NOT NULL)`},
 		{"runtime_leases", `CREATE TABLE runtime_leases (id TEXT PRIMARY KEY, namespace TEXT NOT NULL, controller_id TEXT NOT NULL, owner_id TEXT NOT NULL, pid INTEGER NOT NULL, process_start TEXT NOT NULL, acquired_at TEXT NOT NULL, heartbeat_at TEXT NOT NULL, released_at TEXT)`},
+		{"runtime_reservations", `CREATE TABLE runtime_reservations (id TEXT PRIMARY KEY, lease_id TEXT NOT NULL, task_id TEXT NOT NULL, run_id TEXT NOT NULL, bead_id TEXT NOT NULL, worker_id TEXT NOT NULL, assignment_id INTEGER NOT NULL UNIQUE, generation INTEGER NOT NULL, pid INTEGER NOT NULL, process_start_marker TEXT NOT NULL, executable TEXT NOT NULL, process_group INTEGER NOT NULL, manifest_path TEXT NOT NULL UNIQUE, workdir TEXT NOT NULL, state TEXT NOT NULL, retention_until TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`},
+		{"runtime_reservation_roots", `CREATE TABLE runtime_reservation_roots (reservation_id TEXT NOT NULL REFERENCES runtime_reservations(id) ON DELETE CASCADE, path TEXT PRIMARY KEY, class TEXT NOT NULL, disposition TEXT NOT NULL)`},
 		{"runtime_controllers", `CREATE TABLE runtime_controllers (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, pid INTEGER NOT NULL, process_start TEXT NOT NULL, identity_start TEXT NOT NULL DEFAULT '', executable TEXT NOT NULL DEFAULT '', process_group INTEGER NOT NULL DEFAULT 0, observed_epoch INTEGER NOT NULL, heartbeat_at TEXT NOT NULL)`},
 		{"runtime_pause_epochs", `CREATE TABLE runtime_pause_epochs (epoch INTEGER PRIMARY KEY, state TEXT NOT NULL, created_at TEXT NOT NULL)`},
 		{"runtime_pause_acknowledgements", `CREATE TABLE runtime_pause_acknowledgements (epoch INTEGER NOT NULL, controller_id TEXT NOT NULL, state TEXT NOT NULL, acknowledged_at TEXT NOT NULL, PRIMARY KEY (epoch, controller_id))`},

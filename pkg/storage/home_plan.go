@@ -67,6 +67,11 @@ func cleanOroHome(ctx context.Context, home string, apply bool) (OroHomeCleanupR
 		return OroHomeCleanupResult{}, fmt.Errorf("acquire Oro home cleanup lock: %w", err)
 	}
 	defer func() { _ = lock.Close() }()
+	root, err := os.OpenRoot(home)
+	if err != nil {
+		return OroHomeCleanupResult{}, fmt.Errorf("open Oro home cleanup root: %w", err)
+	}
+	defer func() { _ = root.Close() }()
 
 	entries, err := planOroHomeEntries(home, time.Now())
 	if err != nil {
@@ -78,7 +83,7 @@ func cleanOroHome(ctx context.Context, home string, apply bool) (OroHomeCleanupR
 	}
 	for index := range result.Entries {
 		entry := &result.Entries[index]
-		if err := removeOroHomeEntry(home, entry.Path); err != nil {
+		if err := removeOroHomeEntry(root, entry.Path); err != nil {
 			return OroHomeCleanupResult{}, err
 		}
 		entry.AfterBytes = 0
@@ -244,34 +249,29 @@ func selectedOroHomeEntries(byPath map[string]observedOroHomeEntry, logs []HomeL
 	return entries
 }
 
-func removeOroHomeEntry(home, relativePath string) error {
-	path := filepath.Join(home, relativePath)
-	validatedPath, err := validateOroHomeEntryPath(home, path)
+func removeOroHomeEntry(root *os.Root, relativePath string) error {
+	validatedPath, err := validateOroHomeEntryPath(root, relativePath)
 	if err != nil {
 		return err
 	}
-	if err := os.Remove(validatedPath); err != nil {
+	if err := root.Remove(validatedPath); err != nil {
 		return fmt.Errorf("remove Oro home entry %s: %w", relativePath, err)
 	}
 	return nil
 }
 
-func validateOroHomeEntryPath(home, candidate string) (string, error) {
-	relativePath, err := filepath.Rel(home, candidate)
-	if err != nil {
-		return "", fmt.Errorf("resolve Oro home deletion path: %w", err)
-	}
+func validateOroHomeEntryPath(root *os.Root, relativePath string) (string, error) {
 	if ClassifyOroHome(Entry{Path: filepath.ToSlash(relativePath)}) == RetentionPreserve {
 		return "", fmt.Errorf("refuse non-allowlisted Oro home deletion: %s", relativePath)
 	}
-	info, err := os.Lstat(candidate)
+	info, err := root.Lstat(relativePath)
 	if err != nil {
 		return "", fmt.Errorf("revalidate Oro home entry %s: %w", relativePath, err)
 	}
-	if info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+	if !info.Mode().IsRegular() {
 		return "", fmt.Errorf("refuse unsafe Oro home deletion: %s", relativePath)
 	}
-	return candidate, nil
+	return relativePath, nil
 }
 
 func canonicalOroHome(home string) (string, error) {

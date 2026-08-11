@@ -821,12 +821,125 @@ worker_ready_evidence_mutation_test_pattern() {
 	esac
 }
 
+storage_runtime_mutation_target() {
+	case "$1" in
+	pkg/storage/catalog.go | \
+		pkg/storage/runtime_budget.go | \
+		pkg/storage/runtime_identity.go | \
+		pkg/storage/runtime_manifest.go | \
+		pkg/storage/home_plan.go | \
+		pkg/storage/runtime_reservation.go)
+		return 0
+		;;
+	esac
+	return 1
+}
+
+storage_runtime_mutation_test_pattern() {
+	local file="$1"
+	local match="$2"
+	case "$file:$match" in
+	'pkg/storage/catalog.go:^(catalogTables)$')
+		printf '^TestOpenCatalogMigratesFoundationAndRuntimeSchema$'
+		;;
+	'pkg/storage/runtime_budget.go:^(CheckRuntimeBudget)$' | \
+		'pkg/storage/runtime_budget.go:^(Error)$' | \
+		'pkg/storage/runtime_budget.go:^(Unwrap)$' | \
+		'pkg/storage/runtime_budget.go:^(deniedRuntimeBudgetError)$' | \
+		'pkg/storage/runtime_budget.go:^(validateDiskUsage)$' | \
+		'pkg/storage/runtime_budget.go:^(validateRuntimeBudgetRequest)$' | \
+		'pkg/storage/runtime_budget.go:^(validateRuntimeBudgetRoot)$')
+		printf '^TestRuntimeBudgetAdmissionBoundaries$'
+		;;
+	'pkg/storage/runtime_identity.go:^(MatchesObserved)$' | \
+		'pkg/storage/runtime_identity.go:^(Validate)$' | \
+		'pkg/storage/runtime_identity.go:^(isUTCTimestamp)$' | \
+		'pkg/storage/runtime_identity.go:^(validateProcessIdentity)$')
+		printf '^TestRuntimeIdentityContract$'
+		;;
+	'pkg/storage/runtime_manifest.go:^(ReadRuntimeManifest)$' | \
+		'pkg/storage/runtime_manifest.go:^(WriteRuntimeManifestAtomic)$' | \
+		'pkg/storage/runtime_manifest.go:^(knownManifestState)$' | \
+		'pkg/storage/runtime_manifest.go:^(newRuntimeManifestAtomicOps)$' | \
+		'pkg/storage/runtime_manifest.go:^(publishRuntimeManifestAtomic)$' | \
+		'pkg/storage/runtime_manifest.go:^(rejectSymlinkComponents)$' | \
+		'pkg/storage/runtime_manifest.go:^(sameRuntimeManifestIdentity)$' | \
+		'pkg/storage/runtime_manifest.go:^(validManifestTransition)$' | \
+		'pkg/storage/runtime_manifest.go:^(validateManagedRoot)$' | \
+		'pkg/storage/runtime_manifest.go:^(validateManagedRoots)$' | \
+		'pkg/storage/runtime_manifest.go:^(validateManifestEvidence)$' | \
+		'pkg/storage/runtime_manifest.go:^(validateManifestPath)$' | \
+		'pkg/storage/runtime_manifest.go:^(validateManifestReplacement)$' | \
+		'pkg/storage/runtime_manifest.go:^(validateRuntimeManifest)$' | \
+		'pkg/storage/runtime_manifest.go:^(writeRuntimeManifestAtomic)$')
+		printf '^TestRuntimeManifestAtomicRoundTrip$'
+		;;
+	'pkg/storage/home_plan.go:^(cleanOroHome)$')
+		printf '^TestCleanOroHomeMutationGuards$'
+		;;
+	'pkg/storage/home_plan.go:^(removeOroHomeEntry)$' | \
+	'pkg/storage/home_plan.go:^(validateOroHomeEntryPath)$')
+		printf '^TestOroHomeCleanupOpenedRootConfinement$'
+		;;
+	'pkg/storage/runtime_reservation.go:^(AcquireRuntimeReservation)$' | \
+		'pkg/storage/runtime_reservation.go:^(Error)$' | \
+		'pkg/storage/runtime_reservation.go:^(ReleaseRuntimeReservation)$' | \
+		'pkg/storage/runtime_reservation.go:^(ReserveRuntime)$' | \
+		'pkg/storage/runtime_reservation.go:^(TransitionRuntimeReservation)$' | \
+		'pkg/storage/runtime_reservation.go:^(Unwrap)$' | \
+		'pkg/storage/runtime_reservation.go:^(ensureRuntimeReservationRootsAbsent)$' | \
+		'pkg/storage/runtime_reservation.go:^(newRuntimeReservationHooks)$' | \
+		'pkg/storage/runtime_reservation.go:^(reserveRuntimeWithHooks)$' | \
+		'pkg/storage/runtime_reservation.go:^(runtimeReservationCatalogFromContext)$' | \
+		'pkg/storage/runtime_reservation.go:^(runtimeReservationError)$' | \
+		'pkg/storage/runtime_reservation.go:^(validateRuntimeReservationHooks)$' | \
+		'pkg/storage/runtime_reservation.go:^(validateRuntimeReservationRequest)$')
+		printf '^TestRuntimeReservation(Request|Journal|Catalog)MutationOwner$'
+		;;
+	esac
+}
+
+storage_runtime_mutation_test_file() {
+	local file="$1"
+	local match="$2"
+	local test_pattern
+	test_pattern=$(storage_runtime_mutation_test_pattern "$file" "$match")
+	[[ -n "$test_pattern" ]] || return 0
+	case "$file" in
+	pkg/storage/catalog.go)
+		printf 'pkg/storage/catalog_foundation_test.go'
+		;;
+	pkg/storage/runtime_budget.go)
+		printf 'pkg/storage/runtime_budget_test.go'
+		;;
+	pkg/storage/runtime_identity.go)
+		printf 'pkg/storage/runtime_identity_test.go'
+		;;
+	pkg/storage/runtime_manifest.go)
+		printf 'pkg/storage/runtime_manifest_test.go'
+		;;
+	pkg/storage/home_plan.go)
+		case "$match" in
+		'^(cleanOroHome)$')
+			printf 'pkg/storage/home_plan_test.go'
+			;;
+		'^(removeOroHomeEntry)$' | '^(validateOroHomeEntryPath)$')
+			printf 'pkg/storage/export_test.go'
+			;;
+		esac
+		;;
+	pkg/storage/runtime_reservation.go)
+		printf 'pkg/storage/runtime_reservation_test.go'
+		;;
+	esac
+}
+
 function_sharded_mutation_target() {
 	local file="$1"
 	[[ "$file" == pkg/dispatcher/*.go || "$file" == pkg/storage/dev_schedule.go ||
 		"$file" == cmd/oro/cmd_start.go || "$file" == cmd/oro/cmd_monitor.go ||
 		"$file" == pkg/beadstore/sqlite.go || "$file" == pkg/worker/worker.go ||
-		"$file" == pkg/worker/ready_evidence.go ]]
+		"$file" == pkg/worker/ready_evidence.go ]] || storage_runtime_mutation_target "$file"
 }
 
 authoritative_mutation_test_pattern() {
@@ -1137,7 +1250,16 @@ targeted_test_pattern() {
 	local head="$2"
 	local file="$3"
 	local match="$4"
-	local assignment_admission_pattern assignment_bc_pattern authoritative_pattern cmd_pattern escalation_survivor_pattern p0_durability_pattern qg_classifier_decision_pattern qg_flow_control_pattern qg_store_lifecycle_pattern qg_target_attribution_pattern review_checkpoint_pattern review_integration_recovery_pattern review_worker_lifecycle_pattern split_branch_pattern startup_maintenance_pattern worker_ready_evidence_pattern
+	local assignment_admission_pattern assignment_bc_pattern authoritative_pattern cmd_pattern escalation_survivor_pattern p0_durability_pattern qg_classifier_decision_pattern qg_flow_control_pattern qg_store_lifecycle_pattern qg_target_attribution_pattern review_checkpoint_pattern review_integration_recovery_pattern review_worker_lifecycle_pattern split_branch_pattern startup_maintenance_pattern storage_runtime_pattern worker_ready_evidence_pattern
+	case "$file" in
+	pkg/storage/catalog.go | pkg/storage/home_plan.go | pkg/storage/runtime_budget.go | pkg/storage/runtime_identity.go | pkg/storage/runtime_manifest.go | pkg/storage/runtime_reservation.go)
+		storage_runtime_pattern=$(storage_runtime_mutation_test_pattern "$file" "$match")
+		if [[ -n "$storage_runtime_pattern" ]]; then
+			printf '%s' "$storage_runtime_pattern"
+		fi
+		return 0
+		;;
+	esac
 	worker_ready_evidence_pattern=$(worker_ready_evidence_mutation_test_pattern "$file" "$match")
 	if [[ -n "$worker_ready_evidence_pattern" ]]; then
 		printf '%s' "$worker_ready_evidence_pattern"
@@ -1386,7 +1508,10 @@ run_mutation_shard() {
 	local authoritative_cache_warm_timeout=""
 	local expected_source_hash=""
 	local shard_timeout=""
-	mutation_test_file=$(authoritative_mutation_test_file "$file" "$match")
+	mutation_test_file=$(storage_runtime_mutation_test_file "$file" "$match")
+	if [[ -z "$mutation_test_file" ]]; then
+		mutation_test_file=$(authoritative_mutation_test_file "$file" "$match")
+	fi
 	if [[ -z "$mutation_test_file" ]]; then
 		mutation_test_file=$(escalation_mutation_test_file "$file" "$match")
 	fi
@@ -1439,6 +1564,12 @@ run_mutation_shard() {
 	esac
 	if [[ -z "$match" ]]; then
 		write_shard_no_mutants "$result" "$index" "$file" "$match" "$test_pattern"
+		return
+	fi
+	if storage_runtime_mutation_target "$file" &&
+		[[ -z "$test_pattern" || -z "$mutation_test_file" ]]; then
+		write_shard_infrastructure "$result" "$index" "$file" "$match" "$test_pattern" 2 \
+			'storage mutation target has no deterministic test owner'
 		return
 	fi
 	if [[ "$file" == pkg/worker/worker.go || "$file" == pkg/worker/ready_evidence.go ]] &&
