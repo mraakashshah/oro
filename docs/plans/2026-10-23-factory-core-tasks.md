@@ -21,4 +21,6 @@ The first increment runs on `feature/factory-core`. Its acceptance establishes a
 
 Each native task contains its exact test command, inputs, expected behavior, source references, signatures and error boundaries. Each task uses a separate red/green cycle and atomic commit. Independent file scopes can proceed concurrently; overlapping edits and Git index mutations are serialized. The existing dispatcher is not used to execute this replacement work because its completion and recovery semantics are under evaluation.
 
+The engine acceptance also starts two actual controller processes through public `Run` for the same objective. While the first worker is blocked, the second must fail without adding attempts/events or starting an adapter; killing the owner must allow bounded resume. A direct lock-helper test alone cannot establish that the lifecycle acquires the lock.
+
 Final proof requires the end-to-end artifact test, all package tests with race detection and coverage, real CLI dispatch tests, formatting, lint, build, and assessment of the repository quality gate. Record actual results and any baseline failures; never replace the acceptance criterion with a weaker command to manufacture success.
