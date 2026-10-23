@@ -8,7 +8,7 @@ Build a small replacement lifecycle alongside the existing dispatcher. Given an 
 
 This increment is an experimental execution path for trusted command adapters in disposable or externally isolated repositories. It proves lifecycle correctness with real Git, SQLite, subprocesses, independent acceptance and failure injection. It does not establish hostile-code containment, general model competence, autonomous deployment, or recovery of the host itself. Those capabilities are prerequisites for a future live-factory cutover, not claims made by this increment. The existing factory is neither migrated nor replaced automatically.
 
-The demonstration must include an actual runnable artifact: a first attempt produces the wrong behavior, an external acceptance program detects it, the next attempt consumes the feedback and repairs it, an independent reviewer approves the exact candidate, and promotion occurs without operator intervention. Tests also stop execution after promotion but before durable completion, reopen the state, and establish idempotent recovery.
+The demonstration must include an actual runnable artifact: a first attempt produces the wrong behavior, an external acceptance program detects it, the next attempt consumes the feedback and repairs it, an independent reviewer approves the exact candidate, and promotion occurs without operator intervention. Execute the promoted artifact again from a fresh target checkout. Include an ignored worker build output that would mask incorrect committed source if the worker directory were reused. Tests also stop execution after promotion but before durable completion, reopen the state, and establish idempotent recovery.
 
 ## Current-source revalidation
 
@@ -28,7 +28,7 @@ Add `pkg/factory` and `oro factory run/status`. The public package surface is `R
 
 The package owns a separate SQLite database, immutable admitted specification, policy copies, evidence, and attempt worktrees beneath the explicit state directory. It never opens the live Oro task database or emits legacy DONE/READY messages. Dependencies are the standard library and existing `pkg/dbutil`; no dispatcher, worker, ops, storage, or processenv imports. A structural test enforces that boundary.
 
-One exclusive OS file lock per objective guards the lifecycle; a second runner fails clearly without modifying state. SQLite uses full synchronous durability and transactional state/event updates. The durable snapshot has a revision; updates require the expected revision. File-lock ownership is released by the OS on process death. This coordinates cooperating controllers, not hostile same-user programs.
+One exclusive OS file lock per objective guards the lifecycle; a second runner fails clearly without modifying state. SQLite uses full synchronous durability and transactional state/event updates. Configure and verify FULL on the actual connection used for transitions, rather than assuming the shared opener supplies it. The durable snapshot has a revision; updates require the expected revision. File-lock ownership is released by the OS on process death. Test two controller processes and release after controller death. This coordinates cooperating controllers, not hostile same-user programs.
 
 ### Alternatives
 
@@ -64,7 +64,7 @@ The absolute deadline is computed and persisted once at admission. It does not m
 
 ## Process protocol
 
-Programs receive one JSON document on stdin, never an interpolated shell command. The working directory is the relevant candidate worktree. Input fields are `objective`, `attempt`, `worktree`, `candidate_sha`, `base_sha`, and `feedback`. For the worker, `candidate_sha` is empty. The worker edits files and must not commit; the core commits its changes after successful exit. Arguments are literal argv from the admitted policy.
+Programs receive one JSON document on stdin, never an interpolated shell command. The worker runs in its attempt worktree. Acceptance and review each run in a separate, newly created pristine detached checkout of the recorded candidate SHA; neither reuses the worker directory or the other checker's directory. Input fields are `objective`, `attempt`, `worktree`, `candidate_sha`, `base_sha`, and `feedback`. For the worker, `candidate_sha` is empty. The worker edits files and must not commit; the core commits its changes after successful exit. Arguments are literal argv from the admitted policy.
 
 Strip inherited `ORO_*` and `GIT_*` identity/override variables. Give each attempt private temporary/cache paths, disable interactive Git editors, and cap captured stdout and stderr at 1 MiB each. Exceeding the cap fails the step; do not parse truncated output as success. Apply the smaller of the remaining objective deadline and step timeout. Cancellation/timeout kills the subprocess group and waits for termination. Retain bounded diagnostics in durable feedback.
 
@@ -93,8 +93,8 @@ The snapshot records immutable spec/policy identity, created/deadline timestamps
 1. **Reserve attempt:** before spawning or creating a worktree, atomically increment attempts and enter `running`. If attempts are exhausted or the deadline has elapsed, persist `failed` and spawn nothing.
 2. **Prepare:** resolve the current target SHA and create a unique detached worktree for this attempt. Never reuse an interrupted attempt's writable worktree. Preserve previous worktrees for diagnosis.
 3. **Implement:** execute worker. On success, stage its edits and create a core-owned commit if there are changes. A no-change candidate is valid if acceptance proves the objective already holds. Persist `candidate` and immutable SHA.
-4. **Accept:** run the frozen acceptance policy against that SHA. Check the worktree is clean and still at the candidate before and after execution. Persist valid evidence and `accepted` only on success.
-5. **Review:** similarly run review, require exact identity, and persist `approved` with both evidence records present. Any mutation invalidates the attempt.
+4. **Accept:** create a pristine detached checkout of that SHA and run the frozen acceptance policy there. Check tracked content and HEAD against the candidate before and after execution. Persist valid evidence and `accepted` only on success. Ignored/untracked worker artifacts must never be present in this checkout; checker-created outputs are never promoted or reused by another checker.
+5. **Review:** create another pristine detached checkout of the same SHA, run review, require exact identity, and persist `approved` with both evidence records present. Any tracked mutation or HEAD movement invalidates the attempt. Checker-generated files cannot carry into another stage.
 6. **Prepare promotion:** in one transaction verify candidate/base/policy/evidence identities and persist `promoting` with expected old target SHA and proposed new SHA.
 7. **Promote:** recheck policy identity, object identity, ancestry and that the target is not checked out. Run `git update-ref refs/heads/<target> <candidate> <expected-old>`. No blind ref update, rebase after approval, checkout of the primary tree, push, or cleanup in this operation.
 8. **Complete:** after proving the target equals the candidate, persist `completed`. Return the accepted commit and attempt count. Re-running completed work validates the recorded artifact exists and returns its stored receipt; it does not execute work again.
@@ -153,12 +153,12 @@ The epic acceptance command on the integrated feature branch is `go test ./pkg/f
 | Task | Files | Named acceptance test and required result |
 | --- | --- | --- |
 | 1. Admit immutable objectives | `contract.go`, `contract_test.go` | `TestAdmissionContract`: reject invalid JSON/paths/limits/policies; changed spec cannot resume |
-| 2. Persist bounded attempts | `store.go`, `store_test.go` | `TestDurableAttemptBudget`: reopen DB after failure; attempts/deadline unchanged; no fourth attempt; stale revision rejected |
-| 3. Snapshot Git candidates | `git.go`, `git_test.go` | `TestCandidateIsolation`: real repository, detached unique worktrees, core commit, clean exact candidate, checked-out target rejected |
+| 2. Persist bounded attempts | `store.go`, `store_test.go` | `TestDurableAttemptBudget`: reopen DB after failure; attempts/deadline unchanged; no fourth attempt; stale revision rejected; verify FULL durability and process-level objective exclusion/release |
+| 3. Snapshot Git candidates | `git.go`, `git_test.go` | `TestCandidateIsolation`: real repository, detached unique worktrees, core commit, separate pristine evidence checkouts, ignored worker output excluded, checked-out target rejected |
 | 4. Promote by compare-and-swap | `git.go`, `git_test.go` | `TestPromotionCAS`: external target advance is preserved; no automatic cleanup; no rebase after evidence |
 | 5. Bound command execution | `runner.go`, `runner_test.go` | `TestBoundedExecution`: nonzero, timeout, cancellation, overflow and inherited identity cannot produce success |
 | 6. Validate exact receipts | `receipts.go`, `receipts_test.go` | `TestCandidateReceipts`: reject missing/wrong SHA, missing checks, malformed/trailing JSON, errors with positive verdict |
-| 7. Drive automatic repair | `engine.go`, `engine_test.go` | `TestFactoryAutonomousDeliveryRecovery`: wrong runnable artifact is repaired from independent failure feedback, reviewed and promoted without operator action |
+| 7. Drive automatic repair | `engine.go`, `engine_test.go` | `TestFactoryAutonomousDeliveryRecovery`: wrong runnable artifact with misleading ignored worker output is independently rejected, repaired from feedback, reviewed and promoted; fresh checkout of delivered target executes correct behavior |
 | 8. Reconcile interrupted promotion | `engine.go`, `recovery_test.go` | `TestRestartPromotion`: crash before/after CAS, reopen state, no duplicate effect, stale policy rejected, original budget enforced |
 | 9. Expose CLI lifecycle | `cmd/oro/cmd_factory.go`, `root.go`, `cmd_factory_test.go` | `TestFactoryCLI`: real command dispatch invokes new core, reports completed/failed/status correctly; no legacy task-state mutation |
 
