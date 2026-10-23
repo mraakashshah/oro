@@ -7,6 +7,9 @@ operators, and future agents.
 
 - `INSTALL.md` - install and contributor setup instructions.
 - `dev-setup.md` - local development toolchain notes.
+- [Staff engineer evaluation guide](staff-engineer-evaluation-guide.md) -
+  evidence, failure drills, and decision criteria for evaluating Oro as a
+  trustworthy software factory.
 - `decisions&discoveries.md` - long-lived project decisions and discoveries.
 - `plans/` - active design docs, specs, and implementation plans.
 - `plans/done/` - completed plans retained as historical context.
