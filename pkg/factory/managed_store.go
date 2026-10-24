@@ -460,16 +460,19 @@ func validateManagedScope(scope ScopeHandle) error {
 func loadManagedScope(ctx context.Context, reader managedRowReader, scope ScopeHandle) (managedScopeRecord, error) {
 	var record managedScopeRecord
 	var body []byte
-	err := reader.QueryRowContext(ctx, "SELECT body,phase,pid,pgid,cleanup FROM managed_scopes WHERE id=?", scope.ID).
-		Scan(&body, &record.Phase, &record.PID, &record.PGID, &record.CleanupEvidence)
+	// Slice the BLOB before scanning so corrupt oversized storage cannot force
+	// an unbounded JSON allocation. The extra byte makes overflow detectable.
+	err := reader.QueryRowContext(ctx, "SELECT id,nonce,backend,name,substr(CAST(body AS BLOB),1,2049),phase,pid,pgid,cleanup FROM managed_scopes WHERE id=?", scope.ID).
+		Scan(&record.ID, &record.Nonce, &record.Backend, &record.Name, &body, &record.Phase, &record.PID, &record.PGID, &record.CleanupEvidence)
 	if err != nil {
-		return record, fmt.Errorf("read managed scope: %w", err)
+		return managedScopeRecord{}, fmt.Errorf("read managed scope: %w", err)
 	}
-	if err := json.Unmarshal(body, &record); err != nil {
-		return record, fmt.Errorf("decode managed scope: %w", err)
+	record, err = decodeManagedScopeRecord(record, body)
+	if err != nil {
+		return managedScopeRecord{}, err
 	}
 	if record.ScopeHandle != scope {
-		return record, errors.New("managed scope identity or generation does not match")
+		return managedScopeRecord{}, errors.New("managed scope identity or generation does not match")
 	}
 	return record, nil
 }
@@ -639,7 +642,7 @@ func (j *managedJournal) Observe(ctx context.Context, scope ScopeHandle) (ScopeO
 func (j *managedJournal) scopes(ctx context.Context) ([]managedScopeRecord, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	rows, err := j.conn.QueryContext(ctx, "SELECT body,phase,pid,pgid,cleanup FROM managed_scopes ORDER BY id")
+	rows, err := j.conn.QueryContext(ctx, "SELECT id,nonce,backend,name,substr(CAST(body AS BLOB),1,2049),phase,pid,pgid,cleanup FROM managed_scopes ORDER BY id")
 	if err != nil {
 		return nil, fmt.Errorf("list managed scopes: %w", err)
 	}
@@ -648,11 +651,12 @@ func (j *managedJournal) scopes(ctx context.Context) ([]managedScopeRecord, erro
 	for rows.Next() {
 		var record managedScopeRecord
 		var body []byte
-		if err := rows.Scan(&body, &record.Phase, &record.PID, &record.PGID, &record.CleanupEvidence); err != nil {
+		if err := rows.Scan(&record.ID, &record.Nonce, &record.Backend, &record.Name, &body, &record.Phase, &record.PID, &record.PGID, &record.CleanupEvidence); err != nil {
 			return nil, fmt.Errorf("read scope listing: %w", err)
 		}
-		if err := json.Unmarshal(body, &record); err != nil {
-			return nil, fmt.Errorf("decode scope listing: %w", err)
+		record, err = decodeManagedScopeRecord(record, body)
+		if err != nil {
+			return nil, err
 		}
 		records = append(records, record)
 	}
