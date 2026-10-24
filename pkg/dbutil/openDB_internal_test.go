@@ -18,6 +18,11 @@ type sqliteCodeError int
 func (e sqliteCodeError) Error() string { return fmt.Sprintf("sqlite error %d", e) }
 func (e sqliteCodeError) Code() int     { return int(e) }
 
+type unsetSQLiteTargetError struct{}
+
+func (unsetSQLiteTargetError) Error() string { return "matched without setting target" }
+func (unsetSQLiteTargetError) As(any) bool   { return true }
+
 func TestRetrySQLiteBusyStopsAtDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
 	defer cancel()
@@ -92,6 +97,8 @@ func TestIsSQLiteBusyClassifiesOnlyBusyCodeFamily(t *testing.T) {
 		{name: "locked", err: sqliteCodeError(6), want: false},
 		{name: "plain error", err: errors.New("plain"), want: false},
 		{name: "nil", err: nil, want: false},
+		{name: "unset target", err: unsetSQLiteTargetError{}, want: false},
+		{name: "wrapped unset target", err: fmt.Errorf("wrapped: %w", unsetSQLiteTargetError{}), want: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

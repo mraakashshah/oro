@@ -104,7 +104,7 @@ func retrySQLiteBusy(ctx context.Context, operation func() error) error {
 
 func isSQLiteBusy(err error) bool {
 	var sqliteErr interface{ Code() int }
-	return errors.As(err, &sqliteErr) && sqliteErr.Code()&0xff == sqliteBusyCode
+	return errors.As(err, &sqliteErr) && sqliteErr != nil && sqliteErr.Code()&0xff == sqliteBusyCode
 }
 
 // withBusyTimeout configures modernc SQLite's per-connection busy handler.
