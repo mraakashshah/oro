@@ -12,6 +12,8 @@ operators, and future agents.
 - `plans/done/` - completed plans retained as historical context.
 - `plans/notes/` - supporting notes, inventories, and spike reports for plans.
 - `runbooks/` - current operator procedures.
+- [Experimental factory core](runbooks/factory-core.md) - autonomous objective
+  execution, adapter contracts, restart behavior, and proof limits.
 - `runbooks/drills/` - recovery and operations drill records.
 - `runbooks/incidents/` - incident writeups and blockers.
 - `runbooks/logs/` - dated operator logs.

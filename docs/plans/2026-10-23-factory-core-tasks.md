@@ -18,6 +18,8 @@ The first increment runs on `feature/factory-core`. Its acceptance establishes a
 | `oro-fc-engine` | Drive autonomous repair and delivery | budget, lock, cas, receipts | `TestFactoryAutonomousDeliveryRecovery` |
 | `oro-fc-recovery` | Reconcile interrupted promotion | engine | `TestRestartPromotion` |
 | `oro-fc-cli` | Wire run/status into the real CLI | recovery | `TestFactoryCLI` |
+| `oro-fc-root` | Reject nested repository admission before side effects | engine | `TestRepositoryRootAdmission` |
+| `oro-fc-git-bounds` | Bound Git filters and descendants by the objective deadline | engine | `TestFactoryGitBounds` |
 
 Each native task contains its exact test command, inputs, expected behavior, source references, signatures and error boundaries. Each task uses a separate red/green cycle and atomic commit. Independent file scopes can proceed concurrently; overlapping edits and Git index mutations are serialized. The existing dispatcher is not used to execute this replacement work because its completion and recovery semantics are under evaluation.
 

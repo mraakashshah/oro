@@ -1,5 +1,29 @@
 # Decisions and Discoveries
 
+## 2026-10-23: Prove a replacement factory lifecycle alongside the dispatcher
+
+**Tags:** #factory #autonomy #durability #acceptance #recovery
+
+**Context:** Oro's production paths have useful worker and Git primitives, but
+multiple completion paths and partial evidence integration make autonomous
+delivery difficult to establish. The target is a factory that repairs routine
+failures without a human operator.
+
+**Decision:** Add an opt-in `pkg/factory` lifecycle and `oro factory run/status`
+with one durable evidence-to-promotion path. Reuse `dbutil`; avoid imports from
+the old orchestrator. Freeze the objective and policies, reserve lifetime
+attempts before work, verify separate pristine candidate checkouts, and promote
+by expected-old-SHA CAS. Persist promotion intent before the external effect so
+restart can distinguish interrupted work from a completed Git mutation.
+
+**Implications:** The initial path proves autonomous repair and reconciliation
+with trusted command adapters and disposable or externally isolated repositories.
+It does not migrate the live dispatcher. Production cutover requires actual
+execution isolation, automatic controller supervision, real-model trials, and
+longer unattended recovery evidence. See the
+[design](plans/2026-10-23-factory-core-design.md) and
+[usage guide](runbooks/factory-core.md).
+
 ## 2026-07-18: Start-path tests must isolate CODEX_HOME, not just ORO_HOME
 **Tags:** #testing #isolation #codex #hooks #hermetic #defense-in-depth
 **Context:** A stale hooks block pointing at a deleted `/tmp/oro-subprocess/.../oro-home/hooks`
