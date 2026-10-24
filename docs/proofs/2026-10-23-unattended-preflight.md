@@ -438,8 +438,41 @@ This codec test does not replace the separate conservative core admission gate.
 All these components passed package lint and independent source review. Logs
 remain under `/private/tmp/oro-factory-verify-ldhnhnvl`, including `source-links-*`,
 `git-links-*`, `transport-t4-*`, `transport-t1b-*`, `git-presence-*` and
-`transport-t6a-*`. Native large transfer, real capacity, complete Oro delivery,
-managed execution/recovery and sustained fault qualification remain required.
+`transport-t6a-*`.
+
+Commit `12abedb9` adds historical capacity-ledger regressions. Old active and
+released reservations retain their exact canonical ledger/bootstrap identities
+when new execution or a top-up is denied. Missing execution state cannot release
+an old charge; a fresh objective succeeds with sufficient independently computed
+capacity. Final race passed in 1.686 seconds and independent race in 1.664 seconds.
+
+Commit `9fcb5045` adds the actual native 32 MiB binary round-trip through launchd
+and real Git. A fresh Statfs probe and the serialized allocator reserved
+8,407,095,296 bytes with a separate 1 GiB free-space margin. The input and returned
+output share SHA-256
+`d3a1bd28eba27b766ac3f76d348eba04bf40fd89a9e313e0ec0c0311bfb01a71`.
+The largest encoded request was 44,740,284 bytes; retained logical files totaled
+201,018,202 bytes. Both authenticated process groups were positively absent before
+the production release predicate released the unchanged reservation tuple. Both
+spent H tokens remained in the journal. Native race passed in 30.285 seconds,
+with 9.120 seconds spent in the round-trip; package lint passed. Root verified
+the retained artifact hashes, journal rows and group absence independently.
+
+The test process's OS RSS high-water mark was 1,423,130,624 bytes. Wrapper RSS
+samples reached 298,696,704 and 222,101,504 bytes at a 20 ms sampling interval;
+these samples are not proven process peaks or hard memory limits. Evidence is in
+`host-bulk-native.log`, `host-bulk-native-result.json` and
+`host-bulk-678148128/receipt.json` under the verification directory. Native evidence
+uses source hash `5002405d59005b8213f8406c102864e89c767422fcbdee3100ebed9f20e016c4`;
+the committed formatting-only revision has hash
+`a0f64e25d32d72a7ba073d67b38c31fc6537659e12396ed004dc1951803ad199`
+and passed the pinned formatter and compilation. This fixture seeds private
+journal rows; it proves transport and actual allocation, not public startup.
+
+The full factory package race/shuffle run after the transport changes passed in
+254.366 seconds with 88.7% statement coverage (`transport-core-integrated.log`).
+Large-transfer faults, complete Oro delivery, managed execution/recovery and
+sustained fault qualification remain required.
 
 ## Remaining evidence
 
