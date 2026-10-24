@@ -508,9 +508,40 @@ lint and the pinned formatter passed. Evidence is `docker-volume-state-seal.log`
 This is journal component evidence. The create/inspect adapter, real CLI reader,
 keeper/source integration and daemon lost-acknowledgment recovery remain required.
 Review also identified the same JSON lifecycle overwrite in the shared scope
-loader outside the locally guarded volume path. `oro-mf-scope-integrity` tracks
-that repair and blocks qualification; no candidate access to the journal was
-demonstrated, and the separate final reservation-release reader rejects it.
+loader outside the locally guarded volume path. Commit `8364dfd9` separates
+canonical identity decoding from authoritative lifecycle columns. Behavioral
+regressions demonstrated false grants, false quiescence and reopened cleanup
+permits before the repair. Author race passed in 17.680 seconds and independent
+race in 17.802 seconds; both decoder functions and the loader have 100% statement
+coverage. The real launchd bulk and fault regressions passed again in 61.383
+seconds with unchanged relevant source hashes. Root checked all seven new groups
+absent and all seven spent tokens retained. Evidence is `scope-integrity-final`,
+`scope-integrity-root` and `scope-integrity-native` logs under the verification
+directory. No candidate journal-write capability was demonstrated; final release
+already used a separate canonical reader.
+
+Commit `52d4e3a9` applies the same validation before both cleanup exclusion
+filters, so an invalid kind or backend column cannot hide a live helper or host.
+All three reported paths failed their behavioral regressions before repair.
+Author race passed in 17.915 seconds and independent race in 20.621 seconds;
+package lint, formatting and independent review passed. Evidence uses the
+`cleanup-scope-integrity-*` log prefix. The stricter guard also exposed two older
+volume test fixtures that failed on malformed setup before reaching their intended
+budget/exclusion checks; test-only fixture repairs remain tracked under the volume
+intent task.
+
+Commit `2e9c8961` adds the private create/inspect adapter and scalar configuration
+reader contract. It emits fixed commands, acknowledges only its own trusted
+invocation after exact retirement, and preserves uncertainty after failed
+completion. Inspection binds exact lifetime without claiming quiescence. Review
+reproduced and repaired an unbounded prepared configuration reread and a missing
+`o=` driver-option key; the latter now has an independently parsed option-map test.
+Final affected race passed in 21.379 seconds; root's full review run passed in
+18.391 seconds and the final command regressions in 1.904 seconds. New production
+coverage is 233/250 statements (93.20%); package lint and independent review passed.
+Evidence uses `docker-volume-adapter-options-*` and `docker-volume-options-root`.
+These tests use a recording trusted runtime. Actual Docker lifecycle integration,
+the CLI reader producer, keeper continuity and daemon recovery remain required.
 
 ## Remaining evidence
 

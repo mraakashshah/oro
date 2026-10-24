@@ -1,6 +1,6 @@
 # Unattended factory task graph
 
-Design: [unattended factory design](2026-10-23-unattended-factory-design.md), Gate 1 PASS. Gate 2 PASS after independent review and two contract repairs. Native parent: `oro-factory-managed`, under `oro-factory-autonomy`. There are now 62 tracked nodes below the managed epic, including host capacity's seven children, cleanup runtime's seven children and two wiring grandchildren, container transport/readiness, managed file identity, and CLI start's immutable admission view. Later integration findings remain qualification blockers until their protocols and tests are accepted.
+Design: [unattended factory design](2026-10-23-unattended-factory-design.md), Gate 1 PASS. Gate 2 PASS after independent review and two contract repairs. Native parent: `oro-factory-managed`, under `oro-factory-autonomy`. There are now 63 tracked nodes below the managed epic, including host capacity's seven children, cleanup runtime's seven children and two wiring grandchildren, container transport/readiness, managed file identity, and CLI start's immutable admission view. Later integration findings remain qualification blockers until their protocols and tests are accepted.
 
 Every task inherits the design's authority, budget, platform, and operational requirements. Root owns Git integration; implementers use test-first RED/GREEN and report frozen files. Keep full-gate blockers visible until resolved. Component success does not close the parent.
 
@@ -777,3 +777,13 @@ these components do not establish unattended storage or factory readiness.
 
 The volume-intent path already validates referenced records locally. This task
 closes the shared loader and duplicated listing path used outside that component.
+
+## oro-mf-cleanup-scope-filters: Validate scope records before cleanup exclusion
+
+- Read: `managed_cleanup.go`: `requireNoManagedCleanup`, `requireCleanupHostQuiescence`, `loadCleanupPermit`; `managed_scope_decode.go`: `decodeManagedScopeRecord`.
+- Signature: retain both exclusion APIs; scan bounded complete scope rows and decode them before applying kind, backend, phase or self predicates.
+- Test: `pkg/factory/managed_cleanup_integrity_test.go:TestManagedCleanupScopeIntegrity`.
+- Cmd: `GOTOOLCHAIN=go1.26.10 go test -race ./pkg/factory -run '^TestManagedCleanupScopeIntegrity$|^TestManagedScopeIntegrity$|^TestManagedCleanupAuthority$|^TestManagedDockerVolumeIntent$' -count=1 -timeout=180s` through the protected harness.
+- Assert: noncanonical cleanup kind cannot hide a live helper; mismatched backend cannot hide an unretired host at cleanup admission or permit/grant recheck. Rejection preserves all rows, tokens, permits and events. Canonical Docker targets, retired peers and except-self behavior remain valid.
+- Edges: no candidate journal-write access claimed; no new schema, budget, lifecycle or native action. Validate excluded rows too.
+- Depends on: `oro-mf-scope-integrity`, `oro-mf-cleanup-authority`. The managed epic and qualification explicitly depend on this repair.
