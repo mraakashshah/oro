@@ -493,6 +493,18 @@ flags are permitted. Children inherit the authenticated outer job's process
 group and original deadline. Existing PUBLISHED and retirement checks bind the
 bounded typed result before core consumes it.
 
+Trusted launchd configuration carries the exact runtime-config path and digest.
+Both absent preserves ordinary host/observer construction and disables cleanup;
+a partial or malformed pair is rejected. Cleanup validation reads the frozen
+artifact and compares its root, objective, Oro/Git identities, repository, target
+ref, hard stop, and cleanup allowance with trusted launchd configuration. The
+permit additionally binds policy, objective labels, and Docker context. Before
+launch effects, the runtime reads the current reserved permit and requires its
+exact canonical bytes, scope, and deadline in the fixed helper invocation.
+The existing authenticated grant rechecks authority before GO, and the helper
+checks it before every Docker child. Configuration validation and native launchd
+integration are separate tracked children; neither grants new scope authority.
+
 Resource creation intent precedes the Docker call and records its exact name,
 labels, image/deadline, and mount or volume configuration. Storage binds returned
 identity with a one-way CAS. Container ID is lifetime identity; a changed

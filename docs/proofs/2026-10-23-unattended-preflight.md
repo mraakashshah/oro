@@ -270,7 +270,8 @@ cleanup/journal, release, and adapter race tests passed in 5.194, 1.972, and
 factory/CLI package lint passed. The allocator had 92.9% coverage and its public
 getter/decoder/target checks had 100%. C is supervisor recovery authority after
 controller retirement; a live controller uses ordinary H for routine retirement.
-The fixed Docker helper and launchd wiring remain separate required work.
+The fixed Docker helper is verified below; production launchd wiring remains
+separate required work.
 
 Commit `51df7500` defines and reads the frozen runtime configuration and exact
 private Docker context snapshot. It verifies canonical bytes, hashes, file and
@@ -305,6 +306,50 @@ coverage. Evidence is `factory-core-components.log` and
 `factory-core-components.cover` under the verification directory above. This
 checks the combined core changes; live Docker/launchd integration and unattended
 delivery remain separate operational qualification requirements.
+
+Commit `56044245` constrains cleanup to exact Docker inspect, stop, and remove
+commands with complete ownership binding. Independent race tests passed in
+1.663 seconds and adversarial checks in 1.485 seconds; production coverage was
+95.36%, with CLI package lint passing. Native exact-object missing diagnostics
+were measured before encoding the absence parser.
+
+Commit `eb8d737d` adds the read-only immutable admission view needed by CLI
+publication. It verifies frozen artifacts, then compares the committed journal
+and snapshot identities in a read-only transaction. Independent race tests
+passed in 10.580 seconds; author acceptance and architecture checks passed in
+15.300 seconds, with 94.12% production coverage and package lint passing. It does
+not initialize admission or authorize activation. Preparing/armed/aborted
+activation and the runtime bundle publisher remain required work.
+
+Native volume inspection exposed a local-offset timestamp that the original
+strict ownership comparison rejected. Commits `898c56a1` and `1e209868` normalize
+daemon timestamps to the exact UTC instant at ingestion; persisted permits and
+results remain strictly canonical. Independent race runs passed in 1.300 and
+1.793 seconds. The new normalizer and ingestion statements had 100% coverage;
+factory and CLI lint passed. A different instant or malformed/excess-precision
+timestamp still fails before mutation.
+
+Commit `48d7e432` adds the hidden frozen-Oro cleanup helper. It reopens durable
+authority and rechecks the identical permit, granted process group, immutable
+runtime artifacts, and original deadline before every fixed Docker child and
+result. Real inherited stdin on Darwin required an owned nonblocking descriptor
+duplicate to support deadlines; tests cover cancellation, closure, flag
+restoration, and withheld EOF without spawning Docker.
+
+The helper's independent protected race run passed in 29.032 seconds. The final
+actual-binary native suite passed in 30.439 seconds, with 90.80% helper production
+coverage and CLI lint passing. Under an environment containing only PATH,
+LC_ALL, and LANG, it stopped an owned running container, removed another, and
+removed an owned tmpfs volume after the original work deadline. The volume's raw
+`2026-10-24T02:08:11-04:00` identity became `2026-10-24T06:08:11Z`. Each result
+decoded against its exact permit with mutation acknowledgment; foreign sentinel
+inspection bytes stayed unchanged, and all owned fixtures were retired.
+
+Evidence is `cleanup-helper-independent.log`, `cleanup-helper-final-native.log`,
+and the latter's `-result.json` and `.out` files under the verification directory.
+This fixture seeds valid admitted journal/PGID state. It proves the real helper
+and Docker operations, not the still-pending production launchd invocation,
+supervisor recovery, or public activation path.
 
 ## Remaining evidence
 
