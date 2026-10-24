@@ -24,6 +24,7 @@ func TestManagedDockerVolumeCreate(t *testing.T) {
 	t.Run("prepared reader inherits original invocation deadline", testDockerAdapterPreparedReaderDeadline)
 	t.Run("concurrent prepared consumers dispatch once", testDockerAdapterConcurrentPrepared)
 	t.Run("every call reopens the exact verified configuration", testDockerAdapterConfigReread)
+	t.Run("readiness helper identity cannot drift", testDockerAdapterOroReread)
 	t.Run("inactive dependencies and ownership never invoke", testDockerAdapterInactive)
 	t.Run("local driver options encode exact keys and values", testDockerAdapterDriverOptions)
 }
@@ -197,6 +198,26 @@ func testDockerAdapterConfigReread(t *testing.T) {
 	}
 }
 
+func testDockerAdapterOroReread(t *testing.T) {
+	for _, field := range []string{"path", "hash"} {
+		t.Run(field, func(t *testing.T) {
+			f := newDockerAdapterFixture(t, nil)
+			before := dockerVolumeCounts(t, f.journal)
+			if field == "path" {
+				f.config.OroPath += "-changed"
+			} else {
+				f.config.OroSHA256 = strings.Repeat("e", 64)
+			}
+			if _, err := f.adapter.createVolume(t.Context()); err == nil {
+				t.Fatal("changed readiness helper identity accepted")
+			}
+			if after := dockerVolumeCounts(t, f.journal); after != before || len(f.runtime.calls) != 0 {
+				t.Fatal("helper identity drift had effects")
+			}
+		})
+	}
+}
+
 func testDockerAdapterPreparedReaderDeadline(t *testing.T) {
 	f := newDockerAdapterFixture(t, nil)
 	f.deadline = time.Now().UTC().Add(time.Second)
@@ -312,6 +333,7 @@ func newDockerAdapterFixture(t *testing.T, change func(*ManagedSpec)) *dockerAda
 	f := &dockerAdapterFixture{dockerVolumeFixture: dockerVolumeFixture{root, manifest, journal, generation, time.Now().UTC().Add(30 * time.Second)}}
 	f.config = ManagedDockerConfig{
 		StateRoot: root, ObjectiveID: spec.ID, PolicyHash: manifest.PolicyHash, Deadline: manifest.Deadline, HardStop: manifest.HardStop,
+		OroPath: "/usr/local/bin/oro", OroSHA256: strings.Repeat("d", 64),
 		RuntimeConfigPath: filepath.Join(root, spec.ID, "runtime", "runtime.json"), RuntimeConfigSHA256: strings.Repeat("a", 64), DockerPath: "/opt/homebrew/Cellar/docker/29.9.2/bin/docker", DockerSHA256: strings.Repeat("b", 64), DockerConfig: filepath.Join(root, spec.ID, "runtime", "docker"), DockerContext: spec.Runtime.DockerContext, DockerEndpoint: "unix:///private/tmp/admitted-docker.sock",
 	}
 	f.runtime = &dockerAdapterRuntime{t: t, journal: journal}
@@ -499,6 +521,10 @@ func testDockerAdapterPrepared(t *testing.T) {
 func testDockerAdapterConfig(t *testing.T) {
 	f := newDockerAdapterFixture(t, nil)
 	mutations := map[string]func(*ManagedDockerConfig){"root": func(c *ManagedDockerConfig) { c.StateRoot += "-other" }, "objective": func(c *ManagedDockerConfig) { c.ObjectiveID = "other" }, "policy": func(c *ManagedDockerConfig) { c.PolicyHash = strings.Repeat("b", 64) }, "deadline": func(c *ManagedDockerConfig) { c.Deadline = c.Deadline.Add(time.Second) }, "hardstop": func(c *ManagedDockerConfig) { c.HardStop = c.HardStop.Add(time.Second) }, "artifact": func(c *ManagedDockerConfig) { c.RuntimeConfigPath += ".other" }, "digest": func(c *ManagedDockerConfig) { c.RuntimeConfigSHA256 = "invalid" }, "docker": func(c *ManagedDockerConfig) { c.DockerPath = "docker" }, "docker hash": func(c *ManagedDockerConfig) { c.DockerSHA256 = "invalid" }, "snapshot": func(c *ManagedDockerConfig) { c.DockerConfig += ".other" }, "context": func(c *ManagedDockerConfig) { c.DockerContext = "default" }, "endpoint": func(c *ManagedDockerConfig) { c.DockerEndpoint = "tcp://127.0.0.1:2375" }}
+	mutations["oro empty"] = func(c *ManagedDockerConfig) { c.OroPath = "" }
+	mutations["oro relative"] = func(c *ManagedDockerConfig) { c.OroPath = "oro" }
+	mutations["oro unclean"] = func(c *ManagedDockerConfig) { c.OroPath = "/usr/local/../bin/oro" }
+	mutations["oro hash"] = func(c *ManagedDockerConfig) { c.OroSHA256 = "invalid" }
 	for name, mutate := range mutations {
 		t.Run(name, func(t *testing.T) {
 			config := f.config

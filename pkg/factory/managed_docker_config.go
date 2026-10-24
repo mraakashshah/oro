@@ -11,17 +11,18 @@ import (
 
 // ManagedDockerConfig is the immutable scalar result of the trusted artifact
 // reader. It carries identities, not authority to initialize or grant a scope.
-// DockerPath is the original admitted executable, never an additional copy.
+// DockerPath and OroPath are verified artifact inputs, never additional copies.
 type ManagedDockerConfig struct {
 	StateRoot, ObjectiveID, PolicyHash     string
 	Deadline, HardStop                     time.Time
 	RuntimeConfigPath, RuntimeConfigSHA256 string
+	OroPath, OroSHA256                     string
 	DockerPath, DockerSHA256, DockerConfig string
 	DockerContext, DockerEndpoint          string
 }
 
 // ManagedDockerConfigReader reopens and verifies the exact frozen artifact,
-// private context snapshot, original Docker executable and dedicated endpoint.
+// private context snapshot, original Oro/Docker executables and dedicated endpoint.
 // CLI owns those filesystem checks; core binds the view to committed admission.
 type ManagedDockerConfigReader func(context.Context) (ManagedDockerConfig, error)
 
@@ -35,12 +36,12 @@ func validateManagedDockerConfig(config ManagedDockerConfig, manifest managedMan
 	if config.RuntimeConfigPath != filepath.Join(directory, "runtime.json") || config.DockerConfig != filepath.Join(directory, "docker") {
 		return errors.New("managed Docker runtime paths differ from admitted layout")
 	}
-	for _, path := range []string{config.StateRoot, config.RuntimeConfigPath, config.DockerPath, config.DockerConfig} {
+	for _, path := range []string{config.StateRoot, config.RuntimeConfigPath, config.OroPath, config.DockerPath, config.DockerConfig} {
 		if !managedAbsolutePath(path) {
 			return errors.New("managed Docker requires canonical absolute paths")
 		}
 	}
-	for _, digest := range []string{config.PolicyHash, config.RuntimeConfigSHA256, config.DockerSHA256} {
+	for _, digest := range []string{config.PolicyHash, config.RuntimeConfigSHA256, config.OroSHA256, config.DockerSHA256} {
 		if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(digest) {
 			return errors.New("managed Docker requires exact SHA256 identities")
 		}

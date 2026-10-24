@@ -42,6 +42,7 @@ func testFactoryDockerStorageConfigExact(t *testing.T) {
 	expected := factory.ManagedDockerConfig{
 		StateRoot: f.config.StateRoot, ObjectiveID: f.config.ObjectiveID, PolicyHash: f.config.PolicyHash,
 		Deadline: f.config.Deadline, HardStop: f.config.HardStop, RuntimeConfigPath: f.path, RuntimeConfigSHA256: factoryHostDigest(f.data),
+		OroPath: f.config.OroPath, OroSHA256: f.config.OroSHA256,
 		DockerPath: f.config.DockerPath, DockerSHA256: f.config.DockerSHA256, DockerConfig: filepath.Join(filepath.Dir(f.path), "docker"), DockerContext: f.config.DockerContext, DockerEndpoint: f.config.DockerEndpoint,
 	}
 	// Capture value semantics: later caller mutations cannot rewrite the callback.
