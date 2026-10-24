@@ -52,6 +52,11 @@ func run(ctx context.Context, stateDir string, spec Spec, hooks runHooks) (Statu
 	if err != nil {
 		return Status{}, err
 	}
+	releaseSupervisor, err := lockLegacySupervisor(policies.Dir, spec.ID)
+	if err != nil {
+		return Status{}, err
+	}
+	defer func() { _ = releaseSupervisor() }()
 	unlock, err := lockObjective(policies.Dir)
 	if err != nil {
 		return Status{}, err
