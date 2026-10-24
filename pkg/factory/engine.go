@@ -45,6 +45,9 @@ type controller struct {
 }
 
 func run(ctx context.Context, stateDir string, spec Spec, hooks runHooks) (Status, error) {
+	if err := validateRepository(ctx, spec); err != nil {
+		return Status{}, err
+	}
 	policies, err := loadPolicies(stateDir, spec)
 	if err != nil {
 		return Status{}, err
