@@ -123,3 +123,79 @@ func TestStoreFailures(t *testing.T) {
 		t.Fatal("cancelled open succeeded")
 	}
 }
+
+func TestDurableAttemptBudget(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	state := testSnapshot()
+	deadline := state.Deadline
+	store, err := openStore(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.save(ctx, state, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.close(); err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 1; attempt <= 4; attempt++ {
+		store, err = openStore(ctx, dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		state, err = store.load(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		state.CandidateSHA, state.BaseSHA, state.Worktree = "old-candidate", "old-base", "old-worktree"
+		state.Acceptance, state.Review = &evidence{}, &evidence{}
+		state.Feedback = "repair the observed failure"
+		next := reserveAttempt(state, state.CreatedAt.Add(time.Duration(attempt)*time.Second))
+		if !next.Deadline.Equal(deadline) {
+			t.Fatal("reservation moved deadline")
+		}
+		if attempt <= 3 {
+			if next.State != "running" || next.Attempts != attempt {
+				t.Fatalf("reservation %d = %#v", attempt, next)
+			}
+			if next.CandidateSHA != "" || next.BaseSHA != "" || next.Worktree != "" || next.Acceptance != nil || next.Review != nil {
+				t.Fatal("stale attempt authority retained")
+			}
+			if next.Feedback != state.Feedback {
+				t.Fatal("repair feedback lost")
+			}
+		} else if next.State != "failed" || next.Attempts != 3 || next.Reason == "" {
+			t.Fatalf("fourth reservation = %#v", next)
+		}
+		if err := store.save(ctx, next, state.Revision); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	failed, err := readSnapshot(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed.State != "failed" || failed.Attempts != 3 || !failed.Deadline.Equal(deadline) {
+		t.Fatalf("terminal budget not durable: %#v", failed)
+	}
+	if got := reserveAttempt(failed, failed.CreatedAt); !reflect.DeepEqual(got, failed) {
+		t.Fatal("failed budget reopened")
+	}
+	for _, status := range []string{"pending", "running", "candidate", "accepted", "approved"} {
+		state := testSnapshot()
+		state.State, state.Attempts = status, 1
+		got := reserveAttempt(state, state.Deadline)
+		if got.State != "failed" || got.Attempts != 1 || got.Reason == "" || !got.Deadline.Equal(state.Deadline) {
+			t.Fatalf("deadline did not fail closed: %#v", got)
+		}
+	}
+	completed := testSnapshot()
+	completed.State = "completed"
+	if got := reserveAttempt(completed, completed.Deadline.Add(time.Hour)); !reflect.DeepEqual(got, completed) {
+		t.Fatal("completed objective reopened")
+	}
+}

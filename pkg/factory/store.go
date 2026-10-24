@@ -167,3 +167,24 @@ func readSnapshot(ctx context.Context, dir string) (snapshot, error) {
 	defer func() { _ = db.Close() }()
 	return decodeSnapshot(db.QueryRowContext(ctx, "SELECT body FROM snapshots WHERE id=1"))
 }
+
+// reserveAttempt computes the next snapshot; the caller must save it before any
+// worktree creation or process launch. The absolute deadline never changes.
+func reserveAttempt(state snapshot, now time.Time) snapshot {
+	if state.State == "completed" || state.State == "failed" {
+		return state
+	}
+	if !now.Before(state.Deadline) {
+		state.State, state.Reason = "failed", "objective deadline elapsed"
+		return state
+	}
+	if state.Attempts >= state.Spec.MaxAttempts {
+		state.State, state.Reason = "failed", "attempt budget exhausted"
+		return state
+	}
+	state.Attempts++
+	state.State = "running"
+	state.BaseSHA, state.CandidateSHA, state.Worktree, state.Reason = "", "", "", ""
+	state.Acceptance, state.Review = nil, nil
+	return state
+}
