@@ -16,6 +16,15 @@ import (
 // Admission replay also initializes the base schema. Feature storage must never
 // recreate missing retained intent history after an admission has committed.
 func initManagedDockerVolumeSchema(ctx context.Context, conn *sql.Conn) error {
+	return initManagedDockerSchema(ctx, conn, `CREATE TABLE IF NOT EXISTS managed_docker_intents (
+ volume_scope_id TEXT PRIMARY KEY REFERENCES managed_scopes(id),
+ create_scope_id TEXT NOT NULL UNIQUE REFERENCES managed_scopes(id),
+ body BLOB NOT NULL CHECK(length(body)<=16384)
+);`)
+}
+
+// Only private initializers supply fixed schema literals to this shared guard.
+func initManagedDockerSchema(ctx context.Context, conn *sql.Conn, ddl string) error {
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin Docker intent schema: %w", err)
@@ -43,11 +52,7 @@ func initManagedDockerVolumeSchema(ctx context.Context, conn *sql.Conn) error {
 			return errors.New("missing admission retains committed objective history")
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS managed_docker_intents (
- volume_scope_id TEXT PRIMARY KEY REFERENCES managed_scopes(id),
- create_scope_id TEXT NOT NULL UNIQUE REFERENCES managed_scopes(id),
- body BLOB NOT NULL CHECK(length(body)<=16384)
-);`); err != nil {
+	if _, err := tx.ExecContext(ctx, ddl); err != nil {
 		return fmt.Errorf("initialize Docker intent storage: %w", err)
 	}
 	if err := commitManagedTransaction(conn, tx); err != nil {

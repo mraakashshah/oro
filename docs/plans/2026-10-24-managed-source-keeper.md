@@ -22,7 +22,7 @@ The accepted production leaves are `managedDockerVolumes.createVolume/inspectVol
 
 ## Next executable child: Create stopped source keepers
 
-Suggested ID: `oro-mf-source-keeper-create`, child of storage. One acceptance function and one test file; four production files including the minimal schema hook. The parent retains its complete native and recovery acceptance criteria.
+Tracked ID: `oro-mf-source-keeper-create`, child of storage. One acceptance function and one test file; five production files including the minimal schema hook and shared guard extraction. The parent retains its complete native and recovery acceptance criteria.
 
 Files:
 
