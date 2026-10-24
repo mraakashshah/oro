@@ -93,8 +93,8 @@ func buildSourceTree(entries []sourceEntry, limits sourceLimits, width int) (sou
 	nodes := make(map[string]sourcePathNode)
 	var total int64
 	for _, entry := range result.entries {
-		if (entry.Mode != 0o100644 && entry.Mode != 0o100755) || len(entry.Path) > limits.MaxPathBytes || int64(len(entry.Data)) > limits.MaxFileBytes || int64(len(entry.Data)) > limits.MaxBytes-total {
-			return result, errors.New("source entry exceeds admitted mode, path or byte bounds")
+		if len(entry.Path) > limits.MaxPathBytes || int64(len(entry.Data)) > limits.MaxFileBytes || int64(len(entry.Data)) > limits.MaxBytes-total {
+			return result, errors.New("source entry exceeds admitted path or byte bounds")
 		}
 		if err := validateSourcePath(entry.Path); err != nil {
 			return result, err
@@ -103,6 +103,10 @@ func buildSourceTree(entries []sourceEntry, limits sourceLimits, width int) (sou
 			return result, err
 		}
 		total += int64(len(entry.Data))
+	}
+	// The shared vector validator enforces canonical leaf modes and link targets.
+	if err := validateSourceLinks(result.entries); err != nil {
+		return result, err
 	}
 	slices.SortFunc(result.entries, func(a, b sourceEntry) int { return strings.Compare(a.Path, b.Path) })
 	root := &sourceGitDirectory{children: make(map[string]*sourceGitDirectory)}

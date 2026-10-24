@@ -33,6 +33,164 @@ func TestCandidateCommitAvoidsFilters(t *testing.T) {
 	t.Run("target identity and checked-out guard", testSourceGitTarget)
 }
 
+func TestCandidateInternalLinkExactTree(t *testing.T) {
+	for _, format := range []string{"sha1", "sha256"} {
+		t.Run(format, func(t *testing.T) { testSourceGitLinks(t, format) })
+	}
+	t.Run("unsafe vectors precede host effects", testSourceGitUnsafeLinks)
+	t.Run("unsafe exported trees fail closed", testSourceGitUnsupported)
+	t.Run("link transport corruption fails closed", testSourceGitLinkOutput)
+}
+
+func sourceGitLinkFixture(t *testing.T, format string) (*managedGitRepository, *sourceGitRuntime, managedManifest, string, []sourceEntry, string) {
+	t.Helper()
+	want := []sourceEntry{
+		{Path: ".gitattributes", Mode: 0o100644, Data: []byte(".claude/hooks/* export-ignore\nassets/hooks/context_block_stop.py export-subst\n* filter=hostile\n")},
+		{Path: ".claude/hooks/context_block_stop.py", Mode: 0o120000, Data: []byte("../../assets/hooks/context_block_stop.py")},
+		{Path: ".claude/hooks/context_pct_writer.py", Mode: 0o120000, Data: []byte("../../assets/hooks/context_pct_writer.py")},
+		{Path: "assets/hooks/context_block_stop.py", Mode: 0o100644, Data: []byte("$Format:%H$\n")},
+		{Path: "assets/hooks/context_pct_writer.py", Mode: 0o100755, Data: []byte("executable\n")},
+	}
+	marker := filepath.Join(t.TempDir(), "executed")
+	g, runtime, manifest, base := sourceGitFixture(t, func(repo string) {
+		if format == "sha256" {
+			if err := os.Mkdir(repo, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			gitTestRun(t, repo, "init", "--object-format=sha256", "-b", "main")
+		}
+		for _, entry := range want {
+			path := filepath.Join(repo, entry.Path)
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if entry.Mode == 0o120000 {
+				if err := os.Symlink(string(entry.Data), path); err != nil {
+					t.Fatal(err)
+				}
+				continue
+			}
+			gitTestWrite(t, path, string(entry.Data), os.FileMode(entry.Mode&0o777))
+		}
+		gitTestRun(t, repo, "add", ".")
+		gitTestRun(t, repo, "commit", "-m", "internal source links")
+		gitTestRun(t, repo, "branch", "-f", "delivery")
+		hooks := t.TempDir()
+		program := "#!/bin/sh\nprintf executed > " + gitTestShellQuote(marker) + "\ncat\n"
+		for _, name := range []string{"filter", "pre-commit", "reference-transaction"} {
+			gitTestWrite(t, filepath.Join(hooks, name), program, 0o700)
+		}
+		gitTestRun(t, repo, "config", "filter.hostile.clean", filepath.Join(hooks, "filter"))
+		gitTestRun(t, repo, "config", "filter.hostile.smudge", filepath.Join(hooks, "filter"))
+		gitTestRun(t, repo, "config", "core.hooksPath", hooks)
+	}, func(spec *ManagedSpec) {
+		if format == "sha256" {
+			spec.Repository = filepath.Join(spec.Repository, "sha256")
+		}
+	})
+	return g, runtime, manifest, base, want, marker
+}
+
+func testSourceGitLinks(t *testing.T, format string) {
+	t.Helper()
+	g, runtime, manifest, base, want, marker := sourceGitLinkFixture(t, format)
+	entries, err := g.export(t.Context(), base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range want {
+		index := slices.IndexFunc(entries, func(actual sourceEntry) bool { return actual.Path == entry.Path })
+		if index < 0 || !reflect.DeepEqual(entries[index], entry) {
+			t.Fatalf("raw link/tree entry %q changed", entry.Path)
+		}
+	}
+	repo := manifest.Spec.Repository
+	tree, err := buildSourceTree(entries, g.source, len(base))
+	if err != nil || tree.oid != gitTestRun(t, repo, "rev-parse", base+"^{tree}") {
+		t.Fatalf("export lost exact %s tree identity: %v", format, err)
+	}
+	if noOp, err := g.commit(t.Context(), base, entries); err != nil || noOp != base {
+		t.Fatalf("link no-op changed base: %q, %v", noOp, err)
+	}
+	index := slices.IndexFunc(entries, func(entry sourceEntry) bool { return entry.Path == want[1].Path })
+	entries[index].Data = append([]byte(nil), want[2].Data...)
+	candidate, err := g.commit(t.Context(), base, entries)
+	if err != nil || candidate == base {
+		t.Fatalf("safe changed target did not commit: %q, %v", candidate, err)
+	}
+	got, err := g.export(t.Context(), candidate)
+	if err != nil || !reflect.DeepEqual(got, entries) {
+		t.Fatalf("safe target changed on round-trip: %+v, %v", got, err)
+	}
+	changedTree, err := buildSourceTree(entries, g.source, len(base))
+	if err != nil || changedTree.oid != gitTestRun(t, repo, "rev-parse", candidate+"^{tree}") {
+		t.Fatalf("changed target lost exact tree identity: %v", err)
+	}
+	if raw := gitTestRun(t, repo, "cat-file", "blob", candidate+":"+want[1].Path); raw != string(want[2].Data) {
+		t.Fatalf("Git stored dereferenced or normalized link: %q", raw)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("link transport executed an attribute filter or hook: %v", err)
+	}
+	for _, call := range runtime.calls {
+		if slices.Contains(call.Args, "archive") || !slices.Contains(call.Args, "--no-replace-objects") {
+			t.Fatalf("link transport bypassed raw Git protections: %v", call.Args)
+		}
+	}
+}
+
+func testSourceGitUnsafeLinks(t *testing.T) {
+	t.Helper()
+	g, runtime, _, base := sourceGitFixture(t, nil, nil)
+	file := sourceEntry{Path: "file", Mode: 0o100644, Data: []byte("safe")}
+	for _, entries := range [][]sourceEntry{
+		{file, {Path: "link", Mode: 0o120000, Data: []byte("../outside")}},
+		{file, {Path: "link", Mode: 0o120000, Data: []byte("missing/../file")}},
+		{file, {Path: "link", Mode: 0o120000, Data: []byte("file/../file")}},
+		{file, {Path: "link", Mode: 0o120000, Data: []byte("other")}, {Path: "other", Mode: 0o120000, Data: []byte("file")}},
+		{file, {Path: "link", Mode: 0o120000, Data: []byte("file")}, {Path: "link/child", Mode: 0o100644}},
+		{file, {Path: "module", Mode: 0o160000}},
+	} {
+		if _, err := g.commit(t.Context(), base, entries); err == nil {
+			t.Fatalf("unsafe linked vector committed: %+v", entries)
+		}
+	}
+	if len(runtime.calls) != 0 {
+		t.Fatal("unsafe candidate reached HostRuntime before whole-vector validation")
+	}
+}
+
+func testSourceGitLinkOutput(t *testing.T) {
+	t.Helper()
+	g, runtime, _, base, _, _ := sourceGitLinkFixture(t, "sha1")
+	for _, failure := range []string{"mode", "size", "unterminated", "blob hash"} {
+		t.Run(failure, func(t *testing.T) {
+			runtime.alter = func(call HostInvocation, result HostResult) HostResult {
+				if failure == "blob hash" {
+					if index := bytes.Index(result.Stdout, []byte("../../assets/hooks/context_block_stop.py")); slices.Contains(call.Args, "cat-file") && index >= 0 {
+						result.Stdout[index] = 'x'
+					}
+					return result
+				}
+				if slices.Contains(call.Args, "ls-tree") {
+					switch failure {
+					case "mode":
+						result.Stdout = bytes.Replace(result.Stdout, []byte("120000 blob "), []byte("0120000 blob "), 1)
+					case "size":
+						result.Stdout = bytes.Replace(result.Stdout, []byte("40\t.claude/hooks/"), []byte("39\t.claude/hooks/"), 1)
+					case "unterminated":
+						result.Stdout = result.Stdout[:len(result.Stdout)-1]
+					}
+				}
+				return result
+			}
+			if got, err := g.export(t.Context(), base); err == nil || got != nil {
+				t.Fatalf("corrupted link transport accepted: %+v, %v", got, err)
+			}
+		})
+	}
+}
+
 func TestManagedGitAuthority(t *testing.T) {
 	t.Run("budget precedes effects and never refills", testSourceGitBudget)
 	t.Run("one immutable operation deadline", testSourceGitDeadline)

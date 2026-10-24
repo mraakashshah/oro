@@ -129,7 +129,7 @@ type sourceListingEntry struct {
 func decodeSourceListingEntry(row []byte, limits sourceLimits, width int, remaining int64) (sourceListingEntry, error) {
 	header, path, found := bytes.Cut(row, []byte{'\t'})
 	fields := strings.Fields(string(header))
-	if !found || len(fields) != 4 || fields[1] != "blob" || !sourceOID(fields[2]) || len(fields[2]) != width || (fields[0] != "100644" && fields[0] != "100755") {
+	if !found || len(fields) != 4 || fields[1] != "blob" || !sourceOID(fields[2]) || len(fields[2]) != width || (fields[0] != "100644" && fields[0] != "100755" && fields[0] != "120000") {
 		return sourceListingEntry{}, errors.New("raw Git tree contains an unsupported mode or object")
 	}
 	size, err := strconv.ParseInt(fields[3], 10, 64)
