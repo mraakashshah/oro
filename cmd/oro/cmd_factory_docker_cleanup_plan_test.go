@@ -23,6 +23,94 @@ func TestFactoryDockerCleanupPlan(t *testing.T) {
 	t.Run("descriptor and output boundaries", testFactoryDockerCleanupBounds)
 }
 
+func TestFactoryDockerCleanupCreationTime(t *testing.T) {
+	for _, kind := range []string{"container", "volume"} {
+		t.Run(kind, func(t *testing.T) {
+			for raw, canonical := range map[string]string{
+				"2026-10-24T01:49:04-04:00":           "2026-10-24T05:49:04Z",
+				"2026-10-24T11:34:04+05:45":           "2026-10-24T05:49:04Z",
+				"2026-10-24T05:49:04.000000000+00:00": "2026-10-24T05:49:04Z",
+				"2026-10-24T01:49:04.123456789-04:00": "2026-10-24T05:49:04.123456789Z",
+				"2026-12-31T23:59:59.999999999-00:01": "2027-01-01T00:00:59.999999999Z",
+			} {
+				t.Run(raw, func(t *testing.T) {
+					permit := factoryDockerCleanupPlanFixture(kind)
+					permit.Binding.CreatedAt = canonical
+					want := cloneFactoryDockerCleanupBinding(permit.Binding)
+					object := factoryDockerCleanupObject(permit)
+					object[factoryDockerCleanupCreationField(kind)] = raw
+					for _, unknown := range []bool{false, true} {
+						if unknown {
+							permit.Binding.CreatedAt = ""
+							if kind == "container" {
+								permit.Binding.ContainerID = ""
+							}
+						}
+						got, observation, err := parseFactoryDockerCleanupInspection(permit, factoryDockerCleanupInspectionResult(t, object))
+						if err != nil || observation != "present" || !reflect.DeepEqual(got, want) {
+							t.Fatalf("daemon instant lost (unknown=%t): got=%+v observation=%q err=%v want=%+v", unknown, got, observation, err, want)
+						}
+					}
+					// Normalization belongs only to daemon ingestion. Persisted permits
+					// still require canonical UTC, even when the raw instant is equal.
+					permit.Binding = want
+					permit.Binding.CreatedAt = raw
+					if _, _, err := parseFactoryDockerCleanupInspection(permit, factoryDockerCleanupInspectionResult(t, object)); err == nil {
+						t.Fatal("noncanonical persisted permit was normalized")
+					}
+				})
+			}
+			testFactoryDockerCleanupBadCreationTime(t, kind)
+		})
+	}
+}
+
+func factoryDockerCleanupCreationField(kind string) string {
+	if kind == "volume" {
+		return "CreatedAt"
+	}
+	return "Created"
+}
+
+func testFactoryDockerCleanupBadCreationTime(t *testing.T, kind string) {
+	t.Helper()
+	permit := factoryDockerCleanupPlanFixture(kind)
+	permit.Binding.CreatedAt = "2026-10-24T05:49:04Z"
+	object := factoryDockerCleanupObject(permit)
+	field := factoryDockerCleanupCreationField(kind)
+	object[field] = "2026-10-24T01:49:05-04:00"
+	if _, _, err := parseFactoryDockerCleanupInspection(permit, factoryDockerCleanupInspectionResult(t, object)); err == nil {
+		t.Fatal("different creation instant accepted")
+	}
+	for _, unknown := range []bool{false, true} {
+		if unknown {
+			permit.Binding.CreatedAt = ""
+			if kind == "container" {
+				permit.Binding.ContainerID = ""
+			}
+		}
+		for _, raw := range []string{
+			"", "not a timestamp", "2026-10-24T01:49:04-24:00", "2026-10-24T01:49:04-00:60",
+			"2026-10-24T1:49:04-04:00", "2026-10-24T01:49:04,123-04:00", "2026-10-24T01:49:04.1234567890-04:00",
+			strings.Repeat("x", 36), "0001-01-01T00:00:00Z", "9999-12-31T23:59:59-00:01",
+		} {
+			object[field] = raw
+			got, observation, err := parseFactoryDockerCleanupInspection(permit, factoryDockerCleanupInspectionResult(t, object))
+			if err == nil || observation != "" || !reflect.DeepEqual(got, factory.DockerCleanupBinding{}) {
+				t.Fatalf("invalid observed timestamp accepted (unknown=%t): %q => %+v %q %v", unknown, raw, got, observation, err)
+			}
+		}
+	}
+	permit = factoryDockerCleanupPlanFixture(kind)
+	permit.Binding.CreatedAt = "2026-10-24T05:49:04Z"
+	object = factoryDockerCleanupObject(permit)
+	object[field] = "2026-10-24T01:49:04-04:00"
+	object["Name"] = "foreign"
+	if _, _, err := parseFactoryDockerCleanupInspection(permit, factoryDockerCleanupInspectionResult(t, object)); err == nil {
+		t.Fatal("equivalent timestamp bypassed exact object ownership")
+	}
+}
+
 func factoryDockerCleanupPlanFixture(kind string) factory.DockerCleanupPermit {
 	objective := strings.Repeat("a", 16)
 	target := factory.ScopeHandle{ID: strings.Repeat("b", 32), Nonce: strings.Repeat("c", 32), Kind: kind, Backend: "docker", Generation: 1}
@@ -387,7 +475,7 @@ func testFactoryDockerCleanupBounds(t *testing.T) {
 			}
 		})
 	}
-	for _, kind := range []string{"excessive object fields", "null label", "numeric label", "noncanonical creation", "empty creation", "oversize observed labels", "missing config", "missing state", "duplicate state", "case alias"} {
+	for _, kind := range []string{"excessive object fields", "null label", "numeric label", "malformed creation", "empty creation", "oversize observed labels", "missing config", "missing state", "duplicate state", "case alias"} {
 		t.Run(kind, func(t *testing.T) {
 			object := factoryDockerCleanupObject(p)
 			switch kind {
@@ -399,8 +487,8 @@ func testFactoryDockerCleanupBounds(t *testing.T) {
 				object["Config"] = map[string]any{"Labels": map[string]any{"dev.getoro.factory.policy": nil}}
 			case "numeric label":
 				object["Config"] = map[string]any{"Labels": map[string]any{"dev.getoro.factory.policy": 42}}
-			case "noncanonical creation":
-				object["Created"] = "2026-10-24T01:02:03.456+00:00"
+			case "malformed creation":
+				object["Created"] = "2026-10-24T1:02:03.456+00:00"
 			case "empty creation":
 				object["Created"] = ""
 			case "oversize observed labels":

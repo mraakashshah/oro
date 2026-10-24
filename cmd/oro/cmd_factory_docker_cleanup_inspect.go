@@ -124,6 +124,12 @@ func parseFactoryDockerCleanupContainer(permit factory.DockerCleanupPermit, fiel
 	if err != nil {
 		return factory.DockerCleanupBinding{}, "", err
 	}
+	// Daemon timestamps can use a local offset. Normalize only observed data,
+	// before exact comparison or returning an unknown lifetime's discovery.
+	observed.CreatedAt, err = factory.CanonicalDockerCreatedAt(observed.CreatedAt)
+	if err != nil {
+		return factory.DockerCleanupBinding{}, "", fmt.Errorf("normalize observed container creation identity: %w", err)
+	}
 	if err := matchFactoryDockerCleanupBinding(permit, observed); err != nil {
 		return factory.DockerCleanupBinding{}, "", err
 	}
@@ -149,6 +155,10 @@ func parseFactoryDockerCleanupVolume(permit factory.DockerCleanupPermit, fields 
 	observed.VolumeOptions, err = parseFactoryDockerCleanupMap(fields["Options"])
 	if err != nil {
 		return factory.DockerCleanupBinding{}, "", err
+	}
+	observed.CreatedAt, err = factory.CanonicalDockerCreatedAt(observed.CreatedAt)
+	if err != nil {
+		return factory.DockerCleanupBinding{}, "", fmt.Errorf("normalize observed volume creation identity: %w", err)
 	}
 	if err := matchFactoryDockerCleanupBinding(permit, observed); err != nil {
 		return factory.DockerCleanupBinding{}, "", err
