@@ -62,8 +62,10 @@ func run(ctx context.Context, stateDir string, spec Spec, hooks runHooks) (Statu
 		return Status{}, err
 	}
 	defer func() { _ = store.close() }()
-	c := controller{store: store, policies: policies,
-		repo: gitRepository{path: spec.Repository, stepTimeout: time.Duration(spec.StepTimeoutSeconds) * time.Second}, hooks: hooks}
+	c := controller{
+		store: store, policies: policies,
+		repo: gitRepository{path: spec.Repository, stepTimeout: time.Duration(spec.StepTimeoutSeconds) * time.Second}, hooks: hooks,
+	}
 	if err := c.admit(ctx); err != nil {
 		return snapshotStatus(c.state), err
 	}
@@ -263,6 +265,10 @@ func (c *controller) promote(ctx context.Context) error {
 		return c.reject(ctx, err)
 	}
 	if err := c.repo.promote(ctx, c.state.Spec.TargetBranch, c.state.BaseSHA, c.state.CandidateSHA); err != nil {
+		var checkedOut *targetCheckedOutError
+		if errors.As(err, &checkedOut) {
+			return c.fail(ctx, err)
+		}
 		return c.reject(ctx, err)
 	}
 	if c.hooks.afterPromotion != nil {

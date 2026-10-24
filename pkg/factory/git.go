@@ -18,6 +18,15 @@ type gitRepository struct {
 	deadline    time.Time
 }
 
+type targetCheckedOutError struct {
+	branch string
+}
+
+// Error identifies the branch whose active checkout prevents promotion.
+func (e *targetCheckedOutError) Error() string {
+	return fmt.Sprintf("target branch %q is checked out", e.branch)
+}
+
 func (g gitRepository) resolveTarget(ctx context.Context, branch string) (string, error) {
 	if branch == "" || strings.HasPrefix(branch, "-") {
 		return "", fmt.Errorf("invalid target branch %q", branch)
@@ -44,7 +53,7 @@ func (g gitRepository) target(ctx context.Context, branch string) (string, error
 	}
 	for _, field := range strings.Split(worktrees, "\x00") {
 		if field == "branch refs/heads/"+branch {
-			return "", fmt.Errorf("target branch %q is checked out", branch)
+			return "", &targetCheckedOutError{branch: branch}
 		}
 	}
 	return sha, nil
