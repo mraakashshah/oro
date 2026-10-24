@@ -1,6 +1,6 @@
 # Unattended factory task graph
 
-Design: [unattended factory design](2026-10-23-unattended-factory-design.md), Gate 1 PASS. Gate 2 PASS after independent review and two contract repairs. Native parent: `oro-factory-managed`, under `oro-factory-autonomy`. There are now 61 tracked nodes below the managed epic, including host capacity's seven children, cleanup runtime's seven children and two wiring grandchildren, container transport/readiness, managed file identity, and CLI start's immutable admission view. Later integration findings remain qualification blockers until their protocols and tests are accepted.
+Design: [unattended factory design](2026-10-23-unattended-factory-design.md), Gate 1 PASS. Gate 2 PASS after independent review and two contract repairs. Native parent: `oro-factory-managed`, under `oro-factory-autonomy`. There are now 62 tracked nodes below the managed epic, including host capacity's seven children, cleanup runtime's seven children and two wiring grandchildren, container transport/readiness, managed file identity, and CLI start's immutable admission view. Later integration findings remain qualification blockers until their protocols and tests are accepted.
 
 Every task inherits the design's authority, budget, platform, and operational requirements. Root owns Git integration; implementers use test-first RED/GREEN and report frozen files. Keep full-gate blockers visible until resolved. Component success does not close the parent.
 
@@ -764,3 +764,16 @@ Each child has one test file, bounded production scope and explicit accounting.
 No generic acknowledgment API or second publication receipt protocol is required.
 Unknown post-dispatch daemon work still requires a qualified recovery mechanism;
 these components do not establish unattended storage or factory readiness.
+
+## oro-mf-scope-integrity: Reject lifecycle fields in scope identity JSON
+
+- Read: `managed_store.go`: `loadManagedScope`, `scopes`, `insertScope`, `RecordHello`, `Granted`, `Observe`, `MarkQuiescent`; `managed_cleanup.go`: `loadCleanupPermit`; `managed_reservation.go`: `readReservationScope`.
+- Signature: preserve the existing loader and scope-list APIs; decode canonical `ScopeHandle + Deadline` separately from authoritative lifecycle columns.
+- Test: `pkg/factory/managed_scope_integrity_test.go:TestManagedScopeIntegrity`.
+- Cmd: `GOTOOLCHAIN=go1.26.10 go test -race ./pkg/factory -run '^TestManagedScopeIntegrity$|^TestManagedScopeJournal$|^TestManagedCleanupAuthority$|^TestManagedDockerVolumeIntent$' -count=1 -timeout=180s` through the protected verification harness.
+- Assert: injected JSON `Phase`, `PID` or `PGID` cannot override actual columns, grant execution, forge retirement or reopen a cleanup permit. Unknown/duplicate/noncanonical bodies and identity mismatches reject without mutation. Valid canonical scope lifecycles remain compatible.
+- Edges: reproduce the malformed persisted-authority bypass before fixing; no candidate journal-write capability is claimed. Final reservation release already has a separate canonical reader. No schema reset, refund, migration or native action.
+- Depends on: `oro-mf-journal`. The managed epic and `oro-mf-qualification` explicitly depend on this repair.
+
+The volume-intent path already validates referenced records locally. This task
+closes the shared loader and duplicated listing path used outside that component.

@@ -471,8 +471,46 @@ journal rows; it proves transport and actual allocation, not public startup.
 
 The full factory package race/shuffle run after the transport changes passed in
 254.366 seconds with 88.7% statement coverage (`transport-core-integrated.log`).
-Large-transfer faults, complete Oro delivery, managed execution/recovery and
-sustained fault qualification remain required.
+Commit `20e72f52` adds native large-transfer failure coverage. Cancellation occurs
+after an authenticated child has consumed a 128 KiB prefix of 32 MiB input;
+the output test exceeds a 33,554,431-byte cap by one byte. Both exercise actual
+`Invoke`. Missing and late publication cases use a test driver around the real
+runtime components and authenticated socket, not unmodified `Invoke`: a complete
+pending result cannot substitute for publication, and holding the actual frame's
+newline beyond its original deadline causes rejection. All four cases returned
+no consumable result, preserved five spent H tokens including the seed call, and
+positively retired all five groups before release. Native race passed in
+50.748 seconds; lint, formatting and independent source/artifact review passed.
+The fault sequence took 26.744 seconds and retained 432,061,113 bytes. Evidence is
+`host-bulk-faults-native.log`, `host-bulk-faults-native-result.json` and
+`host-bulk-4252998245/fault-receipt.json` under the verification directory. The
+reused base fixture's zero elapsed field is not timing evidence.
+
+Complete Oro delivery, managed execution/recovery and sustained factory fault
+qualification remain required.
+
+## Managed Docker volume intents
+
+Commit `786fe679` persists an executable volume intent and atomically reserves
+its H token, host scope and volume scope. Prepared records survive controller
+process death without a fresh reservation; dispatching records cannot create
+again. Exact lifetime binding is separate from acknowledgment and quiescence.
+Admission replay cannot recreate missing intent history, including when a missing
+admission row coexists with retained delivery history. Tests reproduce and reject
+inconsistent scope columns and JSON lifecycle overrides before volume transitions.
+
+Affected race tests passed in 17.265 seconds; independent verification passed in
+17.117 seconds. New production coverage is 241/278 statements (86.69%); package
+lint and the pinned formatter passed. Evidence is `docker-volume-state-seal.log`,
+`docker-volume-state-seal-coverage.out`, `docker-volume-state-lint-seal.log` and
+`docker-volume-root.log` under the verification directory.
+
+This is journal component evidence. The create/inspect adapter, real CLI reader,
+keeper/source integration and daemon lost-acknowledgment recovery remain required.
+Review also identified the same JSON lifecycle overwrite in the shared scope
+loader outside the locally guarded volume path. `oro-mf-scope-integrity` tracks
+that repair and blocks qualification; no candidate access to the journal was
+demonstrated, and the separate final reservation-release reader rejects it.
 
 ## Remaining evidence
 
