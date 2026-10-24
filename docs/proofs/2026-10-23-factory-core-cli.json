@@ -1,352 +1,317 @@
 {
-  "proof": "deterministic trusted command adapters, not LLM reliability or hostile-code containment",
-  "artifact_directory": "/tmp/oro-factory-demo-final.nYBhdi",
-  "binary": "/tmp/oro-factory-demo-final.nYBhdi/oro",
-  "binary_sha256": "503376c2bd4ee3cbb4cc5bbb6f21ad1f406b7d2b2577bd28c21ddd77d4d5cf07",
-  "built_revision": "c11c41fe7f7035cce1c6060bba285eaf9609850b",
-  "embedded_vcs_revision": "772f4b94297a97dc6f6249ad5f5bf6976805b080",
-  "source_status_after_demonstration": "M docs/plans/2026-10-23-factory-core-design.md\n M docs/plans/2026-10-23-factory-core-tasks.md\n M docs/runbooks/factory-core.md",
-  "initial_target_sha": "b0d769372390810a2f45840fefe1ec79a59521b1",
-  "promoted_sha": "381553c2100aaefee394e023543291319fe9c1fc",
-  "status": {
-    "id": "standalone-addition",
-    "state": "completed",
-    "attempts": 2,
-    "candidate_sha": "381553c2100aaefee394e023543291319fe9c1fc",
-    "target_branch": "delivery"
-  },
-  "idempotent_rerun": true,
-  "worker_invocations": 2,
-  "acceptance_verdicts": [
-    false,
-    true
-  ],
-  "review_invocations": 1,
-  "feedback_driven_repair": true,
-  "ignored_worker_output_excluded": true,
-  "primary_checkout_unchanged": true,
-  "fresh_artifact_checks": [
-    {
-      "args": [
-        "2",
-        "3"
-      ],
-      "expected": "5",
-      "observed": "5"
-    },
-    {
-      "args": [
-        "-4",
-        "3"
-      ],
-      "expected": "-1",
-      "observed": "-1"
-    },
-    {
-      "args": [
-        "7",
-        "0"
-      ],
-      "expected": "7",
-      "observed": "7"
-    }
-  ],
-  "policies_outside_source": true,
-  "state_outside_source": true,
-  "commands": [
-    {
-      "executable": "git",
-      "args": [
-        "-c",
-        "user.name=Factory Demo",
-        "-c",
-        "user.email=factory-demo@example.invalid",
-        "-c",
-        "core.hooksPath=/dev/null",
-        "-c",
-        "commit.gpgSign=false",
-        "init",
-        "-b",
-        "main"
-      ],
-      "cwd": "/tmp/oro-factory-demo-final.nYBhdi/repository",
-      "exit_code": 0,
-      "stdout": "Initialized empty Git repository in /private/tmp/oro-factory-demo-final.nYBhdi/repository/.git/\n",
-      "stderr": ""
-    },
-    {
-      "executable": "git",
-      "args": [
-        "-c",
-        "user.name=Factory Demo",
-        "-c",
-        "user.email=factory-demo@example.invalid",
-        "-c",
-        "core.hooksPath=/dev/null",
-        "-c",
-        "commit.gpgSign=false",
-        "add",
-        "."
-      ],
-      "cwd": "/tmp/oro-factory-demo-final.nYBhdi/repository",
-      "exit_code": 0,
-      "stdout": "",
-      "stderr": ""
-    },
-    {
-      "executable": "git",
-      "args": [
-        "-c",
-        "user.name=Factory Demo",
-        "-c",
-        "user.email=factory-demo@example.invalid",
-        "-c",
-        "core.hooksPath=/dev/null",
-        "-c",
-        "commit.gpgSign=false",
-        "commit",
-        "-m",
-        "Initial disposable demonstration repository"
-      ],
-      "cwd": "/tmp/oro-factory-demo-final.nYBhdi/repository",
-      "exit_code": 0,
-      "stdout": "[main (root-commit) b0d7693] Initial disposable demonstration repository\n 2 files changed, 2 insertions(+)\n create mode 100644 .gitignore\n create mode 100644 README.md\n",
-      "stderr": ""
-    },
-    {
-      "executable": "git",
-      "args": [
-        "-c",
-        "user.name=Factory Demo",
-        "-c",
-        "user.email=factory-demo@example.invalid",
-        "-c",
-        "core.hooksPath=/dev/null",
-        "-c",
-        "commit.gpgSign=false",
-        "branch",
-        "delivery"
-      ],
-      "cwd": "/tmp/oro-factory-demo-final.nYBhdi/repository",
-      "exit_code": 0,
-      "stdout": "",
-      "stderr": ""
-    },
-    {
-      "executable": "git",
-      "args": [
-        "-c",
-        "user.name=Factory Demo",
-        "-c",
-        "user.email=factory-demo@example.invalid",
-        "-c",
-        "core.hooksPath=/dev/null",
-        "-c",
-        "commit.gpgSign=false",
-        "rev-parse",
-        "delivery"
-      ],
-      "cwd": "/tmp/oro-factory-demo-final.nYBhdi/repository",
-      "exit_code": 0,
-      "stdout": "b0d769372390810a2f45840fefe1ec79a59521b1\n",
-      "stderr": ""
-    },
-    {
-      "executable": "/tmp/oro-factory-demo-final.nYBhdi/oro",
-      "args": [
-        "factory",
-        "run",
-        "--spec",
-        "/tmp/oro-factory-demo-final.nYBhdi/spec.json",
-        "--state-dir",
-        "/tmp/oro-factory-demo-final.nYBhdi/state"
-      ],
-      "cwd": "/tmp/oro-factory-demo-final.nYBhdi",
-      "exit_code": 0,
-      "stdout": "{\"id\":\"standalone-addition\",\"state\":\"completed\",\"attempts\":2,\"candidate_sha\":\"381553c2100aaefee394e023543291319fe9c1fc\",\"target_branch\":\"delivery\"}\n",
-      "stderr": ""
-    },
-    {
-      "executable": "git",
-      "args": [
-        "-c",
-        "user.name=Factory Demo",
-        "-c",
-        "user.email=factory-demo@example.invalid",
-        "-c",
-        "core.hooksPath=/dev/null",
-        "-c",
-        "commit.gpgSign=false",
-        "rev-parse",
-        "delivery"
-      ],
-      "cwd": "/tmp/oro-factory-demo-final.nYBhdi/repository",
-      "exit_code": 0,
-      "stdout": "381553c2100aaefee394e023543291319fe9c1fc\n",
-      "stderr": ""
-    },
-    {
-      "executable": "git",
-      "args": [
-        "-c",
-        "user.name=Factory Demo",
-        "-c",
-        "user.email=factory-demo@example.invalid",
-        "-c",
-        "core.hooksPath=/dev/null",
-        "-c",
-        "commit.gpgSign=false",
-        "rev-parse",
-        "main"
-      ],
-      "cwd": "/tmp/oro-factory-demo-final.nYBhdi/repository",
-      "exit_code": 0,
-      "stdout": "b0d769372390810a2f45840fefe1ec79a59521b1\n",
-      "stderr": ""
-    },
-    {
-      "executable": "git",
-      "args": [
-        "-c",
-        "user.name=Factory Demo",
-        "-c",
-        "user.email=factory-demo@example.invalid",
-        "-c",
-        "core.hooksPath=/dev/null",
-        "-c",
-        "commit.gpgSign=false",
-        "status",
-        "--porcelain"
-      ],
-      "cwd": "/tmp/oro-factory-demo-final.nYBhdi/repository",
-      "exit_code": 0,
-      "stdout": "",
-      "stderr": ""
-    },
-    {
-      "executable": "/bin/sh",
-      "args": [
-        "build/add.sh",
-        "2",
-        "3"
-      ],
-      "cwd": "/tmp/oro-factory-demo-final.nYBhdi/state/standalone-addition/attempt-1/worker",
-      "exit_code": 0,
-      "stdout": "5\n",
-      "stderr": ""
-    },
-    {
-      "executable": "/bin/sh",
-      "args": [
-        "add.sh",
-        "2",
-        "3"
-      ],
-      "cwd": "/tmp/oro-factory-demo-final.nYBhdi/state/standalone-addition/attempt-1/acceptance",
-      "exit_code": 0,
-      "stdout": "-1\n",
-      "stderr": ""
-    },
-    {
-      "executable": "git",
-      "args": [
-        "-c",
-        "user.name=Factory Demo",
-        "-c",
-        "user.email=factory-demo@example.invalid",
-        "-c",
-        "core.hooksPath=/dev/null",
-        "-c",
-        "commit.gpgSign=false",
-        "worktree",
-        "add",
-        "--detach",
-        "/tmp/oro-factory-demo-final.nYBhdi/delivered-checkout",
-        "381553c2100aaefee394e023543291319fe9c1fc"
-      ],
-      "cwd": "/tmp/oro-factory-demo-final.nYBhdi/repository",
-      "exit_code": 0,
-      "stdout": "HEAD is now at 381553c factory: candidate\n",
-      "stderr": "Preparing worktree (detached HEAD 381553c)\n"
-    },
-    {
-      "executable": "/bin/sh",
-      "args": [
-        "add.sh",
-        "2",
-        "3"
-      ],
-      "cwd": "/tmp/oro-factory-demo-final.nYBhdi/delivered-checkout",
-      "exit_code": 0,
-      "stdout": "5\n",
-      "stderr": ""
-    },
-    {
-      "executable": "/bin/sh",
-      "args": [
-        "add.sh",
-        "-4",
-        "3"
-      ],
-      "cwd": "/tmp/oro-factory-demo-final.nYBhdi/delivered-checkout",
-      "exit_code": 0,
-      "stdout": "-1\n",
-      "stderr": ""
-    },
-    {
-      "executable": "/bin/sh",
-      "args": [
-        "add.sh",
-        "7",
-        "0"
-      ],
-      "cwd": "/tmp/oro-factory-demo-final.nYBhdi/delivered-checkout",
-      "exit_code": 0,
-      "stdout": "7\n",
-      "stderr": ""
-    },
-    {
-      "executable": "/tmp/oro-factory-demo-final.nYBhdi/oro",
-      "args": [
-        "factory",
-        "status",
-        "--id",
-        "standalone-addition",
-        "--state-dir",
-        "/tmp/oro-factory-demo-final.nYBhdi/state"
-      ],
-      "cwd": "/tmp/oro-factory-demo-final.nYBhdi",
-      "exit_code": 0,
-      "stdout": "{\"id\":\"standalone-addition\",\"state\":\"completed\",\"attempts\":2,\"candidate_sha\":\"381553c2100aaefee394e023543291319fe9c1fc\",\"target_branch\":\"delivery\"}\n",
-      "stderr": ""
-    },
-    {
-      "executable": "/tmp/oro-factory-demo-final.nYBhdi/oro",
-      "args": [
-        "factory",
-        "run",
-        "--spec",
-        "/tmp/oro-factory-demo-final.nYBhdi/spec.json",
-        "--state-dir",
-        "/tmp/oro-factory-demo-final.nYBhdi/state"
-      ],
-      "cwd": "/tmp/oro-factory-demo-final.nYBhdi",
-      "exit_code": 0,
-      "stdout": "{\"id\":\"standalone-addition\",\"state\":\"completed\",\"attempts\":2,\"candidate_sha\":\"381553c2100aaefee394e023543291319fe9c1fc\",\"target_branch\":\"delivery\"}\n",
-      "stderr": ""
-    },
-    {
-      "executable": "git",
-      "args": [
-        "status",
-        "--short"
-      ],
-      "cwd": "/Users/as21/codehouse/oro/.worktrees/factory-core",
-      "exit_code": 0,
-      "stdout": " M docs/plans/2026-10-23-factory-core-design.md\n M docs/plans/2026-10-23-factory-core-tasks.md\n M docs/runbooks/factory-core.md\n",
-      "stderr": ""
-    }
-  ],
-  "source_build_snapshot": "/tmp/oro-factory-demo-final.nYBhdi/build-source.json",
-  "sanitized_build_environment": true
+	"proof": "deterministic trusted command adapters, not LLM reliability or hostile-code containment",
+	"artifact_directory": "/tmp/oro-factory-demo-final.nYBhdi",
+	"binary": "/tmp/oro-factory-demo-final.nYBhdi/oro",
+	"binary_sha256": "503376c2bd4ee3cbb4cc5bbb6f21ad1f406b7d2b2577bd28c21ddd77d4d5cf07",
+	"built_revision": "c11c41fe7f7035cce1c6060bba285eaf9609850b",
+	"embedded_vcs_revision": "772f4b94297a97dc6f6249ad5f5bf6976805b080",
+	"source_status_after_demonstration": "M docs/plans/2026-10-23-factory-core-design.md\n M docs/plans/2026-10-23-factory-core-tasks.md\n M docs/runbooks/factory-core.md",
+	"initial_target_sha": "b0d769372390810a2f45840fefe1ec79a59521b1",
+	"promoted_sha": "381553c2100aaefee394e023543291319fe9c1fc",
+	"status": {
+		"id": "standalone-addition",
+		"state": "completed",
+		"attempts": 2,
+		"candidate_sha": "381553c2100aaefee394e023543291319fe9c1fc",
+		"target_branch": "delivery"
+	},
+	"idempotent_rerun": true,
+	"worker_invocations": 2,
+	"acceptance_verdicts": [false, true],
+	"review_invocations": 1,
+	"feedback_driven_repair": true,
+	"ignored_worker_output_excluded": true,
+	"primary_checkout_unchanged": true,
+	"fresh_artifact_checks": [
+		{
+			"args": ["2", "3"],
+			"expected": "5",
+			"observed": "5"
+		},
+		{
+			"args": ["-4", "3"],
+			"expected": "-1",
+			"observed": "-1"
+		},
+		{
+			"args": ["7", "0"],
+			"expected": "7",
+			"observed": "7"
+		}
+	],
+	"policies_outside_source": true,
+	"state_outside_source": true,
+	"commands": [
+		{
+			"executable": "git",
+			"args": [
+				"-c",
+				"user.name=Factory Demo",
+				"-c",
+				"user.email=factory-demo@example.invalid",
+				"-c",
+				"core.hooksPath=/dev/null",
+				"-c",
+				"commit.gpgSign=false",
+				"init",
+				"-b",
+				"main"
+			],
+			"cwd": "/tmp/oro-factory-demo-final.nYBhdi/repository",
+			"exit_code": 0,
+			"stdout": "Initialized empty Git repository in /private/tmp/oro-factory-demo-final.nYBhdi/repository/.git/\n",
+			"stderr": ""
+		},
+		{
+			"executable": "git",
+			"args": [
+				"-c",
+				"user.name=Factory Demo",
+				"-c",
+				"user.email=factory-demo@example.invalid",
+				"-c",
+				"core.hooksPath=/dev/null",
+				"-c",
+				"commit.gpgSign=false",
+				"add",
+				"."
+			],
+			"cwd": "/tmp/oro-factory-demo-final.nYBhdi/repository",
+			"exit_code": 0,
+			"stdout": "",
+			"stderr": ""
+		},
+		{
+			"executable": "git",
+			"args": [
+				"-c",
+				"user.name=Factory Demo",
+				"-c",
+				"user.email=factory-demo@example.invalid",
+				"-c",
+				"core.hooksPath=/dev/null",
+				"-c",
+				"commit.gpgSign=false",
+				"commit",
+				"-m",
+				"Initial disposable demonstration repository"
+			],
+			"cwd": "/tmp/oro-factory-demo-final.nYBhdi/repository",
+			"exit_code": 0,
+			"stdout": "[main (root-commit) b0d7693] Initial disposable demonstration repository\n 2 files changed, 2 insertions(+)\n create mode 100644 .gitignore\n create mode 100644 README.md\n",
+			"stderr": ""
+		},
+		{
+			"executable": "git",
+			"args": [
+				"-c",
+				"user.name=Factory Demo",
+				"-c",
+				"user.email=factory-demo@example.invalid",
+				"-c",
+				"core.hooksPath=/dev/null",
+				"-c",
+				"commit.gpgSign=false",
+				"branch",
+				"delivery"
+			],
+			"cwd": "/tmp/oro-factory-demo-final.nYBhdi/repository",
+			"exit_code": 0,
+			"stdout": "",
+			"stderr": ""
+		},
+		{
+			"executable": "git",
+			"args": [
+				"-c",
+				"user.name=Factory Demo",
+				"-c",
+				"user.email=factory-demo@example.invalid",
+				"-c",
+				"core.hooksPath=/dev/null",
+				"-c",
+				"commit.gpgSign=false",
+				"rev-parse",
+				"delivery"
+			],
+			"cwd": "/tmp/oro-factory-demo-final.nYBhdi/repository",
+			"exit_code": 0,
+			"stdout": "b0d769372390810a2f45840fefe1ec79a59521b1\n",
+			"stderr": ""
+		},
+		{
+			"executable": "/tmp/oro-factory-demo-final.nYBhdi/oro",
+			"args": [
+				"factory",
+				"run",
+				"--spec",
+				"/tmp/oro-factory-demo-final.nYBhdi/spec.json",
+				"--state-dir",
+				"/tmp/oro-factory-demo-final.nYBhdi/state"
+			],
+			"cwd": "/tmp/oro-factory-demo-final.nYBhdi",
+			"exit_code": 0,
+			"stdout": "{\"id\":\"standalone-addition\",\"state\":\"completed\",\"attempts\":2,\"candidate_sha\":\"381553c2100aaefee394e023543291319fe9c1fc\",\"target_branch\":\"delivery\"}\n",
+			"stderr": ""
+		},
+		{
+			"executable": "git",
+			"args": [
+				"-c",
+				"user.name=Factory Demo",
+				"-c",
+				"user.email=factory-demo@example.invalid",
+				"-c",
+				"core.hooksPath=/dev/null",
+				"-c",
+				"commit.gpgSign=false",
+				"rev-parse",
+				"delivery"
+			],
+			"cwd": "/tmp/oro-factory-demo-final.nYBhdi/repository",
+			"exit_code": 0,
+			"stdout": "381553c2100aaefee394e023543291319fe9c1fc\n",
+			"stderr": ""
+		},
+		{
+			"executable": "git",
+			"args": [
+				"-c",
+				"user.name=Factory Demo",
+				"-c",
+				"user.email=factory-demo@example.invalid",
+				"-c",
+				"core.hooksPath=/dev/null",
+				"-c",
+				"commit.gpgSign=false",
+				"rev-parse",
+				"main"
+			],
+			"cwd": "/tmp/oro-factory-demo-final.nYBhdi/repository",
+			"exit_code": 0,
+			"stdout": "b0d769372390810a2f45840fefe1ec79a59521b1\n",
+			"stderr": ""
+		},
+		{
+			"executable": "git",
+			"args": [
+				"-c",
+				"user.name=Factory Demo",
+				"-c",
+				"user.email=factory-demo@example.invalid",
+				"-c",
+				"core.hooksPath=/dev/null",
+				"-c",
+				"commit.gpgSign=false",
+				"status",
+				"--porcelain"
+			],
+			"cwd": "/tmp/oro-factory-demo-final.nYBhdi/repository",
+			"exit_code": 0,
+			"stdout": "",
+			"stderr": ""
+		},
+		{
+			"executable": "/bin/sh",
+			"args": ["build/add.sh", "2", "3"],
+			"cwd": "/tmp/oro-factory-demo-final.nYBhdi/state/standalone-addition/attempt-1/worker",
+			"exit_code": 0,
+			"stdout": "5\n",
+			"stderr": ""
+		},
+		{
+			"executable": "/bin/sh",
+			"args": ["add.sh", "2", "3"],
+			"cwd": "/tmp/oro-factory-demo-final.nYBhdi/state/standalone-addition/attempt-1/acceptance",
+			"exit_code": 0,
+			"stdout": "-1\n",
+			"stderr": ""
+		},
+		{
+			"executable": "git",
+			"args": [
+				"-c",
+				"user.name=Factory Demo",
+				"-c",
+				"user.email=factory-demo@example.invalid",
+				"-c",
+				"core.hooksPath=/dev/null",
+				"-c",
+				"commit.gpgSign=false",
+				"worktree",
+				"add",
+				"--detach",
+				"/tmp/oro-factory-demo-final.nYBhdi/delivered-checkout",
+				"381553c2100aaefee394e023543291319fe9c1fc"
+			],
+			"cwd": "/tmp/oro-factory-demo-final.nYBhdi/repository",
+			"exit_code": 0,
+			"stdout": "HEAD is now at 381553c factory: candidate\n",
+			"stderr": "Preparing worktree (detached HEAD 381553c)\n"
+		},
+		{
+			"executable": "/bin/sh",
+			"args": ["add.sh", "2", "3"],
+			"cwd": "/tmp/oro-factory-demo-final.nYBhdi/delivered-checkout",
+			"exit_code": 0,
+			"stdout": "5\n",
+			"stderr": ""
+		},
+		{
+			"executable": "/bin/sh",
+			"args": ["add.sh", "-4", "3"],
+			"cwd": "/tmp/oro-factory-demo-final.nYBhdi/delivered-checkout",
+			"exit_code": 0,
+			"stdout": "-1\n",
+			"stderr": ""
+		},
+		{
+			"executable": "/bin/sh",
+			"args": ["add.sh", "7", "0"],
+			"cwd": "/tmp/oro-factory-demo-final.nYBhdi/delivered-checkout",
+			"exit_code": 0,
+			"stdout": "7\n",
+			"stderr": ""
+		},
+		{
+			"executable": "/tmp/oro-factory-demo-final.nYBhdi/oro",
+			"args": [
+				"factory",
+				"status",
+				"--id",
+				"standalone-addition",
+				"--state-dir",
+				"/tmp/oro-factory-demo-final.nYBhdi/state"
+			],
+			"cwd": "/tmp/oro-factory-demo-final.nYBhdi",
+			"exit_code": 0,
+			"stdout": "{\"id\":\"standalone-addition\",\"state\":\"completed\",\"attempts\":2,\"candidate_sha\":\"381553c2100aaefee394e023543291319fe9c1fc\",\"target_branch\":\"delivery\"}\n",
+			"stderr": ""
+		},
+		{
+			"executable": "/tmp/oro-factory-demo-final.nYBhdi/oro",
+			"args": [
+				"factory",
+				"run",
+				"--spec",
+				"/tmp/oro-factory-demo-final.nYBhdi/spec.json",
+				"--state-dir",
+				"/tmp/oro-factory-demo-final.nYBhdi/state"
+			],
+			"cwd": "/tmp/oro-factory-demo-final.nYBhdi",
+			"exit_code": 0,
+			"stdout": "{\"id\":\"standalone-addition\",\"state\":\"completed\",\"attempts\":2,\"candidate_sha\":\"381553c2100aaefee394e023543291319fe9c1fc\",\"target_branch\":\"delivery\"}\n",
+			"stderr": ""
+		},
+		{
+			"executable": "git",
+			"args": ["status", "--short"],
+			"cwd": "/Users/as21/codehouse/oro/.worktrees/factory-core",
+			"exit_code": 0,
+			"stdout": " M docs/plans/2026-10-23-factory-core-design.md\n M docs/plans/2026-10-23-factory-core-tasks.md\n M docs/runbooks/factory-core.md\n",
+			"stderr": ""
+		}
+	],
+	"source_build_snapshot": "/tmp/oro-factory-demo-final.nYBhdi/build-source.json",
+	"sanitized_build_environment": true
 }
