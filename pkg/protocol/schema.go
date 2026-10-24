@@ -834,40 +834,64 @@ CREATE TRIGGER IF NOT EXISTS bead_notes_touch_parent_ad AFTER DELETE ON bead_not
 END;
 `
 
+type existingBeadSchemaError struct{}
+
+func (existingBeadSchemaError) Error() string {
+	return "initialize bead schema requires a fresh database without beads or review checkpoint schema; use MigrateBeadSchema for an existing database"
+}
+
 // InitializeBeadSchema installs the current native bead schema in a newly
 // created dispatcher database. Existing databases must use MigrateBeadSchema
 // so legacy data and schema variants are upgraded safely.
 func InitializeBeadSchema(ctx context.Context, db *sql.DB) error {
-	tx, err := db.BeginTx(ctx, nil)
+	conn, err := db.Conn(ctx)
 	if err != nil {
 		return fmt.Errorf("initialize bead schema: begin transaction: %w", err)
 	}
-	defer func() { _ = tx.Rollback() }()
+	defer func() { _ = conn.Close() }()
+	// Acquire the write lock before inspecting schema, avoiding a deferred
+	// transaction's read-to-write upgrade race between first-time openers.
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return fmt.Errorf("initialize bead schema: begin transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
+		}
+	}()
 
 	var beadsSchemaExists bool
-	if err := tx.QueryRowContext(ctx,
-		`SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = 'beads')`,
+	if err := conn.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name IN ('beads', 'review_checkpoints'))`,
 	).Scan(&beadsSchemaExists); err != nil {
 		return fmt.Errorf("initialize bead schema: inspect existing schema: %w", err)
 	}
 	if beadsSchemaExists {
-		return errors.New("initialize bead schema requires a fresh database without a beads schema; use MigrateBeadSchema for an existing database")
+		return existingBeadSchemaError{}
 	}
 
-	if _, err := tx.ExecContext(ctx, reviewCheckpointSchemaDDL); err != nil {
+	if _, err := conn.ExecContext(ctx, reviewCheckpointSchemaDDL); err != nil {
 		return fmt.Errorf("initialize review checkpoint schema: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, beadSchemaDDL); err != nil {
+	if _, err := conn.ExecContext(ctx, beadSchemaDDL); err != nil {
 		return fmt.Errorf("initialize bead schema: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
 		return fmt.Errorf("initialize bead schema: commit transaction: %w", err)
 	}
+	committed = true
 	return nil
 }
 
 // MigrateBeadSchema adds the native bead store schema to the dispatcher state DB.
 func MigrateBeadSchema(ctx context.Context, db *sql.DB) error {
+	if err := InitializeBeadSchema(ctx, db); err != nil {
+		var existing existingBeadSchemaError
+		if !errors.As(err, &existing) {
+			return fmt.Errorf("migrate bead schema: %w", err)
+		}
+	}
 	_, err := db.ExecContext(ctx, beadSchemaCoreDDL)
 	if err != nil {
 		return fmt.Errorf("migrate bead schema: %w", err)

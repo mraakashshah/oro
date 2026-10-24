@@ -281,14 +281,16 @@ func TestMigrateBeadSchemaReportsStageFailures(t *testing.T) {
 		execFailureAt  int
 		wantErr        string
 	}{
-		{name: "initial schema", execFailureAt: 1, wantErr: "migrate bead schema"},
-		{name: "contract columns", queryFailureAt: 1, wantErr: "migrate bead contract columns"},
-		{name: "assignment evidence", queryFailureAt: 2, wantErr: "migrate assignment evidence columns"},
-		{name: "review checkpoint schema", queryFailureAt: 3, wantErr: "migrate review checkpoint schema"},
-		{name: "recovery quarantine schema", queryFailureAt: 8, wantErr: "migrate recovery quarantine schema"},
-		{name: "ops runs uniqueness", queryFailureAt: 10, wantErr: "migrate ops_runs legacy uniqueness"},
-		{name: "refreshed core schema", execFailureAt: 3, wantErr: "refresh bead schema"},
-		{name: "queue view refresh", queryFailureAt: 11, wantErr: "refresh bead queue views"},
+		{name: "initialization write lock", execFailureAt: 1, wantErr: "initialize bead schema: begin transaction"},
+		{name: "initialization schema inspection", queryFailureAt: 1, wantErr: "initialize bead schema: inspect existing schema"},
+		{name: "initial schema", execFailureAt: 3, wantErr: "migrate bead schema"},
+		{name: "contract columns", queryFailureAt: 2, wantErr: "migrate bead contract columns"},
+		{name: "assignment evidence", queryFailureAt: 3, wantErr: "migrate assignment evidence columns"},
+		{name: "review checkpoint schema", queryFailureAt: 4, wantErr: "migrate review checkpoint schema"},
+		{name: "recovery quarantine schema", queryFailureAt: 9, wantErr: "migrate recovery quarantine schema"},
+		{name: "ops runs uniqueness", queryFailureAt: 11, wantErr: "migrate ops_runs legacy uniqueness"},
+		{name: "refreshed core schema", execFailureAt: 5, wantErr: "refresh bead schema"},
+		{name: "queue view refresh", queryFailureAt: 12, wantErr: "refresh bead queue views"},
 	}
 
 	for _, test := range tests {
@@ -319,7 +321,7 @@ func TestMigrateBeadSchemaRefreshesCoreSchema(t *testing.T) {
 	if err := MigrateBeadSchema(context.Background(), db); err != nil {
 		t.Fatalf("MigrateBeadSchema() error = %v", err)
 	}
-	assertExecuted(t, script, "INSTALL", "INSTALL", "INSTALL")
+	assertExecuted(t, script, "BEGIN", "ROLLBACK", "INSTALL", "INSTALL", "INSTALL")
 }
 
 type scriptedQuery struct {
@@ -470,6 +472,7 @@ func successfulMigrateBeadSchemaQueries() []scriptedQuery {
 		return scriptedQuery{columns: []string{"name", "notnull"}}
 	}
 	return []scriptedQuery{
+		{columns: []string{"exists"}, values: [][]driver.Value{{true}}}, // existing bead schema
 		emptyColumns(), // beads columns
 		emptyColumns(), // assignments columns
 		emptyColumns(), // review_checkpoints columns

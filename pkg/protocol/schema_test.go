@@ -3,8 +3,10 @@ package protocol_test
 import (
 	"context"
 	"database/sql"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"oro/pkg/dbutil"
 	"oro/pkg/protocol"
@@ -159,7 +161,7 @@ func TestInitializeBeadSchemaReportsTransactionStartFailure(t *testing.T) {
 	}
 }
 
-func TestInitializeBeadSchemaReportsReviewSchemaFailure(t *testing.T) {
+func TestInitializeBeadSchemaRejectsLegacyReviewSchema(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db, err := dbutil.OpenDB(":memory:")
@@ -172,8 +174,27 @@ func TestInitializeBeadSchemaReportsReviewSchemaFailure(t *testing.T) {
 	}
 
 	err = protocol.InitializeBeadSchema(ctx, db)
-	if err == nil || !strings.Contains(err.Error(), "initialize review checkpoint schema") {
+	if err == nil || !strings.Contains(err.Error(), "fresh database") || !strings.Contains(err.Error(), "MigrateBeadSchema") {
+		t.Fatalf("InitializeBeadSchema error = %v, want legacy migration guidance", err)
+	}
+}
+
+func TestInitializeBeadSchemaReportsReviewSchemaFailure(t *testing.T) {
+	t.Parallel()
+	db, err := dbutil.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.ExecContext(t.Context(), `CREATE TABLE idx_review_checkpoints_active_key (id INTEGER)`); err != nil {
+		t.Fatalf("create review index name collision: %v", err)
+	}
+	if err := protocol.InitializeBeadSchema(t.Context(), db); err == nil || !strings.Contains(err.Error(), "initialize review checkpoint schema") {
 		t.Fatalf("InitializeBeadSchema error = %v, want review schema failure", err)
+	}
+	var count int
+	if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM sqlite_schema WHERE name = 'review_checkpoints'`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("failed review initialization retained table: count %d, error %v", count, err)
 	}
 }
 
@@ -192,6 +213,129 @@ func TestInitializeBeadSchemaReportsBeadSchemaFailure(t *testing.T) {
 	err = protocol.InitializeBeadSchema(ctx, db)
 	if err == nil || !strings.Contains(err.Error(), "initialize bead schema") {
 		t.Fatalf("InitializeBeadSchema error = %v, want bead schema failure", err)
+	}
+}
+
+func TestMigrateBeadSchemaAtomicInitialization(t *testing.T) {
+	t.Parallel()
+	db, err := dbutil.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.ExecContext(t.Context(), protocol.SchemaDDL); err != nil {
+		t.Fatalf("create runtime schema: %v", err)
+	}
+	if _, err := db.ExecContext(t.Context(), `CREATE TABLE bead_deps (unexpected TEXT);
+INSERT INTO bead_deps VALUES ('preserve existing data')`); err != nil {
+		t.Fatalf("create incompatible dependency table: %v", err)
+	}
+
+	if err := protocol.MigrateBeadSchema(t.Context(), db); err == nil {
+		t.Fatal("migration succeeded with incompatible dependency table")
+	}
+	for _, name := range []string{"beads", "review_checkpoints", "beads_ready"} {
+		var count int
+		if err := db.QueryRowContext(t.Context(), `SELECT count(*) FROM sqlite_schema WHERE name = ?`, name).Scan(&count); err != nil {
+			t.Fatalf("inspect %s: %v", name, err)
+		}
+		if count != 0 {
+			t.Errorf("failed initialization retained %s schema", name)
+		}
+	}
+	var preserved string
+	if err := db.QueryRowContext(t.Context(), `SELECT unexpected FROM bead_deps`).Scan(&preserved); err != nil {
+		t.Fatalf("read original dependency data: %v", err)
+	}
+	if preserved != "preserve existing data" {
+		t.Fatalf("original dependency data = %q", preserved)
+	}
+}
+
+func TestMigrateBeadSchemaConcurrentFreshInitialization(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	path := filepath.Join(t.TempDir(), "state.db")
+	const openerCount = 4
+	databases := make([]*sql.DB, openerCount)
+	for i := range databases {
+		db, err := dbutil.OpenDB(path)
+		if err != nil {
+			t.Fatalf("open database %d: %v", i, err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		databases[i] = db
+	}
+	if _, err := databases[0].ExecContext(ctx, protocol.SchemaDDL); err != nil {
+		t.Fatalf("create runtime schema: %v", err)
+	}
+	locker, err := databases[0].Conn(ctx)
+	if err != nil {
+		t.Fatalf("acquire schema lock connection: %v", err)
+	}
+	defer func() { _ = locker.Close() }()
+	if _, err := locker.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		t.Fatalf("hold schema write lock: %v", err)
+	}
+	defer func() { _, _ = locker.ExecContext(context.Background(), `ROLLBACK`) }()
+
+	results := make(chan error, openerCount)
+	for _, db := range databases {
+		go func() { results <- protocol.MigrateBeadSchema(ctx, db) }()
+	}
+	remaining := openerCount
+	select {
+	case err := <-results:
+		remaining--
+		t.Errorf("fresh migration returned before schema lock released: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if _, err := locker.ExecContext(ctx, `ROLLBACK`); err != nil {
+		t.Fatalf("release schema write lock: %v", err)
+	}
+	for range remaining {
+		select {
+		case err := <-results:
+			if err != nil {
+				t.Errorf("concurrent fresh migration: %v", err)
+			}
+		case <-ctx.Done():
+			t.Fatalf("wait for concurrent fresh migration: %v", ctx.Err())
+		}
+	}
+	for _, name := range []string{"beads", "review_checkpoints", "beads_ready", "beads_blocked", "review_checkpoints_blocking_assignment"} {
+		var count int
+		if err := databases[0].QueryRowContext(ctx, `SELECT count(*) FROM sqlite_schema WHERE name = ?`, name).Scan(&count); err != nil || count != 1 {
+			t.Errorf("canonical schema %s: count %d, error %v", name, count, err)
+		}
+	}
+}
+
+func TestMigrateBeadSchemaFreshInitializationRunsCommonMigrations(t *testing.T) {
+	t.Parallel()
+	db, err := dbutil.OpenDB(":memory:")
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.ExecContext(t.Context(), protocol.SchemaDDL); err != nil {
+		t.Fatalf("create runtime schema: %v", err)
+	}
+	if _, err := db.ExecContext(t.Context(), `ALTER TABLE recovery_quarantines DROP COLUMN preserved_ref;
+INSERT INTO recovery_quarantines (bead_id, reason) VALUES ('legacy-bead', 'preserve')`); err != nil {
+		t.Fatalf("seed legacy quarantine: %v", err)
+	}
+	if err := protocol.MigrateBeadSchema(t.Context(), db); err != nil {
+		t.Fatalf("migrate fresh bead schema: %v", err)
+	}
+	var beadID, reason string
+	var preservedRef sql.NullString
+	if err := db.QueryRowContext(t.Context(), `SELECT bead_id, reason, preserved_ref FROM recovery_quarantines`).Scan(&beadID, &reason, &preservedRef); err != nil {
+		t.Fatalf("read upgraded quarantine: %v", err)
+	}
+	if beadID != "legacy-bead" || reason != "preserve" || preservedRef.Valid {
+		t.Fatalf("upgraded quarantine = %q/%q/%v", beadID, reason, preservedRef)
 	}
 }
 
