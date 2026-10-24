@@ -527,8 +527,10 @@ Author race passed in 17.915 seconds and independent race in 20.621 seconds;
 package lint, formatting and independent review passed. Evidence uses the
 `cleanup-scope-integrity-*` log prefix. The stricter guard also exposed two older
 volume test fixtures that failed on malformed setup before reaching their intended
-budget/exclusion checks; test-only fixture repairs remain tracked under the volume
-intent task.
+budget/exclusion checks. Commit `d6cdd53b` repairs those fixtures with canonical
+scopes and exact expected errors, including complete authority rollback checks.
+Author race passed in 13.704 seconds and root targeted regressions in 5.884
+seconds; package lint and independent review passed.
 
 Commit `2e9c8961` adds the private create/inspect adapter and scalar configuration
 reader contract. It emits fixed commands, acknowledges only its own trusted
@@ -541,7 +543,24 @@ Final affected race passed in 21.379 seconds; root's full review run passed in
 coverage is 233/250 statements (93.20%); package lint and independent review passed.
 Evidence uses `docker-volume-adapter-options-*` and `docker-volume-options-root`.
 These tests use a recording trusted runtime. Actual Docker lifecycle integration,
-the CLI reader producer, keeper continuity and daemon recovery remain required.
+keeper continuity and daemon recovery remain required.
+
+Commit `28c1f12f` supplies the CLI configuration reader. Every callback reopens
+and verifies frozen artifacts and compares all eleven represented immutable
+admission fields; errors return an empty configuration. Tests cover mutations,
+cancellation, ambient Docker configuration and read-only behavior. Root race
+passed in 1.635 seconds, author race in 1.950 seconds, command-package lint
+reported zero issues, and the new producer covers 8/8 statements. Independent
+review matched the exact source hashes. Evidence uses `docker-volume-config-root`,
+`docker-volume-config-final` and `docker-volume-config-lint-final`. The first RED
+was a missing-symbol compile failure, not a behavioral regression. This reader
+does not itself grant execution; controller construction and native storage
+lifecycle remain required.
+
+The accumulated factory changes passed the full `pkg/factory` race/shuffle run
+with coverage collection (`volume-core-integrated.log` and its result metadata).
+The harness completed in 287.894 seconds. This verifies the package tests, not
+end-to-end unattended delivery.
 
 ## Remaining evidence
 

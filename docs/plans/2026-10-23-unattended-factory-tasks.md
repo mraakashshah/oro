@@ -756,7 +756,7 @@ children extend `oro-mf-docker-storage`; its native acceptance remains unchanged
 
 | Task | Component | Dependencies |
 | --- | --- | --- |
-| `oro-mf-volume-intent` | Atomic usable v1 intents; replay cannot recreate missing authority | `oro-mf-journal`, `oro-mf-cleanup-runtime` |
+| `oro-mf-volume-intent` | Atomic usable v1 intents; replay cannot recreate missing authority | `oro-mf-journal`, `oro-mf-cleanup-runtime`, `oro-mf-cleanup-scope-filters` |
 | `oro-mf-volume-adapter` | Private exact create/inspect calls through HostRuntime | `oro-mf-volume-intent`, `oro-mf-host-scope`, `oro-mf-docker-time` |
 | `oro-mf-volume-config` | Verified immutable CLI configuration reader | `oro-mf-volume-adapter`, `oro-mf-admission-view`, `oro-mf-runtime-config` |
 
