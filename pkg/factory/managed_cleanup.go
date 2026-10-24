@@ -131,23 +131,47 @@ func requireCleanupTarget(ctx context.Context, tx *sql.Tx, target ScopeHandle) e
 }
 
 func requireCleanupHostQuiescence(ctx context.Context, tx *sql.Tx, except string) error {
-	var live int
-	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM managed_scopes WHERE backend!='docker' AND phase!='quiescent' AND id!=?", except).Scan(&live); err != nil {
-		return fmt.Errorf("check cleanup host retirement: %w", err)
-	}
-	if live != 0 {
-		return errors.New("cleanup requires positive prior host-scope retirement")
-	}
-	return nil
+	return scanManagedCleanupScopes(ctx, tx, func(record managedScopeRecord) error {
+		if record.Backend != "docker" && record.Phase != "quiescent" && record.ID != except {
+			return errors.New("cleanup requires positive prior host-scope retirement")
+		}
+		return nil
+	})
 }
 
 func requireNoManagedCleanup(ctx context.Context, tx *sql.Tx) error {
-	var live int
-	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM managed_scopes WHERE phase!='quiescent' AND json_extract(body,'$.kind')='cleanup'").Scan(&live); err != nil {
-		return fmt.Errorf("check ordinary work cleanup exclusion: %w", err)
+	return scanManagedCleanupScopes(ctx, tx, func(record managedScopeRecord) error {
+		if record.Phase != "quiescent" && record.Kind == "cleanup" {
+			return errors.New("ordinary work requires positive cleanup-helper retirement")
+		}
+		return nil
+	})
+}
+
+// Validate complete rows before any classification, including excluded Docker,
+// retired and self scopes. Raw columns or JSON fields cannot hide corruption.
+func scanManagedCleanupScopes(ctx context.Context, tx *sql.Tx, check func(managedScopeRecord) error) error {
+	rows, err := tx.QueryContext(ctx, "SELECT id,nonce,backend,name,substr(CAST(body AS BLOB),1,2049),phase,pid,pgid,cleanup FROM managed_scopes")
+	if err != nil {
+		return fmt.Errorf("list cleanup exclusion scopes: %w", err)
 	}
-	if live != 0 {
-		return errors.New("ordinary work requires positive cleanup-helper retirement")
+	defer rows.Close()
+	for rows.Next() {
+		var record managedScopeRecord
+		var body []byte
+		if err := rows.Scan(&record.ID, &record.Nonce, &record.Backend, &record.Name, &body, &record.Phase, &record.PID, &record.PGID, &record.CleanupEvidence); err != nil {
+			return fmt.Errorf("read cleanup exclusion scope: %w", err)
+		}
+		record, err = decodeManagedScopeRecord(record, body)
+		if err != nil {
+			return err
+		}
+		if err := check(record); err != nil {
+			return err
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("finish cleanup exclusion scopes: %w", err)
 	}
 	return nil
 }
@@ -245,8 +269,10 @@ func validateCleanupLabels(a managedJournalAdmission, target ScopeHandle, labels
 	if !boundedCleanupMap(labels) {
 		return errors.New("cleanup labels exceed their bounded descriptor")
 	}
-	want := map[string]string{"objective": cleanupObjectiveHash(a), "scope": target.ID, "nonce": target.Nonce,
-		"generation": strconv.FormatUint(target.Generation, 10), "kind": target.Kind, "policy": a.ManifestHash}
+	want := map[string]string{
+		"objective": cleanupObjectiveHash(a), "scope": target.ID, "nonce": target.Nonce,
+		"generation": strconv.FormatUint(target.Generation, 10), "kind": target.Kind, "policy": a.ManifestHash,
+	}
 	for key, value := range want {
 		if labels["dev.getoro.factory."+key] != value {
 			return errors.New("cleanup labels differ from exact admitted ownership")
