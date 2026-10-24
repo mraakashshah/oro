@@ -39,10 +39,20 @@ func (runtime *factoryLaunchdRuntime) validateInvocation(ctx context.Context, in
 	if observation.Phase != "reserved" || observation.PID != 0 || observation.PGID != 0 || !observation.Deadline.Equal(invocation.Deadline) {
 		return errors.New("factory invocation requires an exact unconsumed scope reservation")
 	}
-	if invocation.Scope.Kind == "observer" {
+	switch invocation.Scope.Kind {
+	case "host":
+		return nil
+	case "observer":
 		return validateFactoryObserver(ctx, runtime.config, invocation)
+	case "cleanup":
+		permit, err := runtime.authority.CleanupPermit(ctx, invocation.Scope)
+		if err != nil {
+			return fmt.Errorf("read reserved factory cleanup permit: %w", err)
+		}
+		return validateFactoryCleanupInvocation(ctx, runtime.config, invocation, permit)
+	default:
+		return errors.New("factory invocation has no admitted runtime scope kind")
 	}
-	return nil
 }
 
 func (runtime *factoryLaunchdRuntime) register(scope factory.ScopeHandle, call *factoryLaunchdCall) error {

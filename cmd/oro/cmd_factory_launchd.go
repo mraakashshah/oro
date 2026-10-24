@@ -90,8 +90,8 @@ func validateFactoryJob(invocation factory.HostInvocation) error {
 }
 
 func validateFactoryJobScope(scope factory.ScopeHandle) error {
-	if scope.Backend != "launchd" || (scope.Kind != "host" && scope.Kind != "observer") || scope.Generation == 0 {
-		return errors.New("factory job requires a launchd host or observer scope with a positive generation")
+	if scope.Backend != "launchd" || (scope.Kind != "host" && scope.Kind != "observer" && scope.Kind != "cleanup") || scope.Generation == 0 {
+		return errors.New("factory job requires a launchd host, observer or cleanup scope with a positive generation")
 	}
 	if !factoryJobLowerHex(scope.ID, 32) || !factoryJobLowerHex(scope.Nonce, 32) {
 		return errors.New("factory job requires 32-character lowercase hexadecimal scope identity and nonce")
