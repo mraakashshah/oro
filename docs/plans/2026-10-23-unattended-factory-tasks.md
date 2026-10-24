@@ -16,8 +16,14 @@ private helpers may be chosen by implementers.
 type ScopeAuthority interface {
     RecordHello(context.Context, ScopeHandle, int, int) error // verified peer PID, PGID
     Granted(context.Context, ScopeHandle) (bool, error)
+    Observe(context.Context, ScopeHandle) (ScopeObservation, error)
     MarkQuiescent(context.Context, ScopeHandle) error
     Close() error
+}
+type ScopeObservation struct {
+    Phase string
+    PID, PGID int
+    Deadline time.Time
 }
 func OpenScopeAuthority(ctx context.Context, stateDir, id string) (ScopeAuthority, error)
 type SupervisorBackend interface {
@@ -38,6 +44,8 @@ compares current generation, nonce, and lifecycle phase in a transaction. The
 Darwin backend verifies actual peer credentials before RecordHello; the peer's
 JSON claim is not authentication. Journal/controller/supervisor storage APIs use
 separate ownership transactions from the existing objective revision.
+Observe reads an exact full handle, including revoked old epochs, for recovery;
+unknown or mismatched handles fail without creating state or granting execution.
 
 Integration commands below deliberately enable live backends. Ordinary package
 runs may omit expensive opt-in integration scenarios, but qualification requires
@@ -59,10 +67,10 @@ Commit separately after targeted tests, lint, and review. No fake callers or che
 ## oro-mf-journal: Journal managed execution ownership
 
 - Read: pkg/factory/managed_store.go, pkg/factory/store.go:openStore/save, pkg/factory/lock.go:lockObjective.
-- Signature: ScopeHandle; ScopeAuthority.RecordHello/Granted/MarkQuiescent; managed journal transactions.
+- Signature: ScopeHandle; ScopeAuthority.RecordHello/Granted/Observe/MarkQuiescent; managed journal transactions.
 - Test: pkg/factory/managed_store_test.go:TestManagedScopeJournal.
 - Cmd: `GOTOOLCHAIN=go1.26.10 go test ./pkg/factory -run '^TestManagedScopeJournal$' -count=1 -timeout=180s`.
-- Assert / edges: Reserve nonce before external effects; atomically compare generation/nonce/phase, reject revoked grants, count starts/calls once, immutable deadline, FULL synchronous persistence.
+- Assert / edges: Reserve nonce before external effects; atomically compare generation/nonce/phase, reject revoked grants, count starts/calls once, immutable deadline, FULL synchronous persistence. Observe reopens authenticated PID/PGID and deadline for an exact revoked handle; unknown/mismatched handles fail and reads never grant.
 - Depends on: `oro-mf-contract`.
 
 Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
@@ -103,10 +111,10 @@ Commit separately after targeted tests, lint, and review. No fake callers or che
 ## oro-mf-host-exec: Run bounded host invocation wrappers
 
 - Read: cmd/oro/cmd_factory_host_exec.go, cmd/oro/cmd_factory.go:newFactoryCmd, pkg/factory/runner.go:runProcess.
-- Signature: runFactoryHostExec(ctx context.Context,request factory.HostInvocation,authority factory.ScopeAuthority) error.
+- Signature: factoryHostExecRequest{Invocation factory.HostInvocation; ResultPath string}; runFactoryHostExec(ctx context.Context,request factoryHostExecRequest,authority factory.ScopeAuthority) error.
 - Test: cmd/oro/cmd_factory_host_exec_test.go:TestFactoryHostExec.
 - Cmd: `GOTOOLCHAIN=go1.26.10 go test ./cmd/oro -run '^TestFactoryHostExec$' -count=1 -timeout=180s`.
-- Assert / edges: No child or mutable work before authenticated GO; children inherit job PGID; bounded time/output/result serialization; atomic pending result; no host result accepted before scope retirement.
+- Assert / edges: No child or mutable work before authenticated GO; children inherit job PGID; bounded time/output/result serialization; atomic pending result; no host result accepted before scope retirement. Digest-bound ResultPath must equal request-directory/result.pending.json; payload cwd cannot select receipt destination; deadline is rechecked before spawn.
 - Depends on: `oro-mf-host-job`.
 
 Commit separately after targeted tests, lint, and review. No fake callers or check suppression.

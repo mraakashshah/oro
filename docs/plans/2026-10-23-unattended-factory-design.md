@@ -137,6 +137,9 @@ identities/hashes. Every receipt binds its complete manifest hash, base SHA, and
 candidate SHA. Reject zero/unbounded/overflowing budgets, empty checks, duplicate
 IDs, unknown JSON fields, mutable image tags, executable paths inside source,
 invalid branch/path identities, and policies incompatible with runtime limits.
+Bound the entire specification stream to 1 MiB, including whitespace; reject
+overflow distinctly from EOF. Direct typed admission also enforces this encoded
+artifact bound, including JSON escape expansion, before creating durable state.
 
 Admission uses fixed lock order: supervisor lock, then objective lock. Publish a
 managed marker before objective creation, so interruption cannot let legacy Run
@@ -220,13 +223,20 @@ empty success. Production implementation is launchd on this host; unsupported
 platforms fail admission explicitly until their backend is qualified.
 
 The backend receives an admission-bound scope authority with methods to record an
-authenticated handshake, check its grant, and mark quiescence. These operations
+authenticated handshake, check its grant, observe persisted ownership, and mark
+quiescence. These operations
 compare objective ID, generation, nonce, and current lifecycle phase in one
 transaction. Host backend code verifies the peer's real PID/UID before submitting
 the handshake; a claimed JSON PID is insufficient. It cannot grant a revoked or
 superseded generation. Bulk transfer limits come from frozen source limits;
 diagnostic output defaults to 1 MiB per stream. All retained representations,
 including JSON/base64 overhead, count toward the host byte reservation.
+
+`Observe(ctx, handle)` returns the exact scope's persisted phase, authenticated
+PID/PGID, and deadline. It permits reading revoked old epochs for cleanup, never
+grants them, and rejects unknown or mismatched handles. A fresh host backend must
+use this operation to recover ownership evidence; it must not infer process
+identity from names or independently query the journal schema.
 
 Service structure:
 
@@ -241,6 +251,25 @@ Labels use a project-owned prefix plus objective hash and random nonce; never
 reuse `dev.getoro.oro`. One-shot jobs set KeepAlive=false,
 AbandonProcessGroup=false, finite ExitTimeOut. Trusted children inherit the job
 PGID; the managed path does not use legacy `runProcess`'s Setpgid behavior.
+
+The host job renderer receives a private wrapper invocation, with the admitted
+Oro executable as its program. Its literal arguments identify an immutable
+`request.json`, its SHA-256, and an owned Unix socket; the renderer appends the
+fixed deadline and output bound. The request contains the actual command. No
+payload command is launched directly by a plist. Host scope labels are
+`dev.getoro.factory.<objectiveHash16>.<host-or-observer>.<ID32hex>.<Nonce32hex>`; the runtime
+binds the objective hash and verifies socket ownership. Jobs disable globbing,
+use umask 077, and send launchd streams to `/dev/null`; the wrapper separately
+writes bounded pending results. The initial finite exit timeout is five seconds.
+The private `factoryHostExecRequest` contains the actual `HostInvocation` and an
+explicit `ResultPath`. The wrapper obtains objective-bound authority through the
+authenticated socket; it does not independently open a supplied journal path.
+The hidden CLI requires `ResultPath` to equal the request file's private directory
+plus `result.pending.json`; command working directories never select receipt
+destinations. The runtime verifies the canonical parent and ownership before
+launch. An authenticated GO acknowledgment is one-shot for its exact scope;
+revocation followed by whole-job retirement prevents an old scope overlapping
+its replacement. The wrapper rechecks the immutable deadline before spawning.
 
 Before bootstrap, journal the scope. A wrapper starts behind an authenticated
 Unix-socket handshake: HELLO includes scope nonce/PID/PGID; validate caller and
@@ -296,6 +325,12 @@ Use a fresh ownership epoch for these observer scopes after revoking old grants;
 their admitted command set is read-only Git observation. They cannot perform
 update-ref or resume work. Tests require zero additional StartController calls
 and unchanged attempt/controller counts after exhausted-start reconciliation.
+Observer scopes use explicit kind `observer`, require a same-generation
+reconciliation reservation whose token equals the scope ID, and may use only the
+fixed hard-stop allowance. Ordinary host scopes retain the work-deadline bound.
+Advancing an ownership epoch within a live supervisor spends a separately bounded
+epoch token and never spends another supervisor incarnation. The persisted
+current supervisor token fences a superseded supervisor from advancing epochs.
 
 ## Candidate execution, source import, and checks
 
