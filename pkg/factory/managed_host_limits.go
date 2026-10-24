@@ -41,11 +41,15 @@ type HostRetentionLimits struct {
 // Models' turn counts remain inside each invocation's bounded transcript, while
 // every model, tool, host and recovery invocation is accounted for explicitly.
 func ManagedHostRetention(spec ManagedSpec) (HostRetentionLimits, error) {
+	records, err := managedRecordLimits(spec.Recovery, spec.Runtime)
+	if err != nil {
+		return HostRetentionLimits{}, err
+	}
 	if err := validateManagedSpec(spec); err != nil {
 		return HostRetentionLimits{}, err
 	}
 	var arithmetic hostRetentionArithmetic
-	runtime, recovery := spec.Runtime, spec.Recovery
+	runtime := spec.Runtime
 	limits := HostRetentionLimits{
 		RequestBytes: ManagedHostRequestBytes, RuntimeConfigBytes: 1 << 20,
 		ProgramBytes: managedExecutableMaxBytes, LedgerBytes: 32 << 20,
@@ -65,9 +69,10 @@ func ManagedHostRetention(spec ManagedSpec) (HostRetentionLimits, error) {
 	limits.HostOutputBytes = max(limits.ArchiveBytes, 1<<20)
 	limits.PendingResultBytes = arithmetic.sum(arithmetic.product(4, limits.HostOutputBytes), ManagedHostResultMetadataBytes)
 	limits.TranscriptBytes = limits.PendingResultBytes
-	limits.InvocationRecords = arithmetic.sum(int64(runtime.MaxHostInvocations), int64(runtime.MaxModelCalls), int64(runtime.MaxToolCalls), int64(recovery.MaxReconciliationInvocations))
-	limits.ScopeRecords = arithmetic.sum(arithmetic.product(2, arithmetic.sum(int64(recovery.MaxSupervisorStarts), int64(recovery.MaxControllerStarts), int64(recovery.MaxReconciliationInvocations))),
-		int64(runtime.MaxHostInvocations), int64(runtime.MaxModelCalls), int64(runtime.MaxToolCalls))
+	limits.InvocationRecords = records.Invocations
+	// Each cleanup adds two 1 MiB metadata allowances (scope and epoch). Its
+	// <=16 KiB permit fits within these allowances without a second byte charge.
+	limits.ScopeRecords = records.Scopes
 	limits.SourceVersions = arithmetic.sum(2, arithmetic.product(int64(spec.MaxAttempts), arithmetic.sum(int64(len(spec.Acceptance)), 3)))
 	limits.MinimumBytes = retainedHostBytes(runtime, limits, &arithmetic)
 	if arithmetic.err != nil {

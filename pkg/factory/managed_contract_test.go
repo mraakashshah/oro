@@ -16,7 +16,7 @@ func managedContractFixture() ManagedSpec {
 		ID: "calculator", Objective: "Implement addition", Repository: "/private/tmp/repository", TargetBranch: "factory/calculator",
 		RequiredChecks: []string{"addition"}, MaxAttempts: 3, TimeoutSeconds: 300, StepTimeoutSeconds: 60,
 		Recovery: RecoveryPolicy{MaxControllerStarts: 5, MaxSupervisorStarts: 8, RestartDelaySeconds: 1,
-			CleanupTimeoutSeconds: 10, ReconciliationSeconds: 15, MaxReconciliationInvocations: 4},
+			CleanupTimeoutSeconds: 10, ReconciliationSeconds: 15, MaxReconciliationInvocations: 4, MaxCleanupInvocations: 4},
 		Runtime: RuntimePolicy{DockerContext: "colima-oro-factory", ImageDigest: "sha256:" + strings.Repeat("a", 64),
 			MemoryBytes: 256 << 20, ScratchBytes: 64 << 20, SourceBytes: 16 << 20, HostRequiredBytes: 1 << 30, HostReserveBytes: 128 << 20,
 			CPUs: 1.5, PIDs: 64, MaxFiles: 100, SourceInodes: 200, ScratchInodes: 200,
@@ -53,6 +53,112 @@ func TestManagedSpecContract(t *testing.T) {
 			t.Fatal("managed policy leaked into legacy JSON")
 		}
 	})
+}
+
+func TestManagedCleanupPolicy(t *testing.T) {
+	t.Run("checked record and storage bounds", testManagedCleanupRecordBounds)
+	t.Run("required finite cleanup count", func(t *testing.T) {
+		for _, value := range []string{"", "0", "-1", strconv.Itoa(math.MaxInt)} {
+			if _, err := decodeManagedSpec(strings.NewReader(managedCleanupPolicyJSON(t, value))); err == nil {
+				t.Errorf("unbounded or missing cleanup count %q accepted", value)
+			}
+		}
+	})
+	t.Run("large representable count has no arbitrary ceiling", func(t *testing.T) {
+		if _, err := decodeManagedSpec(strings.NewReader(managedCleanupPolicyJSON(t, "1048576"))); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("cleanup count changes identity without extending lifetime", func(t *testing.T) {
+		one, err := decodeManagedSpec(strings.NewReader(managedCleanupPolicyJSON(t, "1")))
+		if err != nil {
+			t.Fatal(err)
+		}
+		two, err := decodeManagedSpec(strings.NewReader(managedCleanupPolicyJSON(t, "2")))
+		if err != nil {
+			t.Fatal(err)
+		}
+		digests := map[string]string{"git": strings.Repeat("a", 64), "model": strings.Repeat("b", 64)}
+		first, err := managedPolicyHash(one, digests)
+		if err != nil {
+			t.Fatal(err)
+		}
+		second, err := managedPolicyHash(two, digests)
+		if err != nil || first == second {
+			t.Fatalf("cleanup count omitted from identity: %s %s %v", first, second, err)
+		}
+		if one.Runtime != two.Runtime || one.TimeoutSeconds != two.TimeoutSeconds || one.StepTimeoutSeconds != two.StepTimeoutSeconds ||
+			one.Recovery.CleanupTimeoutSeconds != two.Recovery.CleanupTimeoutSeconds || one.Recovery.ReconciliationSeconds != two.Recovery.ReconciliationSeconds ||
+			one.Recovery.MaxReconciliationInvocations != two.Recovery.MaxReconciliationInvocations || one.Recovery.MaxSupervisorStarts != two.Recovery.MaxSupervisorStarts ||
+			one.Recovery.MaxControllerStarts != two.Recovery.MaxControllerStarts {
+			t.Fatal("cleanup count changed another allowance or original lifetime")
+		}
+		count, err := journalRecordLimit(managedJournalAdmission{Recovery: one.Recovery, Runtime: one.Runtime})
+		if err != nil || count != 196 {
+			t.Fatalf("cleanup scope and epoch missing from journal bound: %d %v", count, err)
+		}
+	})
+}
+
+func testManagedCleanupRecordBounds(t *testing.T) {
+	t.Helper()
+	spec := hostRetentionFixture()
+	bounds, err := managedRecordLimits(spec.Recovery, spec.Runtime)
+	want := managedRecordBounds{Epochs: 4, Invocations: 5, Scopes: 11, Events: 104, CleanupPermits: 1, CleanupPermitBytes: 16384}
+	if err != nil || bounds != want {
+		t.Fatalf("cleanup record bounds = %+v, %v; want %+v", bounds, err, want)
+	}
+	if ManagedCleanupPermitBytes != 16384 || ManagedStateStorageBytes != 256<<20 || managedJournalMaxDatabaseBytes != 64<<20 {
+		t.Fatal("cleanup changed its permit cap or managed bootstrap storage caps")
+	}
+	for name, mutate := range map[string]func(*ManagedSpec){
+		"zero cleanup":        func(s *ManagedSpec) { s.Recovery.MaxCleanupInvocations = 0 },
+		"negative cleanup":    func(s *ManagedSpec) { s.Recovery.MaxCleanupInvocations = -1 },
+		"epoch sum":           func(s *ManagedSpec) { s.Recovery.MaxCleanupInvocations = math.MaxInt },
+		"work sum":            func(s *ManagedSpec) { s.Runtime.MaxHostInvocations = math.MaxInt },
+		"scope product":       func(s *ManagedSpec) { s.Recovery.MaxCleanupInvocations = math.MaxInt / 2 },
+		"event product":       func(s *ManagedSpec) { s.Recovery.MaxControllerStarts = math.MaxInt / 16 },
+		"permit byte product": func(s *ManagedSpec) { s.Recovery.MaxCleanupInvocations = math.MaxInt/16384 + 1 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := spec
+			mutate(&changed)
+			if got, err := managedRecordLimits(changed.Recovery, changed.Runtime); err == nil || got != (managedRecordBounds{}) {
+				t.Fatalf("invalid record bounds returned usable counts: %+v, %v", got, err)
+			}
+			if _, err := journalRecordLimit(managedJournalAdmission{Recovery: changed.Recovery, Runtime: changed.Runtime}); err == nil {
+				t.Fatal("journal accepted invalid record bounds")
+			}
+		})
+	}
+}
+
+func managedCleanupPolicyJSON(t *testing.T, value string) string {
+	t.Helper()
+	data, err := json.Marshal(managedContractFixture())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var spec, recovery map[string]json.RawMessage
+	if err := json.Unmarshal(data, &spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(spec["recovery"], &recovery); err != nil {
+		t.Fatal(err)
+	}
+	delete(recovery, "max_cleanup_invocations")
+	if value != "" {
+		recovery["max_cleanup_invocations"] = json.RawMessage(value)
+	}
+	spec["recovery"], err = json.Marshal(recovery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err = json.Marshal(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
 }
 
 func testManagedBoundedJSON(t *testing.T) {
@@ -260,7 +366,7 @@ func testManagedInvalidBudgets(t *testing.T) {
 			s.Runtime.MaxModelCalls = 2
 		},
 	}
-	for _, field := range []string{"MaxControllerStarts", "MaxSupervisorStarts", "RestartDelaySeconds", "CleanupTimeoutSeconds", "ReconciliationSeconds", "MaxReconciliationInvocations"} {
+	for _, field := range []string{"MaxControllerStarts", "MaxSupervisorStarts", "RestartDelaySeconds", "CleanupTimeoutSeconds", "ReconciliationSeconds", "MaxReconciliationInvocations", "MaxCleanupInvocations"} {
 		cases["zero recovery "+field] = func(s *ManagedSpec) { reflect.ValueOf(&s.Recovery).Elem().FieldByName(field).SetInt(0) }
 	}
 	for _, field := range []string{"MemoryBytes", "ScratchBytes", "SourceBytes", "HostRequiredBytes", "HostReserveBytes", "PIDs", "MaxFiles", "SourceInodes", "ScratchInodes", "MaxModelCalls", "MaxModelTurns", "MaxToolCalls", "MaxHostInvocations"} {

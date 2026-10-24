@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-// RecoveryPolicy bounds all incarnations and the final read-only reconciliation.
+// RecoveryPolicy bounds all incarnations, cleanup and read-only reconciliation.
 type RecoveryPolicy struct {
 	MaxControllerStarts          int `json:"max_controller_starts"`
 	MaxSupervisorStarts          int `json:"max_supervisor_starts"`
@@ -24,6 +24,40 @@ type RecoveryPolicy struct {
 	CleanupTimeoutSeconds        int `json:"cleanup_timeout_seconds"`
 	ReconciliationSeconds        int `json:"reconciliation_seconds"`
 	MaxReconciliationInvocations int `json:"max_reconciliation_invocations"`
+	MaxCleanupInvocations        int `json:"max_cleanup_invocations"`
+}
+
+// ManagedCleanupPermitBytes caps the canonical target-bound cleanup permit.
+const ManagedCleanupPermitBytes = 16 << 10
+
+type managedRecordBounds struct {
+	Epochs, Invocations, Scopes, Events int64
+	CleanupPermits, CleanupPermitBytes  int64
+}
+
+// managedRecordLimits shares checked journal and retention counts. Each cleanup
+// helper has one invocation, one scope, one epoch and one bounded permit. The
+// conservative scope allowance also covers supervisor/controller reservations.
+func managedRecordLimits(recovery RecoveryPolicy, runtime RuntimePolicy) (managedRecordBounds, error) {
+	for _, count := range []int{recovery.MaxSupervisorStarts, recovery.MaxControllerStarts, recovery.MaxReconciliationInvocations,
+		recovery.MaxCleanupInvocations, runtime.MaxHostInvocations, runtime.MaxModelCalls, runtime.MaxToolCalls} {
+		if count <= 0 {
+			return managedRecordBounds{}, errors.New("managed record limits must be positive")
+		}
+	}
+	var arithmetic hostRetentionArithmetic
+	bounds := managedRecordBounds{CleanupPermits: int64(recovery.MaxCleanupInvocations)}
+	bounds.Epochs = arithmetic.sum(int64(recovery.MaxSupervisorStarts), int64(recovery.MaxControllerStarts),
+		int64(recovery.MaxReconciliationInvocations), bounds.CleanupPermits)
+	work := arithmetic.sum(int64(runtime.MaxHostInvocations), int64(runtime.MaxModelCalls), int64(runtime.MaxToolCalls))
+	bounds.Invocations = arithmetic.sum(work, int64(recovery.MaxReconciliationInvocations), bounds.CleanupPermits)
+	bounds.Scopes = arithmetic.sum(arithmetic.product(2, bounds.Epochs), work)
+	bounds.Events = arithmetic.sum(arithmetic.product(8, bounds.Scopes), 16)
+	bounds.CleanupPermitBytes = arithmetic.product(bounds.CleanupPermits, ManagedCleanupPermitBytes)
+	if arithmetic.err != nil {
+		return managedRecordBounds{}, fmt.Errorf("managed record limits: %w", arithmetic.err)
+	}
+	return bounds, nil
 }
 
 // RuntimePolicy freezes execution identities and finite resource allowances.
@@ -262,6 +296,9 @@ func validateManagedSpec(spec ManagedSpec) error {
 	if err := validateManagedRuntime(spec); err != nil {
 		return err
 	}
+	if _, err := managedRecordLimits(spec.Recovery, spec.Runtime); err != nil {
+		return err
+	}
 	return validateManagedChecks(spec.RequiredChecks, spec.Acceptance)
 }
 
@@ -341,10 +378,10 @@ func managedBranch(branch string) bool {
 
 func validateManagedRecovery(spec ManagedSpec) error {
 	r := spec.Recovery
-	counts := []int{spec.MaxAttempts, r.MaxControllerStarts, r.MaxSupervisorStarts, r.MaxReconciliationInvocations}
+	counts := []int{spec.MaxAttempts, r.MaxControllerStarts, r.MaxSupervisorStarts, r.MaxReconciliationInvocations, r.MaxCleanupInvocations}
 	for _, count := range counts {
 		if count <= 0 {
-			return errors.New("managed attempt, start and reconciliation limits must be positive")
+			return errors.New("managed attempt, start, reconciliation and cleanup limits must be positive")
 		}
 	}
 	seconds := []int{spec.TimeoutSeconds, spec.StepTimeoutSeconds, r.RestartDelaySeconds, r.CleanupTimeoutSeconds, r.ReconciliationSeconds}

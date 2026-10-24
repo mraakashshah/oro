@@ -109,19 +109,8 @@ func validateJournalAdmission(a managedJournalAdmission) error {
 }
 
 func journalRecordLimit(a managedJournalAdmission) (int64, error) {
-	limits := []int{
-		a.Recovery.MaxSupervisorStarts, a.Recovery.MaxControllerStarts, a.Recovery.MaxReconciliationInvocations,
-		a.Runtime.MaxModelCalls, a.Runtime.MaxToolCalls, a.Runtime.MaxHostInvocations,
-		a.Recovery.MaxSupervisorStarts, a.Recovery.MaxControllerStarts, a.Recovery.MaxReconciliationInvocations,
-	}
-	var total int64
-	for _, limit := range limits {
-		if limit <= 0 || int64(limit) > (math.MaxInt64-16)/8-total {
-			return 0, errors.New("managed journal record bound overflows")
-		}
-		total += int64(limit)
-	}
-	return total, nil
+	bounds, err := managedRecordLimits(a.Recovery, a.Runtime)
+	return bounds.Scopes, err
 }
 
 func insertManagedAdmission(ctx context.Context, tx *sql.Tx, a managedJournalAdmission) error {

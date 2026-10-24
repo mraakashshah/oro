@@ -30,6 +30,7 @@ func hostRetentionFixture() ManagedSpec {
 	spec.Runtime.SourceBytes, spec.Runtime.MaxFiles = 1024, 1
 	spec.Runtime.MaxHostInvocations, spec.Runtime.MaxModelCalls, spec.Runtime.MaxToolCalls = 1, 1, 1
 	spec.Recovery.MaxSupervisorStarts, spec.Recovery.MaxControllerStarts, spec.Recovery.MaxReconciliationInvocations = 1, 1, 1
+	spec.Recovery.MaxCleanupInvocations = 1
 	return spec
 }
 
@@ -40,11 +41,11 @@ func TestManagedHostRetention(t *testing.T) {
 			t.Fatal(err)
 		}
 		// Independently calculated: fixed=1,924,136,960; source=7,133,184;
-		// invocation=310,509,568; scope metadata=9,437,184 bytes.
-		if limits.MinimumBytes != 2251216896 || limits.ArchiveBytes != 3584 || limits.HostOutputBytes != 1<<20 || limits.PendingResultBytes != 4210688 {
+		// invocation=388,136,960; scope metadata=11,534,336 bytes.
+		if limits.MinimumBytes != 2330941440 || limits.ArchiveBytes != 3584 || limits.HostOutputBytes != 1<<20 || limits.PendingResultBytes != 4210688 {
 			t.Fatalf("retained bounds = %+v", limits)
 		}
-		if limits.SourceVersions != 6 || limits.InvocationRecords != 4 || limits.ScopeRecords != 9 || limits.MaxPathBytes != 255 {
+		if limits.SourceVersions != 6 || limits.InvocationRecords != 5 || limits.ScopeRecords != 11 || limits.MaxPathBytes != 255 {
 			t.Fatalf("writer/count contracts = %+v", limits)
 		}
 		if limits.RequestBytes != 32<<20 || limits.TranscriptBytes != limits.PendingResultBytes || limits.RuntimeConfigBytes != 1<<20 ||
@@ -99,6 +100,7 @@ func testHostRetentionFamilies(t *testing.T) {
 		"model calls":       func(s *ManagedSpec) { s.Runtime.MaxModelCalls++ },
 		"tool calls":        func(s *ManagedSpec) { s.Runtime.MaxToolCalls++ },
 		"reconciliation":    func(s *ManagedSpec) { s.Recovery.MaxReconciliationInvocations++ },
+		"cleanup":           func(s *ManagedSpec) { s.Recovery.MaxCleanupInvocations++ },
 		"supervisor starts": func(s *ManagedSpec) { s.Recovery.MaxSupervisorStarts++ },
 		"controller starts": func(s *ManagedSpec) { s.Recovery.MaxControllerStarts++ },
 	} {
@@ -119,6 +121,8 @@ func testHostRetentionOverflow(t *testing.T) {
 		"archive multiplication":      func(s *ManagedSpec) { s.Runtime.MaxFiles = math.MaxInt; s.Runtime.SourceInodes = math.MaxInt },
 		"invocation sum":              func(s *ManagedSpec) { s.Runtime.MaxHostInvocations = math.MaxInt },
 		"scope sum":                   func(s *ManagedSpec) { s.Recovery.MaxSupervisorStarts = math.MaxInt },
+		"cleanup sum":                 func(s *ManagedSpec) { s.Recovery.MaxCleanupInvocations = math.MaxInt },
+		"retained cleanup product":    func(s *ManagedSpec) { s.Recovery.MaxCleanupInvocations = math.MaxInt / (32 << 20) },
 		"retained invocation product": func(s *ManagedSpec) { s.Runtime.MaxHostInvocations = math.MaxInt / (32 << 20) },
 		"retained source product":     func(s *ManagedSpec) { s.MaxAttempts = math.MaxInt / (1 << 20) },
 		"invalid zero":                func(s *ManagedSpec) { s.Runtime.SourceBytes = 0 },
