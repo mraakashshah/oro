@@ -109,13 +109,32 @@ func (c *controller) admit(ctx context.Context) error {
 
 func (c *controller) resume(ctx context.Context) error {
 	switch c.state.State {
-	case "pending", "completed", "failed":
+	case "pending", "approved", "completed", "failed":
 		return nil
-	case "running", "candidate", "accepted", "approved", "promoting":
+	case "running", "candidate", "accepted":
 		return c.reject(ctx, errors.New("previous controller interrupted; prior attempt remains spent"))
+	case "promoting":
+		return c.reconcilePromotion(ctx)
 	default:
 		return fmt.Errorf("unknown durable factory state %q", c.state.State)
 	}
+}
+
+func (c *controller) reconcilePromotion(ctx context.Context) error {
+	actual, err := c.repo.resolveTarget(ctx, c.state.Spec.TargetBranch)
+	if err != nil {
+		return err
+	}
+	if actual == c.state.CandidateSHA {
+		// The authorized Git effect already happened; elapsed time cannot undo it.
+		next := c.state
+		next.State, next.Reason = "completed", ""
+		return c.save(ctx, next)
+	}
+	if actual != c.state.BaseSHA {
+		return c.reject(ctx, errors.New("target advanced during interrupted promotion"))
+	}
+	return nil
 }
 
 func (c *controller) step(ctx context.Context) error {
