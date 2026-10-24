@@ -32,8 +32,9 @@ type snapshot struct {
 }
 
 type factoryStore struct {
-	db   *sql.DB
-	conn *sql.Conn
+	db      *sql.DB
+	conn    *sql.Conn
+	managed bool
 }
 
 func openStore(ctx context.Context, dir string) (*factoryStore, error) {
@@ -120,7 +121,12 @@ func (s *factoryStore) save(ctx context.Context, next snapshot, expected int64) 
 	if _, err := tx.ExecContext(ctx, "INSERT INTO events(revision, state, body) VALUES(?, ?, ?)", next.Revision, next.State, body); err != nil {
 		return fmt.Errorf("append factory event: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
+	if s.managed {
+		err = commitManagedTransaction(s.conn, tx)
+	} else {
+		err = tx.Commit()
+	}
+	if err != nil {
 		return fmt.Errorf("commit factory transition: %w", err)
 	}
 	return nil

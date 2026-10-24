@@ -146,7 +146,7 @@ func testManagedAdmissionIdentity(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(manifest.Spec, spec) || manifest.Reservation != reservation {
 		t.Fatalf("frozen identity = %+v, %v", manifest, err)
 	}
-	store, err := openStore(t.Context(), filepath.Join(root, spec.ID))
+	store, err := openManagedFactoryStore(t.Context(), filepath.Join(root, spec.ID))
 	if err != nil {
 		t.Fatal(err)
 	}

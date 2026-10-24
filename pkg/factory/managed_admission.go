@@ -267,7 +267,7 @@ func finishManagedAdmission(ctx context.Context, root string, manifest managedMa
 	if err := freezeManagedManifest(ctx, dir, manifest); err != nil {
 		return Status{}, err
 	}
-	store, err := openStore(ctx, dir)
+	store, err := openManagedFactoryStore(ctx, dir)
 	if err != nil {
 		return Status{}, err
 	}
@@ -283,7 +283,7 @@ func guardManagedObjective(dir string) error {
 	if err != nil || actual != dir {
 		return errors.New("managed objective directory must not traverse symlinks")
 	}
-	for _, name := range []string{"objective.lock", "state.db", "state.db-wal", "state.db-shm"} {
+	for _, name := range []string{"objective.lock", "state.init", "state.db", "state.db-journal", "state.db-wal", "state.db-shm"} {
 		if err := managedRegularOrAbsent(filepath.Join(dir, name)); err != nil {
 			return err
 		}
@@ -633,7 +633,7 @@ func commitManagedAdmission(ctx context.Context, store *factoryStore, manifest m
 			return Status{}, err
 		}
 	}
-	if err := tx.Commit(); err != nil {
+	if err := commitManagedTransaction(store.conn, tx); err != nil {
 		return Status{}, fmt.Errorf("commit managed admission: %w", err)
 	}
 	return snapshotStatus(state), nil

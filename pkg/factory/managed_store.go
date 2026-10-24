@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"net/url"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -48,8 +47,6 @@ type managedJournal struct {
 	identity  []byte
 }
 
-const managedJournalMaxDatabaseBytes int64 = 64 << 20
-
 // initManagedSchema runs before admission's transaction. insertManagedAdmission
 // then shares that transaction with the first delivery snapshot and marker.
 func initManagedSchema(ctx context.Context, conn *sql.Conn) error {
@@ -86,31 +83,7 @@ CREATE TABLE IF NOT EXISTS managed_events (
 }
 
 func managedDurability(ctx context.Context, conn *sql.Conn) error {
-	if _, err := conn.ExecContext(ctx, "PRAGMA synchronous=FULL"); err != nil {
-		return fmt.Errorf("set managed journal durability: %w", err)
-	}
-	var synchronous int
-	if err := conn.QueryRowContext(ctx, "PRAGMA synchronous").Scan(&synchronous); err != nil {
-		return fmt.Errorf("verify managed journal durability: %w", err)
-	}
-	if synchronous != 2 {
-		return errors.New("managed journal requires synchronous=FULL")
-	}
-	var pageSize, pages int64
-	if err := conn.QueryRowContext(ctx, "PRAGMA page_size").Scan(&pageSize); err != nil {
-		return fmt.Errorf("read managed database page size: %w", err)
-	}
-	if pageSize <= 0 || pageSize > managedJournalMaxDatabaseBytes {
-		return errors.New("invalid managed database page size")
-	}
-	limit := managedJournalMaxDatabaseBytes / pageSize
-	if err := conn.QueryRowContext(ctx, fmt.Sprintf("PRAGMA max_page_count=%d", limit)).Scan(&pages); err != nil {
-		return fmt.Errorf("bound managed database pages: %w", err)
-	}
-	if pages > limit {
-		return errors.New("managed database already exceeds its page budget")
-	}
-	return nil
+	return configureManagedStorage(ctx, conn, false)
 }
 
 func validateJournalAdmission(a managedJournalAdmission) error {
@@ -188,18 +161,11 @@ func openManagedJournal(ctx context.Context, root, id string) (*managedJournal, 
 	if !managedAbsolutePath(root) || !managedIdentifier(id) {
 		return nil, errors.New("invalid managed state root or objective ID")
 	}
-	query := url.Values{"mode": {"rw"}, "_txlock": {"immediate"}, "_pragma": {"busy_timeout(5000)"}}
-	dsn := (&url.URL{Scheme: "file", Path: filepath.Join(root, id, "state.db"), RawQuery: query.Encode()}).String()
-	db, err := sql.Open("sqlite", dsn)
+	store, _, err := openManagedConnection(ctx, filepath.Join(root, id), false)
 	if err != nil {
-		return nil, fmt.Errorf("open existing managed journal: %w", err)
+		return nil, err
 	}
-	conn, err := db.Conn(ctx)
-	if err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("acquire managed journal connection: %w", err)
-	}
-	j := &managedJournal{db: db, conn: conn}
+	j := &managedJournal{db: store.db, conn: store.conn}
 	if err := j.loadAdmission(ctx, root, id); err != nil {
 		_ = j.Close()
 		return nil, err
@@ -314,7 +280,7 @@ func (j *managedJournal) mutate(ctx context.Context, kind, ref string, change fu
 	if _, err := tx.ExecContext(ctx, "INSERT INTO managed_events(revision,kind,ref,body) VALUES(?,?,?,?)", state.Revision, kind, ref, body); err != nil {
 		return fmt.Errorf("append managed event: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
+	if err := commitManagedTransaction(j.conn, tx); err != nil {
 		return fmt.Errorf("commit managed transition: %w", err)
 	}
 	return nil

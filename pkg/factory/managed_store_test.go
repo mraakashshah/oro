@@ -40,7 +40,11 @@ func journalFixture(t *testing.T) (string, managedJournalAdmission, *factoryStor
 		Recovery: spec.Recovery, Runtime: spec.Runtime,
 		Reservation: HostReservation{ID: "reservation1", StateRoot: root, ObjectiveID: spec.ID, Bytes: spec.Runtime.HostRequiredBytes},
 	}
-	store, err := openStore(t.Context(), filepath.Join(root, a.ObjectiveID))
+	dir := filepath.Join(root, a.ObjectiveID)
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := openManagedFactoryStore(t.Context(), dir)
 	if err != nil {
 		t.Fatal(err)
 	}
