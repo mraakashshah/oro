@@ -8,9 +8,11 @@ import (
 )
 
 func contractSpec() Spec {
-	return Spec{ID: "calculator", Objective: "Implement addition", Repository: "/tmp/repository", TargetBranch: "factory/calculator",
+	return Spec{
+		ID: "calculator", Objective: "Implement addition", Repository: "/tmp/repository", TargetBranch: "factory/calculator",
 		Worker: Command{Path: "/tmp/worker"}, Acceptance: Command{Path: "/tmp/acceptance"}, Review: Command{Path: "/tmp/review"},
-		RequiredChecks: []string{"positive", "negative"}, MaxAttempts: 3, TimeoutSeconds: 300, StepTimeoutSeconds: 60}
+		RequiredChecks: []string{"positive", "negative"}, MaxAttempts: 3, TimeoutSeconds: 300, StepTimeoutSeconds: 60,
+	}
 }
 
 func policyFixture(t *testing.T) (string, Spec) {

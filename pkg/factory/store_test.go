@@ -13,8 +13,10 @@ import (
 
 func testSnapshot() snapshot {
 	created := time.Date(2026, time.October, 23, 12, 0, 0, 0, time.UTC)
-	return snapshot{Spec: contractSpec(), PolicyHash: "policy", PolicyDigests: map[string]string{"worker": "digest"},
-		CreatedAt: created, Deadline: created.Add(5 * time.Minute), State: "pending"}
+	return snapshot{
+		Spec: contractSpec(), PolicyHash: "policy", PolicyDigests: map[string]string{"worker": "digest"},
+		CreatedAt: created, Deadline: created.Add(5 * time.Minute), State: "pending",
+	}
 }
 
 func TestFactoryStore(t *testing.T) {
