@@ -1,6 +1,6 @@
 # Unattended factory task graph
 
-Design: [unattended factory design](2026-10-23-unattended-factory-design.md), Gate 1 PASS. Gate 2 PASS after independent review and two contract repairs. Native parent: `oro-factory-managed`, under `oro-factory-autonomy`. There are now 35 tracked nodes below the managed epic, including host capacity's three children, container transport/readiness, and restricted cleanup policy/authority/runtime. Later integration findings remain qualification blockers until their protocols and tests are accepted.
+Design: [unattended factory design](2026-10-23-unattended-factory-design.md), Gate 1 PASS. Gate 2 PASS after independent review and two contract repairs. Native parent: `oro-factory-managed`, under `oro-factory-autonomy`. There are now 36 tracked nodes below the managed epic, including host capacity's four children, container transport/readiness, and restricted cleanup policy/authority/runtime. Later integration findings remain qualification blockers until their protocols and tests are accepted.
 
 Every task inherits the design's authority, budget, platform, and operational requirements. Root owns Git integration; implementers use test-first RED/GREEN and report frozen files. Keep full-gate blockers visible until resolved. Component success does not close the parent.
 
@@ -99,7 +99,8 @@ Commit separately after targeted tests, lint, and review. No fake callers or che
 ## oro-mf-host-budget: Reserve managed host capacity
 
 This epic retains its original integration acceptance and depends explicitly on
-`oro-mf-host-limits`, `oro-mf-host-release`, and `oro-mf-host-ledger`.
+`oro-mf-host-limits`, `oro-mf-host-release`, `oro-mf-host-ledger`, and
+`oro-mf-ledger-bootstrap`.
 
 - Read: cmd/oro/cmd_factory_budget.go, cmd/oro/cmd_factory.go:newFactoryCmd, pkg/storage/runtime_budget.go:CheckRuntimeBudget.
 - Signature: admitFactoryHostBudget(ctx context.Context,stateDir string,spec factory.ManagedSpec,probe storage.DiskProbe) (factory.HostReservation,error); releaseFactoryHostReservation(ctx context.Context,stateDir,id string) error.
@@ -293,7 +294,7 @@ Commit separately after targeted tests, lint, and review. No fake callers or che
 - Test: cmd/oro/cmd_factory_start_test.go:TestFactoryManagedStart.
 - Cmd: `ORO_FACTORY_INTEGRATION=1 ORO_FACTORY_DOCKER_CONTEXT=colima-oro-factory GOTOOLCHAIN=go1.26.10 go test ./cmd/oro -run '^TestFactoryManagedStart$' -count=1 -timeout=180s`.
 - Assert / edges: ActualCLI wires budget->frozenadmission->ownedservice registration; controllerauthenticatedgate beforework; existingrun unchanged/rejectsmanaged; repeatedstartidempotent noreset; no legacy fixedlaunchdlabel/swarm; low disk or failed probe through actual public CLI creates no scope/controller/attempt; successful start return never releases active persistent host reservation. Durably freeze Oro executable identity and bounded runtime configuration before registration; resume verifies original frozen Oro/Git artifacts and supplies trusted host-runtime config. Missing or changed content fails without substituting current installation.
-- Depends on: `oro-mf-host-budget`, `oro-mf-host-scope`, `oro-mf-claude`, `oro-mf-supervisor`, `oro-mf-reservation-failure`.
+- Depends on: `oro-mf-host-budget`, `oro-mf-host-scope`, `oro-mf-claude`, `oro-mf-supervisor`, `oro-mf-reservation-failure`, `oro-mf-ledger-bootstrap`.
 
 Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
 
@@ -451,5 +452,17 @@ Commit separately after targeted tests, lint, and review. No fake callers or che
 - Cmd: `GOTOOLCHAIN=go1.26.10 go test -race ./cmd/oro -run '^TestFactoryDockerCleanup$' -count=1 -timeout=180s`.
 - Assert / edges: authenticated cleanup-kind HostRuntime permits only frozen-Oro _docker-cleanup with fixed trusted config path/digest, exact canonical core permit stdin<=16KiB, state-root cwd, fixed environment and1MiB output. Helper verifies frozen config/Docker/endpoint, exact current permit and grant before each child; fixedmax3 Docker commands inspect+ownership check, exact stop/remove, verify. Inspect one exactobject; stop SIGKILL timeout0 fullID; rm --force fullcontainerID without-v or volume rm exactname withoutforce afterconsumersretired. Results bounded typed present/stopped/observed_absent; absence is observation not pending-request completion. no create/start/exec/cp/build/pull/prune/list/arbitrary flags or ambient endpoint; bound every subprocess by originaldeadline and inheritedPGID, verify exactlabels/config/ID/CreatedAt; stale/mismatch/unknownretirement failsclosed and retainscapacity. Native exact cleanup proof includes foreignobjects unchanged, late cleanup succeeds, finalstopped prevents retry.
 - Depends on: `oro-mf-cleanup-authority`, `oro-mf-docker-ready`, `oro-mf-host-scope`.
+
+Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
+
+## oro-mf-ledger-bootstrap: Recover initial host ledger publication
+
+- Parent: `oro-mf-host-budget`.
+- Read: cmd/oro/cmd_factory_budget.go:admitFactoryHostBudgetWithHooks, cmd/oro/cmd_factory_budget_ledger.go:load/initialize/publish, cmd/oro/cmd_factory_budget_test.go:factoryBudgetChildCommand/testFactoryBudgetNoReset.
+- Signature: bounded parent bootstrap authority codec and recoverFactoryBudgetBootstrap under the existing factoryBudgetAccess lock.
+- Test: cmd/oro/cmd_factory_budget_bootstrap_test.go:TestFactoryBudgetBootstrap.
+- Cmd: `GOTOOLCHAIN=go1.26.10 go test -race ./cmd/oro -run 'TestFactoryBudgetBootstrap|TestManagedAdmissionBudget' -count=1 -timeout=180s`.
+- Assert / edges: One canonical parent record atomically transitions bootstrap to initialized. Embed and preserve exactly the first snapshot and reservation identity within2KiB; no return or further allocation before the initialized record is synced. Process kills across bootstrap, metadata, ledger stage/rename, parent phase stage/rename and directory sync preserve the same identity. Reconstruct only from valid bootstrap authority; initialized or legacy v1 missing/corrupt ledger remains closed. Reject conflicting first images, unexpected objective state, and ambiguous staging; no missing-state release or budget reset. Separate activation/abort proof remains necessary.
+- Depends on: `oro-mf-host-ledger`.
 
 Commit separately after targeted tests, lint, and review. No fake callers or check suppression.

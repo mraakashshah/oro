@@ -214,6 +214,21 @@ reset after root loss; released objective identities remain reserved against reu
 Tests must kill actual publishing processes both before and after rename and
 prove that later admission recovers without double-counting capacity.
 
+Fresh ledger initialization uses one bounded canonical parent authority record
+with monotonic `bootstrap -> initialized` phases. Bootstrap embeds the exact
+first snapshot, reservation tuple, root hash, and checksum within 2 KiB. Publish
+and sync it atomically before creating root metadata, publish exactly its first
+ledger image, then atomically publish and sync the initialized parent record.
+No reservation API returns success or admits another allocation before that
+transition. Recovery under the root lock reconstructs only the positively
+recorded first image; a different image or unexpected objective state is an
+error. Once initialized, missing or corrupt ledger state remains an error.
+Existing v1 initialization markers retain sealed-only semantics and cannot be
+reinterpreted as a fresh bootstrap. Actual-process kill tests cover all parent
+and ledger publication boundaries. This restores an interrupted reservation;
+the separate initialization activation/abort protocol still determines whether
+capacity can safely be released before any execution was enabled.
+
 Managed SQLite storage has a separate qualification seam before host reservation
 and controller integration. Every managed opener must use verified FULL
 durability and bounded rollback journaling, with a 64 MiB data-page cap and a
