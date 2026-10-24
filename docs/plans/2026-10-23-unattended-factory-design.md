@@ -183,8 +183,8 @@ The reader remains valid after the work deadline so recovery can use it.
 
 Core exposes `ReadManagedAdmission(ctx, stateDir, id)` as scalar immutable
 producer inputs, without expanding mutable Status or ownership authority. It
-verifies the frozen manifest/programs and positively committed journal/snapshot
-identity in one read-only ownership transaction. Published artifacts alone are
+first verifies the frozen manifest/programs, then compares positively committed
+journal/snapshot identity in one read-only ownership transaction. Published artifacts alone are
 insufficient: admission may have rolled back after freezing them. Reads preserve
 all revisions, budgets, grants, and original deadlines and can inspect expired
 or stopped admission. PolicyHash is the existing journal ManifestHash; core
@@ -503,6 +503,14 @@ does not prove the daemon request cannot complete later. Such intent stays
 uncertain until completion/drain is proven or the exact object is discovered
 and retired. The helper returns an absence observation, never a fabricated
 quiescence proof. Watchdog expiry alone does not prove volume absence.
+
+Docker creation timestamps are normalized at observation ingestion, before any
+ownership binding is stored or compared. The daemon can return local RFC3339
+offsets: native volume evidence returned `2026-10-24T01:49:04-04:00`, whose
+canonical identity is `2026-10-24T05:49:04Z`. Both storage producers and CLI
+inspectors use shared `CanonicalDockerCreatedAt`; it preserves the exact
+nanosecond instant, rejects malformed or excessive-precision input, and returns
+canonical UTC. Journal permits and results retain their strict UTC validation.
 
 The helper and storage consumer share a canonical result codec bounded to
 16 KiB. Version 1 binds the canonical permit SHA-256, exact scope, target and
