@@ -156,7 +156,7 @@ func resolveAncestors(path string) (string, error) {
 		return "", errors.New("factory state path must be absolute")
 	}
 	ancestor := filepath.Clean(path)
-	var missing []string
+	missing := make([]string, 0)
 	for {
 		if _, err := os.Lstat(ancestor); err == nil {
 			break
