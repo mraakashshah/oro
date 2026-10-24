@@ -562,6 +562,57 @@ with coverage collection (`volume-core-integrated.log` and its result metadata).
 The harness completed in 287.894 seconds. This verifies the package tests, not
 end-to-end unattended delivery.
 
+## Stopped source keepers
+
+Commit `f9f47a86` consumes the volume adapter in a journaled stopped-keeper
+creation and inspection chain. Successful creation spends four H invocations and
+six scopes across both resources. One-shot dispatch precedes each effect;
+acknowledgment comes only from the adapter's own trusted call. Full guard, mount,
+configuration and lifetime checks bind the stopped keeper. The shared schema
+guard preserves existing volume behavior and refuses missing-history recreation.
+
+The affected race run passed in 39.145 seconds and root's independent run in
+38.753 seconds. Exact quota-error assertions and rollback checks subsequently
+passed in 3.665 seconds for the author and 3.085 seconds for root. New production
+coverage is 350/404 statements (86.63%); package lint reported zero issues and
+formatting was clean. Independent review checked all six frozen file identities;
+the final test-only quota assertions were strengthened afterward. Root checked
+the final hashes and reran the changed cases. Evidence uses `source-keeper-final`,
+`source-keeper-root`, `source-keeper-budget-pin`, `source-keeper-quota-root` and
+`source-keeper-budget-lint` in the verification directory.
+
+These tests use a recording trusted runtime. A stopped keeper does not preserve
+tmpfs contents: actual READY, continuous keeper lifetime, one-shot seeding,
+stopped export, native qualification and managed controller wiring remain
+required.
+
+## Watchdog image bootstrap
+
+Commit `08a3e01a` adds the production `oro-factory-image` bootstrap command. It
+verifies the bounded static Linux arm64 guard and explicit Docker executable,
+uses private configuration for the dedicated endpoint, sends only the guard and
+fixed Dockerfile, and publishes bounded provenance for the derived immutable
+image. It does not accept the base image or a mutable tag as the resulting guard
+identity.
+
+The initial callable-stub test failed before implementation. Root's first
+independent run later caught an intermittent descendant-retirement failure:
+`EPERM` returned before positive group retirement. Deterministic tests reproduced
+both premature branches. The repair preserves the one-second retirement bound,
+polls until positive `ESRCH`, and retains errors on persistent uncertainty.
+
+Final author race passed in 3.000 seconds and root race in 2.934 seconds. Thirty
+real descendant repetitions passed, new production coverage is 286/337 statements
+(84.9%), and scoped lint and formatting passed. Root reviewed the exact final
+source hashes. Evidence uses `guard-image-build-red`, `guard-image-root`,
+`guard-image-retirement-red`, `guard-image-retirement-green`,
+`guard-image-retirement-repeat`, `guard-image-retirement-lint` and
+`guard-image-root-final` under the verification directory.
+
+The CLI tests use a private protocol peer and actual owned subprocesses. No
+native Docker image was built by these tests. Actual image provenance, namespace
+guard behavior through that produced image and keeper integration remain required.
+
 ## Controller delivery boundary
 
 Commit `a418c365` routes the actual legacy controller through an explicit private
