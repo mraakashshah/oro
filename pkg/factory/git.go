@@ -15,7 +15,7 @@ type gitRepository struct {
 	path string
 }
 
-func (g gitRepository) target(ctx context.Context, branch string) (string, error) {
+func (g gitRepository) resolveTarget(ctx context.Context, branch string) (string, error) {
 	if branch == "" || strings.HasPrefix(branch, "-") {
 		return "", fmt.Errorf("invalid target branch %q", branch)
 	}
@@ -27,16 +27,43 @@ func (g gitRepository) target(ctx context.Context, branch string) (string, error
 	if err != nil {
 		return "", fmt.Errorf("resolve existing target branch: %w", err)
 	}
+	return sha, nil
+}
+
+func (g gitRepository) target(ctx context.Context, branch string) (string, error) {
+	sha, err := g.resolveTarget(ctx, branch)
+	if err != nil {
+		return "", err
+	}
 	worktrees, err := g.run(ctx, g.path, "worktree", "list", "--porcelain", "-z")
 	if err != nil {
 		return "", fmt.Errorf("inspect target worktrees: %w", err)
 	}
 	for _, field := range strings.Split(worktrees, "\x00") {
-		if field == "branch "+ref {
+		if field == "branch refs/heads/"+branch {
 			return "", fmt.Errorf("target branch %q is checked out", branch)
 		}
 	}
 	return sha, nil
+}
+
+func (g gitRepository) promote(ctx context.Context, branch, base, candidate string) error {
+	if _, err := g.target(ctx, branch); err != nil {
+		return fmt.Errorf("validate promotion target: %w", err)
+	}
+	if err := g.exists(ctx, base); err != nil {
+		return fmt.Errorf("validate promotion base: %w", err)
+	}
+	if err := g.exists(ctx, candidate); err != nil {
+		return fmt.Errorf("validate promotion candidate: %w", err)
+	}
+	if _, err := g.run(ctx, g.path, "merge-base", "--is-ancestor", base, candidate); err != nil {
+		return fmt.Errorf("candidate does not descend from approved base: %w", err)
+	}
+	if _, err := g.run(ctx, g.path, "update-ref", "refs/heads/"+branch, candidate, base); err != nil {
+		return fmt.Errorf("promote exact candidate with compare-and-swap: %w", err)
+	}
+	return nil
 }
 
 func (g gitRepository) checkout(ctx context.Context, path, sha string) error {
@@ -141,7 +168,7 @@ func (g gitRepository) run(ctx context.Context, path string, args ...string) (st
 		"-c", "user.name=Oro Factory",
 		"-c", "user.email=factory@oro.invalid",
 	}, args...)
-	cmd := exec.CommandContext(ctx, "git", argv...)
+	cmd := exec.CommandContext(ctx, "git", argv...) //nolint:gosec // Fixed executable with literal argv; no shell interpretation.
 	cmd.Dir = path
 	cmd.Env = gitEnvironment()
 	out, err := cmd.CombinedOutput()
@@ -154,7 +181,7 @@ func (g gitRepository) run(ctx context.Context, path string, args ...string) (st
 func gitEnvironment() []string {
 	env := make([]string, 0, len(os.Environ())+7)
 	for _, entry := range os.Environ() {
-		if !strings.HasPrefix(entry, "GIT_") && !strings.HasPrefix(entry, "ORO_") {
+		if !strings.HasPrefix(entry, "GIT_") && !strings.HasPrefix(entry, "ORO_") && !strings.HasPrefix(entry, "ORO=") {
 			env = append(env, entry)
 		}
 	}

@@ -17,6 +17,138 @@ func TestCandidateIsolation(t *testing.T) {
 	t.Run("environment and hooks isolated", gitTestEnvironmentIsolation)
 }
 
+func TestPromotionCAS(t *testing.T) {
+	t.Run("exact candidate and retained worktree", gitTestPromotionSuccess)
+	t.Run("intervening advance preserved", gitTestPromotionContention)
+	t.Run("invalid promotion rejected", gitTestPromotionInvalid)
+	t.Run("completed ref readable while checked out", gitTestCompletedTargetRead)
+	t.Run("bare oro identity scrubbed", func(t *testing.T) {
+		t.Setenv("ORO", "inherited-project")
+		for _, value := range gitEnvironment() {
+			if strings.HasPrefix(value, "ORO=") {
+				t.Fatal("inherited bare ORO identity reached Git environment")
+			}
+		}
+	})
+}
+
+func gitTestPromotionSuccess(t *testing.T) {
+	t.Helper()
+	git, base, candidate, worker := gitTestPromotionCandidate(t)
+	if err := git.promote(context.Background(), "delivery", base, candidate); err != nil {
+		t.Fatal(err)
+	}
+	if got := gitTestRun(t, git.path, "rev-parse", "delivery"); got != candidate {
+		t.Fatalf("promoted %s, want exact candidate %s", got, candidate)
+	}
+	if got := gitTestRun(t, worker, "rev-parse", "HEAD"); got != candidate {
+		t.Fatalf("candidate was changed or worktree removed: %s", got)
+	}
+	if got := gitTestRun(t, git.path, "rev-parse", "HEAD"); got != base {
+		t.Fatalf("promotion changed primary HEAD: %s", got)
+	}
+	if err := git.promote(context.Background(), "delivery", candidate, candidate); err != nil {
+		t.Fatalf("valid no-change candidate failed: %v", err)
+	}
+}
+
+func gitTestPromotionContention(t *testing.T) {
+	t.Helper()
+	git, base, candidate, worker := gitTestPromotionCandidate(t)
+	tree := gitTestRun(t, git.path, "rev-parse", base+"^{tree}")
+	intervening := gitTestRun(t, git.path, "commit-tree", tree, "-p", base, "-m", "external advance")
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shimDir := t.TempDir()
+	marker := filepath.Join(shimDir, "advanced")
+	shim := "#!/bin/sh\nfor arg do\n  if [ \"$arg\" = update-ref ] && [ ! -e " + gitTestShellQuote(marker) + " ]; then\n    : > " + gitTestShellQuote(marker) + "\n    " + gitTestShellQuote(realGit) + " -C " + gitTestShellQuote(git.path) + " update-ref refs/heads/delivery " + intervening + " " + base + " || exit 72\n  fi\ndone\nexec " + gitTestShellQuote(realGit) + " \"$@\"\n"
+	gitTestWrite(t, filepath.Join(shimDir, "git"), shim, 0o700)
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err := git.promote(context.Background(), "delivery", base, candidate); err == nil {
+		t.Fatal("promotion overwrote an advance between target inspection and ref update")
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("CAS race fixture did not run: %v", err)
+	}
+	if got := gitTestRun(t, git.path, "rev-parse", "delivery"); got != intervening {
+		t.Fatalf("external advance lost: target = %s, want %s", got, intervening)
+	}
+	if got := gitTestRun(t, worker, "rev-parse", "HEAD"); got != candidate {
+		t.Fatalf("contention changed approved candidate or removed worktree: %s", got)
+	}
+}
+
+func gitTestPromotionInvalid(t *testing.T) {
+	t.Helper()
+	git, base, candidate, _ := gitTestPromotionCandidate(t)
+	tree := gitTestRun(t, git.path, "rev-parse", base+"^{tree}")
+	unrelated := gitTestRun(t, git.path, "commit-tree", tree, "-m", "unrelated root")
+	for _, invalid := range []string{strings.Repeat("f", 40), unrelated, tree, "HEAD", "--help"} {
+		if err := git.promote(context.Background(), "delivery", base, invalid); err == nil {
+			t.Errorf("accepted invalid candidate %q", invalid)
+		}
+	}
+	if err := git.promote(context.Background(), "delivery", strings.Repeat("f", 40), candidate); err == nil {
+		t.Fatal("accepted missing base object")
+	}
+	if err := git.promote(context.Background(), "delivery", candidate, candidate); err == nil {
+		t.Fatal("accepted incorrect expected-old target")
+	}
+	if err := git.promote(context.Background(), "main", base, candidate); err == nil {
+		t.Fatal("advanced checked-out target")
+	}
+	if err := git.promote(context.Background(), "missing", base, candidate); err == nil {
+		t.Fatal("created an unadmitted target branch")
+	}
+	if got := gitTestRun(t, git.path, "rev-parse", "delivery"); got != base {
+		t.Fatalf("invalid promotion changed target: %s", got)
+	}
+}
+
+func gitTestCompletedTargetRead(t *testing.T) {
+	t.Helper()
+	git, base, candidate, _ := gitTestPromotionCandidate(t)
+	ctx := context.Background()
+	if err := git.promote(ctx, "delivery", base, candidate); err != nil {
+		t.Fatal(err)
+	}
+	linked := filepath.Join(t.TempDir(), "delivered")
+	gitTestRun(t, git.path, "worktree", "add", linked, "delivery")
+	if got, err := git.resolveTarget(ctx, "delivery"); err != nil || got != candidate {
+		t.Fatalf("read already-promoted target = %s, %v; want %s", got, err, candidate)
+	}
+	if _, err := git.target(ctx, "delivery"); err == nil {
+		t.Fatal("write admission accepted checked-out target")
+	}
+	for _, invalid := range []string{"missing", "--help", "../delivery"} {
+		if _, err := git.resolveTarget(ctx, invalid); err == nil {
+			t.Errorf("read admitted invalid branch %q", invalid)
+		}
+	}
+}
+
+func gitTestPromotionCandidate(t *testing.T) (gitRepository, string, string, string) {
+	t.Helper()
+	repo, base := gitTestRepository(t)
+	git := gitRepository{path: repo}
+	worker := filepath.Join(t.TempDir(), "worker")
+	if err := git.checkout(context.Background(), worker, base); err != nil {
+		t.Fatal(err)
+	}
+	gitTestWrite(t, filepath.Join(worker, "source.txt"), "candidate\n", 0o600)
+	candidate, err := git.commit(context.Background(), worker, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return git, base, candidate, worker
+}
+
+func gitTestShellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
 func gitTestCandidateCheckouts(t *testing.T) {
 	t.Helper()
 	repo, base := gitTestRepository(t)
