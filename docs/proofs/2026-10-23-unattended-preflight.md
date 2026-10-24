@@ -562,6 +562,23 @@ with coverage collection (`volume-core-integrated.log` and its result metadata).
 The harness completed in 287.894 seconds. This verifies the package tests, not
 end-to-end unattended delivery.
 
+## Readiness helper identity
+
+Commit `b0d816d2` carries verified OroPath/OroSHA256 from the existing runtime
+artifact reader into the core storage configuration. Core validates canonical
+path and exact digest shape, and its captured comparable view rejects either
+identity changing before effects. No new artifact schema, executable copy or
+grant is introduced.
+
+Behavioral regressions demonstrated missing producer fields and accepted invalid
+core identities before the repair. Final command-package race passed in 1.624
+seconds; volume/keeper core race passed in 26.325 seconds. Config validation has
+17/17 covered statements, combined package lint reported zero issues, and
+independent four-file source/hash review passed. Evidence uses `ready-helper-*`
+under the verification directory. The separate initial API check was a compile
+failure. The actual READY/source-seeding consumer is tracked under
+`oro-mf-source-prepare` and remains in implementation.
+
 ## Stopped source keepers
 
 Commit `f9f47a86` consumes the volume adapter in a journaled stopped-keeper
