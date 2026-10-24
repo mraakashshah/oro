@@ -8,7 +8,7 @@ import (
 const (
 	// ManagedHostRequestBytes caps the complete encoded host request, including
 	// base64 stdin. Host wrappers and request publishers share this bound.
-	ManagedHostRequestBytes = 32 << 20
+	ManagedHostRequestBytes = 64 << 20
 	// ManagedHostResultMetadataBytes covers scope identity and escaped errors in
 	// addition to the pending result's four-times-output allowance.
 	ManagedHostResultMetadataBytes = 16384

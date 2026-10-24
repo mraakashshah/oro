@@ -3,6 +3,7 @@ package factory //nolint:testpackage // The shared limits are checked against pr
 import (
 	"archive/tar"
 	"bytes"
+	"encoding/base64"
 	"math"
 	"testing"
 )
@@ -41,25 +42,27 @@ func TestManagedHostRetention(t *testing.T) {
 			t.Fatal(err)
 		}
 		// Independently calculated: fixed=1,924,136,960; source=7,133,184;
-		// invocation=388,136,960; scope metadata=11,534,336 bytes.
-		if limits.MinimumBytes != 2330941440 || limits.ArchiveBytes != 3584 || limits.HostOutputBytes != 1<<20 || limits.PendingResultBytes != 4210688 {
+		// invocation=723,681,280; scope metadata=11,534,336 bytes.
+		if limits.MinimumBytes != 2666485760 || limits.ArchiveBytes != 3584 || limits.HostOutputBytes != 1<<20 || limits.PendingResultBytes != 4210688 {
 			t.Fatalf("retained bounds = %+v", limits)
 		}
 		if limits.SourceVersions != 6 || limits.InvocationRecords != 5 || limits.ScopeRecords != 11 || limits.MaxPathBytes != 255 {
 			t.Fatalf("writer/count contracts = %+v", limits)
 		}
-		if limits.RequestBytes != 32<<20 || limits.TranscriptBytes != limits.PendingResultBytes || limits.RuntimeConfigBytes != 1<<20 ||
+		if ManagedHostRequestBytes != 64<<20 || limits.RequestBytes != 64<<20 || limits.TranscriptBytes != limits.PendingResultBytes || limits.RuntimeConfigBytes != 1<<20 ||
 			limits.ProgramBytes != 512<<20 || limits.ScopeMetadataBytes != 1<<20 || limits.LedgerBytes != 32<<20 {
 			t.Fatalf("fixed writer caps = %+v", limits)
 		}
 	})
+	t.Run("both retained request copies grow", testHostRetentionRequestCopies)
+	t.Run("full Oro source allowance fits", testHostRetentionFullSource)
 	t.Run("every retained budget family contributes", testHostRetentionFamilies)
 	t.Run("exact base64 transfer boundary", func(t *testing.T) {
 		spec := hostRetentionFixture()
-		// A=24,379,392 encodes to31MiB, leaving1MiB of request metadata.
-		spec.Runtime.SourceBytes = 24379392 - 2560
+		// A=49,545,216 encodes to 63 MiB, leaving 1 MiB of request metadata.
+		spec.Runtime.SourceBytes = 49545216 - 2560
 		limits, err := ManagedHostRetention(spec)
-		if err != nil || limits.ArchiveBytes != 24379392 || limits.HostOutputBytes != limits.ArchiveBytes {
+		if err != nil || limits.ArchiveBytes != 49545216 || limits.HostOutputBytes != limits.ArchiveBytes {
 			t.Fatalf("exact transport bound rejected: %+v, %v", limits, err)
 		}
 		spec.Runtime.SourceBytes++
@@ -80,6 +83,50 @@ func TestManagedHostRetention(t *testing.T) {
 			t.Fatalf("per-call transcript cap changed with model turns: %+v, %v", after, err)
 		}
 	})
+}
+
+func testHostRetentionRequestCopies(t *testing.T) {
+	t.Helper()
+	for _, fixture := range []struct {
+		hostCalls    int
+		priorMinimum int64
+	}{
+		{hostCalls: 1, priorMinimum: 2330941440},
+		// Six more host calls previously retained 78,675,968 bytes each,
+		// including their separate scope metadata.
+		{hostCalls: 7, priorMinimum: 2802997248},
+	} {
+		spec := hostRetentionFixture()
+		spec.Runtime.MaxHostInvocations = fixture.hostCalls
+		limits, err := ManagedHostRetention(spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		calls := int64(fixture.hostCalls + 4) // One model, tool, reconciliation and cleanup.
+		wantDelta := calls * (64 << 20)       // Two copies each grow by 32 MiB.
+		if limits.InvocationRecords != calls || limits.MinimumBytes-fixture.priorMinimum != wantDelta {
+			t.Fatalf("H=%d request-copy growth: minimum=%d, prior=%d, Q=%d, want delta=%d",
+				fixture.hostCalls, limits.MinimumBytes, fixture.priorMinimum, limits.InvocationRecords, wantDelta)
+		}
+	}
+}
+
+func testHostRetentionFullSource(t *testing.T) {
+	t.Helper()
+	spec := hostRetentionFixture()
+	spec.Runtime.SourceBytes = 40 << 20
+	spec.Runtime.MaxFiles, spec.Runtime.SourceInodes = 2200, 2200
+	limits, err := ManagedHostRetention(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if limits.ArchiveBytes != 44197376 || limits.HostOutputBytes != limits.ArchiveBytes {
+		t.Fatalf("full source archive allowance = %+v", limits)
+	}
+	encoded := int64(base64.StdEncoding.EncodedLen(int(limits.ArchiveBytes))) + (1 << 20)
+	if encoded != 59978412 || encoded > limits.RequestBytes {
+		t.Fatalf("full source encoded request = %d, cap = %d", encoded, limits.RequestBytes)
+	}
 }
 
 func testHostRetentionFamilies(t *testing.T) {
