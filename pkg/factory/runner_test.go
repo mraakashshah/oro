@@ -17,8 +17,8 @@ func TestBoundedExecution(t *testing.T) {
 	t.Run("literal argv and one input document", runnerTestProtocol)
 	t.Run("private environment", runnerTestEnvironment)
 	t.Run("nonzero process", runnerTestFailure)
-	t.Run("deadline kills group", func(t *testing.T) { runnerTestGroupStop(t, false) })
-	t.Run("cancellation kills group", func(t *testing.T) { runnerTestGroupStop(t, true) })
+	t.Run("deadline before child readiness", runnerTestDeadlineBeforeReady)
+	t.Run("cancellation kills group", runnerTestGroupStop)
 	t.Run("stdout overflow", func(t *testing.T) { runnerTestOverflow(t, false) })
 	t.Run("stderr overflow", func(t *testing.T) { runnerTestOverflow(t, true) })
 	t.Run("descendant holds pipe", runnerTestHeldPipe)
@@ -117,29 +117,71 @@ func runnerTestFailure(t *testing.T) {
 	}
 }
 
-func runnerTestGroupStop(t *testing.T, explicitCancel bool) {
+func runnerTestDeadlineBeforeReady(t *testing.T) {
 	t.Helper()
 	worktree := t.TempDir()
-	command := runnerTestPolicy(t, "(sleep 1; printf escaped > escaped) &\nprintf ready\nsleep 30\n")
+	// Deliberately hold readiness beyond the deadline, as a loaded host can do.
+	command := runnerTestPolicy(t, "(sleep 1; printf escaped > escaped) &\nsleep 1\nprintf ready\nsleep 30\n")
 	ctx, cancel := context.WithTimeout(t.Context(), 400*time.Millisecond)
 	defer cancel()
-	want := context.DeadlineExceeded
-	if explicitCancel {
-		ctx, cancel = context.WithCancel(t.Context())
-		defer cancel()
-		want = context.Canceled
-		timer := time.AfterFunc(400*time.Millisecond, cancel)
-		defer timer.Stop()
-	}
 	started := time.Now()
 	result := executeCommand(ctx, command, commandInput{Worktree: worktree}, t.TempDir())
-	if !errors.Is(result.Err, want) || result.ExitCode == 0 || string(result.Stdout) != "ready" {
-		t.Fatalf("cancellation exit %d, output %q, error %v; want %v", result.ExitCode, result.Stdout, result.Err, want)
+	if !errors.Is(result.Err, context.DeadlineExceeded) || result.ExitCode == 0 {
+		t.Fatalf("deadline exit %d, error %v; want deadline exceeded", result.ExitCode, result.Err)
 	}
 	if time.Since(started) > 2*time.Second {
-		t.Fatal("cancellation did not promptly terminate the process group")
+		t.Fatal("deadline did not promptly terminate the process group")
 	}
 	runnerTestNoEscape(t, worktree)
+}
+
+func runnerTestGroupStop(t *testing.T) {
+	t.Helper()
+	worktree, privateDir := t.TempDir(), t.TempDir()
+	command := runnerTestPolicy(t, "sleep 1\nprintf ready\n(printf child > ready; while [ ! -f armed ]; do sleep 0.01; done; sleep 1; printf escaped > escaped) &\nsleep 30\n")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	results := make(chan commandResult, 1)
+	go func() { results <- executeCommand(ctx, command, commandInput{Worktree: worktree}, privateDir) }()
+	runnerTestWaitReady(t, worktree, results)
+	// The child starts its escape clock only after readiness is observed.
+	if err := os.WriteFile(filepath.Join(worktree, "armed"), []byte("cancel"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	select {
+	case result := <-results:
+		if !errors.Is(result.Err, context.Canceled) || result.ExitCode == 0 || string(result.Stdout) != "ready" {
+			t.Fatalf("cancellation exit %d, output %q, error %v; want canceled", result.ExitCode, result.Stdout, result.Err)
+		}
+	case <-timer.C:
+		t.Fatal("cancellation did not promptly terminate the ready process group")
+	}
+	runnerTestNoEscape(t, worktree)
+}
+
+func runnerTestWaitReady(t *testing.T, worktree string, results <-chan commandResult) {
+	t.Helper()
+	timeout := time.NewTimer(10 * time.Second)
+	defer timeout.Stop()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if _, err := os.Stat(filepath.Join(worktree, "ready")); err == nil {
+			return
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		select {
+		case result := <-results:
+			t.Fatalf("fixture exited before child readiness: %v", result.Err)
+		case <-timeout.C:
+			t.Fatal("fixture did not signal child readiness")
+		case <-ticker.C:
+		}
+	}
 }
 
 func runnerTestNoEscape(t *testing.T, worktree string) {
