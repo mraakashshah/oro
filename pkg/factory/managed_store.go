@@ -83,7 +83,7 @@ CREATE TABLE IF NOT EXISTS managed_cleanup_permits (
 	if err != nil {
 		return fmt.Errorf("initialize managed journal: %w", err)
 	}
-	return nil
+	return initManagedDockerVolumeSchema(ctx, conn)
 }
 
 func managedDurability(ctx context.Context, conn *sql.Conn) error {
