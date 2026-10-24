@@ -180,7 +180,10 @@ func (g *managedGitRepository) commit(ctx context.Context, base string, entries 
 }
 
 func (g *managedGitRepository) writeSourceTree(ctx context.Context, tree sourceTree) error {
-	written := make(map[string]bool)
+	written, err := g.existingSourceBlobs(ctx, tree)
+	if err != nil {
+		return err
+	}
 	for index, entry := range tree.entries {
 		expected := tree.blobs[index]
 		if written[expected] {

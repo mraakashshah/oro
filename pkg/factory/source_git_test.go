@@ -2,6 +2,7 @@ package factory //nolint:testpackage // Exercise raw Git objects and the private
 
 import (
 	"bytes"
+	"compress/zlib"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -40,6 +41,319 @@ func TestCandidateInternalLinkExactTree(t *testing.T) {
 	t.Run("unsafe vectors precede host effects", testSourceGitUnsafeLinks)
 	t.Run("unsafe exported trees fail closed", testSourceGitUnsupported)
 	t.Run("link transport corruption fails closed", testSourceGitLinkOutput)
+}
+
+func TestCandidateCommitExistingBlobs(t *testing.T) {
+	for _, format := range []string{"sha1", "sha256"} {
+		t.Run(format, func(t *testing.T) { testSourceGitPresenceCounts(t, format) })
+	}
+	t.Run("malformed presence precedes writes", testSourceGitPresenceMalformed)
+	t.Run("pure presence protocol", testSourceGitPresenceProtocol)
+	t.Run("query and write failure boundaries", testSourceGitPresenceFailure)
+	t.Run("budget is never refunded", testSourceGitPresenceBudget)
+	t.Run("replacement refs do not redirect presence", testSourceGitPresenceReplacement)
+	t.Run("presence is not a raw content proof", testSourceGitPresenceCorruption)
+}
+
+func testSourceGitPresenceCounts(t *testing.T, format string) {
+	t.Helper()
+	g, runtime, _, base := sourceGitFixture(t, func(repo string) {
+		if format == "sha256" {
+			if err := os.Mkdir(repo, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			gitTestRun(t, repo, "init", "--object-format=sha256", "-b", "main")
+		}
+		for index := range 20 {
+			gitTestWrite(t, filepath.Join(repo, fmt.Sprintf("file-%02d", index)), fmt.Sprintf("original-%d\n", index), 0o600)
+		}
+		gitTestRun(t, repo, "add", ".")
+		gitTestRun(t, repo, "commit", "-m", "many original blobs")
+		gitTestRun(t, repo, "branch", "-f", "delivery")
+	}, func(spec *ManagedSpec) {
+		if format == "sha256" {
+			spec.Repository = filepath.Join(spec.Repository, "sha256")
+		}
+	})
+	entries, err := g.export(t.Context(), base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sourceGitCountedCommit(t, g, runtime, base, entries, 1); got != base {
+		t.Fatal("no-op did not retain exact base")
+	}
+	index := slices.IndexFunc(entries, func(entry sourceEntry) bool { return entry.Path == "file-00" })
+	entries[index].Data = []byte("one new identity\n")
+	entries = append(entries, sourceEntry{Path: "duplicate", Mode: 0o100644, Data: entries[index].Data})
+	candidate := sourceGitCountedCommit(t, g, runtime, base, entries, 6)
+	var firstQuery []byte
+	for _, call := range runtime.calls {
+		if slices.Contains(call.Args, "--batch-check") {
+			firstQuery = call.Stdin
+		}
+	}
+	if again := sourceGitCountedCommit(t, g, runtime, base, entries, 5); again != candidate {
+		t.Fatal("already-present replay changed candidate")
+	}
+	for _, call := range runtime.calls[len(runtime.calls)-5:] {
+		if slices.Contains(call.Args, "--batch-check") && !bytes.Equal(call.Stdin, firstQuery) {
+			t.Fatal("identical candidate produced nondeterministic presence input")
+		}
+	}
+	for missing := range 3 {
+		entries = append(entries, sourceEntry{Path: fmt.Sprintf("new-%d", missing), Mode: 0o100644, Data: []byte(fmt.Sprintf("new blob %d", missing))})
+	}
+	candidate = sourceGitCountedCommit(t, g, runtime, candidate, entries, 8)
+	got, err := g.export(t.Context(), candidate)
+	slices.SortFunc(entries, func(a, b sourceEntry) int { return strings.Compare(a.Path, b.Path) })
+	if err != nil || !reflect.DeepEqual(got, entries) {
+		t.Fatalf("presence reuse changed exact candidate tree: %+v, %v", got, err)
+	}
+}
+
+func sourceGitCountedCommit(t *testing.T, g *managedGitRepository, runtime *sourceGitRuntime, base string, entries []sourceEntry, want int) string {
+	t.Helper()
+	before, spent := len(runtime.calls), sourceGitHostSpend(t, runtime)
+	candidate, err := g.commit(t.Context(), base, entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.calls)-before != want || sourceGitHostSpend(t, runtime)-spent != want {
+		t.Fatalf("commit spent %d calls, want %d", len(runtime.calls)-before, want)
+	}
+	queries := 0
+	for _, call := range runtime.calls[before:] {
+		if !call.Deadline.Equal(runtime.calls[before].Deadline) {
+			t.Fatal("presence or writes refreshed the operation deadline")
+		}
+		if slices.Contains(call.Args, "--batch-check") {
+			queries++
+			tree, err := buildSourceTree(entries, g.source, len(base))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var expected []string
+			for _, oid := range tree.blobs {
+				if !slices.Contains(expected, oid) {
+					expected = append(expected, oid)
+				}
+			}
+			if string(call.Stdin) != strings.Join(expected, "\n")+"\n" || !slices.Contains(call.Args, "--no-replace-objects") {
+				t.Fatalf("presence queried identities other than local candidate bytes: %q", call.Stdin)
+			}
+		}
+	}
+	if (want == 1 && queries != 0) || (want != 1 && queries != 1) {
+		t.Fatalf("commit issued %d presence queries", queries)
+	}
+	return candidate
+}
+
+func sourceGitHostSpend(t *testing.T, runtime *sourceGitRuntime) int {
+	t.Helper()
+	var spent int
+	if err := runtime.j.conn.QueryRowContext(t.Context(), "SELECT count(*) FROM managed_reservations WHERE kind='host'").Scan(&spent); err != nil {
+		t.Fatal(err)
+	}
+	return spent
+}
+
+func testSourceGitPresenceMalformed(t *testing.T) {
+	t.Helper()
+	for _, failure := range []string{"oid", "width", "type", "size", "leading zero", "order", "duplicate", "extra", "truncated", "missing form", "long row"} {
+		t.Run(failure, func(t *testing.T) {
+			g, runtime, _, base := sourceGitFixture(t, nil, nil)
+			runtime.alter = func(call HostInvocation, result HostResult) HostResult {
+				if slices.Contains(call.Args, "--batch-check") {
+					result.Stdout = sourceGitBadPresence(result.Stdout, failure)
+				}
+				return result
+			}
+			entries := []sourceEntry{{Path: "source.txt", Mode: 0o100644, Data: []byte("original\n")}, {Path: "z-new", Mode: 0o100644, Data: []byte("missing")}}
+			if candidate, err := g.commit(t.Context(), base, entries); err == nil || candidate != "" {
+				t.Fatalf("malformed presence permitted candidate write: %q, %v", candidate, err)
+			}
+			if len(runtime.calls) != 2 || sourceGitHostSpend(t, runtime) != 2 {
+				t.Fatal("presence error wrote objects or refunded its two consumed calls")
+			}
+		})
+	}
+}
+
+func sourceGitBadPresence(data []byte, failure string) []byte {
+	rows := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	fields := strings.Split(rows[0], " ")
+	switch failure {
+	case "oid":
+		fields[0] = strings.Repeat("0", len(fields[0]))
+	case "width":
+		fields[0] = fields[0][1:]
+	case "type":
+		fields[1] = "tree"
+	case "size":
+		fields[2] = "1"
+	case "leading zero":
+		fields[2] = "0" + fields[2]
+	case "order":
+		return []byte(rows[1] + "\n" + rows[0] + "\n")
+	case "duplicate":
+		return []byte(rows[0] + "\n" + rows[0] + "\n")
+	case "extra":
+		return append(data, []byte(rows[0]+"\n")...)
+	case "truncated":
+		return data[:len(data)-1]
+	case "missing form":
+		return []byte(rows[0] + "\n" + rows[1] + " extra\n")
+	case "long row":
+		return []byte(strings.Repeat("x", 129) + "\n")
+	}
+	rows[0] = strings.Join(fields, " ")
+	return []byte(strings.Join(rows, "\n") + "\n")
+}
+
+func testSourceGitPresenceBudget(t *testing.T) {
+	t.Helper()
+	g, runtime, _, base := sourceGitFixture(t, nil, func(spec *ManagedSpec) { spec.Runtime.MaxHostInvocations = 2 })
+	entries := []sourceEntry{{Path: "added", Mode: 0o100644, Data: []byte("missing")}}
+	if _, err := g.commit(t.Context(), base, entries); err == nil || len(runtime.calls) != 2 || !slices.Contains(runtime.calls[1].Args, "--batch-check") {
+		t.Fatalf("presence budget did not precede writes: %v", err)
+	}
+	if _, err := g.commit(t.Context(), base, entries); err == nil || len(runtime.calls) != 2 || sourceGitHostSpend(t, runtime) != 2 {
+		t.Fatal("failed commit refunded its exhausted budget")
+	}
+}
+
+func testSourceGitPresenceProtocol(t *testing.T) {
+	t.Helper()
+	for _, width := range []int{40, 64} {
+		oid, other := strings.Repeat("a", width), strings.Repeat("b", width)
+		data := []byte(oid + " blob 0\n" + other + " missing\n")
+		got, err := decodeSourceBlobPresence(data, []string{oid, other}, []int64{0, 9})
+		if err != nil || !reflect.DeepEqual(got, []bool{true, false}) {
+			t.Fatalf("valid %d-wide presence rejected: %v, %v", width, got, err)
+		}
+	}
+	if got, err := decodeSourceBlobPresence(nil, nil, nil); err != nil || len(got) != 0 {
+		t.Fatalf("empty presence query rejected: %v, %v", got, err)
+	}
+	oid, other := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	for name, input := range map[string]struct {
+		oids  []string
+		sizes []int64
+	}{
+		"length mismatch": {oids: []string{oid}},
+		"negative size":   {oids: []string{oid}, sizes: []int64{-1}},
+		"uppercase":       {oids: []string{strings.ToUpper(oid)}, sizes: []int64{9}},
+		"invalid hex":     {oids: []string{strings.Repeat("g", 40)}, sizes: []int64{9}},
+		"short identity":  {oids: []string{oid[1:]}, sizes: []int64{9}},
+		"mixed widths":    {oids: []string{oid, strings.Repeat("b", 64)}, sizes: []int64{9, 9}},
+		"duplicate input": {oids: []string{oid, oid}, sizes: []int64{9, 9}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			data := []byte(strings.Join(input.oids, " missing\n") + " missing\n")
+			if got, err := decodeSourceBlobPresence(data, input.oids, input.sizes); err == nil || got != nil {
+				t.Fatalf("invalid local query accepted: %v, %v", got, err)
+			}
+		})
+	}
+	for _, row := range []string{
+		oid + " blob +9\n", oid + " blob 09\n", oid + " blob -9\n", oid + " blob 9223372036854775808\n",
+		oid + "  blob 9\n", oid + " blob 9 \n", " " + oid + " blob 9\n", oid + " missing\r\n",
+		oid + " missing 0\n", oid + " ambiguous\n", other + " missing\n", oid + " blob 9\n\n",
+	} {
+		if got, err := decodeSourceBlobPresence([]byte(row), []string{oid}, []int64{9}); err == nil || got != nil {
+			t.Fatalf("noncanonical presence row accepted: %q, %v, %v", row, got, err)
+		}
+	}
+}
+
+func testSourceGitPresenceFailure(t *testing.T) {
+	t.Helper()
+	for _, failure := range []string{"cancellation", "overflow", "nonzero", "runtime", "write oid"} {
+		t.Run(failure, func(t *testing.T) {
+			g, runtime, _, base := sourceGitFixture(t, nil, nil)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			runtime.before = func(call HostInvocation) {
+				if failure == "runtime" && slices.Contains(call.Args, "--batch-check") {
+					runtime.failure = errors.New("presence ownership uncertain")
+				}
+			}
+			runtime.alter = func(call HostInvocation, result HostResult) HostResult {
+				if slices.Contains(call.Args, "--batch-check") {
+					switch failure {
+					case "cancellation":
+						cancel()
+					case "overflow":
+						result.Stdout = make([]byte, call.OutputLimit+1)
+					case "nonzero":
+						result.ExitCode = 23
+					}
+				}
+				if failure == "write oid" && slices.Contains(call.Args, "hash-object") {
+					result.Stdout = []byte(strings.Repeat("0", len(base)) + "\n")
+				}
+				return result
+			}
+			entries := []sourceEntry{{Path: "added", Mode: 0o100644, Data: []byte("new bytes")}}
+			if candidate, err := g.commit(ctx, base, entries); err == nil || candidate != "" {
+				t.Fatalf("failed presence/write returned candidate: %q, %v", candidate, err)
+			}
+			wantCalls := 2
+			if failure == "write oid" {
+				wantCalls++
+			}
+			if len(runtime.calls) != wantCalls || sourceGitHostSpend(t, runtime) != wantCalls {
+				t.Fatal("failed presence/write continued or refunded its spent calls")
+			}
+		})
+	}
+}
+
+func testSourceGitPresenceReplacement(t *testing.T) {
+	t.Helper()
+	g, runtime, manifest, base := sourceGitFixture(t, nil, nil)
+	data := []byte("original\n")
+	oid := sourceObjectID("blob", data, len(base))
+	other := sourceGitInput(t, manifest.Spec.Repository, []byte("replacement of a different size"), "hash-object", "-w", "--stdin")
+	gitTestRun(t, manifest.Spec.Repository, "replace", oid, other)
+	entries := []sourceEntry{{Path: "source.txt", Mode: 0o100644, Data: data}, {Path: "copy", Mode: 0o100644, Data: data}}
+	candidate := sourceGitCountedCommit(t, g, runtime, base, entries, 5)
+	got, err := g.export(t.Context(), candidate)
+	slices.Reverse(entries)
+	if err != nil || !reflect.DeepEqual(got, entries) {
+		t.Fatalf("replacement ref changed reused bytes: %+v, %v", got, err)
+	}
+}
+
+func testSourceGitPresenceCorruption(t *testing.T) {
+	t.Helper()
+	g, runtime, manifest, base := sourceGitFixture(t, nil, nil)
+	data := []byte("original\n")
+	oid := sourceObjectID("blob", data, len(base))
+	var compressed bytes.Buffer
+	writer := zlib.NewWriter(&compressed)
+	if _, err := writer.Write([]byte("blob 9\x00tampered\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(manifest.Spec.Repository, ".git", "objects", oid[:2], oid[2:])
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, compressed.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entries := []sourceEntry{{Path: "source.txt", Mode: 0o100644, Data: data}, {Path: "copy", Mode: 0o100644, Data: data}}
+	candidate := sourceGitCountedCommit(t, g, runtime, base, entries, 5)
+	if got, err := g.export(t.Context(), candidate); err == nil || got != nil || !strings.Contains(err.Error(), "bytes do not match") {
+		t.Fatalf("presence metadata substituted for raw content proof: %+v, %v", got, err)
+	}
+	if actual := gitTestRun(t, manifest.Spec.Repository, "rev-parse", "delivery"); actual != base {
+		t.Fatal("unverified corrupted content advanced the target")
+	}
 }
 
 func sourceGitLinkFixture(t *testing.T, format string) (*managedGitRepository, *sourceGitRuntime, managedManifest, string, []sourceEntry, string) {
