@@ -328,6 +328,103 @@ func TestCheckpointWorkerReleaseLeaseCurrentMatrix(t *testing.T) {
 	}
 }
 
+func TestCheckpointWorkerReleaseLeaseRejectsAbsentOwners(t *testing.T) {
+	tests := []struct {
+		name      string
+		missing   bool
+		nilWorker bool
+		nilOwner  bool
+	}{
+		{name: "missing worker", missing: true},
+		{name: "nil worker", nilWorker: true},
+		{name: "missing worker and nil owner", missing: true, nilOwner: true},
+		{name: "nil worker and nil owner", nilWorker: true, nilOwner: true},
+		{name: "replacement worker and nil owner", nilOwner: true},
+	}
+	for _, tt := range tests {
+		for _, operation := range []string{"current", "abort", "finalize"} {
+			t.Run(tt.name+"/"+operation, func(t *testing.T) {
+				d, worker, lease := newCheckpointWorkerReleaseLeaseFixture(t, "absent-owner")
+				worker.reviewMessagesDrained = make(chan struct{})
+				worker.reviewMessagesDrainToken = lease.token
+				wantToken, wantDrain := worker.reviewReleaseToken, worker.reviewMessagesDrained
+				if tt.missing {
+					delete(d.workers, worker.id)
+				} else if tt.nilWorker {
+					d.workers[worker.id] = nil
+				}
+				if tt.nilOwner {
+					lease.expected = nil
+				}
+				wantWorker, wantPresent := d.workers[worker.id]
+				calls := 0
+				if recovered := captureCheckpointReleasePanic(func() {
+					switch operation {
+					case "current":
+						if lease.current() {
+							t.Error("absent owner reported current")
+						}
+					case "abort":
+						lease.abort()
+					case "finalize":
+						lease.finalizeDurable(func(*checkpointWorkerReleaseLease) { calls++ })
+					}
+				}); recovered != nil {
+					t.Errorf("absent owner panicked: %v", recovered)
+				}
+				if got, present := d.workers[worker.id]; got != wantWorker || present != wantPresent || calls != 0 {
+					t.Errorf("absent owner changed worker/presence/callbacks: %p/%t/%d, want %p/%t/0", got, present, calls, wantWorker, wantPresent)
+				}
+				if worker.reviewReleaseToken != wantToken || worker.reviewMessagesDrained != wantDrain || worker.reviewMessagesDrainToken != wantToken {
+					t.Error("absent owner changed worker token or drain")
+				}
+				if !d.mu.TryLock() {
+					t.Fatal("dispatcher mutex remained locked after absent owner check")
+				}
+				d.mu.Unlock()
+			})
+		}
+	}
+}
+
+func TestCheckpointWorkerReleaseConnectionOwnership(t *testing.T) {
+	conn := newMockConn()
+	for _, tt := range []struct {
+		name    string
+		worker  *trackedWorker
+		present bool
+		owned   bool
+	}{
+		{name: "missing worker"},
+		{name: "nil worker", present: true},
+		{name: "review owner", worker: &trackedWorker{conn: conn, state: protocol.WorkerReviewing, beadID: "bead"}, present: true, owned: true},
+		{name: "replacement connection", worker: &trackedWorker{conn: newMockConn(), state: protocol.WorkerReviewing, beadID: "bead"}, present: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			d := &Dispatcher{}
+			d.workers = make(map[string]*trackedWorker)
+			if tt.present {
+				d.workers["worker"] = tt.worker
+			}
+			if recovered := captureCheckpointReleasePanic(func() {
+				worker, owned := d.checkpointOwnedWorkerForConnection("worker", conn)
+				if worker != tt.worker || owned != tt.owned {
+					t.Errorf("connection ownership = %p/%t, want %p/%t", worker, owned, tt.worker, tt.owned)
+				}
+			}); recovered != nil {
+				t.Errorf("connection ownership panicked: %v", recovered)
+			}
+			if worker, present := d.workers["worker"]; worker != tt.worker || present != tt.present {
+				t.Error("connection ownership changed worker entry")
+			}
+			if !d.mu.TryLock() {
+				t.Fatal("dispatcher mutex remained locked after connection ownership check")
+			}
+			d.mu.Unlock()
+		})
+	}
+}
+
 func TestCheckpointWorkerReleaseAbortOwnershipMatrix(t *testing.T) {
 	t.Run("owned token and drain are cleared", func(t *testing.T) {
 		d, worker, lease := newCheckpointWorkerReleaseLeaseFixture(t, "abort-owned")

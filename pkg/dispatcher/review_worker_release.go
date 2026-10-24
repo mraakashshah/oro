@@ -262,7 +262,7 @@ func (lease *checkpointWorkerReleaseLease) current() bool {
 	lease.d.mu.Lock()
 	defer lease.d.mu.Unlock()
 	tracked := lease.d.workers[lease.workerID]
-	return tracked == lease.expected && tracked.reviewReleaseToken == lease.token && tracked.conn == lease.observedConn &&
+	return tracked != nil && tracked == lease.expected && tracked.reviewReleaseToken == lease.token && tracked.conn == lease.observedConn &&
 		tracked.state == lease.state && tracked.state == protocol.WorkerReviewing && tracked.beadID == lease.beadID &&
 		tracked.assignmentID == lease.assignmentID
 }
@@ -271,7 +271,7 @@ func (lease *checkpointWorkerReleaseLease) abort() {
 	lease.d.mu.Lock()
 	defer lease.d.mu.Unlock()
 	tracked := lease.d.workers[lease.workerID]
-	if tracked == lease.expected && tracked.reviewReleaseToken == lease.token {
+	if tracked != nil && tracked == lease.expected && tracked.reviewReleaseToken == lease.token {
 		tracked.reviewReleaseToken = 0
 		if tracked.reviewMessagesDrainToken == lease.token {
 			tracked.reviewMessagesDrained = nil
@@ -284,7 +284,7 @@ func (lease *checkpointWorkerReleaseLease) finalizeDurable(finalizeLocked func(*
 	lease.d.mu.Lock()
 	defer lease.d.mu.Unlock()
 	tracked := lease.d.workers[lease.workerID]
-	if tracked != lease.expected || tracked.reviewReleaseToken != lease.token {
+	if tracked == nil || tracked != lease.expected || tracked.reviewReleaseToken != lease.token {
 		return
 	}
 	if tracked.conn != lease.observedConn {

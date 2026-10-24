@@ -384,7 +384,7 @@ func (d *Dispatcher) checkpointOwnedWorkerForConnection(workerID string, conn ne
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	w, ok := d.workers[workerID]
-	return w, ok && w.conn == conn && w.state == protocol.WorkerReviewing && w.beadID != ""
+	return w, ok && w != nil && w.conn == conn && w.state == protocol.WorkerReviewing && w.beadID != ""
 }
 
 func (d *Dispatcher) quarantineDisconnectedPreservedAssignment(ctx context.Context, workerID, beadID string, assignmentID int64, worktree, baseBranch, cause string) bool {
