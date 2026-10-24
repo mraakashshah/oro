@@ -167,6 +167,20 @@ freezes model/Git executables; it does not yet freeze the CLI executable.
 The host backend constructor accepts only this trusted configuration and opens
 its own objective-bound `ScopeAuthority`, which exposes ownership, not policy.
 
+The canonical CLI artifact is `<stateRoot>/<objectiveID>/runtime/runtime.json`.
+It also binds the policy hash, original work deadline, pinned Docker executable
+path/hash, context, and owned Unix endpoint. The private Docker snapshot contains
+only `docker/config.json` with canonical `{}` and
+`docker/contexts/meta/<sha256(context)>/meta.json`, with its exact name, empty
+metadata, and one Docker endpoint with TLS skipping disabled. Reject extra
+settings/files, credentials, plugins, TLS configuration, aliases, changed
+endpoints, and noncanonical JSON. Bound runtime JSON to 64 KiB, context metadata
+to 8 KiB, and the complete bundle including filesystem metadata to the existing
+1 MiB allowance, plus at most one equal staging bundle. Do not copy a fourth
+executable. The reader verifies expected bytes and local artifact identities;
+CLI start/resume must compare these with the verified immutable admission view.
+The reader remains valid after the work deadline so recovery can use it.
+
 Before allocating an objective/scope, the CLI adapter invokes the existing pure
 `storage.CheckRuntimeBudget` with a canonical existing parent, admitted host byte
 requirements, reserve margin, and `Fresh=true`. Require `BudgetFresh` explicitly:
@@ -436,6 +450,15 @@ and journal limits. The original hard stop bounds every cleanup helper. A
 supervisor recovering stopping still consumes its original supervisor-start
 allowance; it gains no uncounted recovery process.
 
+Routine retirement performed by a live controller uses ordinary host allowance
+H and remains bounded by the work deadline. Recovery cleanup C is owned by the
+supervisor after all controller and other non-Docker scopes have positively
+retired. The supervisor itself is represented by its durable incarnation token,
+not a host scope that would block its own cleanup. Do not route live-controller
+cleanup through C or exempt a potentially mutating controller from retirement.
+While any cleanup scope remains nonquiescent, new ordinary budgets and scopes
+are denied; this exclusion is checked in both allocation directions.
+
 Core reserves a `cleanup` scope and a bounded canonical typed permit atomically.
 The permit binds that scope to an existing full Docker target handle, one of
 `inspect`, `stop`, or `remove`, an exact ownership descriptor, and its deadline.
@@ -469,6 +492,21 @@ does not prove the daemon request cannot complete later. Such intent stays
 uncertain until completion/drain is proven or the exact object is discovered
 and retired. The helper returns an absence observation, never a fabricated
 quiescence proof. Watchdog expiry alone does not prove volume absence.
+
+The helper and storage consumer share a canonical result codec bounded to
+16 KiB. Version 1 binds the canonical permit SHA-256, exact scope, target and
+operation, observed ownership binding, observation (`present`, `stopped`, or
+`observed_absent`), and `MutationAcknowledged`. The acknowledgment is true only
+after the exact mutation command exits successfully; inspection or absence
+before mutation cannot set it. An unknown-ID inspection may discover only its
+container ID and creation identity; all previously bound fields remain exact.
+Successful inspection permits any applicable observation with no mutation
+acknowledgment. Successful stop requires `stopped` with acknowledgment or
+`observed_absent`; successful remove requires `observed_absent`. Absence before
+mutation has no acknowledgment; absence after a successful mutation has one.
+Volumes cannot report `stopped`, and failed mutation postconditions are errors.
+The result has no quiescence field. Recovery must separately establish that
+pending creation requests cannot complete before treating absence as retirement.
 
 ## Candidate execution, source import, and checks
 

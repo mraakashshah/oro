@@ -216,12 +216,10 @@ seconds; root's fresh run passed in 6.252 seconds. Both production ledger entry
 points and the capacity calculation reached 100% function coverage; CLI lint
 passed. Missing or corrupt authority retains capacity.
 
-Two integration gaps remain explicit: failed initialization needs durable
-proof that execution was never enabled before releasing a reservation, and
-container cleanup needs narrowly restricted authority after the work deadline.
-First-ever ledger initialization interrupted before its first committed image
-currently fails closed; automatic recovery still needs a proven bootstrap path.
-No public managed start or automatic recovery is established by these components.
+Failed initialization still needs durable proof that execution was never enabled
+before releasing a reservation. The first-ledger bootstrap and restricted cleanup
+authority now have component evidence below; their public start and automatic
+recovery integration remains required.
 
 The complete Oro tree at `7d658569` contains 1,655 blobs totaling 33,127,289 raw
 bytes and two tracked symlinks. It exceeds the current 24,379,392-byte inline
@@ -229,6 +227,50 @@ archive ceiling and the initial no-symlink policy. Full Oro self-hosting require
 bounded bulk transport and safe exact symlink representation, followed by a real
 full-tree trial. Omitting tracked files or qualifying only small fixtures would
 not satisfy that requirement.
+
+## Container transport and recovery components
+
+Commits `a5beaab3` and `365b9c53` account for Docker's extra root header, strictly
+decode its `./` root/prefix, and encode deterministic USTAR source owned by
+UID/GID 1000. Native copy probes established that omitting `docker cp -a`
+preserves candidate ownership; `-a` rewrote it to the guard UID. Export remained
+identical after the writer stopped while the keeper retained the volume.
+Independent codec race tests passed in 7.603 seconds and root's run in 7.900
+seconds; package lint passed. The measured archive bound is
+`A = S + 1024F + 1536`. The full-tree limit above remains unresolved.
+
+Commit `f4feb722` adds the guarded Docker readiness helper. It verifies the exact
+never-started container before attaching, accepts only timely exact READY, and
+joins the attaching client while leaving the keeper alive. Native proof used
+the actual CLI and private context despite polluted ambient Docker settings;
+its receipt is `/private/tmp/oro-docker-ready-native.hD7Ccc/receipt.json`.
+Root's final repeated race suite passed in 24.921 seconds; changed-code CLI lint
+passed and production coverage was 94.30%. A timeout-path test was corrected to
+distinguish explicit reap uncertainty from successful joined-child completion;
+production deadline and success rules were unchanged. This is not yet a
+journal-to-storage integration proof.
+
+Commit `35779f3d` recovers first-ledger initialization from one bounded durable
+bootstrap record without changing its original reservation. Actual SIGKILL tests
+cover publication boundaries. Independent review caught and verified a repair
+requiring parent-directory durability before recovery creates dependent state;
+injected sync failure leaves no root or initialized seal. Independent race tests
+passed in 8.472 seconds and the separate ordering regression in 1.492 seconds;
+CLI lint passed and affected production coverage was 83.04%. Missing initialized
+or legacy authority still cannot reset the ledger. Activation/abort release is
+a separate outstanding protocol.
+
+Commits `7de2810d` and `324dc1ac` add a separate immutable cleanup allowance C,
+count its retained bytes and records, and atomically journal cleanup tokens,
+scopes, and exact target permits. Stopping revokes ordinary work; final stopped
+requires every scope positively quiescent in the same transaction. Cleanup and
+ordinary work exclude each other in both allocation directions. Independent
+cleanup/journal, release, and adapter race tests passed in 5.194, 1.972, and
+1.451 seconds. Root's combined component suite passed in 14.859 seconds; full
+factory/CLI package lint passed. The allocator had 92.9% coverage and its public
+getter/decoder/target checks had 100%. C is supervisor recovery authority after
+controller retirement; a live controller uses ordinary H for routine retirement.
+The fixed Docker helper and launchd wiring remain separate required work.
 
 ## Remaining evidence
 

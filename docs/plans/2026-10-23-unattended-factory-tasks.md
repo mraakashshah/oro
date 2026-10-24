@@ -1,6 +1,6 @@
 # Unattended factory task graph
 
-Design: [unattended factory design](2026-10-23-unattended-factory-design.md), Gate 1 PASS. Gate 2 PASS after independent review and two contract repairs. Native parent: `oro-factory-managed`, under `oro-factory-autonomy`. There are now 36 tracked nodes below the managed epic, including host capacity's four children, container transport/readiness, and restricted cleanup policy/authority/runtime. Later integration findings remain qualification blockers until their protocols and tests are accepted.
+Design: [unattended factory design](2026-10-23-unattended-factory-design.md), Gate 1 PASS. Gate 2 PASS after independent review and two contract repairs. Native parent: `oro-factory-managed`, under `oro-factory-autonomy`. There are now 42 tracked nodes below the managed epic, including host capacity's four children, cleanup runtime's five children, container transport/readiness, and managed file identity. Later integration findings remain qualification blockers until their protocols and tests are accepted.
 
 Every task inherits the design's authority, budget, platform, and operational requirements. Root owns Git integration; implementers use test-first RED/GREEN and report frozen files. Keep full-gate blockers visible until resolved. Component success does not close the parent.
 
@@ -56,6 +56,13 @@ the first eight SHA-256 bytes of canonical state root + NUL + objective ID.
 `host-scope` enforces the design's exact read-only observer argv, environment,
 repository, frozen Git identity, and 256-byte output limit. The backend consumes
 already reserved handles; core journal code owns budget/scope allocation.
+
+Routine live-controller Docker retirement uses ordinary H within the work
+deadline. Recovery C runs from the token-owned supervisor only after the
+controller and other non-Docker scopes positively retire. New ordinary work
+cannot overlap a nonquiescent cleanup scope. Storage must preserve this
+distinction; neither a controller exemption nor a supervisor scope that blocks
+its own recovery is allowed.
 
 Integration commands below deliberately enable live backends. Ordinary package
 runs may omit expensive opt-in integration scenarios, but qualification requires
@@ -294,7 +301,7 @@ Commit separately after targeted tests, lint, and review. No fake callers or che
 - Test: cmd/oro/cmd_factory_start_test.go:TestFactoryManagedStart.
 - Cmd: `ORO_FACTORY_INTEGRATION=1 ORO_FACTORY_DOCKER_CONTEXT=colima-oro-factory GOTOOLCHAIN=go1.26.10 go test ./cmd/oro -run '^TestFactoryManagedStart$' -count=1 -timeout=180s`.
 - Assert / edges: ActualCLI wires budget->frozenadmission->ownedservice registration; controllerauthenticatedgate beforework; existingrun unchanged/rejectsmanaged; repeatedstartidempotent noreset; no legacy fixedlaunchdlabel/swarm; low disk or failed probe through actual public CLI creates no scope/controller/attempt; successful start return never releases active persistent host reservation. Durably freeze Oro executable identity and bounded runtime configuration before registration; resume verifies original frozen Oro/Git artifacts and supplies trusted host-runtime config. Missing or changed content fails without substituting current installation.
-- Depends on: `oro-mf-host-budget`, `oro-mf-host-scope`, `oro-mf-claude`, `oro-mf-supervisor`, `oro-mf-reservation-failure`, `oro-mf-ledger-bootstrap`.
+- Depends on: `oro-mf-host-budget`, `oro-mf-host-scope`, `oro-mf-claude`, `oro-mf-supervisor`, `oro-mf-reservation-failure`, `oro-mf-ledger-bootstrap`, `oro-mf-runtime-config`, `oro-mf-file-identity`.
 
 Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
 
@@ -446,6 +453,10 @@ Commit separately after targeted tests, lint, and review. No fake callers or che
 
 ## oro-mf-cleanup-runtime: Execute exact owned Docker cleanup
 
+This epic retains the integration acceptance below and explicitly depends on
+`oro-mf-runtime-config`, `oro-mf-cleanup-result`, `oro-mf-cleanup-plan`,
+`oro-mf-cleanup-helper`, and `oro-mf-cleanup-wiring`.
+
 - Read: cmd/oro/cmd_factory_launchd_runtime.go:validateFactoryObserver; cmd/oro/cmd_factory_launchd_runtime_invoke_darwin.go:validateInvocation; cmd/oro/cmd_factory_docker_ready.go; pkg/factory/managed_contract.go:DockerCleanupPermit.
 - Signature: newFactoryDockerCleanupCmd() *cobra.Command; runFactoryDockerCleanup(context.Context,factoryDockerCleanupConfig,factory.DockerCleanupPermit,io.Writer) error.
 - Test: cmd/oro/cmd_factory_docker_cleanup_test.go:TestFactoryDockerCleanup.
@@ -464,5 +475,77 @@ Commit separately after targeted tests, lint, and review. No fake callers or che
 - Cmd: `GOTOOLCHAIN=go1.26.10 go test -race ./cmd/oro -run 'TestFactoryBudgetBootstrap|TestManagedAdmissionBudget' -count=1 -timeout=180s`.
 - Assert / edges: One canonical parent record atomically transitions bootstrap to initialized. Embed and preserve exactly the first snapshot and reservation identity within2KiB; no return or further allocation before the initialized record is synced. Process kills across bootstrap, metadata, ledger stage/rename, parent phase stage/rename and directory sync preserve the same identity. Reconstruct only from valid bootstrap authority; initialized or legacy v1 missing/corrupt ledger remains closed. Reject conflicting first images, unexpected objective state, and ambiguous staging; no missing-state release or budget reset. Separate activation/abort proof remains necessary.
 - Depends on: `oro-mf-host-ledger`.
+
+Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
+
+## oro-mf-runtime-config: Validate cleanup runtime artifacts
+
+- Parent: `oro-mf-cleanup-runtime`.
+- Read: cmd/oro/cmd_factory_launchd_runtime.go:factoryLaunchdConfig/verifyFactoryRuntimeProgram; cmd/oro/cmd_factory_docker_ready.go:factoryDockerInvocation; docs/plans/2026-10-23-unattended-factory-design.md.
+- Signature: canonicalFactoryRuntimeConfig(factoryRuntimeConfig)([]byte,error); factoryDockerContextSnapshot(factoryRuntimeConfig)([]byte,[]byte,error); readFactoryRuntimeConfig(context.Context,string,string)(factoryDockerCleanupConfig,error).
+- Test: cmd/oro/cmd_factory_runtime_config_test.go:TestFactoryRuntimeConfig.
+- Cmd: `GOTOOLCHAIN=go1.26.10 go test -race ./cmd/oro -run '^TestFactoryRuntimeConfig$' -count=1 -timeout=180s`.
+- Assert / edges: canonical bounded runtime.json binds root/objective/policy, frozen Oro/Git paths/hashes, repository/ref, original deadlines and cleanup allowance, Docker binary/hash/context and dedicated owned unix endpoint. Exact derived private snapshot has only config.json bytes {} and contexts/meta/sha256(context)/meta.json with Name, empty Metadata and one Docker Endpoint Host/SkipTLSVerify=false. Reader verifies canonical bytes/digest and all program/context identities before returning trusted config; no publication or ambient fallback. Runtime JSON<=64KiB, context metadata<=8KiB, complete final bundle plus metadata within existing1MiB allowance, at most one equal staging bundle later. reject noncanonical/unknown/duplicate JSON, extra files/settings/auth/plugins/TLS, symlinks/hardlinks or wrong owners, non-unix/changed endpoint, wrong program hashes/paths, changed expected artifact digest or out-of-root runtime path; no fourth executable copy, initialization, grant or uncounted writes. Reader verifies only expected immutable bytes and artifact identities; it remains valid after work Deadline for cleanup. Later producer/consumer compares admitted policy/deadlines, because the reader cannot discover stale journal identity alone. CLI-start separately produces and freezes this bundle from verified immutable admission view.
+- Depends on: `oro-mf-docker-ready`, `oro-mf-cleanup-policy`.
+
+Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
+
+## oro-mf-file-identity: Bind managed reads to regular inode identity
+
+- Parent: `oro-factory-managed`.
+- Read: pkg/factory/managed_storage.go:readManagedInitializationMarker/prepareManagedDatabase; pkg/factory/managed_admission.go:openManagedRegular; pkg/factory/managed_storage_test.go:TestManagedStateByteBudget; pkg/factory/managed_admission_test.go:TestManagedAdmissionRejectsFIFO.
+- Signature: existing readManagedInitializationMarker(*os.Root,string) error and openManagedRegular(string,int64,bool)(*os.File,error); introduce only private rooted leaf validation if required.
+- Test: pkg/factory/managed_file_identity_test.go:TestManagedFileIdentity.
+- Cmd: `GOTOOLCHAIN=go1.26.10 go test -race ./pkg/factory -run 'TestManagedFileIdentity|TestManagedAdmission|TestManagedStateByteBudget' -count=1 -timeout=180s`.
+- Assert / edges: external and local initialization markers reject contained and dangling symlinks before interpreting absence or reading authority; managed artifact reads bind opened regular inode to pre-open and post-open leaf identity. Promote a failing reproduction of Go os.Root following contained symlinks despite O_NOFOLLOW. Legitimate ordinary marker/artifact paths continue to work; alias or replacement errors never initialize a fresh database or spend/reset budget. existing/dangling symlink, FIFO/device, leaf replaced with regular or symlink between Lstat/open, inode mismatch, ordinary missing path, cancellation unaffected. No reliance on O_NOFOLLOW inside os.Root, no broad retry/reset or changed executable hash semantics. Scope two production files and one new test file.
+- Depends on: `oro-mf-admission`, `oro-mf-state-budget`.
+
+Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
+
+## oro-mf-cleanup-result: Validate exact cleanup observations
+
+- Parent: `oro-mf-cleanup-runtime`.
+- Read: pkg/factory/managed_contract.go:DockerCleanupPermit/DockerCleanupBinding; pkg/factory/managed_cleanup.go:encodeCleanupPermit.
+- Signature: type DockerCleanupResult; EncodeDockerCleanupResult(DockerCleanupResult,DockerCleanupPermit)([]byte,error); DecodeDockerCleanupResult([]byte,DockerCleanupPermit)(DockerCleanupResult,error).
+- Test: pkg/factory/docker_cleanup_result_test.go:TestDockerCleanupResult.
+- Cmd: `GOTOOLCHAIN=go1.26.10 go test -race ./pkg/factory -run '^TestDockerCleanupResult$' -count=1 -timeout=180s`.
+- Assert / edges: Pure canonical version1 result <=16KiB binds PermitSHA256 of canonical already-authenticated permit and exact Scope/Target/Operation. Observation is present, stopped, or observed_absent; includes observed Binding and MutationAcknowledged. Inspect never acknowledges mutation; pre-mutation absence has false ack. Unknown container ID inspect can fill only ContainerID/CreatedAt, immutable binding fields must remain exact; known lifetime identity never changes. Volume cannot be stopped. No quiescence field or inference. Shared encoder/decoder is used by later helper producer and storage consumer. Reject malformed/duplicate/unknown/noncanonical JSON, oversize, wrong permit digest/scope/target/operation, incompatible observation or acknowledgment, altered labels/image/context/name/volume config, missing known identity. Explicitly document authenticating permit is caller responsibility; codec creates no authority and does not independently read journal. Test all operation-observation-ack combinations and output at size boundary.
+- Depends on: `oro-mf-cleanup-authority`.
+
+Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
+
+## oro-mf-cleanup-plan: Constrain Docker cleanup commands
+
+- Parent: `oro-mf-cleanup-runtime`.
+- Read: cmd/oro/cmd_factory_docker_ready_inspect.go:validateFactoryDockerInspection; pkg/factory/managed_contract.go:DockerCleanupPermit/DockerCleanupBinding.
+- Signature: factoryDockerCleanupInspectArgs(factory.DockerCleanupPermit)([]string,error); factoryDockerCleanupMutationArgs(factory.DockerCleanupPermit,factory.DockerCleanupBinding)([]string,error); parseFactoryDockerCleanupInspection(factory.DockerCleanupPermit,factory.HostResult)(factory.DockerCleanupBinding,string,error).
+- Test: cmd/oro/cmd_factory_docker_cleanup_plan_test.go:TestFactoryDockerCleanupPlan.
+- Cmd: `GOTOOLCHAIN=go1.26.10 go test -race ./cmd/oro -run '^TestFactoryDockerCleanupPlan$' -count=1 -timeout=180s`.
+- Assert / edges: Pure fixed command planner plus bounded inspector authenticates one exact container or volume. Bind context/name/6labels/image/full64hexID/canonicalCreatedAt/volume driver and exact options. Unknown container ID allowed only inspect exact name; known ID always exact ID. Stop args kill with SIGKILL and timeout0 via Docker stop --signal SIGKILL --timeout 0 fullID; container rm --force fullID without -v; volume rm exactname without force. Missing only exact native-probed exit1/[]/stderr forms. No process execution, no list/prune or caller flags. Fixture normal running/stopped/missing; changed labels/ID/CreatedAt/image/options, multiple objects, oversized/truncated/invalid JSON, exit failures, empty output and foreign object all fail. Changed StartedAt alone is not loss of lifetime ownership; do not import readiness never-started constraint. Retain uncertain daemon request semantics. Max1MiB inspect output; native exact missing forms need evidence before encoding.
+- Depends on: `oro-mf-cleanup-authority`, `oro-mf-docker-ready`.
+
+Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
+
+## oro-mf-cleanup-helper: Execute bounded Docker cleanup helpers
+
+- Parent: `oro-mf-cleanup-runtime`.
+- Read: cmd/oro/cmd_factory_runtime_config_read.go:readFactoryRuntimeConfig; cmd/oro/cmd_factory_docker_cleanup_plan.go; pkg/factory/managed_contract.go:ScopeAuthority; cmd/oro/cmd_factory_host_exec.go:executeFactoryHostCommand.
+- Signature: newFactoryDockerCleanupCmd() *cobra.Command; runFactoryDockerCleanup(context.Context,factoryDockerCleanupConfig,factory.DockerCleanupPermit,io.Writer) error.
+- Test: cmd/oro/cmd_factory_docker_cleanup_test.go:TestFactoryDockerCleanup.
+- Cmd: `GOTOOLCHAIN=go1.26.10 go test -race ./cmd/oro -run '^TestFactoryDockerCleanup$' -count=1 -timeout=180s`.
+- Assert / edges: Register hidden frozen-Oro factory _docker-cleanup accepting only runtime-config path/digest, canonical <=16KiB permit stdin. Reopen durable scope authority. Before each child verify frozen config, exact same permit, live Granted, Observe granted with matching deadline and PID=PGID>1, and helper actual Getpgid equals observed PGID. Never RecordHello. Execute at most inspect/mutate/verify fixed Docker children with original permit deadline and inherited outer PGID, bounded output. Use shared core result codec and set MutationAcknowledged only when exact mutation child exits0. Publish only complete bounded result before deadline. Stale/revoked/expired/mismatched authority, swapped config/endpoint, denied grant between commands, unexpected child result, unknown target, short output writer, missing pending request and cancellation produce error or observation without fabricated quiescence. Polling does not extend deadlines. No create/start/exec/cp/build/pull/prune/arbitrary argv. Runtime reader identity must match trusted permit objective/policy/context. Unit fake seam plus native owned-container/volume proof; foreign objects unchanged.
+- Depends on: `oro-mf-runtime-config`, `oro-mf-cleanup-result`, `oro-mf-cleanup-plan`, `oro-mf-cleanup-authority`.
+
+Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
+
+## oro-mf-cleanup-wiring: Restrict launchd cleanup invocations
+
+- Parent: `oro-mf-cleanup-runtime`.
+- Read: cmd/oro/cmd_factory_launchd.go:validateFactoryJobScope; cmd/oro/cmd_factory_launchd_runtime.go:factoryLaunchdConfig; cmd/oro/cmd_factory_launchd_runtime_invoke_darwin.go:validateInvocation; cmd/oro/cmd_factory_docker_cleanup.go:newFactoryDockerCleanupCmd.
+- Signature: validateFactoryCleanupInvocation(context.Context,factoryLaunchdConfig,factory.HostInvocation,factory.DockerCleanupPermit) error; cleanup-kind branch in factoryLaunchdRuntime.validateInvocation.
+- Test: cmd/oro/cmd_factory_launchd_cleanup_test.go:TestFactoryLaunchdCleanup.
+- Cmd: `GOTOOLCHAIN=go1.26.10 go test -race ./cmd/oro -run '^TestFactoryLaunchdCleanup$' -count=1 -timeout=180s`.
+- Assert / edges: Extend launchd scope validation only to exact cleanup kind and require trusted runtime-config path/digest in frozen configuration. Cleanup invocation is exact frozen Oro + factory _docker-cleanup --runtime-config canonicalpath --runtime-config-sha256 digest; canonical core permit stdin<=16KiB, Dir=StateRoot, Env PATH=/usr/bin:/bin LC_ALL=C LANG=C, OutputLimit=1MiB, exact permit Deadline. Read current reserved permit from authority before launch; current ordinary host/observer rules unchanged. Existing authenticated HELLO/GO/PUBLISHED and retirement must apply, including native late cleanup after work deadline within HardStop. Deny altered executable/args/env/cwd/output/deadline/stdin/config or target, no direct Docker or arbitrary late host invocation, no scope-kind fallback. Native proof late cleanup succeeds with exact current permit, final stopped forbids retry, revoked/foreign identities denied, outer process group positively retires. C helper only supervisor-owned after controller/host retirement; routine live-controller cleanup uses ordinary H before work deadline.
+- Depends on: `oro-mf-cleanup-helper`, `oro-mf-host-scope`.
 
 Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
