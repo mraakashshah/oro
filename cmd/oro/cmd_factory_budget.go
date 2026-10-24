@@ -39,7 +39,7 @@ func admitFactoryHostBudgetWithHooks(ctx context.Context, stateDir string, spec 
 	if err := sameFactoryBudgetFilesystem(access, spec.Repository); err != nil {
 		return factory.HostReservation{}, err
 	}
-	ledger, initialized, err := access.load()
+	ledger, initialized, err := access.loadWithHooks(ctx, hooks)
 	if err != nil {
 		return factory.HostReservation{}, err
 	}
@@ -63,12 +63,7 @@ func admitFactoryHostBudgetWithHooks(ctx context.Context, stateDir string, spec 
 	ledger.Entries = append(ledger.Entries, entry)
 	slices.SortFunc(ledger.Entries, func(a, b factoryBudgetEntry) int { return strings.Compare(a.ObjectiveID, b.ObjectiveID) })
 	ledger.Revision++
-	if !initialized {
-		if err := access.initialize(); err != nil {
-			return factory.HostReservation{}, err
-		}
-	}
-	if err := access.publish(ctx, ledger, hooks); err != nil {
+	if err := access.persist(ctx, ledger, initialized, hooks); err != nil {
 		return factory.HostReservation{}, err
 	}
 	return entry.reservation(access.rootPath), nil
@@ -177,7 +172,7 @@ func releaseFactoryHostReservationWithQuery(ctx context.Context, stateDir, reser
 		return err
 	}
 	defer access.close()
-	ledger, initialized, err := access.load()
+	ledger, initialized, err := access.load(ctx)
 	if err != nil {
 		return err
 	}

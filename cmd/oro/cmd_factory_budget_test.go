@@ -84,7 +84,7 @@ func testFactoryBudgetAuthorityBounds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ledger, _, err := access.load()
+	ledger, _, err := access.load(t.Context())
 	if err != nil {
 		access.close()
 		t.Fatal(err)

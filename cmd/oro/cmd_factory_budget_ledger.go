@@ -59,7 +59,11 @@ func (ledger factoryBudgetSnapshot) objective(id string) (factoryBudgetEntry, bo
 	return factoryBudgetEntry{}, false
 }
 
-type factoryBudgetHooks struct{ beforeRename, afterRename func() error }
+type factoryBudgetHooks struct {
+	beforeRename, afterRename func() error
+	bootstrap                 func(string) error
+	syncParent, syncImage     func(*os.Root) error
+}
 
 type factoryBudgetAccess struct {
 	rootPath, rootName, rootHash, markerName string
@@ -82,7 +86,13 @@ func lockFactoryBudget(ctx context.Context, path string) (*factoryBudgetAccess, 
 	access := &factoryBudgetAccess{rootPath: canonical, rootName: filepath.Base(canonical), rootHash: factoryBudgetHash([]byte(canonical)), parent: parent}
 	prefix := ".oro-factory-budget-" + access.rootHash
 	access.markerName = prefix + ".init"
-	lock, err := openFactoryBudgetFile(parent, prefix+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	// Exclusive creation distinguishes the creator from contenders. Concurrent
+	// nonexclusive os.Root creation can return ENOENT on Darwin despite the file
+	// already existing; reopen only a positively observed EEXIST, without reset.
+	lock, err := openFactoryBudgetFile(parent, prefix+".lock", os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		lock, err = openFactoryBudgetFile(parent, prefix+".lock", os.O_RDWR, 0)
+	}
 	if err != nil {
 		access.close()
 		return nil, err
@@ -145,6 +155,11 @@ func (access *factoryBudgetAccess) close() {
 }
 
 func openFactoryBudgetFile(root *os.Root, name string, flags int, mode os.FileMode) (*os.File, error) {
+	// os.Root confines symlinks to its directory, but does not preserve a caller's
+	// O_NOFOLLOW request. A contained or dangling alias is still invalid authority.
+	if err := checkFactoryBudgetLeaf(root, name); err != nil {
+		return nil, err
+	}
 	file, err := root.OpenFile(name, flags|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, mode)
 	if err != nil {
 		return nil, fmt.Errorf("open host budget file: %w", err)
@@ -157,9 +172,28 @@ func openFactoryBudgetFile(root *os.Root, name string, flags int, mode os.FileMo
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || stat.Uid != uint32(os.Getuid()) || stat.Nlink != 1 {
 		_ = file.Close()
-		return nil, errors.New("host budget file must be private, owned, regular and unlinked")
+		return nil, errors.New("host budget file must be private, owned, regular and have no hardlink aliases")
+	}
+	entry, err := root.Lstat(name)
+	if err != nil || !entry.Mode().IsRegular() || !os.SameFile(info, entry) {
+		_ = file.Close()
+		return nil, errors.New("host budget file path changed or became an alias")
 	}
 	return file, nil
+}
+
+func checkFactoryBudgetLeaf(root *os.Root, name string) error {
+	info, err := root.Lstat(name)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect host budget path: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("host budget path must be regular and cannot be an alias")
+	}
+	return nil
 }
 
 func readFactoryBudgetFile(root *os.Root, name string, limit int64) ([]byte, error) {
@@ -178,11 +212,15 @@ func readFactoryBudgetFile(root *os.Root, name string, limit int64) ([]byte, err
 	return data, nil
 }
 
-func (access *factoryBudgetAccess) load() (factoryBudgetSnapshot, bool, error) {
+func (access *factoryBudgetAccess) load(ctx context.Context) (factoryBudgetSnapshot, bool, error) {
+	return access.loadWithHooks(ctx, factoryBudgetHooks{})
+}
+
+func (access *factoryBudgetAccess) loadWithHooks(ctx context.Context, hooks factoryBudgetHooks) (factoryBudgetSnapshot, bool, error) {
 	empty := factoryBudgetSnapshot{Version: 1, RootSHA256: access.rootHash, Entries: []factoryBudgetEntry{}}
-	marker, err := readFactoryBudgetFile(access.parent, access.markerName, 128)
+	marker, err := readFactoryBudgetFile(access.parent, access.markerName, factoryBudgetBootstrapBytes)
 	if errors.Is(err, os.ErrNotExist) {
-		if err := access.requireEmptyRoot(); err != nil {
+		if err := access.prepareFreshBootstrap(); err != nil {
 			return empty, false, err
 		}
 		return empty, false, nil
@@ -190,9 +228,23 @@ func (access *factoryBudgetAccess) load() (factoryBudgetSnapshot, bool, error) {
 	if err != nil {
 		return empty, false, err
 	}
-	if string(marker) != access.markerContents() {
-		return empty, false, errors.New("host budget initialization authority is corrupt")
+	if err := access.recoverParentAuthority(ctx, marker, hooks); err != nil {
+		return empty, false, err
 	}
+	ledger, initialized, err := access.loadCommitted()
+	if err != nil {
+		return empty, false, err
+	}
+	// A predecessor may have died after phase rename but before directory sync.
+	// Observing initialized is insufficient until its directory is durable too.
+	if err := syncFactoryBootstrapDirectory(access.parent, hooks.syncParent); err != nil {
+		return empty, false, err
+	}
+	return ledger, initialized, nil
+}
+
+func (access *factoryBudgetAccess) loadCommitted() (factoryBudgetSnapshot, bool, error) {
+	var empty factoryBudgetSnapshot
 	directory, err := access.openMetadata()
 	if err != nil {
 		return empty, false, err
@@ -240,35 +292,6 @@ func (access *factoryBudgetAccess) markerContents() string {
 	return "oro-factory-host-budget-v1\n" + access.rootHash + "\n"
 }
 
-func (access *factoryBudgetAccess) initialize() error {
-	marker, err := openFactoryBudgetFile(access.parent, access.markerName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		return err
-	}
-	defer marker.Close()
-	if err := writeFactoryBudgetFile(marker, []byte(access.markerContents())); err != nil {
-		return err
-	}
-	if err := syncFactoryBudgetDirectory(access.parent); err != nil {
-		return err
-	}
-	if err := access.parent.Mkdir(access.rootName, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
-		return fmt.Errorf("create factory budget root: %w", err)
-	}
-	root, err := access.parent.OpenRoot(access.rootName)
-	if err != nil {
-		return fmt.Errorf("open initialized factory budget root: %w", err)
-	}
-	defer func() { _ = root.Close() }()
-	if err := root.Mkdir(".managed", 0o700); err != nil {
-		return fmt.Errorf("create host budget metadata: %w", err)
-	}
-	if err := syncFactoryBudgetDirectory(root); err != nil {
-		return err
-	}
-	return syncFactoryBudgetDirectory(access.parent)
-}
-
 func (access *factoryBudgetAccess) openMetadata() (*os.Root, error) {
 	for _, name := range []string{access.rootName, filepath.Join(access.rootName, ".managed")} {
 		info, err := access.parent.Lstat(name)
@@ -287,7 +310,11 @@ func (access *factoryBudgetAccess) openMetadata() (*os.Root, error) {
 }
 
 func retireFactoryBudgetStage(directory *os.Root) error {
-	file, err := openFactoryBudgetFile(directory, factoryBudgetPendingName, os.O_RDONLY, 0)
+	return retireFactoryBudgetNamedStage(directory, factoryBudgetPendingName, factoryBudgetSnapshotBytes)
+}
+
+func retireFactoryBudgetNamedStage(directory *os.Root, name string, limit int64) error {
+	file, err := openFactoryBudgetFile(directory, name, os.O_RDONLY, 0)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -299,10 +326,10 @@ func retireFactoryBudgetStage(directory *os.Root) error {
 	if err != nil {
 		return fmt.Errorf("inspect uncommitted host budget stage: %w", err)
 	}
-	if info.Size() > factoryBudgetSnapshotBytes {
+	if info.Size() > limit {
 		return errors.New("uncommitted host budget stage exceeds bound")
 	}
-	if err := directory.Remove(factoryBudgetPendingName); err != nil {
+	if err := directory.Remove(name); err != nil {
 		return fmt.Errorf("retire uncommitted host budget stage: %w", err)
 	}
 	return syncFactoryBudgetDirectory(directory)
@@ -407,7 +434,7 @@ func (access *factoryBudgetAccess) publish(ctx context.Context, ledger factoryBu
 			return err
 		}
 	}
-	return syncFactoryBudgetDirectory(directory)
+	return syncFactoryBootstrapDirectory(directory, hooks.syncImage)
 }
 
 func writeFactoryBudgetFile(file *os.File, data []byte) error {
