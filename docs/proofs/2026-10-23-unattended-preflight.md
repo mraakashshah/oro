@@ -270,8 +270,8 @@ cleanup/journal, release, and adapter race tests passed in 5.194, 1.972, and
 factory/CLI package lint passed. The allocator had 92.9% coverage and its public
 getter/decoder/target checks had 100%. C is supervisor recovery authority after
 controller retirement; a live controller uses ordinary H for routine retirement.
-The fixed Docker helper is verified below; production launchd wiring remains
-separate required work.
+The fixed Docker helper and launchd invocation are verified below; their
+supervisor and storage callers remain separate required work.
 
 Commit `51df7500` defines and reads the frozen runtime configuration and exact
 private Docker context snapshot. It verifies canonical bytes, hashes, file and
@@ -348,8 +348,42 @@ inspection bytes stayed unchanged, and all owned fixtures were retired.
 Evidence is `cleanup-helper-independent.log`, `cleanup-helper-final-native.log`,
 and the latter's `-result.json` and `.out` files under the verification directory.
 This fixture seeds valid admitted journal/PGID state. It proves the real helper
-and Docker operations, not the still-pending production launchd invocation,
-supervisor recovery, or public activation path.
+and Docker operations; the production launchd invocation is verified separately
+below. Supervisor recovery and public activation remain pending.
+
+Commit `5a42bf2f` binds cleanup invocations to exact frozen runtime configuration
+and canonical authenticated permit bytes. Root's independent race test passed
+in 1.585 seconds; the affected suite passed in 2.395 seconds, new validation
+statements had 100% coverage, and CLI lint passed. Both optional configuration
+fields absent preserves ordinary host/observer construction and denies cleanup.
+
+Commit `55eb33eb` connects that restriction to the shared launchd scope renderer
+and native runtime. The runtime reads the current reserved permit before request
+creation or bootstrap. An independent review found no issues, and its protected
+race tests passed in 2.114 seconds. The author's affected regression suite passed
+in 7.020 seconds, renderer tests in 1.461 seconds, and CLI lint passed. All four
+new permit-lookup/error/restriction statements were covered; the full switch had
+seven of eight statements covered because exact scope validation makes its
+defensive default unreachable.
+
+The direct native race test passed in 21.820 seconds. An actual launchd job
+completed HELLO/GO/PUBLISHED, removed its exact owned tmpfs volume after the work
+deadline, and left a foreign sentinel unchanged. The canonical result reported
+successful removal; the cleanup token count remained one. Before `Invoke`
+returned, the scope was quiescent and its authenticated PID/PGID 34053 returned
+ESRCH. Replaying the consumed scope was denied before launch. Fixture teardown
+retired all owned resources. This seeds legitimate admitted authority; it does
+not demonstrate public admission, supervisor allocation, or unattended recovery.
+
+Initial runs under the protected test harness failed at bootstrap. Exact-job
+macOS logs show that launchd rejected the sandboxed caller before HELLO. The
+successful run reused the established narrowly scoped native lane with private
+Oro state/caches and unchanged HOME/CODEX_HOME. Production launch behavior was
+not changed to accommodate the harness. Evidence is
+`cleanup-launchd-sandbox-denial.log`, `cleanup-launchd-native-final.log`,
+`cleanup-launchd-native-final-result.json`, and `cleanup-launchd-independent.log`
+under the verification directory; `run_cleanup_launchd_native.py` reproduces the
+exact native command and records its environment and before/after source hashes.
 
 ## Remaining evidence
 
