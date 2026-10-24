@@ -10,7 +10,7 @@ import (
 )
 
 func lockObjective(dir string) (func() error, error) {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil { //nolint:gosec // Directory is an explicit admitted objective state path, not untrusted subprocess output.
 		return nil, fmt.Errorf("create objective directory: %w", err)
 	}
 	file, err := os.OpenFile(filepath.Join(dir, "objective.lock"), os.O_CREATE|os.O_RDWR, 0o600) //nolint:gosec // Explicit admitted objective state path.

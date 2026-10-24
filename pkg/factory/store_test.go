@@ -156,15 +156,7 @@ func TestDurableAttemptBudget(t *testing.T) {
 			t.Fatal("reservation moved deadline")
 		}
 		if attempt <= 3 {
-			if next.State != "running" || next.Attempts != attempt {
-				t.Fatalf("reservation %d = %#v", attempt, next)
-			}
-			if next.CandidateSHA != "" || next.BaseSHA != "" || next.Worktree != "" || next.Acceptance != nil || next.Review != nil {
-				t.Fatal("stale attempt authority retained")
-			}
-			if next.Feedback != state.Feedback {
-				t.Fatal("repair feedback lost")
-			}
+			assertReservedAttempt(t, next, attempt, state.Feedback)
 		} else if next.State != "failed" || next.Attempts != 3 || next.Reason == "" {
 			t.Fatalf("fourth reservation = %#v", next)
 		}
@@ -197,5 +189,18 @@ func TestDurableAttemptBudget(t *testing.T) {
 	completed.State = "completed"
 	if got := reserveAttempt(completed, completed.Deadline.Add(time.Hour)); !reflect.DeepEqual(got, completed) {
 		t.Fatal("completed objective reopened")
+	}
+}
+
+func assertReservedAttempt(t *testing.T, next snapshot, attempt int, feedback string) {
+	t.Helper()
+	if next.State != "running" || next.Attempts != attempt {
+		t.Fatalf("reservation %d = %#v", attempt, next)
+	}
+	if next.CandidateSHA != "" || next.BaseSHA != "" || next.Worktree != "" || next.Acceptance != nil || next.Review != nil {
+		t.Fatal("stale attempt authority retained")
+	}
+	if next.Feedback != feedback {
+		t.Fatal("repair feedback lost")
 	}
 }

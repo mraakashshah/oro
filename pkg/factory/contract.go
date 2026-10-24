@@ -74,11 +74,15 @@ func validateSpec(spec Spec) error {
 		spec.StepTimeoutSeconds > spec.TimeoutSeconds || int64(spec.TimeoutSeconds) > math.MaxInt64/int64(time.Second) {
 		return errors.New("attempt and timeout limits must be positive, representable, and step timeout must not exceed total timeout")
 	}
-	if len(spec.RequiredChecks) == 0 {
+	return validateChecks(spec.RequiredChecks)
+}
+
+func validateChecks(checks []string) error {
+	if len(checks) == 0 {
 		return errors.New("at least one required check must be specified")
 	}
-	seen := make(map[string]bool, len(spec.RequiredChecks))
-	for _, check := range spec.RequiredChecks {
+	seen := make(map[string]bool, len(checks))
+	for _, check := range checks {
 		if strings.TrimSpace(check) == "" || seen[check] {
 			return errors.New("required checks must be nonempty and unique")
 		}
