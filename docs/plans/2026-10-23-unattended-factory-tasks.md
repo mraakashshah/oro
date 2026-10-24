@@ -1,6 +1,6 @@
 # Unattended factory task graph
 
-Design: [unattended factory design](2026-10-23-unattended-factory-design.md), Gate 1 PASS. Gate 2 PASS after independent review and two contract repairs. Native parent: `oro-factory-managed`, under `oro-factory-autonomy`. There are now 47 tracked nodes below the managed epic, including host capacity's four children, cleanup runtime's seven children and two wiring grandchildren, container transport/readiness, managed file identity, and CLI start's immutable admission view. Later integration findings remain qualification blockers until their protocols and tests are accepted.
+Design: [unattended factory design](2026-10-23-unattended-factory-design.md), Gate 1 PASS. Gate 2 PASS after independent review and two contract repairs. Native parent: `oro-factory-managed`, under `oro-factory-autonomy`. There are now 48 tracked nodes below the managed epic, including host capacity's five children, cleanup runtime's seven children and two wiring grandchildren, container transport/readiness, managed file identity, and CLI start's immutable admission view. Later integration findings remain qualification blockers until their protocols and tests are accepted.
 
 Every task inherits the design's authority, budget, platform, and operational requirements. Root owns Git integration; implementers use test-first RED/GREEN and report frozen files. Keep full-gate blockers visible until resolved. Component success does not close the parent.
 
@@ -106,8 +106,8 @@ Commit separately after targeted tests, lint, and review. No fake callers or che
 ## oro-mf-host-budget: Reserve managed host capacity
 
 This epic retains its original integration acceptance and depends explicitly on
-`oro-mf-host-limits`, `oro-mf-host-release`, `oro-mf-host-ledger`, and
-`oro-mf-ledger-bootstrap`.
+`oro-mf-host-limits`, `oro-mf-host-release`, `oro-mf-host-ledger`,
+`oro-mf-ledger-bootstrap`, and `oro-mf-host-transfer64`.
 
 - Read: cmd/oro/cmd_factory_budget.go, cmd/oro/cmd_factory.go:newFactoryCmd, pkg/storage/runtime_budget.go:CheckRuntimeBudget.
 - Signature: admitFactoryHostBudget(ctx context.Context,stateDir string,spec factory.ManagedSpec,probe storage.DiskProbe) (factory.HostReservation,error); releaseFactoryHostReservation(ctx context.Context,stateDir,id string) error.
@@ -379,10 +379,10 @@ Commit separately after targeted tests, lint, and review. No fake callers or che
 
 - Parent: `oro-mf-host-budget`.
 - Read: pkg/factory/managed_contract.go:validateManagedSpec; pkg/factory/managed_storage.go:ManagedStateStorageBytes; cmd/oro/cmd_factory_host_exec.go:factoryHostExecRequestLimit.
-- Signature: ManagedHostRetention(ManagedSpec) (HostRetentionLimits,error); exported ManagedHostRequestBytes=32MiB and ManagedHostResultMetadataBytes=16384.
+- Signature: ManagedHostRetention(ManagedSpec) (HostRetentionLimits,error); exported ManagedHostRequestBytes=64MiB and ManagedHostResultMetadataBytes=16384.
 - Test: pkg/factory/managed_host_limits_test.go:TestManagedHostRetention.
 - Cmd: `GOTOOLCHAIN=go1.26.10 go test ./pkg/factory -run '^TestManagedHostRetention$' -count=1 -timeout=180s`.
-- Assert / edges: Use checked integer arithmetic for archive A=S+1024F+1536, output O=max(A,1MiB), pending P=4O+16384, invocation records Q=H+M+T+reconciliation+cleanup, scope records E=2*(supervisor+controller+reconciliation+cleanup)+H+M+T, source versions X=2+attempts*(checks+3). Minimum B=3*512MiB+4*2MiB+2*1MiB+ManagedStateStorageBytes+32MiB+1MiB+X*(2A+2S+128KiB*F+1MiB)+Q*(2*32MiB+2P+2O)+E*1MiB. F bounds files plus implicit dirs, MaxPathBytes255. Reject overflow and4*ceil(A/3)+1MiB>32MiB; exact known fixture and each budget family tested; return caps all future writers consume. CLI rejects HostRequiredBytes below MinimumBytes. The Docker root consumes512 transport bytes; each cleanup permit fits within its counted scope metadata. Cleanup accounting is implemented by the separate cleanup-policy task.
+- Assert / edges: Use checked integer arithmetic for archive A=S+1024F+1536, output O=max(A,1MiB), pending P=4O+16384, invocation records Q=H+M+T+reconciliation+cleanup, scope records E=2*(supervisor+controller+reconciliation+cleanup)+H+M+T, source versions X=2+attempts*(checks+3). Minimum B=3*512MiB+4*2MiB+2*1MiB+ManagedStateStorageBytes+32MiB+1MiB+X*(2A+2S+128KiB*F+1MiB)+Q*(2*64MiB+2P+2O)+E*1MiB. F bounds files plus implicit dirs, MaxPathBytes255. Reject overflow and4*ceil(A/3)+1MiB>64MiB; exact known fixture and each budget family tested; return caps all future writers consume. CLI rejects HostRequiredBytes below MinimumBytes. The Docker root consumes512 transport bytes; each cleanup permit fits within its counted scope metadata. Cleanup accounting is implemented by the separate cleanup-policy task.
 - Depends on: `oro-mf-contract`, `oro-mf-state-budget`.
 
 Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
@@ -619,3 +619,17 @@ Commit separately after targeted tests, lint, and review. No fake callers or che
 - Depends on: `oro-mf-cleanup-restriction`, `oro-mf-cleanup-helper`, `oro-mf-host-scope`.
 
 Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
+
+## oro-mf-host-transfer64: Bound full-tree host requests at 64 MiB
+
+- Parent: `oro-mf-host-budget`.
+- Read: pkg/factory/managed_host_limits.go:ManagedHostRetention,retainedHostBytes; pkg/factory/managed_host_limits_test.go:TestManagedHostRetention; cmd/oro/cmd_factory_host_exec.go:factoryHostExecRequestLimit.
+- Signature: existing ManagedHostRequestBytes becomes `64<<20`; ManagedHostRetention retains its signature.
+- Test: pkg/factory/managed_host_limits_test.go:TestManagedHostRetention.
+- Cmd: `GOTOOLCHAIN=go1.26.10 go test -race ./pkg/factory -run '^TestManagedHostRetention' -count=1`.
+- Assert / edges: Tiny fixture minimum2,666,485,760 and Q5; archive49,545,216 passes and next byte rejects. Both request copies add exactly Q*64MiB over the previous cap. Source40MiB/files2200 fits; checked overflow and Docker-root1536 allowance remain. Ledger32MiB and database caps remain unchanged. Only the limits source and test files change in this slice. No old admission migration, reservation top-up or reset.
+- Depends on: `oro-mf-host-limits`.
+
+Old-admission core and ledger regressions, complete-envelope checks, native bulk transfer, failure retirement, symlink preservation and verified existing-blob reuse remain separate qualification requirements. This cap change alone does not establish full-tree autonomous delivery.
+
+Component evidence at `e2ce78e9`: witnessed failures under the old32MiB cap, then author focused race1.320s, independent focused race1.304s, and existing host-wrapper race6.445s. All43 retention-helper statements covered; full factory-package lint reports zero issues. Independent source review passed. Native large-payload transfer and full-tree delivery remain unproven.
