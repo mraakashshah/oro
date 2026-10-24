@@ -155,6 +155,17 @@ are the package boundaries. Resume uses admitted artifacts exclusively, even if
 the original input file is removed. The CLI supplies a host adapter, not a
 mutable path from candidate output. Keep legacy `Run` policy loading unchanged.
 
+The CLI also freezes its own Oro executable and runtime configuration before
+registering any service. This additional immutable artifact binds the canonical
+state root/objective, Oro path and SHA-256, verified frozen Git path and SHA-256,
+repository/target ref, cleanup allowance, and original hard stop. Resume verifies
+these artifacts; missing or changed content fails without substituting the
+currently installed binary. Account for the Oro copy (at most 512 MiB) and its
+bounded configuration in the host reservation. The core managed manifest already
+freezes model/Git executables; it does not yet freeze the CLI executable.
+The host backend constructor accepts only this trusted configuration and opens
+its own objective-bound `ScopeAuthority`, which exposes ownership, not policy.
+
 Before allocating an objective/scope, the CLI adapter invokes the existing pure
 `storage.CheckRuntimeBudget` with a canonical existing parent, admitted host byte
 requirements, reserve margin, and `Fresh=true`. Require `BudgetFresh` explicitly:
@@ -275,6 +286,11 @@ payload command is launched directly by a plist. Host scope labels are
 binds the objective hash and verifies socket ownership. Jobs disable globbing,
 use umask 077, and send launchd streams to `/dev/null`; the wrapper separately
 writes bounded pending results. The initial finite exit timeout is five seconds.
+The objective hash is the first eight bytes of SHA-256 over the canonical state
+root, one NUL byte, and objective ID, rendered as sixteen lowercase hex digits.
+This separates identical IDs admitted under different roots. Initial native
+qualification uses the current user's `gui/<UID>` domain; `user/<UID>` is not
+qualified. Cleanup retries transient `EPERM` until positive `ESRCH` or its bound.
 The private `factoryHostExecRequest` contains the actual `HostInvocation` and an
 explicit `ResultPath`. The wrapper obtains objective-bound authority through the
 authenticated socket; it does not independently open a supplied journal path.
@@ -340,6 +356,18 @@ pass, including after deadline/start exhaustion. If promoting and target equals
 candidate, complete. If unchanged base, no late mutation. If target differs,
 preserve it and retry only within original budgets. If unreadable, keep promoting
 and its proofs while supervision stops with promotion_outcome_unknown.
+
+An `observer` host scope permits only the frozen Git executable in the frozen
+repository, with no stdin and a 256-byte limit per output stream. Its literal argv
+is `-c core.hooksPath=/dev/null -c core.fsmonitor=false --no-optional-locks --no-replace-objects show-ref --verify --hash <frozen-target-ref>`.
+The complete child environment is `PATH=/usr/bin:/bin`,
+`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_SYSTEM=/dev/null`,
+`GIT_CONFIG_NOSYSTEM=1`, `GIT_TERMINAL_PROMPT=0`, `GIT_OPTIONAL_LOCKS=0`,
+`GIT_NO_REPLACE_OBJECTS=1`, `LC_ALL=C`, and `LANG=C`. The exact target ref is
+`refs/heads/` plus the admitted branch. Missing-ref exit status is data for
+reconciliation; this allowance cannot execute arbitrary commands after the work
+deadline. The core reserves the invocation budget and scope before the backend
+can act; the backend consumes existing handles and never creates their authority.
 
 SupervisorBackend embeds HostRuntime explicitly. Supervise uses it directly for
 read-only Git observation/finalization when no controller starts remain; it does

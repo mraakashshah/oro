@@ -47,6 +47,15 @@ separate ownership transactions from the existing objective revision.
 Observe reads an exact full handle, including revoked old epochs, for recovery;
 unknown or mismatched handles fail without creating state or granting execution.
 
+Host runtime configuration is supplied by trusted CLI wiring, not by ownership
+queries. `cli-start` freezes/verifies the Oro executable and bounded runtime
+artifact before service registration, including across resume; `host-budget`
+includes that additional executable (up to 512 MiB). The objective label hash is
+the first eight SHA-256 bytes of canonical state root + NUL + objective ID.
+`host-scope` enforces the design's exact read-only observer argv, environment,
+repository, frozen Git identity, and 256-byte output limit. The backend consumes
+already reserved handles; core journal code owns budget/scope allocation.
+
 Integration commands below deliberately enable live backends. Ordinary package
 runs may omit expensive opt-in integration scenarios, but qualification requires
 all of them and treats unavailable dependencies or skipped scenarios as failure.
@@ -92,7 +101,7 @@ Commit separately after targeted tests, lint, and review. No fake callers or che
 - Signature: admitFactoryHostBudget(ctx context.Context,stateDir string,spec factory.ManagedSpec,probe storage.DiskProbe) (factory.HostReservation,error); releaseFactoryHostReservation(ctx context.Context,stateDir,id string) error.
 - Test: cmd/oro/cmd_factory_budget_test.go:TestManagedAdmissionBudget.
 - Cmd: `GOTOOLCHAIN=go1.26.10 go test ./cmd/oro -run '^TestManagedAdmissionBudget$' -count=1 -timeout=180s`.
-- Assert / edges: Admission boundary denies insufficient/probe-failed budget before scope/root/attempt; equality permits; concurrent admission cannot double-reserve; preserve reservations on uncertain cleanup; require same filesystem and conservative bounded-writer aggregate. Public CLI wiring/denial is verified by cli-start.; reservation survives admission-process exit; release reopens ledger by ID, CAS/idempotent, never a closure deferred by start.
+- Assert / edges: Admission boundary denies insufficient/probe-failed budget before scope/root/attempt; equality permits; concurrent admission cannot double-reserve; preserve reservations on uncertain cleanup; require same filesystem and conservative bounded-writer aggregate. Public CLI wiring/denial is verified by cli-start; reservation survives admission-process exit; release reopens ledger by ID, CAS/idempotent, never a closure deferred by start. Include the additional frozen Oro executable (up to 512 MiB), bounded CLI runtime artifact, all encoded request/result overhead and ManagedStateStorageBytes in retained byte accounting.
 - Depends on: `oro-mf-contract`, `oro-mf-admission`, `oro-mf-state-budget`.
 
 Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
@@ -114,7 +123,7 @@ Commit separately after targeted tests, lint, and review. No fake callers or che
 - Signature: factoryHostExecRequest{Invocation factory.HostInvocation; ResultPath string}; runFactoryHostExec(ctx context.Context,request factoryHostExecRequest,authority factory.ScopeAuthority) error.
 - Test: cmd/oro/cmd_factory_host_exec_test.go:TestFactoryHostExec.
 - Cmd: `GOTOOLCHAIN=go1.26.10 go test ./cmd/oro -run '^TestFactoryHostExec$' -count=1 -timeout=180s`.
-- Assert / edges: No child or mutable work before authenticated GO; children inherit job PGID; bounded time/output/result serialization; atomic pending result; no host result accepted before scope retirement. Digest-bound ResultPath must equal request-directory/result.pending.json; payload cwd cannot select receipt destination; deadline is rechecked before spawn. Normal child exit7 publishes a valid HostResult with ExitCode7; publication rechecks deadline after directory sync; exclusive inflight survives successful publication; hidden CLI sends mandatory bounded PUBLISHED only after successful timely result publication.
+- Assert / edges: No child or mutable work before authenticated GO; children inherit job PGID; bounded time/output/result serialization; atomic pending result; no host result accepted before scope retirement. Digest-bound ResultPath must equal request-directory/result.pending.json; payload cwd cannot select receipt destination; deadline is rechecked before spawn. Normal child exit7 publishes a valid HostResult with ExitCode7; publication rechecks deadline after directory sync; exclusive inflight survives successful publication; hidden CLI sends mandatory bounded PUBLISHED only after successful timely result publication. Combined ordinary exit7 and retained descendant pipes must remain a transport failure with no PUBLISHED; successful nonzero exits require independent complete output capture.
 - Depends on: `oro-mf-host-job`, `oro-mf-host-peer`.
 
 Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
@@ -125,7 +134,7 @@ Commit separately after targeted tests, lint, and review. No fake callers or che
 - Signature: factory.HostRuntime.Invoke/Retire and factory.ScopeAuthority adapter.
 - Test: cmd/oro/cmd_factory_launchd_runtime_test.go:TestFactoryHostScope.
 - Cmd: `ORO_FACTORY_INTEGRATION=1 ORO_FACTORY_DOCKER_CONTEXT=colima-oro-factory GOTOOLCHAIN=go1.26.10 go test ./cmd/oro -run '^TestFactoryHostScope$' -count=1 -timeout=180s`.
-- Assert / edges: Real temporary launchd jobs prove normal-exit descendant cleanup, timeout, lost bootstrap ack, revoked nonce rejection, real peer PID/UID validation and PGID ESRCH before result consumption; no print parsing or signalling stored PID. Require complete authenticated PUBLISHED frame validated before deadline and a post-decode time/context check; bind request/scope/PID/PGID/deadline/pending digest, then retire and verify exact pending bytes/fields; reject missing/partial/late/mismatched/replayed publication and never accept file existence alone.
+- Assert / edges: Real temporary launchd jobs prove normal-exit descendant cleanup, timeout, lost bootstrap ack, revoked nonce rejection, real peer PID/UID validation and PGID ESRCH before result consumption; no print parsing or signalling stored PID. Require complete authenticated PUBLISHED frame validated before deadline and a post-decode time/context check; bind request/scope/PID/PGID/deadline/pending digest, then retire and verify exact pending bytes/fields; reject missing/partial/late/mismatched/replayed publication and never accept file existence alone. Trusted config binds canonical root/objective, frozen Oro/Git identities, repository/ref and cleanup/hard stop; exact objective hash includes canonical root. Enforce the design's exact read-only observer argv/environment, no stdin and output limit 256; never allocate scope authority.
 - Depends on: `oro-mf-host-exec`, `oro-mf-journal`.
 
 Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
@@ -268,7 +277,7 @@ Commit separately after targeted tests, lint, and review. No fake callers or che
 - Signature: factory start strictspec + internal _controller/_supervise/_mcp commands.
 - Test: cmd/oro/cmd_factory_start_test.go:TestFactoryManagedStart.
 - Cmd: `ORO_FACTORY_INTEGRATION=1 ORO_FACTORY_DOCKER_CONTEXT=colima-oro-factory GOTOOLCHAIN=go1.26.10 go test ./cmd/oro -run '^TestFactoryManagedStart$' -count=1 -timeout=180s`.
-- Assert / edges: ActualCLI wires budget->frozenadmission->ownedservice registration; controllerauthenticatedgate beforework; existingrun unchanged/rejectsmanaged; repeatedstartidempotent noreset; no legacy fixedlaunchdlabel/swarm; low disk or failed probe through actual public CLI creates no scope/controller/attempt; successful start return never releases active persistent host reservation.
+- Assert / edges: ActualCLI wires budget->frozenadmission->ownedservice registration; controllerauthenticatedgate beforework; existingrun unchanged/rejectsmanaged; repeatedstartidempotent noreset; no legacy fixedlaunchdlabel/swarm; low disk or failed probe through actual public CLI creates no scope/controller/attempt; successful start return never releases active persistent host reservation. Durably freeze Oro executable identity and bounded runtime configuration before registration; resume verifies original frozen Oro/Git artifacts and supplies trusted host-runtime config. Missing or changed content fails without substituting current installation.
 - Depends on: `oro-mf-host-budget`, `oro-mf-host-scope`, `oro-mf-claude`, `oro-mf-supervisor`, `oro-mf-reservation-failure`.
 
 Commit separately after targeted tests, lint, and review. No fake callers or check suppression.

@@ -155,8 +155,26 @@ managed delivery integration remain separate required work.
 
 ## Remaining evidence
 
-Still required: frozen managed admission, durable execution ownership, automatic
-controller/supervisor recovery, protected source import, independent acceptance,
+Managed contract validation, immutable admission, durable execution ownership,
+and kernel Unix socket peer authentication are committed as component foundations
+(`e4d35865`, `a3602210`, `8daf3a85`, and `2ac91908`). A full factory race/shuffle
+run passed in 151.943 seconds with 85.3% coverage before a final behavior-preserving
+admission helper extraction; focused admission/process-lock tests and lint passed
+after that extraction. This is component evidence, not unattended delivery.
+
+Native launchd preflight with the actual wrapper binary established PID=PGID,
+inherited child/grandchild groups, and positive group ESRCH after normal exit,
+active bootout, and timeout. Withholding GO created no payload or pending result.
+Transient EPERM after bootout reproduced and was treated as uncertain until
+ESRCH. The final cleanup found all six owned labels absent and all five
+authenticated groups empty. Evidence lives in
+`/private/tmp/oro-host-preflight-mvd1u_mg/`, including `gui/report.json`,
+`gui-withheld-retry/report.json`, and `final-cleanup.json`. These tests preceded
+the latest wrapper output-completion repair and did not exercise the durable
+runtime backend; they establish the platform primitive only.
+
+Still required: automatic controller/supervisor recovery, protected source import,
+independent acceptance,
 restricted real-model execution, sustained fault trials, and integration into an
 unattended objective queue. A user-session LaunchAgent proof also cannot establish
 recovery across logout or host failure. No production cutover is claimed here.
