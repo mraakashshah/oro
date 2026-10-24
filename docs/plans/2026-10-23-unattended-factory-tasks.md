@@ -1,6 +1,6 @@
 # Unattended factory task graph
 
-Design: [unattended factory design](2026-10-23-unattended-factory-design.md), Gate 1 PASS. Gate 2 PASS after independent review and two contract repairs. Native parent: `oro-factory-managed`, under `oro-factory-autonomy`. The original 25 children gained socket peer authentication and managed database storage bounds. Host capacity reservation is now an epic with three implementation children, for 30 tracked nodes below the managed epic.
+Design: [unattended factory design](2026-10-23-unattended-factory-design.md), Gate 1 PASS. Gate 2 PASS after independent review and two contract repairs. Native parent: `oro-factory-managed`, under `oro-factory-autonomy`. The original 25 children gained socket peer authentication, managed database storage bounds, and a container readiness helper. Host capacity reservation is now an epic with three implementation children, for 31 tracked nodes below the managed epic. Later integration findings below remain qualification blockers until their protocols and tests are accepted.
 
 Every task inherits the design's authority, budget, platform, and operational requirements. Root owns Git integration; implementers use test-first RED/GREEN and report frozen files. Keep full-gate blockers visible until resolved. Component success does not close the parent.
 
@@ -182,7 +182,18 @@ Commit separately after targeted tests, lint, and review. No fake callers or che
 - Test: pkg/factory/execution_docker_storage_test.go:TestExecutionStorageLimits.
 - Cmd: `ORO_FACTORY_INTEGRATION=1 ORO_FACTORY_DOCKER_CONTEXT=colima-oro-factory GOTOOLCHAIN=go1.26.10 go test ./pkg/factory -run '^TestExecutionStorageLimits$' -count=1 -timeout=180s`.
 - Assert / edges: Journal local-driver tmpfs/keeper before creation; enforce byte+inode quotas; keeper maintains source after worker stop until trusted export; no host mount; private checker sources; image/build/guard identity pinned; subsequent objective survives quota attack.
-- Depends on: `oro-mf-journal`, `oro-mf-host-scope`, `oro-mf-archive`, `oro-mf-watchdog`, `oro-mf-git-tree` (shared host invocation allocator).
+- Depends on: `oro-mf-journal`, `oro-mf-host-scope`, `oro-mf-archive`, `oro-mf-watchdog`, `oro-mf-git-tree` (shared host invocation allocator), `oro-mf-docker-ready`.
+
+Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
+
+## oro-mf-docker-ready: Authenticate container guard readiness
+
+- Read: cmd/oro/cmd_factory.go:newFactoryCmd, cmd/oro/cmd_factory_launchd_runtime.go:verifyFactoryRuntimeProgram, cmd/oro/cmd_factory_host_exec.go, cmd/oro-factory-guard/main.go.
+- Signature: newFactoryDockerReadyCmd() *cobra.Command; runFactoryDockerReady(context.Context,factoryDockerReadyRequest,io.Writer) error.
+- Test: cmd/oro/cmd_factory_docker_ready_test.go:TestFactoryDockerReady.
+- Cmd: `GOTOOLCHAIN=go1.26.10 go test -race ./cmd/oro -run '^TestFactoryDockerReady$' -count=1 -timeout=180s`.
+- Assert / edges: Frozen Oro helper verifies canonical Docker executable SHA256 and explicit private config/context; inspect exact stopped container ID/name/labels/image/guard UID/entrypoint/deadline before fixed start/attach. Accept exactly timely READY newline, kill and reap only its owned attaching client, return bounded identity/deadline while keeper remains alive. Invalid ownership, missing/partial/late/extra readiness, early exit, overflow, or incomplete client retirement fail closed. No ambient executable/context or stdin. All effects belong to one authenticated pre-journaled HostRuntime invocation; core rechecks the running container identity and StartedAt before granting work.
+- Depends on: `oro-mf-host-scope`, `oro-mf-watchdog`.
 
 Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
 

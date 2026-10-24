@@ -183,8 +183,52 @@ preserving escaped literal strings. The regression witnessed RED, then passed
 under race in 1.449 seconds; independent source review and CLI lint passed.
 The real backend subsequently passed seven launchd scenarios, including lost
 acknowledgment, timeout, concurrent retirement, and pending-byte tampering.
-Backend review remains in progress: these scenarios do not establish complete
+Commit `b5c2a99c` includes the reviewed runtime. Independent review reproduced
+cleanup exceeding the hard stop and a mismatched handle canceling an active
+invocation with the same ID. The repairs bound cleanup by the original hard stop
+and compare the complete handle before cancellation. The repaired native race
+suite passed independently in 24.503 seconds; runtime coverage was 82.3% and CLI
+lint passed. All seven owned job labels were absent and all five granted process
+groups returned ESRCH. These scenarios do not establish complete
 controller/supervisor recovery or qualify the unfinished service.
+
+## Exact source and capacity foundations
+
+Commit `8158d076` exports raw Git objects, verifies every blob and reconstructed
+tree, and imports deterministic exact trees without candidate filters or hooks.
+Every Git invocation consumes persisted budget and scope authority before the
+HostRuntime call. Real Git/journal tests passed independently in 24.253 seconds;
+root's final focused suite passed in 7.758 seconds and package lint passed. The
+new production scope had 84.3% statement coverage. Those tests use a test host
+runtime; they do not prove native isolation or managed delivery integration.
+
+On this Mac, `/usr/bin/git` is an Apple developer-tool launcher whose copied
+binary dies by signal. The actual executable resolved by `xcrun --find git`
+works after freezing. Admission must qualify that identity rather than falling
+back to a mutable original installation.
+
+Commits `d98371c4`, `f20278a5`, and `8e1322dc` add shared retained-byte accounting,
+exact terminal release eligibility, and a durable bounded host capacity ledger.
+The ledger uses a canonical parent lock, counts active reservations, and retains
+released IDs. Cross-process tests cover competing admission and SIGKILL before
+and after publication rename. Independent race verification passed in 6.359
+seconds; root's fresh run passed in 6.252 seconds. Both production ledger entry
+points and the capacity calculation reached 100% function coverage; CLI lint
+passed. Missing or corrupt authority retains capacity.
+
+Two integration gaps remain explicit: failed initialization needs durable
+proof that execution was never enabled before releasing a reservation, and
+container cleanup needs narrowly restricted authority after the work deadline.
+First-ever ledger initialization interrupted before its first committed image
+currently fails closed; automatic recovery still needs a proven bootstrap path.
+No public managed start or automatic recovery is established by these components.
+
+The complete Oro tree at `7d658569` contains 1,655 blobs totaling 33,127,289 raw
+bytes and two tracked symlinks. It exceeds the current 24,379,392-byte inline
+archive ceiling and the initial no-symlink policy. Full Oro self-hosting requires
+bounded bulk transport and safe exact symlink representation, followed by a real
+full-tree trial. Omitting tracked files or qualifying only small fixtures would
+not satisfy that requirement.
 
 ## Remaining evidence
 
