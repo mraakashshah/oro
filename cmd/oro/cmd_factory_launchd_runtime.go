@@ -23,6 +23,7 @@ import (
 type factoryLaunchdConfig struct {
 	StateRoot, ObjectiveID, OroPath, OroSHA256 string
 	GitPath, GitSHA256, Repository, TargetRef  string
+	RuntimeConfigPath, RuntimeConfigSHA256     string
 	CleanupTimeout                             time.Duration
 	HardStop                                   time.Time
 }
@@ -36,6 +37,9 @@ func validateFactoryLaunchdConfig(ctx context.Context, config factoryLaunchdConf
 	}
 	if !factoryJobAbsolutePath(config.StateRoot) {
 		return errors.New("factory runtime requires a canonical state root")
+	}
+	if err := validateFactoryCleanupConfigReference(config); err != nil {
+		return err
 	}
 	if err := factoryHostPrivateDirectory(config.StateRoot); err != nil {
 		return err
