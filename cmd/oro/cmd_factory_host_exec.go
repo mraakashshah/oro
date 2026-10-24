@@ -238,7 +238,7 @@ func factoryHostPrivateDirectory(path string) error {
 	if err != nil || canonical != path {
 		return errors.New("factory host directory must exist and be canonical without symlinks")
 	}
-	info, err := os.Stat(path)
+	info, err := os.Stat(path) // #nosec G703 -- Metadata-only inspection of the intentionally supplied canonical directory; private ownership is checked below.
 	if err != nil {
 		return fmt.Errorf("inspect factory host private directory: %w", err)
 	}

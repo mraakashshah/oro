@@ -111,7 +111,7 @@ func bindFactoryRuntimeRoot(root *os.Root, path string) error {
 	if err := factoryHostPrivateDirectory(path); err != nil {
 		return err
 	}
-	entry, err := os.Lstat(path)
+	entry, err := os.Lstat(path) // #nosec G703 -- Metadata-only comparison of the canonical private path with the opened-root inode below.
 	if err != nil {
 		return fmt.Errorf("inspect factory runtime directory path: %w", err)
 	}
@@ -248,7 +248,7 @@ func verifyFactoryRuntimeConfig(ctx context.Context, config factoryRuntimeConfig
 	if err != nil || canonical != config.Repository {
 		return errors.New("factory runtime repository is not canonical")
 	}
-	info, err := os.Lstat(config.Repository)
+	info, err := os.Lstat(config.Repository) // #nosec G703 -- Metadata-only directory check of the digest-bound canonical repository; no contents are read, written or executed.
 	if err != nil || !info.IsDir() {
 		return errors.New("factory runtime repository must be a directory")
 	}
@@ -291,7 +291,7 @@ func verifyFactoryRuntimeEndpoint(endpoint string) error {
 	if err != nil || canonical != path {
 		return errors.New("factory Docker endpoint must exist without aliases")
 	}
-	info, err := os.Lstat(path)
+	info, err := os.Lstat(path) // #nosec G703 -- Metadata-only check of the digest-bound canonical Unix socket; type, ownership and link checks below remain required.
 	if err != nil || info.Mode()&os.ModeSocket == 0 || !factoryHostPrivateOwner(info) {
 		return errors.New("factory Docker endpoint must be an owned private Unix socket")
 	}
