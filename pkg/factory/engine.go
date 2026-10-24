@@ -62,23 +62,26 @@ func run(ctx context.Context, stateDir string, spec Spec, hooks runHooks) (Statu
 		return Status{}, err
 	}
 	defer func() { _ = store.close() }()
-	c := controller{store: store, policies: policies, repo: gitRepository{path: spec.Repository}, hooks: hooks}
+	c := controller{store: store, policies: policies,
+		repo: gitRepository{path: spec.Repository, stepTimeout: time.Duration(spec.StepTimeoutSeconds) * time.Second}, hooks: hooks}
 	if err := c.admit(ctx); err != nil {
 		return snapshotStatus(c.state), err
 	}
 	if err := c.resume(ctx); err != nil {
 		return snapshotStatus(c.state), err
 	}
+	c.repo.deadline = c.state.Deadline
 	for c.state.State != "completed" && c.state.State != "failed" {
 		if err := ctx.Err(); err != nil {
 			return snapshotStatus(c.state), fmt.Errorf("factory interrupted: %w", err)
 		}
 		if err := c.step(ctx); err != nil {
-			return snapshotStatus(c.state), err
+			return snapshotStatus(c.state), errors.Join(err, ctx.Err())
 		}
 	}
 	if c.state.State == "completed" {
-		if err := c.repo.exists(ctx, c.state.CandidateSHA); err != nil {
+		observer := gitRepository{path: c.repo.path, stepTimeout: c.repo.stepTimeout}
+		if err := observer.exists(ctx, c.state.CandidateSHA); err != nil {
 			return snapshotStatus(c.state), fmt.Errorf("completed artifact unavailable: %w", err)
 		}
 	}
@@ -124,7 +127,8 @@ func (c *controller) resume(ctx context.Context) error {
 }
 
 func (c *controller) reconcilePromotion(ctx context.Context) error {
-	actual, err := c.repo.resolveTarget(ctx, c.state.Spec.TargetBranch)
+	observer := gitRepository{path: c.repo.path, stepTimeout: c.repo.stepTimeout}
+	actual, err := observer.resolveTarget(ctx, c.state.Spec.TargetBranch)
 	if err != nil {
 		return err
 	}
@@ -266,7 +270,9 @@ func (c *controller) promote(ctx context.Context) error {
 			return err
 		}
 	}
-	actual, err := c.repo.resolveTarget(ctx, c.state.Spec.TargetBranch)
+	// Read proof of the authorized effect even if its deadline just elapsed.
+	observer := gitRepository{path: c.repo.path, stepTimeout: c.repo.stepTimeout}
+	actual, err := observer.resolveTarget(ctx, c.state.Spec.TargetBranch)
 	if err != nil {
 		return err
 	}
@@ -308,7 +314,7 @@ func commandFailure(result commandResult) error {
 	if result.Err == nil && result.ExitCode == 0 {
 		return nil
 	}
-	return fmt.Errorf("policy exited %d: %v; stdout=%s; stderr=%s", result.ExitCode, result.Err, result.Stdout, result.Stderr)
+	return errors.Join(result.Err, fmt.Errorf("policy exited %d; stdout=%s; stderr=%s", result.ExitCode, result.Stdout, result.Stderr))
 }
 
 func boundedReason(err error) string {

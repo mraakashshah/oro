@@ -9,10 +9,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 type gitRepository struct {
-	path string
+	path        string
+	stepTimeout time.Duration
+	deadline    time.Time
 }
 
 func (g gitRepository) resolveTarget(ctx context.Context, branch string) (string, error) {
@@ -161,6 +164,8 @@ func (g gitRepository) exists(ctx context.Context, sha string) error {
 }
 
 func (g gitRepository) run(ctx context.Context, path string, args ...string) (string, error) {
+	ctx, cancel := g.commandContext(ctx)
+	defer cancel()
 	argv := append([]string{
 		"-c", "core.hooksPath=" + os.DevNull,
 		"-c", "core.fsmonitor=false",
@@ -171,11 +176,26 @@ func (g gitRepository) run(ctx context.Context, path string, args ...string) (st
 	cmd := exec.CommandContext(ctx, "git", argv...) //nolint:gosec // Fixed executable with literal argv; no shell interpretation.
 	cmd.Dir = path
 	cmd.Env = gitEnvironment()
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	result := runProcess(ctx, cmd)
+	if result.Err != nil {
+		return "", fmt.Errorf("git %s: %w; stdout=%s; stderr=%s", strings.Join(args, " "), result.Err,
+			strings.TrimSpace(string(result.Stdout)), strings.TrimSpace(string(result.Stderr)))
 	}
-	return strings.TrimSpace(string(out)), nil
+	return strings.TrimSpace(string(result.Stdout)), nil
+}
+
+func (g gitRepository) commandContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	timeout := g.stepTimeout
+	if timeout <= 0 {
+		// Admission and terminal observations have no objective deadline yet,
+		// but must still have a finite subprocess bound.
+		timeout = 30 * time.Second
+	}
+	deadline := time.Now().Add(timeout)
+	if !g.deadline.IsZero() && g.deadline.Before(deadline) {
+		deadline = g.deadline
+	}
+	return context.WithDeadline(ctx, deadline)
 }
 
 func gitEnvironment() []string {

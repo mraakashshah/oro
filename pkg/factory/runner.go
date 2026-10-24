@@ -38,6 +38,16 @@ func executeCommand(ctx context.Context, command Command, input commandInput, pr
 	if err != nil {
 		return commandResult{ExitCode: -1, Err: err}
 	}
+	return runProcess(ctx, cmd)
+}
+
+// runProcess applies the same cancellation, descendant and output bounds to
+// admitted policy programs and Git commands created with exec.CommandContext.
+func runProcess(ctx context.Context, cmd *exec.Cmd) commandResult {
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	cmd.SysProcAttr.Setpgid = true
 	stop := func() error { return killCommandGroup(cmd) }
 	stdout := &commandOutput{stream: "stdout", stop: stop}
 	stderr := &commandOutput{stream: "stderr", stop: stop}
@@ -45,14 +55,14 @@ func executeCommand(ctx context.Context, command Command, input commandInput, pr
 	cmd.Cancel = stop
 	// A successfully exited parent may leave descendants holding its output pipes.
 	cmd.WaitDelay = 200 * time.Millisecond
-	err = cmd.Run()
+	err := cmd.Run()
 	err = errors.Join(err, stop(), stdout.err, stderr.err, ctx.Err())
 	result := commandResult{Stdout: stdout.buffer.Bytes(), Stderr: stderr.buffer.Bytes(), ExitCode: -1}
 	if cmd.ProcessState != nil {
 		result.ExitCode = cmd.ProcessState.ExitCode()
 	}
 	if err != nil {
-		result.Err = fmt.Errorf("execute policy: %w", err)
+		result.Err = fmt.Errorf("execute process: %w", err)
 	}
 	return result
 }
@@ -72,7 +82,6 @@ func prepareCommand(ctx context.Context, command Command, input commandInput, pr
 	cmd := exec.CommandContext(ctx, command.Path, command.Args...) //nolint:gosec // Admitted policy path and literal argv are trusted inputs.
 	cmd.Dir, cmd.Env = input.Worktree, env
 	cmd.Stdin = bytes.NewReader(append(encoded, '\n'))
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	return cmd, nil
 }
 
@@ -110,7 +119,7 @@ func killCommandGroup(cmd *exec.Cmd) error {
 		return nil
 	}
 	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-		return fmt.Errorf("kill policy process group: %w", err)
+		return fmt.Errorf("kill process group: %w", err)
 	}
 	return nil
 }
