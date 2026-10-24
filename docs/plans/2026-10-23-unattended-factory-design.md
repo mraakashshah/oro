@@ -100,6 +100,7 @@ type RecoveryPolicy struct {
     MaxControllerStarts, MaxSupervisorStarts int
     RestartDelaySeconds, CleanupTimeoutSeconds int
     ReconciliationSeconds, MaxReconciliationInvocations int
+    MaxCleanupInvocations int
 }
 type RuntimePolicy struct {
     DockerContext, ImageDigest string
@@ -297,7 +298,7 @@ Oro executable as its program. Its literal arguments identify an immutable
 `request.json`, its SHA-256, and an owned Unix socket; the renderer appends the
 fixed deadline and output bound. The request contains the actual command. No
 payload command is launched directly by a plist. Host scope labels are
-`dev.getoro.factory.<objectiveHash16>.<host-or-observer>.<ID32hex>.<Nonce32hex>`; the runtime
+`dev.getoro.factory.<objectiveHash16>.<host-or-observer-or-cleanup>.<ID32hex>.<Nonce32hex>`; the runtime
 binds the objective hash and verifies socket ownership. Jobs disable globbing,
 use umask 077, and send launchd streams to `/dev/null`; the wrapper separately
 writes bounded pending results. The initial finite exit timeout is five seconds.
@@ -399,6 +400,60 @@ fixed hard-stop allowance. Ordinary host scopes retain the work-deadline bound.
 Advancing an ownership epoch within a live supervisor spends a separately bounded
 epoch token and never spends another supervisor incarnation. The persisted
 current supervisor token fences a superseded supervisor from advancing epochs.
+
+### Restricted cleanup after work ends
+
+Stopping is a distinct durable phase: `running -> stopping -> stopped`.
+Requesting stopping revokes normal execution grants and prohibits new work.
+Only restricted cleanup and the existing exact Git observer may execute while
+stopping. Final stopped is sealed in the same transaction that proves every
+scope, including cleanup invocations, quiescent. A cleanup reservation racing
+that transition either wins first and prevents sealing, or loses and is denied.
+Stopped never admits new scopes, grants, or epochs, preserving the terminal
+reservation-release invariant. Uncertain cleanup retains the reservation and
+the stopping state; it must not claim stopped merely to release capacity.
+
+`MaxCleanupInvocations` is a positive immutable allowance independent of host
+work and reconciliation. Each cleanup helper attempt consumes one token before
+effects; retries consume new tokens, and nothing refunds them. Count cleanup
+requests, pending results, permit records, scopes, and epochs in retained-byte
+and journal limits. The original hard stop bounds every cleanup helper. A
+supervisor recovering stopping still consumes its original supervisor-start
+allowance; it gains no uncounted recovery process.
+
+Core reserves a `cleanup` scope and a bounded canonical typed permit atomically.
+The permit binds that scope to an existing full Docker target handle, one of
+`inspect`, `stop`, or `remove`, an exact ownership descriptor, and its deadline.
+Descriptors contain context, name, container ID/creation identity, image,
+labels, and volume driver/options. They cannot select host executables, paths,
+environment, endpoints, or arbitrary arguments. An unknown container ID permits
+inspection only; mutation requires its verified full ID. Volumes cannot use
+stop. ScopeAuthority exposes `CleanupPermit(ctx, scope)` for the exact current
+reserved/granted scope; reading it never grants execution.
+
+The host runtime accepts only the frozen Oro cleanup helper, its verified
+runtime-config path/digest, fixed environment and state-root working directory,
+canonical permit stdin of at most 16 KiB, and bounded output. The helper verifies
+the pinned Docker/config/endpoint and rechecks the identical permit and live
+grant before each child. It runs at most three fixed Docker commands: exact
+inspection, ownership-checked mutation, and verification. Stop uses SIGKILL with
+timeout zero and the full container ID. Container removal never removes volumes;
+volume removal never uses force and follows retirement of its owned consumers.
+No create, start, exec, copy, build, pull, prune, enumeration, or caller-selected
+flags are permitted. Children inherit the authenticated outer job's process
+group and original deadline. Existing PUBLISHED and retirement checks bind the
+bounded typed result before core consumes it.
+
+Resource creation intent precedes the Docker call and records its exact name,
+labels, image/deadline, and mount or volume configuration. Storage binds returned
+identity with a one-way CAS. Container ID is lifetime identity; a changed
+StartedAt invalidates readiness but does not authorize forgetting the same owned
+container. Volumes use name, CreatedAt, labels, driver, and options; names are
+never reused. A lost create/start acknowledgment followed by inspect-not-found
+does not prove the daemon request cannot complete later. Such intent stays
+uncertain until completion/drain is proven or the exact object is discovered
+and retired. The helper returns an absence observation, never a fabricated
+quiescence proof. Watchdog expiry alone does not prove volume absence.
 
 ## Candidate execution, source import, and checks
 

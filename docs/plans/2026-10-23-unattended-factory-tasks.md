@@ -1,6 +1,6 @@
 # Unattended factory task graph
 
-Design: [unattended factory design](2026-10-23-unattended-factory-design.md), Gate 1 PASS. Gate 2 PASS after independent review and two contract repairs. Native parent: `oro-factory-managed`, under `oro-factory-autonomy`. The original 25 children gained socket peer authentication, managed database storage bounds, and a container readiness helper. Host capacity reservation is now an epic with three implementation children, for 31 tracked nodes below the managed epic. Later integration findings below remain qualification blockers until their protocols and tests are accepted.
+Design: [unattended factory design](2026-10-23-unattended-factory-design.md), Gate 1 PASS. Gate 2 PASS after independent review and two contract repairs. Native parent: `oro-factory-managed`, under `oro-factory-autonomy`. There are now 35 tracked nodes below the managed epic, including host capacity's three children, container transport/readiness, and restricted cleanup policy/authority/runtime. Later integration findings remain qualification blockers until their protocols and tests are accepted.
 
 Every task inherits the design's authority, budget, platform, and operational requirements. Root owns Git integration; implementers use test-first RED/GREEN and report frozen files. Keep full-gate blockers visible until resolved. Component success does not close the parent.
 
@@ -17,6 +17,7 @@ type ScopeAuthority interface {
     RecordHello(context.Context, ScopeHandle, int, int) error // verified peer PID, PGID
     Granted(context.Context, ScopeHandle) (bool, error)
     Observe(context.Context, ScopeHandle) (ScopeObservation, error)
+    CleanupPermit(context.Context, ScopeHandle) (DockerCleanupPermit, error)
     MarkQuiescent(context.Context, ScopeHandle) error
     Close() error
 }
@@ -182,7 +183,7 @@ Commit separately after targeted tests, lint, and review. No fake callers or che
 - Test: pkg/factory/execution_docker_storage_test.go:TestExecutionStorageLimits.
 - Cmd: `ORO_FACTORY_INTEGRATION=1 ORO_FACTORY_DOCKER_CONTEXT=colima-oro-factory GOTOOLCHAIN=go1.26.10 go test ./pkg/factory -run '^TestExecutionStorageLimits$' -count=1 -timeout=180s`.
 - Assert / edges: Journal local-driver tmpfs/keeper before creation; enforce byte+inode quotas; keeper maintains source after worker stop until trusted export; no host mount; private checker sources; image/build/guard identity pinned; subsequent objective survives quota attack.
-- Depends on: `oro-mf-journal`, `oro-mf-host-scope`, `oro-mf-archive`, `oro-mf-watchdog`, `oro-mf-git-tree` (shared host invocation allocator), `oro-mf-docker-ready`.
+- Depends on: `oro-mf-journal`, `oro-mf-host-scope`, `oro-mf-archive`, `oro-mf-watchdog`, `oro-mf-git-tree` (shared host invocation allocator), `oro-mf-docker-ready`, `oro-mf-docker-archive`, `oro-mf-cleanup-runtime`.
 
 Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
 
@@ -303,7 +304,7 @@ Commit separately after targeted tests, lint, and review. No fake callers or che
 - Test: cmd/oro/cmd_factory_control_test.go:TestFactoryManagedControl.
 - Cmd: `ORO_FACTORY_INTEGRATION=1 ORO_FACTORY_DOCKER_CONTEXT=colima-oro-factory GOTOOLCHAIN=go1.26.10 go test ./cmd/oro -run '^TestFactoryManagedControl$' -count=1 -timeout=180s`.
 - Assert / edges: Statusreadonly truthful objective vsstopped supervision; waitzero onlycompleted; stopdurablerevocation and exactscope retirement/unregister; no unrelatedjob/processkill; unknownpromotion preserved; stop and terminal recovery reopen persisted reservation ledger and release once only after all scopes quiescent; cross-process start-exit/success/crash-before-release/uncertain-cleanup test proves capacity recovered or retained correctly.
-- Depends on: `oro-mf-cli-start`.
+- Depends on: `oro-mf-cli-start`, `oro-mf-cleanup-runtime`.
 
 Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
 
@@ -369,7 +370,7 @@ Commit separately after targeted tests, lint, and review. No fake callers or che
 - Signature: ManagedHostRetention(ManagedSpec) (HostRetentionLimits,error); exported ManagedHostRequestBytes=32MiB and ManagedHostResultMetadataBytes=16384.
 - Test: pkg/factory/managed_host_limits_test.go:TestManagedHostRetention.
 - Cmd: `GOTOOLCHAIN=go1.26.10 go test ./pkg/factory -run '^TestManagedHostRetention$' -count=1 -timeout=180s`.
-- Assert / edges: Use checked integer arithmetic for archive A=S+1024F+1024, output O=max(A,1MiB), pending P=4O+16384, invocation records Q=H+M+T+reconciliation, scope records E=2*(supervisor+controller+reconciliation)+H+M+T, source versions X=2+attempts*(checks+3). Minimum B=3*512MiB+4*2MiB+2*1MiB+ManagedStateStorageBytes+32MiB+1MiB+X*(2A+2S+128KiB*F+1MiB)+Q*(2*32MiB+2P+2O)+E*1MiB. F bounds files plus implicit dirs, MaxPathBytes255. Reject overflow and4*ceil(A/3)+1MiB>32MiB; exact known fixture and each budget family tested; return caps all future writers consume. CLI rejects HostRequiredBytes below MinimumBytes.
+- Assert / edges: Use checked integer arithmetic for archive A=S+1024F+1536, output O=max(A,1MiB), pending P=4O+16384, invocation records Q=H+M+T+reconciliation+cleanup, scope records E=2*(supervisor+controller+reconciliation+cleanup)+H+M+T, source versions X=2+attempts*(checks+3). Minimum B=3*512MiB+4*2MiB+2*1MiB+ManagedStateStorageBytes+32MiB+1MiB+X*(2A+2S+128KiB*F+1MiB)+Q*(2*32MiB+2P+2O)+E*1MiB. F bounds files plus implicit dirs, MaxPathBytes255. Reject overflow and4*ceil(A/3)+1MiB>32MiB; exact known fixture and each budget family tested; return caps all future writers consume. CLI rejects HostRequiredBytes below MinimumBytes. The Docker root consumes512 transport bytes; each cleanup permit fits within its counted scope metadata. Cleanup accounting is implemented by the separate cleanup-policy task.
 - Depends on: `oro-mf-contract`, `oro-mf-state-budget`.
 
 Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
@@ -406,5 +407,49 @@ Commit separately after targeted tests, lint, and review. No fake callers or che
 - Cmd: `GOTOOLCHAIN=go1.26.10 go test ./pkg/factory -run '^TestManagedStateByteBudget$' -count=1 -timeout=180s`.
 - Assert / edges: Every managed admission, journal and delivery snapshot opener uses verified FULL durability and bounded rollback journaling with64MiB data-page cap; no WAL growth under a pinned reader; combined managed database and transient journal bytes stay below256MiB; blocked writes fail within context/busy limit; actual interrupted transaction rolls back on reopen; legacy WAL behavior remains unchanged.
 - Depends on: `oro-mf-journal`, `oro-mf-admission`.
+
+Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
+
+## oro-mf-docker-archive: Validate Docker source archive transport
+
+- Read: pkg/factory/source_archive.go:decodeSourceArchive/rejectSourceSpecialHeader; pkg/factory/managed_host_limits.go:ManagedHostRetention; pkg/factory/source_git.go; cmd/oro-factory-guard/main.go.
+- Signature: decodeDockerSourceArchive(io.Reader,sourceLimits)([]sourceEntry,error); trusted USTAR seed encoder with matching sourceLimits.
+- Test: pkg/factory/source_docker_archive_test.go:TestDockerSourceArchive.
+- Cmd: `GOTOOLCHAIN=go1.26.10 go test -race ./pkg/factory -run 'TestDockerSourceArchive|TestCandidateImportRejectsEscapes|TestManagedHostRetention|TestCandidateExportExactTree' -count=1 -timeout=180s`.
+- Assert / edges: trusted seed USTAR preserves UID/GID1000 without docker cp -a; preflight USTAR representability before resource allocation. Export adapter accepts exactly one first ./ directory, strips exactly one ./ from following paths, then performs unchanged raw-header, metadata, path, duplicate, size/count and trailer validation; original decoder semantics unchanged. Reject PAX/GNU/link/special/ambiguous or malformed roots and paths. Shared archive allowance adds exactly512B for Docker root: A=S+1024F+1536; one F=1,S=1048577 real-format stream needs1051136bytes and stays bounded; updated base64 guard rejects overflow. all bytes bounded before parse; never normalize hidden PAX metadata, widen source/file/path quotas, or extract on host; captured real Docker fixture and malformed variants prove transport behavior.
+- Depends on: `oro-mf-archive`, `oro-mf-host-limits`.
+
+Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
+
+## oro-mf-cleanup-policy: Bound cleanup invocation policy
+
+- Read: pkg/factory/managed_contract.go:RecoveryPolicy/validateManagedSpec; pkg/factory/managed_host_limits.go:ManagedHostRetention; pkg/factory/managed_store.go:journalRecordLimit.
+- Signature: RecoveryPolicy.MaxCleanupInvocations int; updated checked bound helpers.
+- Test: pkg/factory/managed_contract_test.go:TestManagedCleanupPolicy.
+- Cmd: `GOTOOLCHAIN=go1.26.10 go test -race ./pkg/factory -run 'TestManagedCleanupPolicy|TestManagedSpecContract|TestManagedHostRetention' -count=1 -timeout=180s`.
+- Assert / edges: immutable required Recovery.MaxCleanupInvocations C is positive, bounded and part of canonical identity; checked retained-byte/record/epoch bounds include every cleanup helper and permit without spending host or reconciliation counts. Q=H+M+T+R+C; include cleanup scope/epoch rows and <=16KiB permit per C within declared retention. Known small fixture, overflow, zero/negative/excessC, unchanged original deadline and bootstrap storage limits tested. no default unlimited cleanup, no refunded budget, no public CLI dummy wiring; preserve Docker archive +512 root allowance.
+- Depends on: `oro-mf-contract`, `oro-mf-host-limits`, `oro-mf-docker-archive`.
+
+Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
+
+## oro-mf-cleanup-authority: Journal restricted cleanup authority
+
+- Read: pkg/factory/managed_store.go:beginGeneration/reserveBudget/checkScopeAdmission/RecordHello/Granted/setDesired; pkg/factory/managed_reservation.go:ReleasableHostReservation; pkg/factory/managed_contract.go:ScopeAuthority.
+- Signature: DockerCleanupOp; DockerCleanupBinding; DockerCleanupPermit; ScopeAuthority.CleanupPermit(context.Context,ScopeHandle)(DockerCleanupPermit,error); reserveManagedCleanupInvocation(context.Context,*managedJournal,uint64,ScopeHandle,DockerCleanupOp,DockerCleanupBinding,time.Time)(ScopeHandle,error).
+- Test: pkg/factory/managed_cleanup_test.go:TestManagedCleanupAuthority.
+- Cmd: `GOTOOLCHAIN=go1.26.10 go test -race ./pkg/factory -run 'TestManagedCleanupAuthority|TestManagedScopeJournal|TestReleasableHostReservation' -count=1 -timeout=180s`.
+- Assert / edges: running->stopping->stopped is monotonic; stopping revokes work and admits only bounded cleanup plus exact restricted observer, final stopped seals epochs/scopes/grants and remains release eligibility. Count all supervisor recovery within original start allowance. reserveManagedCleanupInvocation atomically validates existing exact target fullhandle, persists new cleanup token/scope/canonical typed permit before effects, freshC per retry. ScopeAuthority.CleanupPermit reads exact current-generation reserved/granted permit before deadline without granting; no arbitrary argv/host paths/env. Unknown containerID allowed only inspect, stop/remove require full64hex ID, volume stop invalid; names/context/labels match admitted target. stale generation/nonce, wrong target/config/binding, exhaustedC, malformed/corrupt/oversize permit and expired hardstop fail without effects; original work cannot run while stopping, no new authority after release; cross-process reopen/races and exact deadline preservation.
+- Depends on: `oro-mf-cleanup-policy`, `oro-mf-journal`, `oro-mf-host-release`.
+
+Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
+
+## oro-mf-cleanup-runtime: Execute exact owned Docker cleanup
+
+- Read: cmd/oro/cmd_factory_launchd_runtime.go:validateFactoryObserver; cmd/oro/cmd_factory_launchd_runtime_invoke_darwin.go:validateInvocation; cmd/oro/cmd_factory_docker_ready.go; pkg/factory/managed_contract.go:DockerCleanupPermit.
+- Signature: newFactoryDockerCleanupCmd() *cobra.Command; runFactoryDockerCleanup(context.Context,factoryDockerCleanupConfig,factory.DockerCleanupPermit,io.Writer) error.
+- Test: cmd/oro/cmd_factory_docker_cleanup_test.go:TestFactoryDockerCleanup.
+- Cmd: `GOTOOLCHAIN=go1.26.10 go test -race ./cmd/oro -run '^TestFactoryDockerCleanup$' -count=1 -timeout=180s`.
+- Assert / edges: authenticated cleanup-kind HostRuntime permits only frozen-Oro _docker-cleanup with fixed trusted config path/digest, exact canonical core permit stdin<=16KiB, state-root cwd, fixed environment and1MiB output. Helper verifies frozen config/Docker/endpoint, exact current permit and grant before each child; fixedmax3 Docker commands inspect+ownership check, exact stop/remove, verify. Inspect one exactobject; stop SIGKILL timeout0 fullID; rm --force fullcontainerID without-v or volume rm exactname withoutforce afterconsumersretired. Results bounded typed present/stopped/observed_absent; absence is observation not pending-request completion. no create/start/exec/cp/build/pull/prune/list/arbitrary flags or ambient endpoint; bound every subprocess by originaldeadline and inheritedPGID, verify exactlabels/config/ID/CreatedAt; stale/mismatch/unknownretirement failsclosed and retainscapacity. Native exact cleanup proof includes foreignobjects unchanged, late cleanup succeeds, finalstopped prevents retry.
+- Depends on: `oro-mf-cleanup-authority`, `oro-mf-docker-ready`, `oro-mf-host-scope`.
 
 Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
