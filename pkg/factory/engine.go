@@ -129,16 +129,13 @@ func (c *controller) resume(ctx context.Context) error {
 }
 
 func (c *controller) reconcilePromotion(ctx context.Context) error {
-	observer := gitRepository{path: c.repo.path, stepTimeout: c.repo.stepTimeout}
-	actual, err := observer.resolveTarget(ctx, c.state.Spec.TargetBranch)
+	actual, err := c.observeTarget(ctx)
 	if err != nil {
 		return err
 	}
 	if actual == c.state.CandidateSHA {
 		// The authorized Git effect already happened; elapsed time cannot undo it.
-		next := c.state
-		next.State, next.Reason = "completed", ""
-		return c.save(ctx, next)
+		return c.completePromotion(ctx)
 	}
 	if actual != c.state.BaseSHA {
 		return c.reject(ctx, errors.New("target advanced during interrupted promotion"))
@@ -265,11 +262,7 @@ func (c *controller) promote(ctx context.Context) error {
 		return c.reject(ctx, err)
 	}
 	if err := c.repo.promote(ctx, c.state.Spec.TargetBranch, c.state.BaseSHA, c.state.CandidateSHA); err != nil {
-		var checkedOut *targetCheckedOutError
-		if errors.As(err, &checkedOut) {
-			return c.fail(ctx, err)
-		}
-		return c.reject(ctx, err)
+		return c.reconcilePromotionError(ctx, err)
 	}
 	if c.hooks.afterPromotion != nil {
 		if err := c.hooks.afterPromotion(c.state); err != nil {
@@ -277,14 +270,39 @@ func (c *controller) promote(ctx context.Context) error {
 		}
 	}
 	// Read proof of the authorized effect even if its deadline just elapsed.
-	observer := gitRepository{path: c.repo.path, stepTimeout: c.repo.stepTimeout}
-	actual, err := observer.resolveTarget(ctx, c.state.Spec.TargetBranch)
+	actual, err := c.observeTarget(ctx)
 	if err != nil {
 		return err
 	}
 	if actual != c.state.CandidateSHA {
 		return errors.New("target advanced before completion could be recorded")
 	}
+	return c.completePromotion(ctx)
+}
+
+func (c *controller) reconcilePromotionError(ctx context.Context, promotionErr error) error {
+	var checkedOut *targetCheckedOutError
+	if errors.As(promotionErr, &checkedOut) {
+		return c.fail(ctx, promotionErr)
+	}
+	actual, err := c.observeTarget(ctx)
+	if err != nil {
+		// An unsuccessful acknowledgment does not prove the ref was unchanged.
+		// Preserve promotion intent and evidence until an observer can decide.
+		return errors.Join(promotionErr, fmt.Errorf("observe uncertain promotion outcome: %w", err))
+	}
+	if actual == c.state.CandidateSHA {
+		return c.completePromotion(ctx)
+	}
+	return c.reject(ctx, promotionErr)
+}
+
+func (c *controller) observeTarget(ctx context.Context) (string, error) {
+	observer := gitRepository{path: c.repo.path, stepTimeout: c.repo.stepTimeout}
+	return observer.resolveTarget(ctx, c.state.Spec.TargetBranch)
+}
+
+func (c *controller) completePromotion(ctx context.Context) error {
 	next := c.state
 	next.State, next.Reason = "completed", ""
 	return c.save(ctx, next)
