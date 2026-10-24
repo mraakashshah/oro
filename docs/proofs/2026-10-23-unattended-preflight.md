@@ -626,9 +626,49 @@ source hashes. Evidence uses `guard-image-build-red`, `guard-image-root`,
 `guard-image-retirement-repeat`, `guard-image-retirement-lint` and
 `guard-image-root-final` under the verification directory.
 
-The CLI tests use a private protocol peer and actual owned subprocesses. No
-native Docker image was built by these tests. Actual image provenance, namespace
-guard behavior through that produced image and keeper integration remain required.
+Those protected CLI tests used a private protocol peer and actual owned
+subprocesses. The native qualification below adds actual image evidence;
+production keeper/controller integration remains separately required.
+
+## Native produced-image qualification
+
+Commit `bc4dca68` adds the opt-in production-builder qualification. The direct
+native run passed in 36.15 seconds (package 37.372 seconds, harness 37.633 seconds)
+with unchanged source hashes. It made 45 fixed calls, including three internal
+builder calls; all 42 recorded host calls positively retired. It built the exact
+verified guard from the pinned base and ran the resulting immutable image.
+
+The actual UID1000 probe overwrote a seeded0644 file and created a file inside a
+seeded0755 directory. Signal/replacement/extension attempts against UID65534
+PID1 failed. A detached writer increased its heartbeat before an interval with
+no Docker control calls. The namespace then exited normally at its original
+deadline, with PID0, no OOM, and FinishedAt approximately 2.5 milliseconds after
+the deadline. The foreign sentinel's complete recorded identity and state were
+unchanged before its separate teardown.
+
+The fixture removed its two containers, source volume and derived image through
+exact ownership checks. Root inspected all four resources independently and
+confirmed exact missing-object refusals. The additional five read-only probes
+(including a correction for Docker's formatting newline) bring the observed
+total to 50 calls, below the fixed64-call bound. No VM stop, restart, pull, prune
+or default-context change occurred.
+
+Evidence is `guard-image-native.log`, `guard-image-native-result.json`,
+`guard-image-native-independent.json` and
+`guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/native-receipt.json` under the
+verification directory. Derived image identity was
+`sha256:d986c2a31311b84c7a14f3f713bea589efe67e5e17193b7857095a23f30634f2`;
+the retained guard SHA256 is
+`651b3fb967efb3c896c212ae7f27dc1d98b16e0c62a44255aa60d7b60e1eef78`.
+
+This actual evidence also exposed a production integration blocker:
+the image's build-provenance label is inherited into the container, while the
+keeper inspector expected exactly six ownership labels. Recording fixtures
+omitted that inherited label. `oro-mf-keeper-image-labels` tracks the strict
+complete-map binding repair; source-preparation integration is held until it
+passes. The native fixture copied the image labels explicitly, so its success
+does not prove the production keeper path yet. No unattended delivery or
+controller-recovery claim follows from this bootstrap qualification.
 
 ## Controller delivery boundary
 
