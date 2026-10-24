@@ -3,6 +3,7 @@ package factory //nolint:testpackage // Tests the private trusted Docker tar bou
 import (
 	"archive/tar"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"reflect"
@@ -18,6 +19,11 @@ func TestDockerSourceArchive(t *testing.T) {
 	t.Run("bounded complete stream", testDockerArchiveBounds)
 	t.Run("trusted seed ownership and execute bits", testDockerArchiveEncode)
 	t.Run("seed preflights both transport names", testDockerArchiveEncodeLimits)
+	t.Run("links preserve raw targets after regular entries", testDockerArchiveLinks)
+	t.Run("link targets count toward every source quota", testDockerArchiveLinkQuotas)
+	t.Run("unsafe complete link vectors emit nothing", testDockerArchiveLinkVectors)
+	t.Run("link metadata and bodies remain strict", testDockerArchiveLinkMetadata)
+	t.Run("link USTAR fields preflight both transport paths", testDockerArchiveLinkUSTAR)
 }
 
 func dockerArchiveLimits() sourceLimits {
@@ -182,7 +188,7 @@ func testDockerArchiveEncode(t *testing.T) {
 	var names []string
 	for {
 		h, err := stream.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -259,5 +265,194 @@ func assertDockerArchiveRejected(t *testing.T, data []byte, limits sourceLimits)
 	t.Helper()
 	if got, err := decodeDockerSourceArchive(bytes.NewReader(data), limits); err == nil || got != nil {
 		t.Fatalf("unsafe Docker archive accepted: %+v, %v", got, err)
+	}
+}
+
+func testDockerArchiveLinks(t *testing.T) {
+	t.Helper()
+	entries := []sourceEntry{
+		{Path: ".claude/hooks/context_block_stop.py", Mode: 0o120000, Data: []byte("../../assets/hooks/context_block_stop.py")},
+		{Path: ".claude/hooks/context_pct_writer.py", Mode: 0o120000, Data: []byte("../../assets/hooks/context_pct_writer.py")},
+		{Path: "assets/hooks/context_block_stop.py", Mode: 0o100755, Data: []byte("#!/usr/bin/python\n")},
+		{Path: "assets/hooks/context_pct_writer.py", Mode: 0o100644, Data: []byte("raw\x00\xff\n")},
+		{Path: "alias", Mode: 0o120000, Data: []byte("assets/../assets/hooks/context_pct_writer.py")},
+	}
+	archive, err := encodeDockerSourceArchive(entries, dockerArchiveLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream := tar.NewReader(bytes.NewReader(archive))
+	linkSeen, links := false, 0
+	for {
+		header, err := stream.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if header.Uid != 1000 || header.Gid != 1000 || header.Format != tar.FormatUSTAR {
+			t.Fatalf("seed ownership or format changed: %+v", header)
+		}
+		if header.Typeflag != tar.TypeSymlink {
+			if linkSeen {
+				t.Fatalf("non-link %q emitted after a link", header.Name)
+			}
+			continue
+		}
+		linkSeen, links = true, links+1
+		body, err := io.ReadAll(stream)
+		if err != nil || header.Size != 0 || header.Mode != 0o777 || len(body) != 0 {
+			t.Fatalf("link carries mode/body: %+v, %q, %v", header, body, err)
+		}
+	}
+	if links != 3 {
+		t.Fatalf("seed contains %d links", links)
+	}
+	for _, data := range [][]byte{archive, dockerArchiveExportFixture(t, archive)} {
+		decode := decodeSourceArchive
+		if !bytes.Equal(data, archive) {
+			decode = decodeDockerSourceArchive
+		}
+		got, err := decode(bytes.NewReader(data), dockerArchiveLimits())
+		if err != nil || len(got) != len(entries) {
+			t.Fatalf("link round trip: %+v, %v", got, err)
+		}
+		for _, expected := range entries {
+			found := false
+			for _, actual := range got {
+				found = found || reflect.DeepEqual(actual, expected)
+			}
+			if !found {
+				t.Fatalf("raw source entry changed: %+v", expected)
+			}
+		}
+	}
+	for i, j := 0, len(entries)-1; i < j; i, j = i+1, j-1 {
+		entries[i], entries[j] = entries[j], entries[i]
+	}
+	if again, err := encodeDockerSourceArchive(entries, dockerArchiveLimits()); err != nil || !bytes.Equal(again, archive) {
+		t.Fatalf("link seed depends on input order: %v", err)
+	}
+}
+
+// This is a synthetic Docker root/prefix envelope, not native symlink evidence.
+// The earlier native capture contains regular files only; capture is separate.
+func dockerArchiveExportFixture(t *testing.T, seed []byte) []byte {
+	t.Helper()
+	entries := []archiveFixtureEntry{dockerArchiveRoot()}
+	stream := tar.NewReader(bytes.NewReader(seed))
+	for {
+		header, err := stream.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(stream)
+		if err != nil {
+			t.Fatal(err)
+		}
+		header.Name = "./" + header.Name
+		entries = append(entries, archiveFixtureEntry{header: *header, data: string(body)})
+	}
+	return candidateArchive(t, entries...)
+}
+
+func testDockerArchiveLinkQuotas(t *testing.T) {
+	t.Helper()
+	entries := []sourceEntry{{Path: "d/link", Mode: 0o120000, Data: []byte("../file")}, {Path: "file", Mode: 0o100644, Data: []byte("x")}}
+	seed, err := encodeDockerSourceArchive(entries, dockerArchiveLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	export := dockerArchiveExportFixture(t, seed)
+	limits := sourceLimits{MaxArchiveBytes: int64(len(seed)), MaxBytes: 8, MaxFileBytes: 7, MaxFiles: 3, MaxPathBytes: 6}
+	if data, err := encodeDockerSourceArchive(entries, limits); err != nil || !bytes.Equal(data, seed) {
+		t.Fatalf("exact link seed quotas rejected: %v", err)
+	}
+	decodeLimits := limits
+	decodeLimits.MaxArchiveBytes = int64(len(export))
+	if got, err := decodeDockerSourceArchive(bytes.NewReader(export), decodeLimits); err != nil || len(got) != 2 {
+		t.Fatalf("exact Docker link quotas rejected: %+v, %v", got, err)
+	}
+	for _, lower := range []func(*sourceLimits){
+		func(l *sourceLimits) { l.MaxArchiveBytes-- },
+		func(l *sourceLimits) { l.MaxBytes-- },
+		func(l *sourceLimits) { l.MaxFileBytes-- },
+		func(l *sourceLimits) { l.MaxFiles-- },
+		func(l *sourceLimits) { l.MaxPathBytes-- },
+	} {
+		bounded := limits
+		lower(&bounded)
+		if data, err := encodeDockerSourceArchive(entries, bounded); err == nil || data != nil {
+			t.Fatalf("link seed exceeded quota: %+v", bounded)
+		}
+		bounded = decodeLimits
+		lower(&bounded)
+		assertDockerArchiveRejected(t, export, bounded)
+	}
+}
+
+func testDockerArchiveLinkVectors(t *testing.T) {
+	t.Helper()
+	base := []sourceEntry{{Path: "file", Mode: 0o100644, Data: []byte("x")}, {Path: "dir/child", Mode: 0o100644}}
+	for _, target := range []string{"", "../file", "/file", "./file", "missing/../file", "file/../file", "DIR/../file", "dir", "FILE", "other", ".git/../file", "file\x00", strings.Repeat("a", 101)} {
+		entries := append([]sourceEntry{{Path: "link", Mode: 0o120000, Data: []byte(target)}}, base...)
+		if data, err := encodeDockerSourceArchive(entries, dockerArchiveLimits()); err == nil || data != nil {
+			t.Fatalf("unsafe raw target emitted seed: %q", target)
+		}
+	}
+	for _, extra := range [][]sourceEntry{
+		{{Path: "file", Mode: 0o120000, Data: []byte("dir/child")}},
+		{{Path: "FILE", Mode: 0o120000, Data: []byte("file")}},
+		{{Path: "dir", Mode: 0o120000, Data: []byte("file")}},
+		{{Path: "link", Mode: 0o120000, Data: []byte("file")}, {Path: "link/child", Mode: 0o100644}},
+		{{Path: "link", Mode: 0o120000, Data: []byte("other")}, {Path: "other", Mode: 0o120000, Data: []byte("file")}},
+		{{Path: "link", Mode: 0o120777, Data: []byte("file")}},
+	} {
+		entries := append(extra, base...)
+		if data, err := encodeDockerSourceArchive(entries, dockerArchiveLimits()); err == nil || data != nil {
+			t.Fatalf("conflicting link vector emitted seed: %+v", extra)
+		}
+	}
+}
+
+func testDockerArchiveLinkMetadata(t *testing.T) {
+	t.Helper()
+	link := sourceLinkFixture("./link", "file")
+	file := dockerArchiveFile("./file", "x")
+	archive := candidateArchive(t, dockerArchiveRoot(), link, file)
+	got, err := decodeDockerSourceArchive(bytes.NewReader(archive), dockerArchiveLimits())
+	if err != nil || len(got) != 2 || got[0].Mode != 0o120000 || string(got[0].Data) != "file" {
+		t.Fatalf("link preceding target rejected or dereferenced: %+v, %v", got, err)
+	}
+	copy(archive[512+124:512+136], "00000000001\x00")
+	fixDockerArchiveChecksum(archive[512:1024])
+	assertDockerArchiveRejected(t, archive, dockerArchiveLimits())
+	file.header.Linkname = "link"
+	assertDockerArchiveRejected(t, candidateArchive(t, dockerArchiveRoot(), file), dockerArchiveLimits())
+	for _, format := range []tar.Format{tar.FormatPAX, tar.FormatGNU} {
+		link.header.Linkname, link.header.Format = strings.Repeat("t", 101), format
+		assertDockerArchiveRejected(t, candidateArchive(t, dockerArchiveRoot(), link), dockerArchiveLimits())
+	}
+}
+
+func testDockerArchiveLinkUSTAR(t *testing.T) {
+	t.Helper()
+	target := strings.Repeat("t", 100)
+	entries := []sourceEntry{{Path: "link", Mode: 0o120000, Data: []byte(target)}, {Path: target, Mode: 0o100644, Data: []byte("x")}}
+	seed, err := encodeDockerSourceArchive(entries, dockerArchiveLimits())
+	if err != nil {
+		t.Fatalf("100 byte USTAR target rejected: %v", err)
+	}
+	if got, err := decodeDockerSourceArchive(bytes.NewReader(dockerArchiveExportFixture(t, seed)), dockerArchiveLimits()); err != nil || len(got) != 2 {
+		t.Fatalf("100 byte target cannot round trip: %+v, %v", got, err)
+	}
+	prefix := strings.Repeat("a", 80)
+	entries = []sourceEntry{{Path: prefix + "/file", Mode: 0o100644}, {Path: prefix + "/" + strings.Repeat("b", 74) + "/" + strings.Repeat("c", 99), Mode: 0o120000, Data: []byte("../file")}}
+	if data, err := encodeDockerSourceArchive(entries, dockerArchiveLimits()); err == nil || data != nil {
+		t.Fatal("link path requiring PAX after Docker prefix emitted a seed")
 	}
 }

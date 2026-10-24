@@ -42,8 +42,8 @@ func decodeDockerSourceArchive(reader io.Reader, limits sourceLimits) ([]sourceE
 }
 
 // encodeDockerSourceArchive preflights the complete seed before resource
-// allocation. Its caller must use docker cp WITHOUT -a: Docker's archive option
-// rewrites ownership to the container's configured guard UID, not candidate 1000.
+// allocation. Its caller must use docker cp WITHOUT -a or -L: archive mode
+// rewrites ownership to the guard UID, and following links changes source bytes.
 // Explicit directory headers preserve candidate ownership of implicit parents.
 func encodeDockerSourceArchive(entries []sourceEntry, limits sourceLimits) ([]byte, error) {
 	if !validSourceLimits(limits) {
@@ -57,7 +57,13 @@ func encodeDockerSourceArchive(entries []sourceEntry, limits sourceLimits) ([]by
 	for _, node := range nodes {
 		names = append(names, node.name)
 	}
-	sort.Strings(names)
+	sort.Slice(names, func(i, j int) bool {
+		leftLink, rightLink := files[names[i]].Mode == 0o120000, files[names[j]].Mode == 0o120000
+		if leftLink != rightLink {
+			return !leftLink
+		}
+		return names[i] < names[j]
+	})
 	var out boundedDockerArchive
 	out.limit = limits.MaxArchiveBytes
 	stream := tar.NewWriter(&out)
@@ -69,8 +75,10 @@ func encodeDockerSourceArchive(entries []sourceEntry, limits sourceLimits) ([]by
 		if err := stream.WriteHeader(&header); err != nil {
 			return nil, fmt.Errorf("write Docker seed header: %w", err)
 		}
-		if _, err := stream.Write(files[name].Data); err != nil {
-			return nil, fmt.Errorf("write Docker seed bytes: %w", err)
+		if header.Typeflag == tar.TypeReg {
+			if _, err := stream.Write(files[name].Data); err != nil {
+				return nil, fmt.Errorf("write Docker seed bytes: %w", err)
+			}
 		}
 	}
 	if err := stream.Close(); err != nil {
@@ -84,31 +92,37 @@ func dockerSourceNodes(entries []sourceEntry, limits sourceLimits) (nodes map[st
 	files = make(map[string]sourceEntry)
 	var total int64
 	for _, entry := range entries {
-		if entry.Mode != 0o100644 && entry.Mode != 0o100755 {
-			return nil, nil, errors.New("docker seed requires canonical Git regular-file modes")
+		if entry.Mode != 0o100644 && entry.Mode != 0o100755 && entry.Mode != 0o120000 {
+			return nil, nil, errors.New("docker seed requires canonical Git regular-file or symlink modes")
 		}
 		header := dockerSourceHeader(sourcePathNode{name: entry.Path}, entry)
 		if _, _, err := validateSourceHeader(&header, limits); err != nil {
 			return nil, nil, err
 		}
-		if header.Size > limits.MaxBytes-total {
+		if int64(len(entry.Data)) > limits.MaxBytes-total {
 			return nil, nil, errors.New("docker seed exceeds expanded byte limit")
 		}
 		if err := addSourcePath(nodes, entry.Path, false, limits.MaxFiles); err != nil {
 			return nil, nil, err
 		}
-		total += header.Size
+		total += int64(len(entry.Data))
 		files[entry.Path] = entry
+	}
+	if err := validateSourceLinks(entries); err != nil {
+		return nil, nil, err
 	}
 	return nodes, files, nil
 }
 
 func dockerSourceHeader(node sourcePathNode, entry sourceEntry) tar.Header {
 	header := tar.Header{Name: node.name, Uid: 1000, Gid: 1000, Format: tar.FormatUSTAR}
-	if node.directory {
+	switch {
+	case node.directory:
 		header.Name += "/"
 		header.Typeflag, header.Mode = tar.TypeDir, 0o755
-	} else {
+	case entry.Mode == 0o120000:
+		header.Typeflag, header.Mode, header.Linkname = tar.TypeSymlink, 0o777, string(entry.Data)
+	default:
 		header.Typeflag, header.Mode, header.Size = tar.TypeReg, int64(entry.Mode&0o777), int64(len(entry.Data))
 	}
 	return header
