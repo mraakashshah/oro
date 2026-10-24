@@ -117,7 +117,14 @@ func loadPolicies(stateDir string, spec Spec) (policySet, error) {
 	if containedPath(root, state) {
 		return policySet{}, errors.New("factory state must be outside the repository")
 	}
-	p := policySet{Spec: spec, Dir: filepath.Join(state, spec.ID), Digests: make(map[string]string), Programs: make(map[string][]byte)}
+	objectiveDir, err := resolveAncestors(filepath.Join(state, spec.ID))
+	if err != nil {
+		return policySet{}, err
+	}
+	if containedPath(root, objectiveDir) {
+		return policySet{}, errors.New("objective state must be outside the repository")
+	}
+	p := policySet{Spec: spec, Dir: objectiveDir, Digests: make(map[string]string), Programs: make(map[string][]byte)}
 	for stage, command := range specCommands(spec) {
 		program, readErr := readExternalProgram(root, command.Path)
 		if readErr != nil {

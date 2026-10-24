@@ -102,7 +102,7 @@ func TestImmutablePolicies(t *testing.T) {
 }
 
 func TestPolicyPathAdmission(t *testing.T) {
-	cases := []string{"contained state", "contained program", "symlink state", "symlink program", "missing program", "nonexecutable", "directory program", "relative state", "missing repository"}
+	cases := []string{"contained state", "contained program", "symlink state", "symlink objective", "symlink program", "missing program", "nonexecutable", "directory program", "relative state", "missing repository"}
 	for _, name := range cases {
 		t.Run(name, func(t *testing.T) {
 			state, spec := policyFixture(t)
@@ -127,6 +127,13 @@ func TestPolicyPathAdmission(t *testing.T) {
 				}
 				spec.Worker.Path = filepath.Join(filepath.Dir(spec.Repository), "linked-policy")
 				if err := os.Symlink(inside, spec.Worker.Path); err != nil {
+					t.Fatal(err)
+				}
+			case "symlink objective":
+				if err := os.MkdirAll(state, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(spec.Repository, filepath.Join(state, spec.ID)); err != nil {
 					t.Fatal(err)
 				}
 			case "missing program":
