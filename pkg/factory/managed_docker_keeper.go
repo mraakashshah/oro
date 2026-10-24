@@ -142,6 +142,12 @@ func validateManagedDockerKeeper(j *managedJournal, intent managedDockerKeeperIn
 	expected := managedDockerKeeperBinding(j.admission, intent.Keeper)
 	expected.ContainerID = intent.Binding.ContainerID
 	expected.CreatedAt = intent.Binding.CreatedAt
+	if intent.Binding.CreatedAt != "" {
+		if err := validateCleanupLabels(j.admission, intent.Keeper, intent.Binding.Labels); err != nil {
+			return err
+		}
+		expected.Labels = intent.Binding.Labels
+	}
 	if !reflect.DeepEqual(expected, intent.Binding) {
 		return errors.New("keeper binding differs from derived ownership")
 	}
@@ -357,13 +363,41 @@ func bindManagedDockerKeeper(ctx context.Context, journal *managedJournal, owner
 		}
 		expected := cloneManagedDockerBinding(intent.Binding)
 		expected.CreatedAt = observed.CreatedAt
+		if err := validateManagedKeeperObservedLabels(intent.Binding, observed.Labels); err != nil {
+			return false, err
+		}
+		expected.Labels = observed.Labels
 		if !reflect.DeepEqual(expected, observed) || (intent.Binding.CreatedAt != "" && intent.Binding.CreatedAt != observed.CreatedAt) {
 			return false, errors.New("keeper lifetime differs from immutable ownership")
 		}
 		if intent.Binding.CreatedAt != "" {
 			return false, nil
 		}
-		intent.Binding.CreatedAt = observed.CreatedAt
+		intent.Binding = cloneManagedDockerBinding(observed)
 		return true, nil
 	})
+}
+
+// The fixed create command supplies the six ownership labels. The immutable
+// image may supply additional labels; the first stopped inspection freezes all
+// of them with CreatedAt. Once bound, no key or value may be rediscovered.
+func validateManagedKeeperObservedLabels(expected DockerCleanupBinding, observed map[string]string) error {
+	if !boundedCleanupMap(observed) {
+		return errors.New("keeper labels exceed the bounded ownership descriptor")
+	}
+	if expected.CreatedAt != "" {
+		if !reflect.DeepEqual(expected.Labels, observed) {
+			return errors.New("keeper complete label identity changed")
+		}
+		return nil
+	}
+	if len(expected.Labels) != 6 {
+		return errors.New("unbound keeper requires exactly its six ownership labels")
+	}
+	for key, value := range expected.Labels {
+		if observed[key] != value {
+			return errors.New("keeper labels differ from exact admitted ownership")
+		}
+	}
+	return nil
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"strings"
 	"time"
@@ -63,39 +64,85 @@ type (
 )
 
 func parseManagedDockerKeeperInspection(result HostResult, expected managedDockerKeeperIntent, volume managedDockerVolumeIntent) (DockerCleanupBinding, error) {
+	value, binding, err := parseManagedKeeperInspection(result, expected, volume)
+	if err != nil {
+		return DockerCleanupBinding{}, err
+	}
+	if err := validateManagedKeeperStopped(value.State); err != nil {
+		return DockerCleanupBinding{}, err
+	}
+	return binding, nil
+}
+
+func parseManagedDockerRunningKeeperInspection(result HostResult, keeper managedDockerKeeperIntent, volume managedDockerVolumeIntent, expectedStartedAt string) (string, error) {
+	if keeper.Binding.CreatedAt == "" {
+		return "", errors.New("running source requires its bound creation lifetime")
+	}
+	value, _, err := parseManagedKeeperInspection(result, keeper, volume)
+	if err != nil {
+		return "", err
+	}
+	if err := validateManagedKeeperRunning(value.State); err != nil {
+		return "", err
+	}
+	// Preserve the raw lexeme: time.Time decoding alone accepts overprecision and
+	// other spellings that cannot identify a canonical source lifetime.
+	var raw []struct{ State struct{ StartedAt string } }
+	if err := json.Unmarshal(result.Stdout, &raw); err != nil {
+		return "", fmt.Errorf("read raw keeper start time: %w", err)
+	}
+	started, err := CanonicalDockerCreatedAt(raw[0].State.StartedAt)
+	if err != nil {
+		return "", fmt.Errorf("normalize keeper start time: %w", err)
+	}
+	if expectedStartedAt != "" && started != expectedStartedAt {
+		return "", errors.New("keeper source continuity changed")
+	}
+	return started, nil
+}
+
+func validateManagedKeeperRunning(s managedKeeperState) error {
+	if s.Status != "running" || !s.Running || s.Pid <= 1 || s.Paused || s.Restarting || s.Dead || s.ExitCode != 0 || s.Error != "" || !s.FinishedAt.IsZero() {
+		return errors.New("source keeper is not an intact running guard")
+	}
+	return nil
+}
+
+func parseManagedKeeperInspection(result HostResult, expected managedDockerKeeperIntent, volume managedDockerVolumeIntent) (managedKeeperInspection, DockerCleanupBinding, error) {
 	if !boundedManagedDockerOutput(result) || result.ExitCode != 0 || len(result.Stderr) != 0 {
-		return DockerCleanupBinding{}, errors.New("keeper inspection has uncertain status or exceeds output bounds")
+		return managedKeeperInspection{}, DockerCleanupBinding{}, errors.New("keeper inspection has uncertain status or exceeds output bounds")
 	}
 	if err := validateManagedKeeperInspectionInput(expected, volume); err != nil {
-		return DockerCleanupBinding{}, err
+		return managedKeeperInspection{}, DockerCleanupBinding{}, err
 	}
 	if err := validateDockerVolumeJSON(result.Stdout); err != nil {
-		return DockerCleanupBinding{}, err
+		return managedKeeperInspection{}, DockerCleanupBinding{}, err
 	}
 	var objects []json.RawMessage
 	if err := json.Unmarshal(result.Stdout, &objects); err != nil {
-		return DockerCleanupBinding{}, fmt.Errorf("decode keeper inspection: %w", err)
+		return managedKeeperInspection{}, DockerCleanupBinding{}, fmt.Errorf("decode keeper inspection: %w", err)
 	}
 	if len(objects) != 1 {
-		return DockerCleanupBinding{}, errors.New("keeper inspection requires one object")
+		return managedKeeperInspection{}, DockerCleanupBinding{}, errors.New("keeper inspection requires one object")
 	}
 	var value managedKeeperInspection
 	if err := decodeManagedKeeperObject(objects[0], reflect.ValueOf(&value).Elem()); err != nil {
-		return DockerCleanupBinding{}, err
+		return managedKeeperInspection{}, DockerCleanupBinding{}, err
 	}
 	if err := validateManagedKeeperInspection(value, expected, volume); err != nil {
-		return DockerCleanupBinding{}, err
+		return managedKeeperInspection{}, DockerCleanupBinding{}, err
 	}
 	created, err := CanonicalDockerCreatedAt(value.Created)
 	if err != nil {
-		return DockerCleanupBinding{}, fmt.Errorf("normalize keeper creation time: %w", err)
+		return managedKeeperInspection{}, DockerCleanupBinding{}, fmt.Errorf("normalize keeper creation time: %w", err)
 	}
 	if expected.Binding.CreatedAt != "" && expected.Binding.CreatedAt != created {
-		return DockerCleanupBinding{}, errors.New("keeper creation lifetime changed")
+		return managedKeeperInspection{}, DockerCleanupBinding{}, errors.New("keeper creation lifetime changed")
 	}
 	binding := cloneManagedDockerBinding(expected.Binding)
 	binding.CreatedAt = created
-	return binding, nil
+	binding.Labels = maps.Clone(value.Config.Labels)
+	return value, binding, nil
 }
 
 // Every selected field must be explicitly present with its exact spelling.
@@ -185,9 +232,6 @@ func validateManagedKeeperInspection(v managedKeeperInspection, intent managedDo
 	if err := validateManagedKeeperGuard(v.Config, intent); err != nil {
 		return err
 	}
-	if err := validateManagedKeeperStopped(v.State); err != nil {
-		return err
-	}
 	if err := validateManagedKeeperHardening(v.HostConfig); err != nil {
 		return err
 	}
@@ -231,10 +275,10 @@ func validateManagedKeeperMounts(v managedKeeperInspection, volumeName string) e
 }
 
 func validateManagedKeeperGuard(c managedKeeperConfig, intent managedDockerKeeperIntent) error {
-	if c.User != "65534:65534" || !reflect.DeepEqual(c.Entrypoint, []string{"/usr/local/bin/oro-factory-guard"}) || !reflect.DeepEqual(c.Cmd, []string{"--deadline", intent.GuardDeadline.Format(time.RFC3339Nano)}) || c.Tty || c.OpenStdin || !c.AttachStdout || !reflect.DeepEqual(c.Labels, intent.Binding.Labels) {
+	if c.User != "65534:65534" || !reflect.DeepEqual(c.Entrypoint, []string{"/usr/local/bin/oro-factory-guard"}) || !reflect.DeepEqual(c.Cmd, []string{"--deadline", intent.GuardDeadline.Format(time.RFC3339Nano)}) || c.Tty || c.OpenStdin || !c.AttachStdout {
 		return errors.New("keeper guard configuration differs")
 	}
-	return nil
+	return validateManagedKeeperObservedLabels(intent.Binding, c.Labels)
 }
 
 func validateManagedKeeperStopped(s managedKeeperState) error {
@@ -245,7 +289,7 @@ func validateManagedKeeperStopped(s managedKeeperState) error {
 }
 
 func validateManagedKeeperInspectionInput(expected managedDockerKeeperIntent, volume managedDockerVolumeIntent) error {
-	if !managedKeeperID(expected.Binding.ContainerID) || expected.Volume != volume.Volume || volume.Phase != "acknowledged" || volume.Binding.CreatedAt == "" {
+	if expected.Phase != "acknowledged" || !managedKeeperID(expected.Binding.ContainerID) || expected.Volume != volume.Volume || volume.Phase != "acknowledged" || volume.Binding.CreatedAt == "" {
 		return errors.New("keeper inspection lacks acknowledged exact source identity")
 	}
 	return nil

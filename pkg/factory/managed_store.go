@@ -91,6 +91,13 @@ CREATE TABLE IF NOT EXISTS managed_cleanup_permits (
  volume_scope_id TEXT NOT NULL UNIQUE REFERENCES managed_scopes(id),
  create_scope_id TEXT NOT NULL UNIQUE REFERENCES managed_scopes(id),
  body BLOB NOT NULL CHECK(length(body)<=16384)
+);
+CREATE TABLE IF NOT EXISTS managed_docker_sources (
+ keeper_scope_id TEXT PRIMARY KEY REFERENCES managed_scopes(id),
+ volume_scope_id TEXT NOT NULL UNIQUE REFERENCES managed_scopes(id),
+ start_scope_id TEXT NOT NULL UNIQUE REFERENCES managed_scopes(id),
+ seed_scope_id TEXT UNIQUE REFERENCES managed_scopes(id),
+ body BLOB NOT NULL CHECK(length(body)<=16384)
 );`)
 }
 
