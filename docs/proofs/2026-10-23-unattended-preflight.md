@@ -222,8 +222,8 @@ authority now have component evidence below; their public start and automatic
 recovery integration remains required.
 
 The complete Oro tree at `7d658569` contains 1,655 blobs totaling 33,127,289 raw
-bytes and two tracked symlinks. It exceeds the current 24,379,392-byte inline
-archive ceiling and the initial no-symlink policy. Full Oro self-hosting requires
+bytes and two tracked symlinks. At that revision it exceeded the 24,379,392-byte
+inline archive ceiling and the initial no-symlink policy. Full Oro self-hosting requires
 bounded bulk transport and safe exact symlink representation, followed by a real
 full-tree trial. Omitting tracked files or qualifying only small fixtures would
 not satisfy that requirement.
@@ -237,7 +237,8 @@ preserves candidate ownership; `-a` rewrote it to the guard UID. Export remained
 identical after the writer stopped while the keeper retained the volume.
 Independent codec race tests passed in 7.603 seconds and root's run in 7.900
 seconds; package lint passed. The measured archive bound is
-`A = S + 1024F + 1536`. The full-tree limit above remains unresolved.
+`A = S + 1024F + 1536`. Newer transport components are recorded below;
+full-tree native delivery remains required.
 
 Commit `f4feb722` adds the guarded Docker readiness helper. It verifies the exact
 never-started container before attaching, accepts only timely exact READY, and
@@ -384,6 +385,61 @@ not changed to accommodate the harness. Evidence is
 `cleanup-launchd-native-final-result.json`, and `cleanup-launchd-independent.log`
 under the verification directory; `run_cleanup_launchd_native.py` reproduces the
 exact native command and records its environment and before/after source hashes.
+
+## Full-source transport components
+
+Commit `e2ce78e9` raises the complete encoded host request cap to 64 MiB while
+charging both retained copies. The archive allowance tops out at 49,545,216 bytes;
+the next byte rejects. Exact accounting, overflow and Docker-root tests passed,
+with all 43 retention statements covered. Independent retention and existing
+wrapper race runs passed in 1.304 and 6.445 seconds. Ledger limits remain unchanged.
+Commit `0e0720b4` tests historical reservations: metadata stays readable, insufficient
+capacity denies new Git execution, and attempted top-ups leave identities,
+progress, events and counters unchanged. Independent race passed in 1.817 seconds.
+
+Commits `05dbd0cc`, `fb2ede84` and `e53954e4` preserve restricted internal symlinks
+in source vectors, exact Git objects and Docker seed archives. Validation checks
+every raw traversal prefix before a later `..`, counts target bytes, and rejects
+unsafe links before effects. Both real SHA-1 and SHA-256 Git fixtures preserve
+raw link bytes through safe changes without filters or hooks. Docker codec tests
+verify Size0/raw Linkname, regular entries before links and quota boundaries.
+The final Git regression race passed in 17.659 seconds; independent combined
+Git/Docker tests passed in 6.050 seconds. Those initial Docker codec fixtures
+were synthetic. Commit `d2b112ae` adds the separate real Docker copy round-trip:
+production seed encoding, actual copy in/out without `-a`/`-L`, and production
+decoding preserved all five entries and three raw link targets. The protected
+native test passed in 1.37 seconds (package race run 2.638 seconds) with 29 joined
+CLI commands. The 7,168-byte actual export has SHA-256
+`a9387c7a16044dff69271d836002bf70324608dc1dc60124048e158582bc34a4`.
+The holder was positively stopped with PID0 before removal; both volumes and the
+holder were removed and verified absent. The sentinel's complete inspection was
+unchanged before its separate teardown. Root independently inspected the actual
+archive, receipt, command transcript and source. Package lint passed. Artifacts
+are in `docker-links-native-301230466/` beneath the verification directory. This
+proves native codec compatibility for the fixture, not managed storage lifecycle,
+full-tree delivery, quota enforcement or daemon-crash recovery.
+
+Commit `df3a41ce` queries locally computed blob identities in one bounded Git call
+and writes only missing blobs after strict response validation. A one-blob repair
+uses six host calls; no-op uses one, and k missing blobs use 5+k. Actual corrupted
+loose-object contents still fail subsequent raw export verification. The final
+Git regression race passed in 29.082 seconds; independent verification passed in
+13.176 seconds. Both new functions have 100% statement coverage.
+
+Commit `bcce6b2d` tests the wrapper's actual complete 64 MiB JSON/base64 envelope,
+canonical limit+1 rejection, binary stdin, escaping and malformed inputs. Invalid
+UTF-8 strings cannot silently become executable changed arguments: the reader
+rejects their noncanonical replacement encoding. Explicit valid replacement runes
+and arbitrary binary stdin remain distinct positive controls. Final race passed
+in 14.581 seconds; independent full verification passed in 15.093 seconds, with
+the final digest-case style adjustment checked separately in 1.491 seconds.
+This codec test does not replace the separate conservative core admission gate.
+
+All these components passed package lint and independent source review. Logs
+remain under `/private/tmp/oro-factory-verify-ldhnhnvl`, including `source-links-*`,
+`git-links-*`, `transport-t4-*`, `transport-t1b-*`, `git-presence-*` and
+`transport-t6a-*`. Native large transfer, real capacity, complete Oro delivery,
+managed execution/recovery and sustained fault qualification remain required.
 
 ## Remaining evidence
 
