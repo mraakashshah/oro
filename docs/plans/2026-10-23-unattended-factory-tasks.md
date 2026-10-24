@@ -1,6 +1,6 @@
 # Unattended factory task graph
 
-Design: [unattended factory design](2026-10-23-unattended-factory-design.md), Gate 1 PASS. Gate 2 PASS after independent review and two contract repairs. Native parent: `oro-factory-managed`, under `oro-factory-autonomy`. There are now 42 tracked nodes below the managed epic, including host capacity's four children, cleanup runtime's five children, container transport/readiness, and managed file identity. Later integration findings remain qualification blockers until their protocols and tests are accepted.
+Design: [unattended factory design](2026-10-23-unattended-factory-design.md), Gate 1 PASS. Gate 2 PASS after independent review and two contract repairs. Native parent: `oro-factory-managed`, under `oro-factory-autonomy`. There are now 43 tracked nodes below the managed epic, including host capacity's four children, cleanup runtime's five children, container transport/readiness, managed file identity, and CLI start's immutable admission view. Later integration findings remain qualification blockers until their protocols and tests are accepted.
 
 Every task inherits the design's authority, budget, platform, and operational requirements. Root owns Git integration; implementers use test-first RED/GREEN and report frozen files. Keep full-gate blockers visible until resolved. Component success does not close the parent.
 
@@ -296,6 +296,10 @@ Commit separately after targeted tests, lint, and review. No fake callers or che
 
 ## oro-mf-cli-start: Start managed factory services
 
+This epic retains its public integration acceptance and explicitly depends on
+its `oro-mf-admission-view` child. Remaining publication/activation work must
+also be decomposed before implementation.
+
 - Read: cmd/oro/cmd_factory.go:newFactoryCmd, cmd/oro/root.go:rootSubcommands, cmd/oro/cmd_factory_start.go, cmd/oro/cmd_factory_supervise.go.
 - Signature: factory start strictspec + internal _controller/_supervise/_mcp commands.
 - Test: cmd/oro/cmd_factory_start_test.go:TestFactoryManagedStart.
@@ -547,5 +551,17 @@ Commit separately after targeted tests, lint, and review. No fake callers or che
 - Cmd: `GOTOOLCHAIN=go1.26.10 go test -race ./cmd/oro -run '^TestFactoryLaunchdCleanup$' -count=1 -timeout=180s`.
 - Assert / edges: Extend launchd scope validation only to exact cleanup kind and require trusted runtime-config path/digest in frozen configuration. Cleanup invocation is exact frozen Oro + factory _docker-cleanup --runtime-config canonicalpath --runtime-config-sha256 digest; canonical core permit stdin<=16KiB, Dir=StateRoot, Env PATH=/usr/bin:/bin LC_ALL=C LANG=C, OutputLimit=1MiB, exact permit Deadline. Read current reserved permit from authority before launch; current ordinary host/observer rules unchanged. Existing authenticated HELLO/GO/PUBLISHED and retirement must apply, including native late cleanup after work deadline within HardStop. Deny altered executable/args/env/cwd/output/deadline/stdin/config or target, no direct Docker or arbitrary late host invocation, no scope-kind fallback. Native proof late cleanup succeeds with exact current permit, final stopped forbids retry, revoked/foreign identities denied, outer process group positively retires. C helper only supervisor-owned after controller/host retirement; routine live-controller cleanup uses ordinary H before work deadline.
 - Depends on: `oro-mf-cleanup-helper`, `oro-mf-host-scope`.
+
+Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
+
+## oro-mf-admission-view: Read verified immutable managed admission
+
+- Parent: `oro-mf-cli-start`.
+- Read: pkg/factory/managed_admission.go:loadManagedManifest/managedJournalIdentity/managedSnapshotSpec/existingManagedAdmission; pkg/factory/managed_store.go:openManagedJournal/mutate; pkg/factory/managed_reservation.go:ReleasableHostReservation; pkg/factory/store.go:factoryStore.load.
+- Signature: type ManagedAdmissionView struct{StateRoot,ObjectiveID,PolicyHash,GitPath,GitSHA256,Repository,TargetRef string; Deadline,HardStop time.Time; CleanupTimeoutSeconds int; DockerContext,ImageDigest string}; ReadManagedAdmission(context.Context,string,string)(ManagedAdmissionView,error).
+- Test: pkg/factory/managed_admission_view_test.go:TestManagedAdmissionView.
+- Cmd: `GOTOOLCHAIN=go1.26.10 go test -race ./pkg/factory -run 'TestManagedAdmissionView|TestManagedAdmission|TestManagedFileIdentity|TestManagedScopeJournal' -count=1 -timeout=180s`.
+- Assert / edges: ReadManagedAdmission returns only scalar immutable producer inputs from positively committed existing admission: StateRoot, ObjectiveID, PolicyHash, GitPath, GitSHA256, Repository, TargetRef, Deadline, HardStop, CleanupTimeoutSeconds, DockerContext, ImageDigest. PolicyHash equals journal ManifestHash; GitPath is verified frozen objective/git, TargetRef exact refs/heads branch, ImageDigest preserved verbatim. Validate exact canonical root/id and bound whole verification to one30s context; load verified manifest/frozen artifacts without original paths, reopen existing managed journal only, compare exact managedJournalIdentity(manifest) and snapshot immutable spec/policy/CreatedAt/Deadline in one read-only ownership transaction. Success never authorizes service startup. marker-only/artifacts-published-before-rolled-back-admission must reject without creating state; absent/corrupt manifest, frozen programs, journal identity or snapshot identity reject. Removed original spec/programs still succeeds; repeated reads leave revisions/counters/grants/events/deadlines unchanged; expired/stopped committed admission stays readable; canceled context and alias root/artifact fail. No initialization, re-admission, Git execution, grants, epoch changes or invented Docker binary/endpoint/Oro identity; CLI pins those separately. Activation/abort fence remains separate and successful metadata verification never bypasses it. Only new managed_admission_view.go and _test.go.
+- Depends on: `oro-mf-admission`, `oro-mf-file-identity`, `oro-mf-journal`.
 
 Commit separately after targeted tests, lint, and review. No fake callers or check suppression.

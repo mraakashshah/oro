@@ -181,6 +181,17 @@ executable. The reader verifies expected bytes and local artifact identities;
 CLI start/resume must compare these with the verified immutable admission view.
 The reader remains valid after the work deadline so recovery can use it.
 
+Core exposes `ReadManagedAdmission(ctx, stateDir, id)` as scalar immutable
+producer inputs, without expanding mutable Status or ownership authority. It
+verifies the frozen manifest/programs and positively committed journal/snapshot
+identity in one read-only ownership transaction. Published artifacts alone are
+insufficient: admission may have rolled back after freezing them. Reads preserve
+all revisions, budgets, grants, and original deadlines and can inspect expired
+or stopped admission. PolicyHash is the existing journal ManifestHash; core
+returns the frozen Git path/hash and admitted Docker context/image identity.
+The CLI separately pins its Oro and Docker binaries and endpoint. Reading this
+metadata never authorizes startup or bypasses the separate activation fence.
+
 Before allocating an objective/scope, the CLI adapter invokes the existing pure
 `storage.CheckRuntimeBudget` with a canonical existing parent, admitted host byte
 requirements, reserve margin, and `Fresh=true`. Require `BudgetFresh` explicitly:
