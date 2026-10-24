@@ -542,8 +542,22 @@ pending creation requests cannot complete before treating absence as retirement.
 ## Candidate execution, source import, and checks
 
 The controller owns all Git authority. Export committed source without `.git`;
-never give a linked worktree or host bind mount to a candidate. Initial support
-rejects symlinks, submodules, hardlinks, devices, FIFOs, absolute/traversal paths,
+never give a linked worktree or host bind mount to a candidate. Source snapshots
+preserve regular files and a restricted internal leaf-symlink subset: Git mode
+`120000` carries the exact raw relative target bytes, at most 100 printable ASCII
+bytes, resolving directly to an existing regular file in the complete snapshot.
+Validate every raw traversal component before processing a later `..`: each
+intermediate component must be an existing exact-case directory, and popping
+above root is forbidden. Never normalize away a nonexistent directory, file,
+link, or case mismatch. Reject dangling links, link chains/cycles, directory
+targets, symlink parents, absolute targets, empty/dot components, backslashes,
+reserved components and case aliases. All consumers validate the complete vector
+before effects; raw target bytes count toward source and per-file quotas, and
+links count toward inode limits. USTAR links have Size0 and exact Linkname bytes;
+no host extraction or dereferencing occurs. Docker seed emits regular files
+before links into a fresh empty owned volume without `-L` or `-a`.
+
+Reject submodules, hardlinks, devices, FIFOs, absolute/traversal entry paths,
 duplicate paths, case-colliding names, and any case-folded `.git` component.
 Bound archive bytes, expanded bytes, file count, per-file size, and path length.
 Parse and validate before importing; no extraction into controller/origin paths.
