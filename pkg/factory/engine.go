@@ -39,7 +39,7 @@ type runHooks struct {
 type controller struct {
 	store    *factoryStore
 	policies policySet
-	repo     gitRepository
+	backend  deliveryBackend
 	state    snapshot
 	hooks    runHooks
 }
@@ -69,48 +69,59 @@ func run(ctx context.Context, stateDir string, spec Spec, hooks runHooks) (Statu
 	defer func() { _ = store.close() }()
 	c := controller{
 		store: store, policies: policies,
-		repo: gitRepository{path: spec.Repository, stepTimeout: time.Duration(spec.StepTimeoutSeconds) * time.Second}, hooks: hooks,
+		backend: newLegacyDeliveryBackend(policies), hooks: hooks,
 	}
 	if err := c.admit(ctx); err != nil {
 		return snapshotStatus(c.state), err
 	}
-	if err := c.resume(ctx); err != nil {
+	if err := c.drive(ctx); err != nil {
 		return snapshotStatus(c.state), err
-	}
-	c.repo.deadline = c.state.Deadline
-	for c.state.State != "completed" && c.state.State != "failed" {
-		if err := ctx.Err(); err != nil {
-			return snapshotStatus(c.state), fmt.Errorf("factory interrupted: %w", err)
-		}
-		if err := c.step(ctx); err != nil {
-			return snapshotStatus(c.state), errors.Join(err, ctx.Err())
-		}
-	}
-	if c.state.State == "completed" {
-		observer := gitRepository{path: c.repo.path, stepTimeout: c.repo.stepTimeout}
-		if err := observer.exists(ctx, c.state.CandidateSHA); err != nil {
-			return snapshotStatus(c.state), fmt.Errorf("completed artifact unavailable: %w", err)
-		}
 	}
 	return snapshotStatus(c.state), nil
 }
 
+func (c *controller) drive(ctx context.Context) error {
+	if c.backend == nil {
+		return errors.New("factory controller requires an explicit delivery backend")
+	}
+	if err := c.resume(ctx); err != nil {
+		return err
+	}
+	for c.state.State != "completed" && c.state.State != "failed" {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("factory interrupted: %w", err)
+		}
+		if err := c.step(ctx); err != nil {
+			return errors.Join(err, ctx.Err())
+		}
+	}
+	if c.state.State == "completed" {
+		if err := c.backend.completedArtifact(ctx, c.state.CandidateSHA); err != nil {
+			return fmt.Errorf("completed artifact unavailable: %w", err)
+		}
+	}
+	return nil
+}
+
 func (c *controller) admit(ctx context.Context) error {
+	if c.backend == nil {
+		return errors.New("factory controller requires an explicit delivery backend")
+	}
 	s, err := c.store.load(ctx)
 	if err == nil {
 		c.state = s
 		if s.PolicyHash != c.policies.Hash || s.Spec.ID != c.policies.Spec.ID {
 			return errors.New("objective specification or source policies changed since admission")
 		}
-		return verifyPolicies(c.policies)
+		return c.backend.verifyPolicies()
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	if _, err := c.repo.target(ctx, c.policies.Spec.TargetBranch); err != nil {
+	if _, err := c.backend.target(ctx, time.Time{}); err != nil {
 		return err
 	}
-	if err := freezePolicies(c.policies); err != nil {
+	if err := c.backend.freezePolicies(); err != nil {
 		return err
 	}
 	now := time.Now().UTC()
@@ -175,12 +186,12 @@ func (c *controller) attempt(ctx context.Context) error {
 	if err := c.save(ctx, next); err != nil || c.state.State == "failed" {
 		return err
 	}
-	base, err := c.repo.target(ctx, c.state.Spec.TargetBranch)
+	base, err := c.backend.target(ctx, c.state.Deadline)
 	if err != nil {
 		return c.fail(ctx, err)
 	}
-	path := filepath.Join(c.policies.Dir, fmt.Sprintf("attempt-%d", c.state.Attempts), "worker")
-	if err := c.repo.checkout(ctx, path, base); err != nil {
+	path, err := c.backend.checkout(ctx, "worker", c.state.Attempts, base, c.state.Deadline)
+	if err != nil {
 		return c.reject(ctx, err)
 	}
 	next = c.state
@@ -192,7 +203,7 @@ func (c *controller) attempt(ctx context.Context) error {
 	if err := commandFailure(result); err != nil {
 		return c.reject(ctx, err)
 	}
-	candidate, err := c.repo.commit(ctx, path, base)
+	candidate, err := c.backend.commit(ctx, path, base, c.state.Deadline)
 	if err != nil {
 		return c.reject(ctx, err)
 	}
@@ -202,19 +213,18 @@ func (c *controller) attempt(ctx context.Context) error {
 }
 
 func (c *controller) check(ctx context.Context, stage string) error {
-	path := filepath.Join(c.policies.Dir, fmt.Sprintf("attempt-%d", c.state.Attempts), stage)
-	if err := c.repo.checkout(ctx, path, c.state.CandidateSHA); err != nil {
+	path, err := c.backend.checkout(ctx, stage, c.state.Attempts, c.state.CandidateSHA, c.state.Deadline)
+	if err != nil {
 		return c.reject(ctx, err)
 	}
-	if err := c.repo.pristine(ctx, path, c.state.CandidateSHA); err != nil {
+	if err := c.backend.pristine(ctx, path, c.state.CandidateSHA, c.state.Deadline); err != nil {
 		return c.reject(ctx, err)
 	}
 	result := c.execute(ctx, stage, path)
-	if err := c.repo.pristine(ctx, path, c.state.CandidateSHA); err != nil {
+	if err := c.backend.pristine(ctx, path, c.state.CandidateSHA, c.state.Deadline); err != nil {
 		return c.reject(ctx, err)
 	}
 	next := c.state
-	var err error
 	if stage == "acceptance" {
 		next.Acceptance, err = acceptEvidence(result, next.CandidateSHA, next.BaseSHA, next.PolicyHash, next.Spec.RequiredChecks)
 		next.State = "accepted"
@@ -229,27 +239,21 @@ func (c *controller) check(ctx context.Context, stage string) error {
 }
 
 func (c *controller) execute(ctx context.Context, stage, path string) commandResult {
-	if err := verifyPolicies(c.policies); err != nil {
+	if err := c.backend.verifyPolicies(); err != nil {
 		return commandResult{ExitCode: -1, Err: err}
 	}
-	deadline := time.Now().Add(time.Duration(c.state.Spec.StepTimeoutSeconds) * time.Second)
-	if c.state.Deadline.Before(deadline) {
-		deadline = c.state.Deadline
-	}
-	stepCtx, cancel := context.WithDeadline(ctx, deadline)
-	defer cancel()
 	input := commandInput{
 		Objective: c.state.Spec.Objective, Attempt: c.state.Attempts, Worktree: path,
 		CandidateSHA: c.state.CandidateSHA, BaseSHA: c.state.BaseSHA, Feedback: c.state.Feedback,
 	}
-	return executeCommand(stepCtx, c.policies.command(stage), input, path+"-runtime")
+	return c.backend.execute(ctx, stage, input, c.state.Deadline)
 }
 
 func (c *controller) authorizePromotion(ctx context.Context) error {
 	if !time.Now().Before(c.state.Deadline) {
 		return errors.New("objective deadline elapsed before promotion")
 	}
-	if err := verifyPolicies(c.policies); err != nil {
+	if err := c.backend.verifyPolicies(); err != nil {
 		return err
 	}
 	for stage, proof := range map[string]*evidence{"acceptance": c.state.Acceptance, "review": c.state.Review} {
@@ -259,14 +263,14 @@ func (c *controller) authorizePromotion(ctx context.Context) error {
 			return fmt.Errorf("invalid %s evidence for promotion", stage)
 		}
 	}
-	return c.repo.exists(ctx, c.state.CandidateSHA)
+	return c.backend.exists(ctx, c.state.CandidateSHA, c.state.Deadline)
 }
 
 func (c *controller) promote(ctx context.Context) error {
 	if err := c.authorizePromotion(ctx); err != nil {
 		return c.reject(ctx, err)
 	}
-	if err := c.repo.promote(ctx, c.state.Spec.TargetBranch, c.state.BaseSHA, c.state.CandidateSHA); err != nil {
+	if err := c.backend.promote(ctx, c.state.BaseSHA, c.state.CandidateSHA, c.state.Deadline); err != nil {
 		return c.reconcilePromotionError(ctx, err)
 	}
 	if c.hooks.afterPromotion != nil {
@@ -303,8 +307,7 @@ func (c *controller) reconcilePromotionError(ctx context.Context, promotionErr e
 }
 
 func (c *controller) observeTarget(ctx context.Context) (string, error) {
-	observer := gitRepository{path: c.repo.path, stepTimeout: c.repo.stepTimeout}
-	return observer.resolveTarget(ctx, c.state.Spec.TargetBranch)
+	return c.backend.observeTarget(ctx)
 }
 
 func (c *controller) completePromotion(ctx context.Context) error {
