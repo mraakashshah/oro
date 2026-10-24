@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -60,6 +61,10 @@ func factoryJobPlist(invocation factory.HostInvocation) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("encode factory job plist: %w", err)
 	}
+	// launchd rejects expanded boolean elements even when plutil accepts them.
+	// XML-escaped string values cannot contain these literal element sequences.
+	data = bytes.ReplaceAll(data, []byte("<true></true>"), []byte("<true/>"))
+	data = bytes.ReplaceAll(data, []byte("<false></false>"), []byte("<false/>"))
 	return append([]byte(xml.Header), data...), nil
 }
 

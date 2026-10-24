@@ -28,6 +28,21 @@ func TestFactoryLaunchdJob(t *testing.T) {
 			Deadline: time.Date(2027, time.January, 2, 3, 4, 5, 123456789, time.UTC), OutputLimit: 1 << 20,
 		}
 	}
+	t.Run("native launchd boolean tokens", func(t *testing.T) {
+		invocation := valid()
+		invocation.Path = "/trusted/<true></true>/<false></false>/oro"
+		data, err := factoryJobPlist(invocation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(data, []byte("<true></true>")) || bytes.Contains(data, []byte("<false></false>")) ||
+			bytes.Count(data, []byte("<true/>")) != 1 || bytes.Count(data, []byte("<false/>")) != 3 {
+			t.Fatal("launchd requires self-closing boolean tokens even when plutil accepts expanded tags")
+		}
+		if got := decodeFactoryJobPlist(t, data)["Program"].Text; got != invocation.Path {
+			t.Fatalf("boolean serialization changed literal program path: %q", got)
+		}
+	})
 	t.Run("literal immutable one shot wrapper", func(t *testing.T) {
 		invocation := valid()
 		before := valid()
