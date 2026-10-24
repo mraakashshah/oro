@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"syscall"
 	"time"
 )
 
@@ -148,15 +147,11 @@ func openManagedInitializationRoot(dir string, create bool) (*os.Root, error) {
 }
 
 func readManagedInitializationMarker(root *os.Root, name string) error {
-	file, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
+	file, err := openManagedRootRegular(root, name, int64(len(managedStateInitMarker)), false)
 	if err != nil {
 		return fmt.Errorf("open managed initialization marker: %w", err)
 	}
 	defer file.Close()
-	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() {
-		return errors.New("managed initialization marker must be regular")
-	}
 	contents, err := io.ReadAll(io.LimitReader(file, int64(len(managedStateInitMarker)+1)))
 	if err != nil || string(contents) != managedStateInitMarker {
 		return errors.New("managed database initialization marker is incomplete or incompatible")

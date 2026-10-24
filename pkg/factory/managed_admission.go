@@ -423,23 +423,41 @@ func openManagedRegular(path string, limit int64, executable bool) (*os.File, er
 		return nil, fmt.Errorf("open managed file parent: %w", err)
 	}
 	defer root.Close()
-	info, err := root.Lstat(filepath.Base(path))
+	return openManagedRootRegular(root, filepath.Base(path), limit, executable)
+}
+
+type managedRegularRoot interface {
+	Lstat(string) (os.FileInfo, error)
+	OpenFile(string, int, os.FileMode) (*os.File, error)
+}
+
+func openManagedRootRegular(root managedRegularRoot, name string, limit int64, executable bool) (*os.File, error) {
+	before, err := root.Lstat(name)
 	if err != nil {
 		return nil, fmt.Errorf("inspect managed file: %w", err)
 	}
-	if !info.Mode().IsRegular() {
+	if !before.Mode().IsRegular() {
 		return nil, errors.New("managed file must be regular and cannot be a symlink")
 	}
-	// Do not block on a FIFO substituted after Lstat; inspect the opened file
-	// again before reading any bytes. A context cannot cancel a blocking open.
-	file, err := root.OpenFile(filepath.Base(path), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	// os.Root may resolve contained symlinks despite O_NOFOLLOW. Bind the regular
+	// leaf before and after opening; NONBLOCK also prevents substituted FIFO hangs.
+	file, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
+		// Only the initial Lstat may report absence to initialization callers.
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, errors.New("managed file disappeared after inspection")
+		}
 		return nil, fmt.Errorf("open managed file: %w", err)
 	}
-	info, err = file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() > limit || (executable && (info.Size() == 0 || info.Mode().Perm()&0o111 == 0)) {
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || !os.SameFile(before, info) || info.Size() > limit || (executable && (info.Size() == 0 || info.Mode().Perm()&0o111 == 0)) {
 		_ = file.Close()
-		return nil, errors.New("managed file must be regular, bounded and have its required executable permission")
+		return nil, errors.New("managed file must retain its inspected inode, byte bound and required executable permission")
+	}
+	after, err := root.Lstat(name)
+	if err != nil || !after.Mode().IsRegular() || !os.SameFile(info, after) {
+		_ = file.Close()
+		return nil, errors.New("managed file path changed after opening")
 	}
 	return file, nil
 }
