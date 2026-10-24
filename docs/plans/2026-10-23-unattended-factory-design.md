@@ -198,6 +198,21 @@ after terminal commit but before release, a new incarnation finishes release.
 Uncertain cleanup preserves the reservation. Cross-process tests must prove each
 case and that the next objective can use released capacity.
 
+Host capacity has three explicit seams: shared pure retention limits, a core
+release-eligibility query, and the CLI reservation ledger. The core query requires
+monotonic stopped supervision and positive quiescence for every scope in one
+ownership transaction; it returns the exact admitted reservation tuple.
+The ledger compares that tuple before releasing capacity. Persist canonical
+complete snapshots capped at 8 MiB and 4,096 lifetime entries, with a 32 MiB
+allowance for committed/staging images and metadata. Under a root allocation
+lock, sync exclusive bounded staging, atomically rename, then sync the directory.
+After process death, accept the valid old or new committed authority and retire
+uncommitted staging only under that lock. Missing or corrupt committed authority
+fails closed. An initialization marker outside the state root prevents accidental
+reset after root loss; released objective identities remain reserved against reuse.
+Tests must kill actual publishing processes both before and after rename and
+prove that later admission recovers without double-counting capacity.
+
 Managed SQLite storage has a separate qualification seam before host reservation
 and controller integration. Every managed opener must use verified FULL
 durability and bounded rollback journaling, with a 64 MiB data-page cap and a

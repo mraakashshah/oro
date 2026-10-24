@@ -153,6 +153,39 @@ the final archive and architecture race tests passed in 1.315 seconds, with scop
 lint reporting zero issues. Container export, exact Git tree construction, and
 managed delivery integration remain separate required work.
 
+## Durable state and host wrappers
+
+Commit `f28ab781` bounds managed SQLite data to 64 MiB and reserves 256 MiB for
+the database and rollback journal. All managed writers use verified FULL/DELETE
+configuration; legacy WAL remains unchanged. Tests exercised a 62,077,616-byte
+live journal, killed an actual committing process, and verified atomic recovery.
+Pinned-reader failures preserve committed state and release failed transaction
+ownership. Independent review caught whole-objective-directory loss resetting
+spent budgets; a durable root-level initialization reservation now prevents it.
+
+The full factory race/shuffle suite passed in 209.200 seconds at 85.4% coverage
+before that final no-reset repair. After the repair, affected race tests passed
+in 62.742 seconds; a subsequent capability-path cleanup passed focused race tests
+in 5.560 seconds and package lint with zero issues. These distinct snapshots and
+their logs are retained under `/private/tmp/oro-factory-verify-ldhnhnvl/`.
+
+Commit `b6fb7521` adds the authenticated host wrapper. Independent pipe completion
+prevents ordinary nonzero exits from hiding truncated output or retained input
+pipes. Publication requires a complete successful capture, the original deadline,
+and the authenticated PUBLISHED protocol. Root's focused race suite passed in
+7.669 seconds; wrapper coverage was 82.5%, including 100% of its new drain helpers.
+Independent review passed after reproducing and repairing deadline, replay, and
+combined nonzero-exit/retained-pipe failures.
+
+Native backend tests exposed a renderer defect missed by `plutil`: launchd rejects
+expanded boolean elements. Commit `ec787eaf` emits self-closing elements while
+preserving escaped literal strings. The regression witnessed RED, then passed
+under race in 1.449 seconds; independent source review and CLI lint passed.
+The real backend subsequently passed seven launchd scenarios, including lost
+acknowledgment, timeout, concurrent retirement, and pending-byte tampering.
+Backend review remains in progress: these scenarios do not establish complete
+controller/supervisor recovery or qualify the unfinished service.
+
 ## Remaining evidence
 
 Managed contract validation, immutable admission, durable execution ownership,

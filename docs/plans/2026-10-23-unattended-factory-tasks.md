@@ -1,6 +1,6 @@
 # Unattended factory task graph
 
-Design: [unattended factory design](2026-10-23-unattended-factory-design.md), Gate 1 PASS. Gate 2 PASS after independent review and two contract repairs. Native parent: `oro-factory-managed`, under `oro-factory-autonomy`. The original 25 children now have two additional implementation seams: socket peer authentication and managed database storage bounds, for 27 tracked children.
+Design: [unattended factory design](2026-10-23-unattended-factory-design.md), Gate 1 PASS. Gate 2 PASS after independent review and two contract repairs. Native parent: `oro-factory-managed`, under `oro-factory-autonomy`. The original 25 children gained socket peer authentication and managed database storage bounds. Host capacity reservation is now an epic with three implementation children, for 30 tracked nodes below the managed epic.
 
 Every task inherits the design's authority, budget, platform, and operational requirements. Root owns Git integration; implementers use test-first RED/GREEN and report frozen files. Keep full-gate blockers visible until resolved. Component success does not close the parent.
 
@@ -97,6 +97,9 @@ Commit separately after targeted tests, lint, and review. No fake callers or che
 
 ## oro-mf-host-budget: Reserve managed host capacity
 
+This epic retains its original integration acceptance and depends explicitly on
+`oro-mf-host-limits`, `oro-mf-host-release`, and `oro-mf-host-ledger`.
+
 - Read: cmd/oro/cmd_factory_budget.go, cmd/oro/cmd_factory.go:newFactoryCmd, pkg/storage/runtime_budget.go:CheckRuntimeBudget.
 - Signature: admitFactoryHostBudget(ctx context.Context,stateDir string,spec factory.ManagedSpec,probe storage.DiskProbe) (factory.HostReservation,error); releaseFactoryHostReservation(ctx context.Context,stateDir,id string) error.
 - Test: cmd/oro/cmd_factory_budget_test.go:TestManagedAdmissionBudget.
@@ -157,7 +160,7 @@ Commit separately after targeted tests, lint, and review. No fake callers or che
 - Test: pkg/factory/source_git_test.go:TestCandidateExportExactTree.
 - Cmd: `GOTOOLCHAIN=go1.26.10 go test ./pkg/factory -run '^TestCandidateExportExactTree$' -count=1 -timeout=180s`.
 - Assert / edges: Raw ls-tree/cat-file export preserves every path/mode/blob despite export-ignore/subst; filter-free import creates same tree and expected parent; candidate hooks/filters never execute on host; bounded bulk output; CAS preserved.
-- Depends on: `oro-mf-archive`, `oro-mf-host-scope`.
+- Depends on: `oro-mf-archive`, `oro-mf-host-scope`, `oro-mf-host-limits`.
 
 Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
 
@@ -179,7 +182,7 @@ Commit separately after targeted tests, lint, and review. No fake callers or che
 - Test: pkg/factory/execution_docker_storage_test.go:TestExecutionStorageLimits.
 - Cmd: `ORO_FACTORY_INTEGRATION=1 ORO_FACTORY_DOCKER_CONTEXT=colima-oro-factory GOTOOLCHAIN=go1.26.10 go test ./pkg/factory -run '^TestExecutionStorageLimits$' -count=1 -timeout=180s`.
 - Assert / edges: Journal local-driver tmpfs/keeper before creation; enforce byte+inode quotas; keeper maintains source after worker stop until trusted export; no host mount; private checker sources; image/build/guard identity pinned; subsequent objective survives quota attack.
-- Depends on: `oro-mf-journal`, `oro-mf-host-scope`, `oro-mf-archive`, `oro-mf-watchdog`.
+- Depends on: `oro-mf-journal`, `oro-mf-host-scope`, `oro-mf-archive`, `oro-mf-watchdog`, `oro-mf-git-tree` (shared host invocation allocator).
 
 Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
 
@@ -345,6 +348,42 @@ Commit separately after targeted tests, lint, and review. No fake callers or che
 - Cmd: `GOTOOLCHAIN=go1.26.10 go test ./cmd/oro -run '^TestFactoryHostPeer$' -count=1 -timeout=180s`.
 - Assert / edges: Read real Darwin LOCAL_PEERCRED and LOCAL_PEERPID through SyscallConn; an owned subprocess Unix socket yields its actual PID and UID; no claimed JSON identity or ps parsing; nil/closed socket and unsupported OS fail explicitly.
 - Depends on: `oro-mf-contract`.
+
+Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
+
+## oro-mf-host-limits: Bound retained host artifacts
+
+- Parent: `oro-mf-host-budget`.
+- Read: pkg/factory/managed_contract.go:validateManagedSpec; pkg/factory/managed_storage.go:ManagedStateStorageBytes; cmd/oro/cmd_factory_host_exec.go:factoryHostExecRequestLimit.
+- Signature: ManagedHostRetention(ManagedSpec) (HostRetentionLimits,error); exported ManagedHostRequestBytes=32MiB and ManagedHostResultMetadataBytes=16384.
+- Test: pkg/factory/managed_host_limits_test.go:TestManagedHostRetention.
+- Cmd: `GOTOOLCHAIN=go1.26.10 go test ./pkg/factory -run '^TestManagedHostRetention$' -count=1 -timeout=180s`.
+- Assert / edges: Use checked integer arithmetic for archive A=S+1024F+1024, output O=max(A,1MiB), pending P=4O+16384, invocation records Q=H+M+T+reconciliation, scope records E=2*(supervisor+controller+reconciliation)+H+M+T, source versions X=2+attempts*(checks+3). Minimum B=3*512MiB+4*2MiB+2*1MiB+ManagedStateStorageBytes+32MiB+1MiB+X*(2A+2S+128KiB*F+1MiB)+Q*(2*32MiB+2P+2O)+E*1MiB. F bounds files plus implicit dirs, MaxPathBytes255. Reject overflow and4*ceil(A/3)+1MiB>32MiB; exact known fixture and each budget family tested; return caps all future writers consume. CLI rejects HostRequiredBytes below MinimumBytes.
+- Depends on: `oro-mf-contract`, `oro-mf-state-budget`.
+
+Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
+
+## oro-mf-host-release: Expose terminal host reservation eligibility
+
+- Parent: `oro-mf-host-budget`.
+- Read: pkg/factory/managed_store.go:mutate/setDesired/scopes; pkg/factory/managed_admission.go:loadManagedManifest; pkg/factory/managed_contract.go:HostReservation.
+- Signature: ReleasableHostReservation(context.Context,string,string) (HostReservation,bool,error).
+- Test: pkg/factory/managed_reservation_test.go:TestReleasableHostReservation.
+- Cmd: `GOTOOLCHAIN=go1.26.10 go test ./pkg/factory -run '^TestReleasableHostReservation$' -count=1 -timeout=180s`.
+- Assert / edges: One ownership transaction returns the exact immutable reservation only for monotonic stopped supervision with every exact scope quiescent and cleanup evidence. Running or live/revoked scopes deny release; missing/corrupt authority errors. Eligibility cannot reopen execution; CLI compares the exact tuple before a durable idempotent release.
+- Depends on: `oro-mf-journal`, `oro-mf-state-budget`.
+
+Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
+
+## oro-mf-host-ledger: Persist host capacity reservations
+
+- Parent: `oro-mf-host-budget`.
+- Read: cmd/oro/cmd_factory_budget.go; pkg/storage/runtime_budget.go:CheckRuntimeBudget; pkg/factory/managed_host_limits.go:ManagedHostRetention; pkg/factory/managed_reservation.go:ReleasableHostReservation.
+- Signature: admitFactoryHostBudget(context.Context,string,factory.ManagedSpec,storage.DiskProbe) (factory.HostReservation,error); releaseFactoryHostReservation(context.Context,string,string) error.
+- Test: cmd/oro/cmd_factory_budget_test.go:TestManagedAdmissionBudget.
+- Cmd: `GOTOOLCHAIN=go1.26.10 go test ./cmd/oro -run '^TestManagedAdmissionBudget$' -count=1 -timeout=180s`.
+- Assert / edges: Canonical parent lock serializes probe and durable reservation, same-filesystem repository/state required. Explicit BudgetFresh needed; denial/probe failure creates no factory/objective root or attempt. Subtract active reservations and preserve largest reserve margin; equality succeeds. Canonical versioned full-image JSON<=8MiB and4096 lifetime entries<=1KiB each, within32MiB retention; root-bound identity/revision/checksum, released IDs retained. Exclusive deterministic staging+fsync+atomic rename+directory sync leaves valid old or new authority after SIGKILL; discard uncommitted staging only under lock after validating committed snapshot. External initialization marker prevents reset when root/ledger disappears; missing/corrupt authority errors. Cross-process tests prove simultaneous admission cannot double-reserve, reservation survives process exit, pre-rename kill recovers old capacity, post-rename kill retains new capacity. Release exact stored tuple only after core eligibility, durably idempotent; uncertain cleanup retains reservation; actual public CLI wiring remains cli-start.
+- Depends on: `oro-mf-host-limits`, `oro-mf-host-release`, `oro-mf-admission`.
 
 Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
 
