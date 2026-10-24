@@ -1,5 +1,24 @@
 # Decisions and Discoveries
 
+## 2026-10-24: Route controller effects through one delivery backend
+
+**Tags:** #factory #isolation #delivery #recovery
+
+**Context:** The controller created host Git observers directly and executed
+policy commands itself. A managed backend could otherwise be bypassed during
+recovery or the final artifact check.
+
+**Decision:** Keep durable transitions, evidence validation and promotion
+decisions in the controller. Delegate policy operations, workspaces, execution,
+Git effects and both observation paths to an explicitly supplied private
+delivery backend. Legacy Run constructs its backend explicitly. Work calls carry
+the original admitted deadline; recovery observations have separate finite bounds.
+
+**Implications:** The actual legacy controller now uses the same drive path that
+the future managed backend will consume. An absent backend is an error. This
+extraction preserves legacy behavior; managed construction and native execution
+qualification remain required before unattended activation.
+
 ## 2026-10-23: Prove a replacement factory lifecycle alongside the dispatcher
 
 **Tags:** #factory #autonomy #durability #acceptance #recovery

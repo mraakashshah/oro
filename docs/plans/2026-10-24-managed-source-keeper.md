@@ -30,6 +30,7 @@ Files:
 - New `pkg/factory/managed_docker_keeper.go`: bounded keeper record, atomic reservations, CAS and own-call acknowledgment/lifetime binding.
 - New `pkg/factory/managed_docker_keeper_inspect.go`: bounded stopped-container parser and exact creation/mount/security checks.
 - Minimal `pkg/factory/managed_store.go` hook for the separately guarded keeper table initializer.
+- Narrow `pkg/factory/managed_docker_volume_state.go` extraction of the existing guarded schema transaction, shared only by the fixed volume and keeper initializers. Preserve volume v1 and its missing-table replay behavior.
 - New `pkg/factory/execution_docker_storage_test.go:TestManagedSourceKeeperCreate`.
 
 Read: `managed_docker.go:{createVolume,operation,ready,invoke}`, `managed_docker_volume.go` and `managed_docker_volume_state.go` for the accepted transaction/identity rules, `managed_store.go:{mutate,checkScopeAdmission,insertScope,loadManagedScope}`, `managed_host.go:reserveManagedHostInvocation`, `managed_host_limits.go:ManagedHostRetention`, `cmd_factory_docker_ready_inspect.go` for guard/keeper checks, and design sections on source storage/guard image.

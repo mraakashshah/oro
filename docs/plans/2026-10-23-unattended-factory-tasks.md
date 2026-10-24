@@ -1,6 +1,6 @@
 # Unattended factory task graph
 
-Design: [unattended factory design](2026-10-23-unattended-factory-design.md), Gate 1 PASS. Gate 2 PASS after independent review and two contract repairs. Native parent: `oro-factory-managed`, under `oro-factory-autonomy`. There are now 63 tracked nodes below the managed epic, including host capacity's seven children, cleanup runtime's seven children and two wiring grandchildren, container transport/readiness, managed file identity, and CLI start's immutable admission view. Later integration findings remain qualification blockers until their protocols and tests are accepted.
+Design: [unattended factory design](2026-10-23-unattended-factory-design.md), Gate 1 PASS. Gate 2 PASS after independent review and two contract repairs. Native parent: `oro-factory-managed`, under `oro-factory-autonomy`. There are now 65 tracked nodes below the managed epic, including host capacity's seven children, cleanup runtime's seven children and two wiring grandchildren, container transport/readiness, managed file identity, CLI start's immutable admission view, and the stopped-keeper and guard-image implementation leaves. Later integration findings remain qualification blockers until their protocols and tests are accepted.
 
 Every task inherits the design's authority, budget, platform, and operational requirements. Root owns Git integration; implementers use test-first RED/GREEN and report frozen files. Keep full-gate blockers visible until resolved. Component success does not close the parent.
 
@@ -759,11 +759,19 @@ children extend `oro-mf-docker-storage`; its native acceptance remains unchanged
 | `oro-mf-volume-intent` | Atomic usable v1 intents; replay cannot recreate missing authority | `oro-mf-journal`, `oro-mf-cleanup-runtime`, `oro-mf-cleanup-scope-filters` |
 | `oro-mf-volume-adapter` | Private exact create/inspect calls through HostRuntime | `oro-mf-volume-intent`, `oro-mf-host-scope`, `oro-mf-docker-time` |
 | `oro-mf-volume-config` | Verified immutable CLI configuration reader | `oro-mf-volume-adapter`, `oro-mf-admission-view`, `oro-mf-runtime-config` |
+| `oro-mf-source-keeper-create` | Consume volume creation in journaled stopped-keeper creation and inspection | `oro-mf-volume-adapter`, `oro-mf-volume-config`, `oro-mf-watchdog` |
+| `oro-mf-guard-image-build` | Produce the derived immutable watchdog image and bounded provenance | `oro-mf-watchdog` |
 
 Each child has one test file, bounded production scope and explicit accounting.
 No generic acknowledgment API or second publication receipt protocol is required.
 Unknown post-dispatch daemon work still requires a qualified recovery mechanism;
 these components do not establish unattended storage or factory readiness.
+
+The stopped-keeper contract is in the
+[implementation plan](2026-10-24-managed-source-keeper.md). The image builder is
+trusted bootstrap tooling, outside objective execution. Its protected tests do
+not establish a native image build. READY, one-shot seeding, stopped export,
+managed controller construction and actual daemon recovery remain required.
 
 ## oro-mf-scope-integrity: Reject lifecycle fields in scope identity JSON
 

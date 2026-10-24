@@ -562,6 +562,30 @@ with coverage collection (`volume-core-integrated.log` and its result metadata).
 The harness completed in 287.894 seconds. This verifies the package tests, not
 end-to-end unattended delivery.
 
+## Controller delivery boundary
+
+Commit `a418c365` routes the actual legacy controller through an explicit private
+delivery backend. Policy operations, workspaces, execution, Git effects and both
+recovery and terminal observations delegate through that boundary. The controller
+retains durable transitions, evidence validation and promotion decisions. No
+backend means an error; work operations carry the original deadline.
+
+The baseline legacy race run passed in 125.221 seconds. After extraction, the
+broader lifecycle, restart, lost-acknowledgment, CAS, Git-bound, repository-admission
+and dependency regressions passed in 147.299 seconds. The final focused race
+passed in 7.992 seconds and covers all 19 statements in the new backend adapter.
+Opaque workspace identities, expired deadlines and injected observation failures
+exercise the actual controller drive path. Package lint reported zero issues;
+the pinned formatter reported no files. Independent source review passed.
+Evidence uses `backend-baseline`, `controller-backend`, `backend-focused-seal`
+and `source-keeper-lint-green` under the verification directory.
+
+The first API check was a compile failure. The isolated routing regression then
+reached the old host Git fallback before the controller was wired to its supplied
+backend; it excluded only the independent keeper test while that API was being
+authored. Final successful checks used the regular package invocation. This is a
+wired legacy extraction, not a managed execution or delivery qualification.
+
 ## Remaining evidence
 
 Managed contract validation, immutable admission, durable execution ownership,
