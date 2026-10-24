@@ -232,6 +232,9 @@ quiescence; `Retire` returns nil only after exact-scope retirement is establishe
 Both enforce bounded time and output. Backend uncertainty is an error, never an
 empty success. Production implementation is launchd on this host; unsupported
 platforms fail admission explicitly until their backend is qualified.
+An ordinary exited child with a nonzero status is still a valid `HostResult`;
+acceptance compares it with the frozen expected exit status. Cancellation,
+signals, output overflow, and transport/lifetime failures remain errors.
 
 The backend receives an admission-bound scope authority with methods to record an
 authenticated handshake, check its grant, observe persisted ownership, and mark
@@ -296,8 +299,19 @@ parse `launchctl print` as an API. Ungranted jobs cannot have descendants or
 effects; stale grants cannot be replayed. Preserve cleanup intents across death.
 
 For normal completion, `_host-exec` atomically writes a bounded pending result,
-exits, and launchd retires remaining same-group children. The controller consumes
-that result only after quiescence. Timeout also retires the whole invocation.
+then sends one mandatory `PUBLISHED` frame over the same authenticated socket.
+The frame binds the request digest, complete scope, authenticated PID/PGID,
+deadline, and SHA-256 of the pending bytes. The server must receive and validate
+the entire bounded frame, then recheck time/context, before the original deadline.
+A response to the wrapper is optional. Missing, partial, late, mismatched, or
+replayed publication is failure; visible pending files alone establish nothing.
+The exclusive inflight name remains until retirement cleanup, preventing a
+check/create replay race after publication. The wrapper then exits, and launchd
+retires remaining same-group children. The controller consumes a result only
+after quiescence and verifies its exact digest and bound fields. A crash before
+the server accepts publication conservatively loses that invocation; interrupted
+work stays spent and promotion recovery remains separate. Timeout also retires
+the whole invocation.
 Trusted runtimes must not deliberately detach from their job PGID; all untrusted
 code executes in containers, whose PID namespace includes detached descendants.
 

@@ -114,7 +114,7 @@ Commit separately after targeted tests, lint, and review. No fake callers or che
 - Signature: factoryHostExecRequest{Invocation factory.HostInvocation; ResultPath string}; runFactoryHostExec(ctx context.Context,request factoryHostExecRequest,authority factory.ScopeAuthority) error.
 - Test: cmd/oro/cmd_factory_host_exec_test.go:TestFactoryHostExec.
 - Cmd: `GOTOOLCHAIN=go1.26.10 go test ./cmd/oro -run '^TestFactoryHostExec$' -count=1 -timeout=180s`.
-- Assert / edges: No child or mutable work before authenticated GO; children inherit job PGID; bounded time/output/result serialization; atomic pending result; no host result accepted before scope retirement. Digest-bound ResultPath must equal request-directory/result.pending.json; payload cwd cannot select receipt destination; deadline is rechecked before spawn.
+- Assert / edges: No child or mutable work before authenticated GO; children inherit job PGID; bounded time/output/result serialization; atomic pending result; no host result accepted before scope retirement. Digest-bound ResultPath must equal request-directory/result.pending.json; payload cwd cannot select receipt destination; deadline is rechecked before spawn. Normal child exit7 publishes a valid HostResult with ExitCode7; publication rechecks deadline after directory sync; exclusive inflight survives successful publication; hidden CLI sends mandatory bounded PUBLISHED only after successful timely result publication.
 - Depends on: `oro-mf-host-job`, `oro-mf-host-peer`.
 
 Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
@@ -125,7 +125,7 @@ Commit separately after targeted tests, lint, and review. No fake callers or che
 - Signature: factory.HostRuntime.Invoke/Retire and factory.ScopeAuthority adapter.
 - Test: cmd/oro/cmd_factory_launchd_runtime_test.go:TestFactoryHostScope.
 - Cmd: `ORO_FACTORY_INTEGRATION=1 ORO_FACTORY_DOCKER_CONTEXT=colima-oro-factory GOTOOLCHAIN=go1.26.10 go test ./cmd/oro -run '^TestFactoryHostScope$' -count=1 -timeout=180s`.
-- Assert / edges: Real temporary launchd jobs prove normal-exit descendant cleanup, timeout, lost bootstrap ack, revoked nonce rejection, real peer PID/UID validation and PGID ESRCH before result consumption; no print parsing or signalling stored PID.
+- Assert / edges: Real temporary launchd jobs prove normal-exit descendant cleanup, timeout, lost bootstrap ack, revoked nonce rejection, real peer PID/UID validation and PGID ESRCH before result consumption; no print parsing or signalling stored PID. Require complete authenticated PUBLISHED frame validated before deadline and a post-decode time/context check; bind request/scope/PID/PGID/deadline/pending digest, then retire and verify exact pending bytes/fields; reject missing/partial/late/mismatched/replayed publication and never accept file existence alone.
 - Depends on: `oro-mf-host-exec`, `oro-mf-journal`.
 
 Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
