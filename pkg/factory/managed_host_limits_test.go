@@ -1,9 +1,28 @@
 package factory //nolint:testpackage // The shared limits are checked against private validated contract fixtures.
 
 import (
+	"archive/tar"
+	"bytes"
 	"math"
 	"testing"
 )
+
+func TestManagedHostRetentionDockerRoot(t *testing.T) {
+	spec := hostRetentionFixture()
+	spec.Runtime.SourceBytes = 1048577
+	limits, err := ManagedHostRetention(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := candidateArchive(t, archiveFixtureEntry{header: tar.Header{Name: "./", Mode: 0o700, Typeflag: tar.TypeDir}},
+		archiveFixtureEntry{header: tar.Header{Name: "./file", Mode: 0o644, Typeflag: tar.TypeReg}, data: string(bytes.Repeat([]byte{'x'}, int(spec.Runtime.SourceBytes)))})
+	if len(archive) != 1051136 {
+		t.Fatalf("Docker shape fixture bytes=%d", len(archive))
+	}
+	if limits.ArchiveBytes != 1051137 || limits.HostOutputBytes < int64(len(archive)) {
+		t.Fatalf("Docker root exceeds shared allowance: archive=%d bounds=%+v", len(archive), limits)
+	}
+}
 
 func hostRetentionFixture() ManagedSpec {
 	spec := managedContractFixture()
@@ -20,9 +39,9 @@ func TestManagedHostRetention(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// Independently calculated: fixed=1,924,136,960; source=7,127,040;
+		// Independently calculated: fixed=1,924,136,960; source=7,133,184;
 		// invocation=310,509,568; scope metadata=9,437,184 bytes.
-		if limits.MinimumBytes != 2251210752 || limits.ArchiveBytes != 3072 || limits.HostOutputBytes != 1<<20 || limits.PendingResultBytes != 4210688 {
+		if limits.MinimumBytes != 2251216896 || limits.ArchiveBytes != 3584 || limits.HostOutputBytes != 1<<20 || limits.PendingResultBytes != 4210688 {
 			t.Fatalf("retained bounds = %+v", limits)
 		}
 		if limits.SourceVersions != 6 || limits.InvocationRecords != 4 || limits.ScopeRecords != 9 || limits.MaxPathBytes != 255 {
@@ -37,7 +56,7 @@ func TestManagedHostRetention(t *testing.T) {
 	t.Run("exact base64 transfer boundary", func(t *testing.T) {
 		spec := hostRetentionFixture()
 		// A=24,379,392 encodes to31MiB, leaving1MiB of request metadata.
-		spec.Runtime.SourceBytes = 24379392 - 2048
+		spec.Runtime.SourceBytes = 24379392 - 2560
 		limits, err := ManagedHostRetention(spec)
 		if err != nil || limits.ArchiveBytes != 24379392 || limits.HostOutputBytes != limits.ArchiveBytes {
 			t.Fatalf("exact transport bound rejected: %+v, %v", limits, err)

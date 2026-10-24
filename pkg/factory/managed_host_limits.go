@@ -52,8 +52,9 @@ func ManagedHostRetention(spec ManagedSpec) (HostRetentionLimits, error) {
 		ScopeMetadataBytes: 1 << 20, MaxPathBytes: 255,
 	}
 	// USTAR needs one 512-byte header and up to 511 padding bytes per entry,
-	// plus two end blocks. Count directories as entries too.
-	limits.ArchiveBytes = arithmetic.sum(runtime.SourceBytes, arithmetic.product(1024, int64(runtime.MaxFiles)), 1024)
+	// plus two end blocks and Docker's extra './' root directory header. Count
+	// source directories as entries too; the transport root is not a source inode.
+	limits.ArchiveBytes = arithmetic.sum(runtime.SourceBytes, arithmetic.product(1024, int64(runtime.MaxFiles)), 1536)
 	encoded := arithmetic.sum(arithmetic.product(4, arithmetic.sum(limits.ArchiveBytes, 2)/3), 1<<20)
 	if arithmetic.err != nil {
 		return HostRetentionLimits{}, arithmetic.err
