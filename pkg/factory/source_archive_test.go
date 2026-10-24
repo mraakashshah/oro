@@ -4,12 +4,170 @@ import (
 	"archive/tar"
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestSourceArchiveInternalLinks(t *testing.T) {
+	t.Run("Oro raw targets are order independent", testSourceLinksOro)
+	t.Run("raw target quotas", testSourceLinksQuotas)
+	t.Run("traversal and target rejection", testSourceLinksRejected)
+	t.Run("pure vector target grammar", testSourceLinkVectorGrammar)
+	t.Run("valid canceled directory traversal", func(t *testing.T) {
+		archive := candidateArchive(t, sourceLinkFixture("link", "existing-dir/../file"), sourceLinkFileFixture("file"), sourceLinkFileFixture("existing-dir/child"))
+		got, err := decodeSourceArchive(bytes.NewReader(archive), sourceLinkLimits())
+		if err != nil || len(got) != 3 || string(got[0].Data) != "existing-dir/../file" {
+			t.Fatalf("valid raw traversal changed: %+v, %v", got, err)
+		}
+	})
+	t.Run("100 byte target", func(t *testing.T) {
+		target := strings.Repeat("a", 100)
+		archive := candidateArchive(t, sourceLinkFixture("link", target), sourceLinkFileFixture(target))
+		got, err := decodeSourceArchive(bytes.NewReader(archive), sourceLinkLimits())
+		if err != nil || len(got) != 2 || got[0].Mode != 0o120000 || string(got[0].Data) != target {
+			t.Fatalf("exact target limit rejected: %+v, %v", got, err)
+		}
+	})
+	t.Run("nonzero symlink size", func(t *testing.T) {
+		archive := candidateArchive(t, sourceLinkFixture("link", "file"), sourceLinkFileFixture("file"))
+		copy(archive[124:136], "00000000001\x00")
+		copy(archive[148:156], "        ")
+		var checksum int
+		for _, value := range archive[:512] {
+			checksum += int(value)
+		}
+		copy(archive[148:156], fmt.Sprintf("%06o\x00 ", checksum))
+		assertCandidateArchiveRejected(t, archive, sourceLinkLimits())
+	})
+}
+
+func sourceLinkLimits() sourceLimits {
+	return sourceLimits{MaxArchiveBytes: 1 << 20, MaxBytes: 1024, MaxFileBytes: 512, MaxFiles: 32, MaxPathBytes: 256}
+}
+
+func sourceLinkFixture(name, target string) archiveFixtureEntry {
+	return archiveFixtureEntry{header: tar.Header{Name: name, Typeflag: tar.TypeSymlink, Mode: 0o777, Linkname: target}}
+}
+
+func sourceLinkFileFixture(name string) archiveFixtureEntry {
+	return archiveFixtureEntry{header: tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: 0o644}, data: "x"}
+}
+
+func testSourceLinksOro(t *testing.T) {
+	t.Helper()
+	files := []archiveFixtureEntry{
+		sourceLinkFixture(".claude/hooks/context_block_stop.py", "../../assets/hooks/context_block_stop.py"),
+		sourceLinkFixture(".claude/hooks/context_pct_writer.py", "../../assets/hooks/context_pct_writer.py"),
+		sourceLinkFileFixture("assets/hooks/context_block_stop.py"),
+		sourceLinkFileFixture("assets/hooks/context_pct_writer.py"),
+	}
+	files[3].header.Mode = 0o755
+	want := make(map[string]sourceEntry)
+	for _, entry := range files {
+		mode, data := uint32(0o100644), entry.data
+		if entry.header.Typeflag == tar.TypeSymlink {
+			mode, data = 0o120000, entry.header.Linkname
+		} else if entry.header.Mode == 0o755 {
+			mode = 0o100755
+		}
+		want[entry.header.Name] = sourceEntry{Path: entry.header.Name, Mode: mode, Data: []byte(data)}
+	}
+	for _, order := range [][]archiveFixtureEntry{files, {files[3], files[2], files[1], files[0]}} {
+		got, err := decodeSourceArchive(bytes.NewReader(candidateArchive(t, order...)), sourceLinkLimits())
+		if err != nil || len(got) != len(want) {
+			t.Fatalf("decode Oro links: %+v, %v", got, err)
+		}
+		for _, entry := range got {
+			if !reflect.DeepEqual(entry, want[entry.Path]) {
+				t.Fatalf("link target or mode changed: %+v", entry)
+			}
+		}
+	}
+}
+
+func testSourceLinksQuotas(t *testing.T) {
+	t.Helper()
+	link, file := sourceLinkFixture("d/link", "../file"), sourceLinkFileFixture("file")
+	for _, order := range [][]archiveFixtureEntry{{link, file}, {file, link}} {
+		archive := candidateArchive(t, order...)
+		limits := sourceLimits{MaxArchiveBytes: int64(len(archive)), MaxBytes: 8, MaxFileBytes: 7, MaxFiles: 3, MaxPathBytes: 6}
+		if got, err := decodeSourceArchive(bytes.NewReader(archive), limits); err != nil || len(got) != 2 {
+			t.Fatalf("exact link quotas rejected: %+v, %v", got, err)
+		}
+		for _, mutate := range []func(*sourceLimits){
+			func(l *sourceLimits) { l.MaxBytes-- },
+			func(l *sourceLimits) { l.MaxFileBytes-- },
+			func(l *sourceLimits) { l.MaxFiles-- },
+		} {
+			bounded := limits
+			mutate(&bounded)
+			assertCandidateArchiveRejected(t, archive, bounded)
+		}
+	}
+}
+
+func testSourceLinksRejected(t *testing.T) {
+	t.Helper()
+	for _, target := range []string{
+		"", "..", "../../outside", "/file", "//file", "C:/file", `dir\file`, "./file", "existing-dir//child",
+		".git/../file", "git~1/../file", "CON/../file", "file.", " file", "file ", "missing", "link", "existing-dir", "FILE",
+		"nonexistent/../file", "regular/../file", "link/../file", "EXISTING-dir/../file",
+	} {
+		t.Run(target, func(t *testing.T) {
+			archive := candidateArchive(t, sourceLinkFixture("subject", target), sourceLinkFileFixture("file"),
+				sourceLinkFileFixture("existing-dir/child"), sourceLinkFileFixture("regular"), sourceLinkFixture("link", "file"))
+			assertCandidateArchiveRejected(t, archive, sourceLinkLimits())
+		})
+	}
+	for name, files := range map[string][]archiveFixtureEntry{
+		"cycle":              {sourceLinkFixture("one", "two"), sourceLinkFixture("two", "one")},
+		"self":               {sourceLinkFixture("self", "self")},
+		"symlink parent":     {sourceLinkFixture("link", "file"), sourceLinkFileFixture("link/child"), sourceLinkFileFixture("file")},
+		"parent after child": {sourceLinkFileFixture("link/child"), sourceLinkFixture("link", "file"), sourceLinkFileFixture("file")},
+		// An empty tar-only directory has no Git leaf and cannot survive export.
+		"empty directory traversal": {sourceLinkFixture("link", "empty/../file"), sourceLinkFileFixture("file"),
+			{header: tar.Header{Name: "empty/", Mode: 0o755, Typeflag: tar.TypeDir}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assertCandidateArchiveRejected(t, candidateArchive(t, files...), sourceLinkLimits())
+		})
+	}
+	for _, target := range []string{strings.Repeat("a", 101), "nonascii-é"} {
+		link := sourceLinkFixture("link", target)
+		link.header.Format = tar.FormatPAX
+		assertCandidateArchiveRejected(t, candidateArchive(t, link), sourceLinkLimits())
+	}
+}
+
+func testSourceLinkVectorGrammar(t *testing.T) {
+	t.Helper()
+	file := sourceEntry{Path: "file", Mode: 0o100644, Data: []byte("x")}
+	for _, target := range []string{"file\x00", "fi\nle", "fi\x7fle", "nonascii-é", strings.Repeat("a", 101)} {
+		entries := []sourceEntry{file, {Path: "link", Mode: 0o120000, Data: []byte(target)}}
+		if len(target) == 101 {
+			// A matching endpoint must not conceal the raw target length error.
+			entries[0].Path = target
+		}
+		if err := validateSourceLinks(entries); err == nil {
+			t.Fatalf("unsupported raw target accepted: %q", target)
+		}
+	}
+	for name, entries := range map[string][]sourceEntry{
+		"unsupported mode": {file, {Path: "submodule", Mode: 0o160000}},
+		"invalid path":     {file, {Path: "../link", Mode: 0o120000, Data: []byte("file")}},
+		"case collision":   {file, {Path: "FILE", Mode: 0o100644}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateSourceLinks(entries); err == nil {
+				t.Fatal("invalid source vector accepted")
+			}
+		})
+	}
+}
 
 func TestCandidateImportRejectsEscapes(t *testing.T) {
 	limits := sourceLimits{MaxArchiveBytes: 1 << 20, MaxBytes: 1024, MaxFileBytes: 512, MaxFiles: 16, MaxPathBytes: 256}

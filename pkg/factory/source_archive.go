@@ -12,7 +12,8 @@ import (
 
 type sourceEntry struct {
 	Path string
-	// Mode is a canonical Git regular-file mode, not host permission metadata.
+	// Mode is a canonical Git regular-file or symlink mode, not host permissions.
+	// Symlink Data retains the exact raw relative target bytes.
 	Mode uint32
 	Data []byte
 }
@@ -46,6 +47,9 @@ func decodeSourceArchiveEntries(reader io.Reader, limits sourceLimits, normalize
 			return nil, err
 		}
 		if header == nil {
+			if err := validateSourceLinks(entries); err != nil {
+				return nil, err
+			}
 			return entries, nil
 		}
 		name, directory, err := validateSourceHeader(header, limits)
@@ -62,7 +66,7 @@ func decodeSourceArchiveEntries(reader io.Reader, limits sourceLimits, normalize
 		if err != nil {
 			return nil, err
 		}
-		total += header.Size
+		total += int64(len(entry.Data))
 		entries = append(entries, entry)
 	}
 }
@@ -94,6 +98,12 @@ func nextSourceArchiveHeader(archive []byte, input *bytes.Reader, stream *tar.Re
 }
 
 func readSourceEntry(stream io.Reader, header *tar.Header, name string, remainingBytes int64) (sourceEntry, error) {
+	if header.Typeflag == tar.TypeSymlink {
+		if int64(len(header.Linkname)) > remainingBytes {
+			return sourceEntry{}, errors.New("source link target exceeds expanded byte limit")
+		}
+		return sourceEntry{Path: name, Mode: 0o120000, Data: []byte(header.Linkname)}, nil
+	}
 	if header.Size > remainingBytes {
 		return sourceEntry{}, errors.New("source archive exceeds expanded byte limit")
 	}
@@ -139,7 +149,7 @@ func rejectSourceSpecialHeader(archive []byte, remaining int) error {
 	// Next hides extended headers, even when no regular file follows. Check
 	// the raw type before Next can consume any such metadata or sparse maps.
 	switch archive[offset+padding+156] {
-	case 0, tar.TypeReg, tar.TypeDir: // NUL is the legacy regular-file type or a zero end block.
+	case 0, tar.TypeReg, tar.TypeDir, tar.TypeSymlink: // NUL is the legacy regular-file type or a zero end block.
 		return nil
 	default:
 		return errors.New("source archive contains an unsupported raw entry type")
@@ -169,6 +179,9 @@ func validateSourceHeader(header *tar.Header, limits sourceLimits) (name string,
 	if header.Size < 0 || header.Size > limits.MaxFileBytes || (directory && header.Size != 0) {
 		return "", false, fmt.Errorf("source archive entry %q exceeds file byte limit or has directory data", header.Name)
 	}
+	if header.Typeflag == tar.TypeSymlink && int64(len(header.Linkname)) > limits.MaxFileBytes {
+		return "", false, errors.New("source link target exceeds file byte limit")
+	}
 	name = header.Name
 	if len(name) > limits.MaxPathBytes {
 		return "", false, errors.New("source archive exceeds path byte limit")
@@ -186,10 +199,13 @@ func validateSourceMetadata(header *tar.Header) error {
 	if header.Format != tar.FormatUSTAR || len(header.PAXRecords) != 0 {
 		return errors.New("source archive supports USTAR without extended metadata only")
 	}
-	if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeDir {
+	if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeDir && header.Typeflag != tar.TypeSymlink {
 		return fmt.Errorf("source archive entry %q has unsupported type %d", header.Name, header.Typeflag)
 	}
-	if header.Linkname != "" || header.Mode < 0 || header.Mode&^0o777 != 0 || header.Devmajor != 0 || header.Devminor != 0 {
+	if (header.Typeflag == tar.TypeSymlink && header.Size != 0) || (header.Typeflag != tar.TypeSymlink && header.Linkname != "") {
+		return fmt.Errorf("source archive entry %q has unsupported link metadata or body", header.Name)
+	}
+	if header.Mode < 0 || header.Mode&^0o777 != 0 || header.Devmajor != 0 || header.Devminor != 0 {
 		return fmt.Errorf("source archive entry %q has unsupported mode or link/device metadata", header.Name)
 	}
 	return nil
