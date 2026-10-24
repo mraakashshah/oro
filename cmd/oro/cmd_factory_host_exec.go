@@ -24,10 +24,10 @@ import (
 )
 
 const (
-	// The complete envelope includes base64 stdin. This accommodates the initial
-	// 16 MiB source transfer; larger admitted policies must fit this same cap.
-	factoryHostExecRequestLimit  = 32 << 20
-	factoryHostExecMetadataLimit = 16384
+	// The complete envelope includes base64 stdin. Admission and every writer
+	// share these limits so retained-byte accounting covers the actual transport.
+	factoryHostExecRequestLimit  = factory.ManagedHostRequestBytes
+	factoryHostExecMetadataLimit = factory.ManagedHostResultMetadataBytes
 	factoryHostExecWireLimit     = 4096
 	factoryHostExecErrorLimit    = 1024
 	factoryHostExecWaitDelay     = 200 * time.Millisecond
