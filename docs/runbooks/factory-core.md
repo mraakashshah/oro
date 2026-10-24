@@ -33,11 +33,14 @@ policy programs and the state directory outside that repository. For example:
 }
 ```
 
-Save this as a specification file and run:
+Save this as a specification file. Use a binary built from the checkout containing
+this increment; for a local build and invocation:
 
 ```sh
-oro factory run --spec /absolute/path/to/spec.json --state-dir /absolute/factory-state
-oro factory status --id calculator --state-dir /absolute/factory-state
+make stage-assets
+go build -o ./oro ./cmd/oro
+./oro factory run --spec /absolute/path/to/spec.json --state-dir /absolute/factory-state
+./oro factory status --id calculator --state-dir /absolute/factory-state
 ```
 
 `run` prints terminal status JSON and succeeds only for `completed`. Exhaustion
@@ -99,7 +102,7 @@ controller performs this reconciliation without human repair of its state.
 To verify the implementation in a development checkout:
 
 ```sh
-go test ./pkg/factory -race -cover -count=1 -timeout=180s
+go test ./pkg/factory -race -cover -count=1 -timeout=300s
 make stage-assets
 go test ./cmd/oro -run '^TestFactoryCLI$' -count=1 -timeout=120s
 ```

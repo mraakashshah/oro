@@ -20,6 +20,9 @@ The first increment runs on `feature/factory-core`. Its acceptance establishes a
 | `oro-fc-cli` | Wire run/status into the real CLI | recovery | `TestFactoryCLI` |
 | `oro-fc-root` | Reject nested repository admission before side effects | engine | `TestRepositoryRootAdmission` |
 | `oro-fc-git-bounds` | Bound Git filters and descendants by the objective deadline | engine | `TestFactoryGitBounds` |
+| `oro-fc-promotion-failure` | Preserve checked-out target failure diagnostics | git-bounds | `TestCheckedOutPromotionTarget` |
+| `oro-fc-cas-ack` | Reconcile lost Git promotion acknowledgment | git-bounds | `TestPromotionLostAcknowledgment` |
+| `oro-fc-runner-clock` | Synchronize cancellation test startup under load | runner | `TestBoundedExecution` |
 
 Each native task contains its exact test command, inputs, expected behavior, source references, signatures and error boundaries. Each task uses a separate red/green cycle and atomic commit. Independent file scopes can proceed concurrently; overlapping edits and Git index mutations are serialized. The existing dispatcher is not used to execute this replacement work because its completion and recovery semantics are under evaluation.
 

@@ -1,6 +1,8 @@
 # Factory core: autonomous delivery and recovery, first increment
 
-Status: design for implementation. Baseline: `79f6cad693fdcbf83c9f19f96a785b80e6ae5ff7`.
+Status: implemented as an experimental feature-branch increment; see the
+[proof and qualification limits](../proofs/2026-10-23-factory-core.md).
+Baseline: `79f6cad693fdcbf83c9f19f96a785b80e6ae5ff7`.
 
 ## Goal and success boundary
 
@@ -67,6 +69,8 @@ The absolute deadline is computed and persisted once at admission. It does not m
 Programs receive one JSON document on stdin, never an interpolated shell command. The worker runs in its attempt worktree. Acceptance and review each run in a separate, newly created pristine detached checkout of the recorded candidate SHA; neither reuses the worker directory or the other checker's directory. Input fields are `objective`, `attempt`, `worktree`, `candidate_sha`, `base_sha`, and `feedback`. For the worker, `candidate_sha` is empty. The worker edits files and must not commit; the core commits its changes after successful exit. Arguments are literal argv from the admitted policy.
 
 Strip inherited `ORO_*` and `GIT_*` identity/override variables. Give each attempt private temporary/cache paths, disable interactive Git editors, and cap captured stdout and stderr at 1 MiB each. Exceeding the cap fails the step; do not parse truncated output as success. Apply the smaller of the remaining objective deadline and step timeout. Cancellation/timeout kills the subprocess group and waits for termination. Retain bounded diagnostics in durable feedback.
+
+Git operations use the same bounded subprocess mechanism, including filters and descendants. Mutating Git work obeys the original objective deadline. Admission and read-only confirmation of an already authorized effect remain bounded, but confirmation can proceed after that deadline; it must not start a new mutation or extend the work budget.
 
 The acceptance program must exit zero and return exactly one JSON receipt:
 
