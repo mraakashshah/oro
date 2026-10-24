@@ -1,8 +1,6 @@
 module oro
 
-go 1.26.4
-
-toolchain go1.26.5
+go 1.26.10
 
 require (
 	charm.land/lipgloss/v2 v2.0.2

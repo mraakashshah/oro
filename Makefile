@@ -1,5 +1,12 @@
 .PHONY: build build-search-hook ensure-github-cli install install-git-hooks setup test test-all test-integration lint nilaway fmt vet gate clean stage-assets clean-assets dev-sync release mutate-go mutate-go-diff mutate-py mutate-py-full verify-bundled-libs download-ort vendor-sqlite-vec vendor-sqlite-vec-release test-vendor-sqlite-vec uninstall
 
+# A newer ambient Go does not downgrade to go.mod's preferred toolchain.
+# Keep repository commands on that toolchain; GOTOOLCHAIN=... remains an override.
+ifeq ($(strip $(GOTOOLCHAIN)),)
+GOTOOLCHAIN := $(shell awk '$$1 == "go" { minimum = "go" $$2 } $$1 == "toolchain" { preferred = $$2 } END { if (preferred != "" && preferred != "default") print preferred; else print minimum }' go.mod)
+endif
+export GOTOOLCHAIN
+
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 GO_BUILD_FLAGS ?= -buildvcs=false
 LDFLAGS := -ldflags "-X oro/internal/appversion.version=$(VERSION)"

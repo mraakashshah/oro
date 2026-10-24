@@ -74,6 +74,13 @@ while [ "$#" -gt 0 ]; do
 	esac
 done
 
+# Select this project's preferred Go even when PATH contains a newer release.
+# An explicit GOTOOLCHAIN override is preserved for compatibility testing.
+if [ -z "${GOTOOLCHAIN:-}" ] && [ -f go.mod ]; then
+	GOTOOLCHAIN=$(awk '$1 == "go" { minimum = "go" $2 } $1 == "toolchain" { preferred = $2 } END { if (preferred != "" && preferred != "default") print preferred; else print minimum }' go.mod)
+	export GOTOOLCHAIN
+fi
+
 # Prevent hook env leakage into test subprocesses.
 # Save worktree state BEFORE unsetting — mutation testing needs this later to
 # resolve refs (git rev-parse --verify main) in worktrees where .git is a

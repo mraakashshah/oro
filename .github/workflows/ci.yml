@@ -257,6 +257,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Toolchain selection regression
+        run: bash scripts/toolchain_selection_test.sh
+
       - name: shellcheck
         run: find . -name '*.sh' -not -path './references/*' -not -path './archive/*' -not -path './.worktrees/*' -exec shellcheck --severity=info {} +
 
