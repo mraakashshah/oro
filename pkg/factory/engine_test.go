@@ -189,20 +189,8 @@ func TestFactoryPolicyProcess(t *testing.T) {
 
 func enginePolicyWorker(input commandInput, mode, marker string) error {
 	if mode == "block-first" {
-		f, err := os.OpenFile(marker+".starts", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-		if err != nil {
+		if err := engineBlockFirstWorker(input.Attempt, marker); err != nil {
 			return err
-		}
-		_, err = f.WriteString("worker\n")
-		_ = f.Close()
-		if err != nil {
-			return err
-		}
-		if input.Attempt == 1 {
-			if err := os.WriteFile(marker, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
-				return err
-			}
-			time.Sleep(30 * time.Second)
 		}
 	}
 	operator := "-"
@@ -219,6 +207,23 @@ func enginePolicyWorker(input commandInput, mode, marker string) error {
 		return err
 	}
 	return os.WriteFile("build/add.sh", []byte("#!/bin/sh\necho $(( $1 + $2 ))\n"), 0o700)
+}
+
+func engineBlockFirstWorker(attempt int, marker string) error {
+	f, err := os.OpenFile(marker+".starts", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = f.WriteString("worker\n")
+	_ = f.Close()
+	if err != nil || attempt != 1 {
+		return err
+	}
+	if err := os.WriteFile(marker, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+		return err
+	}
+	time.Sleep(30 * time.Second)
+	return nil
 }
 
 func enginePolicyAccept(input commandInput) error {
