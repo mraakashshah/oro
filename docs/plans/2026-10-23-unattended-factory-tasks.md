@@ -1,6 +1,6 @@
 # Unattended factory task graph
 
-Design: [unattended factory design](2026-10-23-unattended-factory-design.md), Gate 1 PASS. Gate 2 PASS after independent review and two contract repairs. Native parent: `oro-factory-managed`, under `oro-factory-autonomy`. All 25 children and explicit dependency edges are recorded.
+Design: [unattended factory design](2026-10-23-unattended-factory-design.md), Gate 1 PASS. Gate 2 PASS after independent review and two contract repairs. Native parent: `oro-factory-managed`, under `oro-factory-autonomy`. The original 25 children now have two additional implementation seams: socket peer authentication and managed database storage bounds, for 27 tracked children.
 
 Every task inherits the design's authority, budget, platform, and operational requirements. Root owns Git integration; implementers use test-first RED/GREEN and report frozen files. Keep full-gate blockers visible until resolved. Component success does not close the parent.
 
@@ -93,7 +93,7 @@ Commit separately after targeted tests, lint, and review. No fake callers or che
 - Test: cmd/oro/cmd_factory_budget_test.go:TestManagedAdmissionBudget.
 - Cmd: `GOTOOLCHAIN=go1.26.10 go test ./cmd/oro -run '^TestManagedAdmissionBudget$' -count=1 -timeout=180s`.
 - Assert / edges: Admission boundary denies insufficient/probe-failed budget before scope/root/attempt; equality permits; concurrent admission cannot double-reserve; preserve reservations on uncertain cleanup; require same filesystem and conservative bounded-writer aggregate. Public CLI wiring/denial is verified by cli-start.; reservation survives admission-process exit; release reopens ledger by ID, CAS/idempotent, never a closure deferred by start.
-- Depends on: `oro-mf-contract`, `oro-mf-admission`.
+- Depends on: `oro-mf-contract`, `oro-mf-admission`, `oro-mf-state-budget`.
 
 Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
 
@@ -115,7 +115,7 @@ Commit separately after targeted tests, lint, and review. No fake callers or che
 - Test: cmd/oro/cmd_factory_host_exec_test.go:TestFactoryHostExec.
 - Cmd: `GOTOOLCHAIN=go1.26.10 go test ./cmd/oro -run '^TestFactoryHostExec$' -count=1 -timeout=180s`.
 - Assert / edges: No child or mutable work before authenticated GO; children inherit job PGID; bounded time/output/result serialization; atomic pending result; no host result accepted before scope retirement. Digest-bound ResultPath must equal request-directory/result.pending.json; payload cwd cannot select receipt destination; deadline is rechecked before spawn.
-- Depends on: `oro-mf-host-job`.
+- Depends on: `oro-mf-host-job`, `oro-mf-host-peer`.
 
 Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
 
@@ -192,7 +192,7 @@ Commit separately after targeted tests, lint, and review. No fake callers or che
 - Test: pkg/factory/backend_test.go:TestControllerBackendPreservesLegacy.
 - Cmd: `GOTOOLCHAIN=go1.26.10 go test ./pkg/factory -run '^TestControllerBackendPreservesLegacy$' -count=1 -timeout=180s`.
 - Assert / edges: Existing trusted lifecycle/recovery/CAS tests remain green; backend is used for all managed effects including fresh observeTarget/completed-artifact Git instances; no legacy runProcess fallback for managed execution.
-- Depends on: `oro-mf-admission`, `oro-mf-git-tree`, `oro-mf-docker-scope`.
+- Depends on: `oro-mf-admission`, `oro-mf-git-tree`, `oro-mf-docker-scope`, `oro-mf-state-budget`.
 
 Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
 
@@ -325,5 +325,27 @@ Commit separately after targeted tests, lint, and review. No fake callers or che
 - Cmd: `./scripts/qualify_factory.sh --docker-context colima-oro-factory --iterations 10`.
 - Assert / edges: BuildactualCLI withrevision+binarydigest, run10realobjectives/3fixtures+allfaultandauthorityscenarios, independentlyexecutepromotedtree, no manualrestart/cleanup/approval; missingprerequisitesfail; fullgates/review and integratedmainrerun beforecutover; no broaderautonomycompletionclaim.
 - Depends on: `oro-mf-fault-supervisor`, `oro-mf-fault-promotion`, `oro-mf-claude`.
+
+Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
+
+## oro-mf-host-peer: Authenticate factory Unix socket peers
+
+- Read: cmd/oro/cmd_factory_host_peer_darwin.go, cmd/oro/cmd_factory_host_peer_other.go, cmd/oro/cmd_factory_host_exec.go.
+- Signature: factoryHostPeer(conn *net.UnixConn)(pid int,uid int,err error).
+- Test: cmd/oro/cmd_factory_host_peer_test.go:TestFactoryHostPeer.
+- Cmd: `GOTOOLCHAIN=go1.26.10 go test ./cmd/oro -run '^TestFactoryHostPeer$' -count=1 -timeout=180s`.
+- Assert / edges: Read real Darwin LOCAL_PEERCRED and LOCAL_PEERPID through SyscallConn; an owned subprocess Unix socket yields its actual PID and UID; no claimed JSON identity or ps parsing; nil/closed socket and unsupported OS fail explicitly.
+- Depends on: `oro-mf-contract`.
+
+Commit separately after targeted tests, lint, and review. No fake callers or check suppression.
+
+## oro-mf-state-budget: Bound managed SQLite storage
+
+- Read: pkg/factory/managed_storage.go, pkg/factory/managed_store.go:openManagedJournal/managedDurability, pkg/factory/managed_admission.go:admitManaged, pkg/factory/store.go:factoryStore/initialize/save.
+- Signature: openManagedFactoryStore(ctx context.Context,dir string)(*factoryStore,error); shared managed SQLite connection configuration.
+- Test: pkg/factory/managed_storage_test.go:TestManagedStateByteBudget.
+- Cmd: `GOTOOLCHAIN=go1.26.10 go test ./pkg/factory -run '^TestManagedStateByteBudget$' -count=1 -timeout=180s`.
+- Assert / edges: Every managed admission, journal and delivery snapshot opener uses verified FULL durability and bounded rollback journaling with64MiB data-page cap; no WAL growth under a pinned reader; combined managed database and transient journal bytes stay below256MiB; blocked writes fail within context/busy limit; actual interrupted transaction rolls back on reopen; legacy WAL behavior remains unchanged.
+- Depends on: `oro-mf-journal`, `oro-mf-admission`.
 
 Commit separately after targeted tests, lint, and review. No fake callers or check suppression.

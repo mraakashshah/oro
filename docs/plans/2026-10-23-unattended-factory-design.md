@@ -187,6 +187,17 @@ after terminal commit but before release, a new incarnation finishes release.
 Uncertain cleanup preserves the reservation. Cross-process tests must prove each
 case and that the next objective can use released capacity.
 
+Managed SQLite storage has a separate qualification seam before host reservation
+and controller integration. Every managed opener must use verified FULL
+durability and bounded rollback journaling, with a 64 MiB data-page cap and a
+conservative 256 MiB allowance for the database and its transient journal.
+The legacy WAL path remains unchanged. A pinned reader must cause bounded
+contention rather than retained WAL growth; an interrupted transaction must
+recover atomically. A page-count cap alone is insufficient: SQLite documents
+[WAL growth when checkpointing cannot finish](https://www.sqlite.org/wal.html#avoiding_excessively_large_wal_files).
+All managed admission, ownership, and delivery snapshot writers must use the
+same verified configuration; changing only the journal helper is insufficient.
+
 ## Durable supervision and process ownership
 
 Use dedicated SQLite tables/events for supervision and scope ownership, separate
