@@ -27,6 +27,10 @@ type sourceLimits struct {
 // extracts files or interprets Git attributes. Paths remain raw repository paths;
 // callers must not strip a transport prefix without revalidating the result.
 func decodeSourceArchive(reader io.Reader, limits sourceLimits) ([]sourceEntry, error) {
+	return decodeSourceArchiveEntries(reader, limits, nil)
+}
+
+func decodeSourceArchiveEntries(reader io.Reader, limits sourceLimits, normalize func(*tar.Header) (bool, error)) ([]sourceEntry, error) {
 	archive, err := readSourceArchive(reader, limits)
 	if err != nil {
 		return nil, err
@@ -37,19 +41,12 @@ func decodeSourceArchive(reader io.Reader, limits sourceLimits) ([]sourceEntry, 
 	var entries []sourceEntry
 	var total int64
 	for {
-		before := input.Len()
-		if err := rejectSourceSpecialHeader(archive, before); err != nil {
+		header, err := nextSourceArchiveHeader(archive, input, stream, normalize)
+		if err != nil {
 			return nil, err
 		}
-		header, err := stream.Next()
-		if errors.Is(err, io.EOF) {
-			if err := validateSourceArchiveEnd(archive, input.Len(), before); err != nil {
-				return nil, err
-			}
+		if header == nil {
 			return entries, nil
-		}
-		if err != nil {
-			return nil, fmt.Errorf("read source archive header: %w", err)
 		}
 		name, directory, err := validateSourceHeader(header, limits)
 		if err != nil {
@@ -70,6 +67,32 @@ func decodeSourceArchive(reader io.Reader, limits sourceLimits) ([]sourceEntry, 
 	}
 }
 
+func nextSourceArchiveHeader(archive []byte, input *bytes.Reader, stream *tar.Reader, normalize func(*tar.Header) (bool, error)) (*tar.Header, error) {
+	for {
+		before := input.Len()
+		if err := rejectSourceSpecialHeader(archive, before); err != nil {
+			return nil, err
+		}
+		header, err := stream.Next()
+		if errors.Is(err, io.EOF) {
+			return nil, validateSourceArchiveEnd(archive, input.Len(), before)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read source archive header: %w", err)
+		}
+		if normalize == nil {
+			return header, nil
+		}
+		skip, err := normalize(header)
+		if err != nil {
+			return nil, err
+		}
+		if !skip {
+			return header, nil
+		}
+	}
+}
+
 func readSourceEntry(stream io.Reader, header *tar.Header, name string, remainingBytes int64) (sourceEntry, error) {
 	if header.Size > remainingBytes {
 		return sourceEntry{}, errors.New("source archive exceeds expanded byte limit")
@@ -87,8 +110,7 @@ func readSourceEntry(stream io.Reader, header *tar.Header, name string, remainin
 }
 
 func readSourceArchive(reader io.Reader, limits sourceLimits) ([]byte, error) {
-	if reader == nil || limits.MaxArchiveBytes <= 0 || limits.MaxArchiveBytes == math.MaxInt64 ||
-		limits.MaxBytes <= 0 || limits.MaxFileBytes <= 0 || limits.MaxFiles <= 0 || limits.MaxPathBytes <= 0 {
+	if reader == nil || !validSourceLimits(limits) {
 		return nil, errors.New("source archive requires positive, nonoverflowing limits and a reader")
 	}
 	// Read at most one byte beyond the admitted bound, including all trailing
@@ -101,6 +123,11 @@ func readSourceArchive(reader io.Reader, limits sourceLimits) ([]byte, error) {
 		return nil, errors.New("source archive exceeds archive byte limit")
 	}
 	return archive, nil
+}
+
+func validSourceLimits(limits sourceLimits) bool {
+	return limits.MaxArchiveBytes > 0 && limits.MaxArchiveBytes != math.MaxInt64 &&
+		limits.MaxBytes > 0 && limits.MaxFileBytes > 0 && limits.MaxFiles > 0 && limits.MaxPathBytes > 0
 }
 
 func rejectSourceSpecialHeader(archive []byte, remaining int) error {
