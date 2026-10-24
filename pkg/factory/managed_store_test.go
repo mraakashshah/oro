@@ -240,6 +240,9 @@ func testManagedJournalBudgets(t *testing.T) {
 	if _, _, err := j.beginGeneration(t.Context(), "supervisor3", time.Now()); err == nil {
 		t.Fatal("supervisor start limit bypassed")
 	}
+	if err := j.setDesired(t.Context(), gen, "stopping", "budget exhausted", time.Time{}); err != nil {
+		t.Fatal(err)
+	}
 	if err := j.setDesired(t.Context(), gen, "stopped", "budget exhausted", time.Time{}); err != nil {
 		t.Fatal(err)
 	}
@@ -448,6 +451,7 @@ func testManagedJournalEpochs(t *testing.T) {
 	a.Recovery.MaxSupervisorStarts = 1
 	a.Recovery.MaxControllerStarts = 2
 	a.Recovery.MaxReconciliationInvocations = 1
+	a.Recovery.MaxCleanupInvocations = 1
 	insertJournalFixture(t, store, a)
 	j := openJournalFixture(t, root, a.ObjectiveID)
 	gen, _, err := j.beginGeneration(t.Context(), "one-supervisor", time.Now())
@@ -480,7 +484,7 @@ func testManagedJournalEpochs(t *testing.T) {
 	if _, err := j.reserveBudget(t.Context(), gen, "controller", "controller3", time.Now()); err == nil {
 		t.Fatal("controller starts exceeded frozen allowance")
 	}
-	for _, token := range []string{"epoch3", "epoch4"} {
+	for _, token := range []string{"epoch3", "epoch4", "cleanup-epoch"} {
 		if _, _, err := j.advanceEpoch(t.Context(), "one-supervisor", token, time.Now()); err != nil {
 			t.Fatal(err)
 		}

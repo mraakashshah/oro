@@ -671,6 +671,12 @@ func (authority *factoryHostSocketAuthority) RecordHello(ctx context.Context, sc
 	return nil
 }
 
+// The handshake socket grants one wrapper launch; cleanup helpers independently
+// reopen the durable core authority to obtain and verify their typed permits.
+func (*factoryHostSocketAuthority) CleanupPermit(context.Context, factory.ScopeHandle) (factory.DockerCleanupPermit, error) {
+	return factory.DockerCleanupPermit{}, errors.New("cleanup permits are unavailable through the host handshake socket")
+}
+
 func factoryHostGoMatches(response factoryHostExecGo, hello factoryHostExecHello, deadline time.Time) bool {
 	return response.Version == 1 && response.Operation == "GO" && response.RequestSHA256 == hello.RequestSHA256 &&
 		response.Scope == hello.Scope && response.PID == hello.PID && response.PGID == hello.PGID && response.Deadline.Equal(deadline)

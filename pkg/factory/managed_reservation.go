@@ -87,10 +87,7 @@ func readReservationScope(rows *sql.Rows, admission managedJournalAdmission, gen
 	if identity.ID != id || identity.Nonce != nonce || identity.Backend != backend || identity.Name != name || identity.Generation > generation {
 		return false, errors.New("reservation scope columns differ from exact ownership identity")
 	}
-	bound := admission.Deadline
-	if identity.Kind == "observer" || identity.Kind == "keeper" {
-		bound = admission.HardStop
-	}
+	bound := managedScopeLifetime(admission, identity.Kind)
 	if identity.Deadline.IsZero() || identity.Deadline.After(bound) {
 		return false, errors.New("reservation scope lifetime is invalid")
 	}

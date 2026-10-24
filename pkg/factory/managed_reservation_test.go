@@ -41,6 +41,9 @@ func TestReleasableHostReservation(t *testing.T) {
 		root, admission, store := journalFixture(t)
 		insertJournalFixture(t, store, admission)
 		journal := openJournalFixture(t, root, admission.ObjectiveID)
+		if err := journal.setDesired(t.Context(), 0, "stopping", "user-stop", time.Time{}); err != nil {
+			t.Fatal(err)
+		}
 		if err := journal.setDesired(t.Context(), 0, "stopped", "user-stop", time.Time{}); err != nil {
 			t.Fatal(err)
 		}
@@ -73,12 +76,15 @@ func testHostReleaseTerminal(t *testing.T) {
 	if _, err := fixture.journal.reserveScope(t.Context(), other, fixture.admission.Deadline, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if err := fixture.journal.setDesired(t.Context(), fixture.scope.Generation, "stopped", "completed", time.Time{}); err != nil {
+	if err := fixture.journal.setDesired(t.Context(), fixture.scope.Generation, "stopping", "completed", time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	// A revoked scope remains uncertain until the backend records retirement.
 	assertHostReservationRetained(t, fixture)
 	if err := fixture.journal.MarkQuiescent(t.Context(), other); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.journal.setDesired(t.Context(), fixture.scope.Generation, "stopped", "completed", time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	before, err := fixture.journal.supervision(t.Context())
@@ -116,10 +122,13 @@ func assertHostReservationRetained(t *testing.T, fixture hostReleaseFixture) {
 
 func stopHostReleaseFixture(t *testing.T, fixture hostReleaseFixture) {
 	t.Helper()
-	if err := fixture.journal.setDesired(t.Context(), fixture.scope.Generation, "stopped", "promotion_outcome_unknown", time.Time{}); err != nil {
+	if err := fixture.journal.setDesired(t.Context(), fixture.scope.Generation, "stopping", "promotion_outcome_unknown", time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := fixture.journal.MarkQuiescent(t.Context(), fixture.scope); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.journal.setDesired(t.Context(), fixture.scope.Generation, "stopped", "promotion_outcome_unknown", time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 }

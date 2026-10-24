@@ -156,9 +156,43 @@ type HostRuntime interface {
 type ScopeAuthority interface {
 	RecordHello(context.Context, ScopeHandle, int, int) error
 	Granted(context.Context, ScopeHandle) (bool, error)
+	CleanupPermit(context.Context, ScopeHandle) (DockerCleanupPermit, error)
 	Observe(context.Context, ScopeHandle) (ScopeObservation, error)
 	MarkQuiescent(context.Context, ScopeHandle) error
 	Close() error
+}
+
+// DockerCleanupOp is one fixed inspection or retirement operation.
+type DockerCleanupOp string
+
+// Supported cleanup operations never create or execute candidate resources.
+const (
+	DockerCleanupInspect DockerCleanupOp = "inspect"
+	DockerCleanupStop    DockerCleanupOp = "stop"
+	DockerCleanupRemove  DockerCleanupOp = "remove"
+)
+
+// DockerCleanupBinding is the trusted storage snapshot of one exact object.
+// It selects no host executable, path, endpoint, environment or command flags.
+type DockerCleanupBinding struct {
+	Kind          string            `json:"kind"`
+	Context       string            `json:"context"`
+	Name          string            `json:"name"`
+	ContainerID   string            `json:"container_id"`
+	CreatedAt     string            `json:"created_at"`
+	ImageID       string            `json:"image_id"`
+	VolumeDriver  string            `json:"volume_driver"`
+	Labels        map[string]string `json:"labels"`
+	VolumeOptions map[string]string `json:"volume_options"`
+}
+
+// DockerCleanupPermit binds one counted helper invocation to one owned target.
+type DockerCleanupPermit struct {
+	Scope     ScopeHandle          `json:"scope"`
+	Target    ScopeHandle          `json:"target"`
+	Operation DockerCleanupOp      `json:"operation"`
+	Binding   DockerCleanupBinding `json:"binding"`
+	Deadline  time.Time            `json:"deadline"`
 }
 
 // ScopeObservation exposes persisted ownership for exact-scope retirement.

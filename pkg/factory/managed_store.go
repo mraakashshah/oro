@@ -75,6 +75,10 @@ CREATE TABLE IF NOT EXISTS managed_scopes (
 CREATE TABLE IF NOT EXISTS managed_events (
  revision INTEGER PRIMARY KEY CHECK(revision>1), kind TEXT NOT NULL,
  ref TEXT NOT NULL CHECK(length(ref)<=256), body BLOB NOT NULL CHECK(length(body)<=8192)
+);
+CREATE TABLE IF NOT EXISTS managed_cleanup_permits (
+ scope_id TEXT PRIMARY KEY REFERENCES managed_scopes(id),
+ body BLOB NOT NULL CHECK(length(body)<=16384)
 );`)
 	if err != nil {
 		return fmt.Errorf("initialize managed journal: %w", err)
@@ -217,7 +221,7 @@ func loadManagedSupervision(ctx context.Context, reader managedRowReader) (manag
 		return state, fmt.Errorf("decode supervision: %w", err)
 	}
 	if state.Revision != revision || revision <= 0 || state.Generation > math.MaxInt64 ||
-		(state.DesiredState != "running" && state.DesiredState != "stopped") {
+		(state.DesiredState != "running" && state.DesiredState != "stopping" && state.DesiredState != "stopped") {
 		return state, errors.New("invalid durable supervision state")
 	}
 	return state, nil
@@ -275,7 +279,7 @@ func (j *managedJournal) mutate(ctx context.Context, kind, ref string, change fu
 	return nil
 }
 
-func reserveManagedToken(ctx context.Context, tx *sql.Tx, kind, token string, generation uint64, limit int) (bool, error) {
+func reserveManagedToken(ctx context.Context, tx *sql.Tx, kind, token string, generation uint64, limit int64) (bool, error) {
 	if !managedIdentifier(token) || generation == 0 || generation > math.MaxInt64 || limit <= 0 {
 		return false, errors.New("invalid managed reservation")
 	}
@@ -290,7 +294,7 @@ func reserveManagedToken(ctx context.Context, tx *sql.Tx, kind, token string, ge
 	if !errors.Is(err, sql.ErrNoRows) {
 		return false, fmt.Errorf("read managed reservation: %w", err)
 	}
-	var used int
+	var used int64
 	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM managed_reservations WHERE kind=?", kind).Scan(&used); err != nil {
 		return false, fmt.Errorf("count managed reservations: %w", err)
 	}
@@ -305,7 +309,7 @@ func reserveManagedToken(ctx context.Context, tx *sql.Tx, kind, token string, ge
 
 func (j *managedJournal) beginGeneration(ctx context.Context, token string, now time.Time) (generation uint64, fresh bool, err error) {
 	err = j.mutate(ctx, "supervisor", token, func(tx *sql.Tx, state *managedSupervision) (bool, error) {
-		if !managedIdentifier(token) || state.DesiredState != "running" || !now.Before(j.admission.HardStop) {
+		if !managedIdentifier(token) || state.DesiredState == "stopped" || !now.Before(j.admission.HardStop) {
 			return false, errors.New("supervisor incarnation is no longer admitted")
 		}
 		err := tx.QueryRowContext(ctx, "SELECT generation FROM managed_reservations WHERE kind='supervisor' AND token=?", token).Scan(&generation)
@@ -320,7 +324,7 @@ func (j *managedJournal) beginGeneration(ctx context.Context, token string, now 
 			return false, fmt.Errorf("read supervisor incarnation: %w", err)
 		}
 		generation = state.Generation + 1
-		fresh, err = reserveManagedToken(ctx, tx, "supervisor", token, generation, j.admission.Recovery.MaxSupervisorStarts)
+		fresh, err = reserveManagedToken(ctx, tx, "supervisor", token, generation, int64(j.admission.Recovery.MaxSupervisorStarts))
 		if err != nil {
 			return false, err
 		}
@@ -343,7 +347,7 @@ func (j *managedJournal) advanceEpoch(ctx context.Context, supervisorToken, epoc
 		if state.SupervisorToken != supervisorToken || !managedIdentifier(supervisorToken) {
 			return false, errors.New("ownership epoch requires the current admitted supervisor")
 		}
-		if err := activeManagedGeneration(state, state.Generation, now, j.admission.HardStop); err != nil {
+		if err := activeManagedRecovery(state, state.Generation, now, j.admission.HardStop); err != nil {
 			return false, err
 		}
 		var err error
@@ -366,9 +370,11 @@ func (j *managedJournal) advanceManagedEpoch(ctx context.Context, tx *sql.Tx, st
 	if !errors.Is(err, sql.ErrNoRows) {
 		return false, fmt.Errorf("read ownership epoch reservation: %w", err)
 	}
-	r := j.admission.Recovery
-	limit := r.MaxSupervisorStarts + r.MaxControllerStarts + r.MaxReconciliationInvocations
-	if _, err := reserveManagedToken(ctx, tx, "epoch", token, state.Generation+1, limit); err != nil {
+	bounds, err := managedRecordLimits(j.admission.Recovery, j.admission.Runtime)
+	if err != nil {
+		return false, err
+	}
+	if _, err := reserveManagedToken(ctx, tx, "epoch", token, state.Generation+1, bounds.Epochs); err != nil {
 		return false, err
 	}
 	if _, err := tx.ExecContext(ctx, "UPDATE managed_scopes SET phase='revoked' WHERE phase IN ('reserved','granted')"); err != nil {
@@ -396,7 +402,14 @@ func (j *managedJournal) budgetLimit(kind string) int {
 }
 
 func activeManagedGeneration(state *managedSupervision, generation uint64, now, deadline time.Time) error {
-	if generation == 0 || generation != state.Generation || state.DesiredState != "running" || !now.Before(deadline) {
+	if state.DesiredState != "running" {
+		return errors.New("managed work requires running supervision")
+	}
+	return activeManagedRecovery(state, generation, now, deadline)
+}
+
+func activeManagedRecovery(state *managedSupervision, generation uint64, now, deadline time.Time) error {
+	if generation == 0 || generation != state.Generation || state.DesiredState == "stopped" || !now.Before(deadline) {
 		return errors.New("managed ownership epoch is inactive, stale or expired")
 	}
 	return nil
@@ -405,11 +418,14 @@ func activeManagedGeneration(state *managedSupervision, generation uint64, now, 
 func (j *managedJournal) reserveBudget(ctx context.Context, generation uint64, kind, token string, now time.Time) (bool, error) {
 	var fresh bool
 	err := j.mutate(ctx, "reserve-"+kind, token, func(tx *sql.Tx, state *managedSupervision) (bool, error) {
-		deadline := j.admission.Deadline
+		active := activeManagedGeneration(state, generation, now, j.admission.Deadline)
 		if kind == "reconciliation" {
-			deadline = j.admission.HardStop
+			active = activeManagedRecovery(state, generation, now, j.admission.HardStop)
 		}
-		if err := activeManagedGeneration(state, generation, now, deadline); err != nil {
+		if active != nil {
+			return false, active
+		}
+		if err := requireNoManagedCleanup(ctx, tx); err != nil {
 			return false, err
 		}
 		if kind == "controller" && now.Before(state.NextStart) {
@@ -425,7 +441,7 @@ func (j *managedJournal) reserveBudget(ctx context.Context, generation uint64, k
 			}
 		}
 		var err error
-		fresh, err = reserveManagedToken(ctx, tx, kind, token, generation, j.budgetLimit(kind))
+		fresh, err = reserveManagedToken(ctx, tx, kind, token, generation, int64(j.budgetLimit(kind)))
 		return fresh, err
 	})
 	return fresh && err == nil, err
@@ -484,11 +500,18 @@ func (j *managedJournal) reserveScope(ctx context.Context, scope ScopeHandle, de
 }
 
 func (j *managedJournal) checkScopeAdmission(ctx context.Context, tx *sql.Tx, state *managedSupervision, scope ScopeHandle, deadline, now time.Time) error {
-	bound := j.admission.Deadline
-	if scope.Kind == "keeper" || scope.Kind == "observer" {
-		bound = j.admission.HardStop
+	if scope.Kind == "cleanup" {
+		return errors.New("cleanup scope requires an atomic typed permit reservation")
 	}
-	if err := activeManagedGeneration(state, scope.Generation, now, bound); err != nil {
+	bound := managedScopeLifetime(j.admission, scope.Kind)
+	active := activeManagedGeneration(state, scope.Generation, now, j.admission.Deadline)
+	if scope.Kind == "observer" {
+		active = activeManagedRecovery(state, scope.Generation, now, bound)
+	}
+	if active != nil {
+		return active
+	}
+	if err := requireNoManagedCleanup(ctx, tx); err != nil {
 		return err
 	}
 	if !deadline.After(now) || deadline.After(bound) {
@@ -540,8 +563,13 @@ func (j *managedJournal) RecordHello(ctx context.Context, scope ScopeHandle, pid
 		if err != nil {
 			return false, err
 		}
-		if err := activeManagedGeneration(state, scope.Generation, time.Now(), record.Deadline); err != nil {
+		if err := j.activeScope(state, record, time.Now()); err != nil {
 			return false, err
+		}
+		if scope.Kind == "cleanup" {
+			if _, err := j.loadCleanupPermit(ctx, tx, state, scope); err != nil {
+				return false, err
+			}
 		}
 		if record.Phase == "granted" && record.PID == pid && record.PGID == pgid {
 			return false, nil
@@ -564,7 +592,14 @@ func (j *managedJournal) Granted(ctx context.Context, scope ScopeHandle) (bool, 
 		if err != nil {
 			return false, err
 		}
-		granted = record.Phase == "granted" && activeManagedGeneration(state, scope.Generation, time.Now(), record.Deadline) == nil
+		granted = record.Phase == "granted" && j.activeScope(state, record, time.Now()) == nil
+		if granted && scope.Kind == "cleanup" {
+			_, err := j.loadCleanupPermit(ctx, tx, state, scope)
+			if err != nil {
+				granted = false
+				return false, err
+			}
+		}
 		return false, nil
 	})
 	return granted, err
@@ -628,22 +663,60 @@ func (j *managedJournal) scopes(ctx context.Context) ([]managedScopeRecord, erro
 }
 
 func (j *managedJournal) setDesired(ctx context.Context, generation uint64, desired, reason string, next time.Time) error {
-	if (desired != "running" && desired != "stopped") || len(reason) > 4096 || strings.ContainsRune(reason, 0) || next.After(j.admission.HardStop) {
+	if (desired != "running" && desired != "stopping" && desired != "stopped") || len(reason) > 4096 || strings.ContainsRune(reason, 0) || next.After(j.admission.HardStop) {
 		return errors.New("invalid bounded supervision outcome or backoff")
 	}
 	return j.mutate(ctx, "desired-state", desired, func(tx *sql.Tx, state *managedSupervision) (bool, error) {
-		if state.Generation != generation || (state.DesiredState == "stopped" && desired != "stopped") {
+		if state.Generation != generation || (state.DesiredState != "running" && desired == "running") {
 			return false, errors.New("stale generation or terminal supervision state")
 		}
 		if state.DesiredState == desired && state.Reason == reason && state.NextStart.Equal(next) {
 			return false, nil
 		}
-		state.DesiredState, state.Reason, state.NextStart = desired, reason, next.UTC()
-		if desired == "stopped" {
-			if _, err := tx.ExecContext(ctx, "UPDATE managed_scopes SET phase='revoked' WHERE phase IN ('reserved','granted')"); err != nil {
-				return false, fmt.Errorf("revoke stopped supervision: %w", err)
-			}
+		if err := j.prepareDesired(ctx, tx, state, desired); err != nil {
+			return false, err
 		}
+		state.DesiredState, state.Reason, state.NextStart = desired, reason, next.UTC()
 		return true, nil
 	})
+}
+
+func (j *managedJournal) prepareDesired(ctx context.Context, tx *sql.Tx, state *managedSupervision, desired string) error {
+	if state.DesiredState == "stopped" {
+		return errors.New("stopped supervision is permanently sealed")
+	}
+	if desired == "stopped" {
+		if state.DesiredState != "stopping" {
+			return errors.New("final stop requires stopping supervision")
+		}
+		quiet, err := reservationScopesQuiescent(ctx, tx, j.admission, state.Generation)
+		if err != nil || !quiet {
+			return errors.Join(errors.New("final stop requires every exact scope quiescent"), err)
+		}
+	}
+	if desired == "stopping" && state.DesiredState == "running" {
+		if _, err := tx.ExecContext(ctx, "UPDATE managed_scopes SET phase='revoked' WHERE phase IN ('reserved','granted')"); err != nil {
+			return fmt.Errorf("revoke stopping supervision: %w", err)
+		}
+	}
+	return nil
+}
+
+func managedScopeLifetime(a managedJournalAdmission, kind string) time.Time {
+	switch kind {
+	case "observer", "keeper", "cleanup":
+		return a.HardStop
+	default:
+		return a.Deadline
+	}
+}
+
+func (j *managedJournal) activeScope(state *managedSupervision, record managedScopeRecord, now time.Time) error {
+	if record.Kind == "observer" || record.Kind == "cleanup" {
+		return activeManagedRecovery(state, record.Generation, now, record.Deadline)
+	}
+	if err := activeManagedGeneration(state, record.Generation, now, j.admission.Deadline); err != nil {
+		return err
+	}
+	return activeManagedGeneration(state, record.Generation, now, record.Deadline)
 }

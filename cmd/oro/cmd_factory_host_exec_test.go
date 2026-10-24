@@ -25,6 +25,13 @@ import (
 )
 
 func TestFactoryHostExec(t *testing.T) {
+	t.Run("handshake socket has no cleanup permit authority", func(t *testing.T) {
+		authority := &factoryHostSocketAuthority{}
+		permit, err := authority.CleanupPermit(t.Context(), factory.ScopeHandle{})
+		if err == nil || !reflect.DeepEqual(permit, factory.DockerCleanupPermit{}) {
+			t.Fatalf("handshake socket supplied cleanup authority: %+v %v", permit, err)
+		}
+	})
 	t.Run("hidden command is registered", func(t *testing.T) {
 		command, _, err := newFactoryCmd().Find([]string{"_host-exec"})
 		if err != nil || command.Name() != "_host-exec" || !command.Hidden {
@@ -397,6 +404,10 @@ func (a *factoryHostExecTestAuthority) RecordHello(_ context.Context, _ factory.
 func (a *factoryHostExecTestAuthority) Granted(context.Context, factory.ScopeHandle) (bool, error) {
 	time.Sleep(a.grantDelay)
 	return a.grant, nil
+}
+
+func (*factoryHostExecTestAuthority) CleanupPermit(context.Context, factory.ScopeHandle) (factory.DockerCleanupPermit, error) {
+	return factory.DockerCleanupPermit{}, errors.New("test handshake authority does not supply cleanup permits")
 }
 
 func (a *factoryHostExecTestAuthority) Observe(context.Context, factory.ScopeHandle) (factory.ScopeObservation, error) {
