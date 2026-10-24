@@ -1,6 +1,6 @@
 # Unattended factory task graph
 
-Design: [unattended factory design](2026-10-23-unattended-factory-design.md), Gate 1 PASS. Gate 2 PASS after independent review and two contract repairs. Native parent: `oro-factory-managed`, under `oro-factory-autonomy`. There are now 58 tracked nodes below the managed epic, including host capacity's seven children, cleanup runtime's seven children and two wiring grandchildren, container transport/readiness, managed file identity, and CLI start's immutable admission view. Later integration findings remain qualification blockers until their protocols and tests are accepted.
+Design: [unattended factory design](2026-10-23-unattended-factory-design.md), Gate 1 PASS. Gate 2 PASS after independent review and two contract repairs. Native parent: `oro-factory-managed`, under `oro-factory-autonomy`. There are now 61 tracked nodes below the managed epic, including host capacity's seven children, cleanup runtime's seven children and two wiring grandchildren, container transport/readiness, managed file identity, and CLI start's immutable admission view. Later integration findings remain qualification blockers until their protocols and tests are accepted.
 
 Every task inherits the design's authority, budget, platform, and operational requirements. Root owns Git integration; implementers use test-first RED/GREEN and report frozen files. Keep full-gate blockers visible until resolved. Component success does not close the parent.
 
@@ -747,3 +747,20 @@ Additional dependencies: `oro-mf-host-old-core`, `oro-mf-source-links`, `oro-mf-
 - Signature: func TestDockerSourceLinksNative(t *testing.T), Darwin-qualified newfile only.
 - Edges: disabled integration skips beforeeffects; enabled missingbackend/image/pin fails. No-a/-L/syntheticoutput/hostextraction/ambientcontext; live stdout1MiB/stderr4KiB caps; <=32commands/work60s/percall10s/cleanup30s, joined children. Lostack/identitymismatch retains uncertainty and fails, never broadcleanup/retrycreate/absence-as-drain. This is nativecodec proof, not factory/storage/recovery qualification.
 - Depends on: `oro-mf-source-links`, `oro-mf-docker-links`; `oro-mf-qualification` also depends on this capture.
+
+## Managed Docker volume implementation children
+
+The [reviewed volume plan](2026-10-24-managed-docker-volume-v1.md) pins the full
+shared lifecycle, exact signatures, commands, tests and failure contracts. These
+children extend `oro-mf-docker-storage`; its native acceptance remains unchanged.
+
+| Task | Component | Dependencies |
+| --- | --- | --- |
+| `oro-mf-volume-intent` | Atomic usable v1 intents; replay cannot recreate missing authority | `oro-mf-journal`, `oro-mf-cleanup-runtime` |
+| `oro-mf-volume-adapter` | Private exact create/inspect calls through HostRuntime | `oro-mf-volume-intent`, `oro-mf-host-scope`, `oro-mf-docker-time` |
+| `oro-mf-volume-config` | Verified immutable CLI configuration reader | `oro-mf-volume-adapter`, `oro-mf-admission-view`, `oro-mf-runtime-config` |
+
+Each child has one test file, bounded production scope and explicit accounting.
+No generic acknowledgment API or second publication receipt protocol is required.
+Unknown post-dispatch daemon work still requires a qualified recovery mechanism;
+these components do not establish unattended storage or factory readiness.
