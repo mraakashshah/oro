@@ -4,6 +4,12 @@ Paused at the user's request on 2026-10-24. Work is preserved on
 `feature/factory-core`. This checkpoint is unfinished implementation work;
 the autonomous factory has not been qualified end to end.
 
+For an extended-break handoff, start with the tracked
+[resume guide](2026-10-24-factory-resume-guide.md). It preserves the subsequent
+Astra/Terra role clarification, proposed delivery experiment, code entry points,
+task inventory, and research/evidence that previously lived only in temporary
+storage. Implementation remains paused.
+
 ## Accepted evidence
 
 - `bc4dca68`: actual production image-builder and produced watchdog qualification

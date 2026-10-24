@@ -1,0 +1,52 @@
+{
+  "fixture": "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf",
+  "sentinel_unchanged": true,
+  "all_recorded_host_calls_retired": true,
+  "independent_absence": [
+    {
+      "kind": "container",
+      "target": "a30ef71ed0834100e00717e904945779c7e2f8c60f29bfa30b8ae348e29c6a92",
+      "exit_code": 1,
+      "stdout": "\n",
+      "stderr": "Error response from daemon: No such container: a30ef71ed0834100e00717e904945779c7e2f8c60f29bfa30b8ae348e29c6a92"
+    },
+    {
+      "kind": "volume",
+      "target": "oro-guard-native-73164a1597a3e2e24c8119d060a6ddbf-source",
+      "exit_code": 1,
+      "stdout": "\n",
+      "stderr": "Error response from daemon: get oro-guard-native-73164a1597a3e2e24c8119d060a6ddbf-source: no such volume"
+    },
+    {
+      "kind": "container",
+      "target": "989343cba57a3658a033bb9f68bf145b337d01f15e2efb75235575b19420a64e",
+      "exit_code": 1,
+      "stdout": "\n",
+      "stderr": "Error response from daemon: No such container: 989343cba57a3658a033bb9f68bf145b337d01f15e2efb75235575b19420a64e"
+    },
+    {
+      "kind": "image",
+      "target": "sha256:d986c2a31311b84c7a14f3f713bea589efe67e5e17193b7857095a23f30634f2",
+      "exit_code": 1,
+      "stdout": "\n",
+      "stderr": "Error response from daemon: No such image: sha256:d986c2a31311b84c7a14f3f713bea589efe67e5e17193b7857095a23f30634f2"
+    }
+  ],
+  "native_calls": 45,
+  "additional_readonly_calls": 5,
+  "root_checker_correction": "First absence probe emitted one formatting newline; strict blank-line plus exact CLI refusal is accepted. No resource or test failure.",
+  "positive_diagnostics": [
+    {
+      "artifact": "call-24.json",
+      "stdout": "UID1000_WRITABLE",
+      "retired": true
+    },
+    {
+      "artifact": "call-25.json",
+      "stdout": "ATTACKS_DENIED",
+      "retired": true
+    }
+  ],
+  "finish_after_deadline_seconds": 0.002534,
+  "detached_writer": "writer_pid=52 heartbeat_before=10 heartbeat_after=25"
+}

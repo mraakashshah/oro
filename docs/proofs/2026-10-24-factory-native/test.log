@@ -1,0 +1,6 @@
+=== RUN   TestGuardImageNative
+    native_test.go:127: native evidence=/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf calls=45 original_hard_stop=2026-10-24T10:15:39.175018-04:00
+--- PASS: TestGuardImageNative (36.15s)
+PASS
+coverage: 69.7% of statements
+ok  	oro/cmd/oro-factory-image	37.372s	coverage: 69.7% of statements

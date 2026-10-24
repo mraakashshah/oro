@@ -1,0 +1,4 @@
+FROM golang@sha256:27f2d3b83cfc5803c8078f8e730af0f7c431bf067afaec8f60a36fb763187cba
+COPY guard /usr/local/bin/oro-factory-guard
+USER 65534:65534
+ENTRYPOINT ["/usr/local/bin/oro-factory-guard"]

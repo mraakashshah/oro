@@ -1,0 +1,1568 @@
+{
+  "Observations": {
+    "autonomous_wait_started": "2026-10-24T10:12:14.664422-04:00",
+    "colima": [
+      "/opt/homebrew/Cellar/colima/0.10.3/bin/colima",
+      "d4397bbf2f42c11484abe96c08899e0f60828822460df602a4388a512e410774"
+    ],
+    "derived_image_absent": true,
+    "detached_writer": "writer_pid=52 heartbeat_before=10 heartbeat_after=25",
+    "elapsed": "36.142386584s",
+    "guard_deadline": "2026-10-24T14:12:43.903622Z",
+    "guard_expired": {
+      "Id": "989343cba57a3658a033bb9f68bf145b337d01f15e2efb75235575b19420a64e",
+      "Name": "/oro-guard-native-73164a1597a3e2e24c8119d060a6ddbf-guard",
+      "Created": "2026-10-24T14:12:14.006158606Z",
+      "CreatedAt": "",
+      "Image": "sha256:d986c2a31311b84c7a14f3f713bea589efe67e5e17193b7857095a23f30634f2",
+      "Driver": "overlayfs",
+      "Labels": null,
+      "Options": null,
+      "RepoTags": null,
+      "Config": {
+        "User": "65534:65534",
+        "Labels": {
+          "dev.getoro.factory.guard-build": "11dc0060bbf9b17b35df1bd133fb6673",
+          "dev.getoro.factory.native-guard": "73164a1597a3e2e24c8119d060a6ddbf",
+          "dev.getoro.factory.native-role": "guard"
+        },
+        "Entrypoint": [
+          "/usr/local/bin/oro-factory-guard"
+        ],
+        "Cmd": [
+          "--deadline",
+          "2026-10-24T14:12:43.903622Z"
+        ]
+      },
+      "State": {
+        "Status": "exited",
+        "StartedAt": "2026-10-24T14:12:14.128376004Z",
+        "FinishedAt": "2026-10-24T14:12:43.90615659Z",
+        "Error": "",
+        "Running": false,
+        "Paused": false,
+        "Restarting": false,
+        "Dead": false,
+        "OOMKilled": false,
+        "Pid": 0,
+        "ExitCode": 0
+      },
+      "HostConfig": {
+        "ReadonlyRootfs": true,
+        "Privileged": false,
+        "NetworkMode": "none",
+        "PidMode": "",
+        "IpcMode": "private",
+        "CgroupnsMode": "private",
+        "Memory": 67108864,
+        "MemorySwap": 67108864,
+        "NanoCpus": 500000000,
+        "PidsLimit": 64,
+        "ShmSize": 1048576,
+        "Binds": null,
+        "CapAdd": null,
+        "CapDrop": [
+          "ALL"
+        ],
+        "SecurityOpt": [
+          "no-new-privileges"
+        ],
+        "Tmpfs": {
+          "/tmp": "rw,nosuid,nodev,noexec,size=4194304,nr_inodes=1024,mode=1777"
+        },
+        "LogConfig": {
+          "Type": "none"
+        }
+      },
+      "Mounts": [
+        {
+          "Type": "volume",
+          "Name": "oro-guard-native-73164a1597a3e2e24c8119d060a6ddbf-source",
+          "Destination": "/source",
+          "RW": true
+        }
+      ]
+    },
+    "hard_stop": "2026-10-24T10:15:39.175018-04:00",
+    "host_available_bytes": 209089282048,
+    "inputs": {
+      "Guard": "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-inputs-4odwbdb_/guard",
+      "GuardSHA256": "651b3fb967efb3c896c212ae7f27dc1d98b16e0c62a44255aa60d7b60e1eef78",
+      "Docker": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "DockerSHA256": "5682ae92519b289f0340461c963af2031e6c876c8ffb2a8b2459bfde6316bda0",
+      "Context": "colima-oro-factory",
+      "Endpoint": "unix:///Users/as21/.colima/oro-factory/docker.sock",
+      "Output": "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/build"
+    },
+    "passed": true,
+    "ready_and_client_retired": "2026-10-24T10:12:14.124074-04:00",
+    "seed_headers": [
+      {
+        "Typeflag": 53,
+        "Name": "nested/",
+        "Linkname": "",
+        "Size": 0,
+        "Mode": 493,
+        "Uid": 1000,
+        "Gid": 1000,
+        "Uname": "",
+        "Gname": "",
+        "ModTime": "1969-12-31T19:00:00-05:00",
+        "AccessTime": "0001-01-01T00:00:00Z",
+        "ChangeTime": "0001-01-01T00:00:00Z",
+        "Devmajor": 0,
+        "Devminor": 0,
+        "Xattrs": null,
+        "PAXRecords": null,
+        "Format": 2
+      },
+      {
+        "Typeflag": 48,
+        "Name": "nested/original.txt",
+        "Linkname": "",
+        "Size": 9,
+        "Mode": 420,
+        "Uid": 1000,
+        "Gid": 1000,
+        "Uname": "",
+        "Gname": "",
+        "ModTime": "1969-12-31T19:00:00-05:00",
+        "AccessTime": "0001-01-01T00:00:00Z",
+        "ChangeTime": "0001-01-01T00:00:00Z",
+        "Devmajor": 0,
+        "Devminor": 0,
+        "Xattrs": null,
+        "PAXRecords": null,
+        "Format": 2
+      },
+      {
+        "Typeflag": 48,
+        "Name": "seed.txt",
+        "Linkname": "",
+        "Size": 5,
+        "Mode": 420,
+        "Uid": 1000,
+        "Gid": 1000,
+        "Uname": "",
+        "Gname": "",
+        "ModTime": "1969-12-31T19:00:00-05:00",
+        "AccessTime": "0001-01-01T00:00:00Z",
+        "ChangeTime": "0001-01-01T00:00:00Z",
+        "Devmajor": 0,
+        "Devminor": 0,
+        "Xattrs": null,
+        "PAXRecords": null,
+        "Format": 2
+      }
+    ],
+    "seed_sha256": "ab22e5ac01971e32169cbe7d2d2340777ae53c30d34182ecb8465a855aa30ac8",
+    "sentinel_after": {
+      "Id": "a30ef71ed0834100e00717e904945779c7e2f8c60f29bfa30b8ae348e29c6a92",
+      "Name": "/oro-guard-native-73164a1597a3e2e24c8119d060a6ddbf-sentinel",
+      "Created": "2026-10-24T14:12:13.528779819Z",
+      "CreatedAt": "",
+      "Image": "sha256:27f2d3b83cfc5803c8078f8e730af0f7c431bf067afaec8f60a36fb763187cba",
+      "Driver": "overlayfs",
+      "Labels": null,
+      "Options": null,
+      "RepoTags": null,
+      "Config": {
+        "User": "65534:65534",
+        "Labels": {
+          "dev.getoro.factory.native-guard": "73164a1597a3e2e24c8119d060a6ddbf",
+          "dev.getoro.factory.native-role": "sentinel"
+        },
+        "Entrypoint": [
+          "/bin/sleep"
+        ],
+        "Cmd": [
+          "120"
+        ]
+      },
+      "State": {
+        "Status": "running",
+        "StartedAt": "2026-10-24T14:12:13.650887582Z",
+        "FinishedAt": "0001-01-01T00:00:00Z",
+        "Error": "",
+        "Running": true,
+        "Paused": false,
+        "Restarting": false,
+        "Dead": false,
+        "OOMKilled": false,
+        "Pid": 4545,
+        "ExitCode": 0
+      },
+      "HostConfig": {
+        "ReadonlyRootfs": true,
+        "Privileged": false,
+        "NetworkMode": "none",
+        "PidMode": "",
+        "IpcMode": "private",
+        "CgroupnsMode": "private",
+        "Memory": 67108864,
+        "MemorySwap": 67108864,
+        "NanoCpus": 500000000,
+        "PidsLimit": 64,
+        "ShmSize": 1048576,
+        "Binds": null,
+        "CapAdd": null,
+        "CapDrop": [
+          "ALL"
+        ],
+        "SecurityOpt": [
+          "no-new-privileges"
+        ],
+        "Tmpfs": {
+          "/tmp": "rw,nosuid,nodev,noexec,size=4194304,nr_inodes=1024,mode=1777"
+        },
+        "LogConfig": {
+          "Type": "none"
+        }
+      },
+      "Mounts": []
+    },
+    "sentinel_before": {
+      "Id": "a30ef71ed0834100e00717e904945779c7e2f8c60f29bfa30b8ae348e29c6a92",
+      "Name": "/oro-guard-native-73164a1597a3e2e24c8119d060a6ddbf-sentinel",
+      "Created": "2026-10-24T14:12:13.528779819Z",
+      "CreatedAt": "",
+      "Image": "sha256:27f2d3b83cfc5803c8078f8e730af0f7c431bf067afaec8f60a36fb763187cba",
+      "Driver": "overlayfs",
+      "Labels": null,
+      "Options": null,
+      "RepoTags": null,
+      "Config": {
+        "User": "65534:65534",
+        "Labels": {
+          "dev.getoro.factory.native-guard": "73164a1597a3e2e24c8119d060a6ddbf",
+          "dev.getoro.factory.native-role": "sentinel"
+        },
+        "Entrypoint": [
+          "/bin/sleep"
+        ],
+        "Cmd": [
+          "120"
+        ]
+      },
+      "State": {
+        "Status": "running",
+        "StartedAt": "2026-10-24T14:12:13.650887582Z",
+        "FinishedAt": "0001-01-01T00:00:00Z",
+        "Error": "",
+        "Running": true,
+        "Paused": false,
+        "Restarting": false,
+        "Dead": false,
+        "OOMKilled": false,
+        "Pid": 4545,
+        "ExitCode": 0
+      },
+      "HostConfig": {
+        "ReadonlyRootfs": true,
+        "Privileged": false,
+        "NetworkMode": "none",
+        "PidMode": "",
+        "IpcMode": "private",
+        "CgroupnsMode": "private",
+        "Memory": 67108864,
+        "MemorySwap": 67108864,
+        "NanoCpus": 500000000,
+        "PidsLimit": 64,
+        "ShmSize": 1048576,
+        "Binds": null,
+        "CapAdd": null,
+        "CapDrop": [
+          "ALL"
+        ],
+        "SecurityOpt": [
+          "no-new-privileges"
+        ],
+        "Tmpfs": {
+          "/tmp": "rw,nosuid,nodev,noexec,size=4194304,nr_inodes=1024,mode=1777"
+        },
+        "LogConfig": {
+          "Type": "none"
+        }
+      },
+      "Mounts": []
+    }
+  },
+  "Calls": [
+    {
+      "Program": "/opt/homebrew/Cellar/colima/0.10.3/bin/colima",
+      "Args": [
+        "-p",
+        "oro-factory",
+        "ssh",
+        "--",
+        "df",
+        "-Pk",
+        "/var/lib/docker"
+      ],
+      "Started": "2026-10-24T10:12:09.252055-04:00",
+      "Finished": "2026-10-24T10:12:09.494959-04:00",
+      "PID": 37177,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "b52815dc97eba1379c9c4ed61effc01155b8e8ce3c8874df263911f49f88ae07",
+      "Stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Error": ""
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/colima/0.10.3/bin/colima",
+      "Args": [
+        "-p",
+        "oro-factory",
+        "ssh",
+        "--",
+        "cat",
+        "/proc/meminfo"
+      ],
+      "Started": "2026-10-24T10:12:09.509836-04:00",
+      "Finished": "2026-10-24T10:12:09.612497-04:00",
+      "PID": 37188,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "93c2c283fba60044a1f90c3b3b5934694673647da0ca894e6c6b13077439b149",
+      "Stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Error": ""
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "info",
+        "--format",
+        "{{.OSType}}/{{.Architecture}}"
+      ],
+      "Started": "2026-10-24T10:12:09.639397-04:00",
+      "Finished": "2026-10-24T10:12:09.927066-04:00",
+      "PID": 37199,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "afc95e0482eccb7b8a13df7f544866870b9863a31055ddf48f938817d8e2e7ff",
+      "Stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Error": ""
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "version",
+        "--format",
+        "{{json .}}"
+      ],
+      "Started": "2026-10-24T10:12:09.956531-04:00",
+      "Finished": "2026-10-24T10:12:09.976197-04:00",
+      "PID": 37200,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "f5441d4b4981ebaef9425ed2d07a78334579bef97097985775f446495f84c7f4",
+      "Stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Error": ""
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "image",
+        "inspect",
+        "--format",
+        "{{json .}}",
+        "golang@sha256:27f2d3b83cfc5803c8078f8e730af0f7c431bf067afaec8f60a36fb763187cba"
+      ],
+      "Started": "2026-10-24T10:12:13.248873-04:00",
+      "Finished": "2026-10-24T10:12:13.290729-04:00",
+      "PID": 37211,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "29e0a58549b8f242f9d3ed700a498e3572fa40ba4281ca2e56441988b3dbd57b",
+      "Stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Error": ""
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "image",
+        "inspect",
+        "--format",
+        "{{json .}}",
+        "sha256:d986c2a31311b84c7a14f3f713bea589efe67e5e17193b7857095a23f30634f2"
+      ],
+      "Started": "2026-10-24T10:12:13.321819-04:00",
+      "Finished": "2026-10-24T10:12:13.343911-04:00",
+      "PID": 37222,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "9ae8d632893d282f55bd8388e88f793c0f2615fc9f289b6eafe9bd00c3868c68",
+      "Stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Error": ""
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "image",
+        "inspect",
+        "--format",
+        "{{json .}}",
+        "sha256:27f2d3b83cfc5803c8078f8e730af0f7c431bf067afaec8f60a36fb763187cba"
+      ],
+      "Started": "2026-10-24T10:12:13.37749-04:00",
+      "Finished": "2026-10-24T10:12:13.410424-04:00",
+      "PID": 37229,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "29e0a58549b8f242f9d3ed700a498e3572fa40ba4281ca2e56441988b3dbd57b",
+      "Stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Error": ""
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "create",
+        "--pull=never",
+        "--name",
+        "oro-guard-native-73164a1597a3e2e24c8119d060a6ddbf-sentinel",
+        "--label",
+        "dev.getoro.factory.native-guard=73164a1597a3e2e24c8119d060a6ddbf",
+        "--label",
+        "dev.getoro.factory.native-role=sentinel",
+        "--network",
+        "none",
+        "--read-only",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--cgroupns",
+        "private",
+        "--ipc",
+        "private",
+        "--memory",
+        "64m",
+        "--memory-swap",
+        "64m",
+        "--cpus",
+        "0.5",
+        "--pids-limit",
+        "64",
+        "--log-driver",
+        "none",
+        "--shm-size",
+        "1m",
+        "--tmpfs",
+        "/tmp:rw,nosuid,nodev,noexec,size=4194304,nr_inodes=1024,mode=1777",
+        "--user",
+        "65534:65534",
+        "--entrypoint",
+        "/bin/sleep",
+        "sha256:27f2d3b83cfc5803c8078f8e730af0f7c431bf067afaec8f60a36fb763187cba",
+        "120"
+      ],
+      "Started": "2026-10-24T10:12:13.448033-04:00",
+      "Finished": "2026-10-24T10:12:13.487008-04:00",
+      "PID": 37230,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "1766961d93d93d8a4d1bf694832e16c2509d2369e4b4178c7297a6b819d41520",
+      "Stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Error": ""
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "container",
+        "inspect",
+        "--format",
+        "{{json .}}",
+        "a30ef71ed0834100e00717e904945779c7e2f8c60f29bfa30b8ae348e29c6a92"
+      ],
+      "Started": "2026-10-24T10:12:13.515198-04:00",
+      "Finished": "2026-10-24T10:12:13.531495-04:00",
+      "PID": 37231,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "78eb716a09c4c5bc623e6155c1e55897770c33a2f7864a7f89348578dac5e63f",
+      "Stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Error": ""
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "start",
+        "a30ef71ed0834100e00717e904945779c7e2f8c60f29bfa30b8ae348e29c6a92"
+      ],
+      "Started": "2026-10-24T10:12:13.572243-04:00",
+      "Finished": "2026-10-24T10:12:13.645956-04:00",
+      "PID": 37232,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "1766961d93d93d8a4d1bf694832e16c2509d2369e4b4178c7297a6b819d41520",
+      "Stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Error": ""
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "container",
+        "inspect",
+        "--format",
+        "{{json .}}",
+        "a30ef71ed0834100e00717e904945779c7e2f8c60f29bfa30b8ae348e29c6a92"
+      ],
+      "Started": "2026-10-24T10:12:13.674269-04:00",
+      "Finished": "2026-10-24T10:12:13.690773-04:00",
+      "PID": 37233,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "250980d1713349768a53cd158e1e12624427195ced41b786086df4b052f19011",
+      "Stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Error": ""
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "volume",
+        "inspect",
+        "--format",
+        "{{json .}}",
+        "oro-guard-native-73164a1597a3e2e24c8119d060a6ddbf-source"
+      ],
+      "Started": "2026-10-24T10:12:13.721652-04:00",
+      "Finished": "2026-10-24T10:12:13.737172-04:00",
+      "PID": 37234,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "Stderr": "c4f11415ee358459b83bd62a161cf2551a9fb82aa3afed94d46f985a1ff38789",
+      "Error": "exit status 1"
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "volume",
+        "create",
+        "--driver",
+        "local",
+        "--opt",
+        "type=tmpfs",
+        "--opt",
+        "device=tmpfs",
+        "--opt",
+        "o=size=1048576,nr_inodes=32,uid=1000,gid=1000",
+        "--label",
+        "dev.getoro.factory.native-guard=73164a1597a3e2e24c8119d060a6ddbf",
+        "--label",
+        "dev.getoro.factory.native-role=source",
+        "oro-guard-native-73164a1597a3e2e24c8119d060a6ddbf-source"
+      ],
+      "Started": "2026-10-24T10:12:13.773596-04:00",
+      "Finished": "2026-10-24T10:12:13.792156-04:00",
+      "PID": 37235,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "12fe436e59347ece1709e212f1d3529a2d3e602968245afc498a3ccf3f4b446c",
+      "Stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Error": ""
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "volume",
+        "inspect",
+        "--format",
+        "{{json .}}",
+        "oro-guard-native-73164a1597a3e2e24c8119d060a6ddbf-source"
+      ],
+      "Started": "2026-10-24T10:12:13.820098-04:00",
+      "Finished": "2026-10-24T10:12:13.836699-04:00",
+      "PID": 37236,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "7e15d277ac4f88bf4d3c40ed3c18f2b45da24c74ed5d79c6c092faeddb8f847d",
+      "Stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Error": ""
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "image",
+        "inspect",
+        "--format",
+        "{{json .}}",
+        "sha256:d986c2a31311b84c7a14f3f713bea589efe67e5e17193b7857095a23f30634f2"
+      ],
+      "Started": "2026-10-24T10:12:13.872759-04:00",
+      "Finished": "2026-10-24T10:12:13.896312-04:00",
+      "PID": 37238,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "9ae8d632893d282f55bd8388e88f793c0f2615fc9f289b6eafe9bd00c3868c68",
+      "Stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Error": ""
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "create",
+        "--pull=never",
+        "--name",
+        "oro-guard-native-73164a1597a3e2e24c8119d060a6ddbf-guard",
+        "--label",
+        "dev.getoro.factory.guard-build=11dc0060bbf9b17b35df1bd133fb6673",
+        "--label",
+        "dev.getoro.factory.native-guard=73164a1597a3e2e24c8119d060a6ddbf",
+        "--label",
+        "dev.getoro.factory.native-role=guard",
+        "--network",
+        "none",
+        "--read-only",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--cgroupns",
+        "private",
+        "--ipc",
+        "private",
+        "--memory",
+        "64m",
+        "--memory-swap",
+        "64m",
+        "--cpus",
+        "0.5",
+        "--pids-limit",
+        "64",
+        "--log-driver",
+        "none",
+        "--shm-size",
+        "1m",
+        "--tmpfs",
+        "/tmp:rw,nosuid,nodev,noexec,size=4194304,nr_inodes=1024,mode=1777",
+        "--user",
+        "65534:65534",
+        "--mount",
+        "type=volume,src=oro-guard-native-73164a1597a3e2e24c8119d060a6ddbf-source,dst=/source,volume-nocopy",
+        "sha256:d986c2a31311b84c7a14f3f713bea589efe67e5e17193b7857095a23f30634f2",
+        "--deadline",
+        "2026-10-24T14:12:43.903622Z"
+      ],
+      "Started": "2026-10-24T10:12:13.932003-04:00",
+      "Finished": "2026-10-24T10:12:13.964552-04:00",
+      "PID": 37239,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "4e2cbaaa0216e6eac95755e5e4b2936d4a8a2d18983d14a77eb33224a6dba295",
+      "Stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Error": ""
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "container",
+        "inspect",
+        "--format",
+        "{{json .}}",
+        "989343cba57a3658a033bb9f68bf145b337d01f15e2efb75235575b19420a64e"
+      ],
+      "Started": "2026-10-24T10:12:13.995361-04:00",
+      "Finished": "2026-10-24T10:12:14.012046-04:00",
+      "PID": 37240,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "e14c3ae1ce1e55d60e2f65595ebd7cf2723d9f16fa792ea88904fe3f149c7d80",
+      "Stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Error": ""
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "start",
+        "--attach",
+        "989343cba57a3658a033bb9f68bf145b337d01f15e2efb75235575b19420a64e"
+      ],
+      "Started": "2026-10-24T10:12:14.05064-04:00",
+      "Finished": "2026-10-24T10:12:14.116314-04:00",
+      "PID": 37241,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "3dfa3fb239f56c778a1e9b33eb31328349edd155a95806dac4378904e88527e5",
+      "Stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Error": ""
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "container",
+        "inspect",
+        "--format",
+        "{{json .}}",
+        "989343cba57a3658a033bb9f68bf145b337d01f15e2efb75235575b19420a64e"
+      ],
+      "Started": "2026-10-24T10:12:14.148904-04:00",
+      "Finished": "2026-10-24T10:12:14.16561-04:00",
+      "PID": 37242,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "58386a6bb9b057e3878293d753d8857696a80dff0e28ca8706b6d0083b887ca7",
+      "Stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Error": ""
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "cp",
+        "-",
+        "989343cba57a3658a033bb9f68bf145b337d01f15e2efb75235575b19420a64e:/source"
+      ],
+      "Started": "2026-10-24T10:12:14.201575-04:00",
+      "Finished": "2026-10-24T10:12:14.223105-04:00",
+      "PID": 37243,
+      "Retired": true,
+      "InputBytes": 3584,
+      "InputSHA256": "ab22e5ac01971e32169cbe7d2d2340777ae53c30d34182ecb8465a855aa30ac8",
+      "Stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Error": ""
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "exec",
+        "--user",
+        "1000:1000",
+        "989343cba57a3658a033bb9f68bf145b337d01f15e2efb75235575b19420a64e",
+        "/bin/sh",
+        "-c",
+        "set -eu\ntest \"$(id -u):$(id -g)\" = 1000:1000\ntest \"$(stat -c '%u:%g:%a' /source/nested)\" = 1000:1000:755\ntest \"$(stat -c '%u:%g:%a' /source/nested/original.txt)\" = 1000:1000:644\ntest \"$(stat -c '%u:%g:%a' /source/seed.txt)\" = 1000:1000:644\nprintf 'appended\\n' \u003e\u003e /source/nested/original.txt\nprintf 'created\\n' \u003e /source/nested/created.txt\nprintf 'original\\nappended\\n' | cmp -s - /source/nested/original.txt\nprintf 'created\\n' | cmp -s - /source/nested/created.txt\nprintf 'seed\\n' | cmp -s - /source/seed.txt\nprintf UID1000_WRITABLE"
+      ],
+      "Started": "2026-10-24T10:12:14.256732-04:00",
+      "Finished": "2026-10-24T10:12:14.295437-04:00",
+      "PID": 37244,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "bd9554819d32fec16481be310dc60f41360a885bb0019062c818b1e9c85438e5",
+      "Stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Error": ""
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "exec",
+        "--user",
+        "1000:1000",
+        "989343cba57a3658a033bb9f68bf145b337d01f15e2efb75235575b19420a64e",
+        "/bin/sh",
+        "-c",
+        "set -eu\ntest \"$(id -u):$(id -g)\" = 1000:1000\ntest \"$(awk '/^Uid:/ {print $2}' /proc/1/status)\" = 65534\ntest \"$(awk '/^CapEff:/ {print $2}' /proc/self/status)\" = 0000000000000000\ntest \"$(awk '/^NoNewPrivs:/ {print $2}' /proc/self/status)\" = 1\nfor signal in STOP KILL TERM; do if kill -\"$signal\" 1 2\u003e/dev/null; then exit 1; fi; done\nif (printf replace \u003e /usr/local/bin/oro-factory-guard) 2\u003e/dev/null; then exit 1; fi\nif (printf extend \u003e /proc/1/fd/0) 2\u003e/dev/null; then exit 1; fi\nif (printf extend \u003e /proc/1/mem) 2\u003e/dev/null; then exit 1; fi\nif /usr/local/bin/oro-factory-guard --deadline 2099-01-01T00:00:00Z \u003e/tmp/replacement 2\u003e\u00261; then exit 1; fi\nprintf ATTACKS_DENIED"
+      ],
+      "Started": "2026-10-24T10:12:14.326031-04:00",
+      "Finished": "2026-10-24T10:12:14.363125-04:00",
+      "PID": 37245,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "169d20d58e2e64778260070428e4b08fe87de2816c6a8242ff1907ae46deae43",
+      "Stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Error": ""
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "exec",
+        "--user",
+        "1000:1000",
+        "989343cba57a3658a033bb9f68bf145b337d01f15e2efb75235575b19420a64e",
+        "/bin/sh",
+        "-c",
+        "setsid /bin/sh -c 'setsid /bin/sh -c '\"'\"'echo $$ \u003e /tmp/writer.pid; while :; do echo tick \u003e\u003e /tmp/heartbeat; sleep 0.05; done'\"'\"' \u003c/dev/null \u003e/dev/null 2\u003e/tmp/writer.log \u0026' \u003c/dev/null \u003e/dev/null 2\u003e/tmp/detach.log \u0026"
+      ],
+      "Started": "2026-10-24T10:12:14.397859-04:00",
+      "Finished": "2026-10-24T10:12:14.436388-04:00",
+      "PID": 37246,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Error": ""
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "exec",
+        "--user",
+        "1000:1000",
+        "989343cba57a3658a033bb9f68bf145b337d01f15e2efb75235575b19420a64e",
+        "/bin/sh",
+        "-c",
+        "set -eu\nfor n in 1 2 3 4 5 6 7 8 9 10; do if test -s /tmp/writer.pid \u0026\u0026 test -s /tmp/heartbeat; then break; fi; sleep 0.05; done\npid=$(cat /tmp/writer.pid)\ntest \"$(awk '/^PPid:/ {print $2}' /proc/$pid/status)\" = 1\ntest \"$(awk '{print $6}' /proc/$pid/stat)\" = \"$pid\"\nbefore=$(wc -c \u003c /tmp/heartbeat); sleep 0.15; after=$(wc -c \u003c /tmp/heartbeat)\ntest \"$after\" -gt \"$before\"\nprintf 'writer_pid=%s heartbeat_before=%s heartbeat_after=%s' \"$pid\" \"$before\" \"$after\""
+      ],
+      "Started": "2026-10-24T10:12:14.467296-04:00",
+      "Finished": "2026-10-24T10:12:14.655448-04:00",
+      "PID": 37247,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "061c645451167ae82a97bd76f82ea7b2100d2ed9bc1709f4c3d9175becf944c5",
+      "Stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Error": ""
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "container",
+        "inspect",
+        "--format",
+        "{{json .}}",
+        "989343cba57a3658a033bb9f68bf145b337d01f15e2efb75235575b19420a64e"
+      ],
+      "Started": "2026-10-24T10:12:44.35015-04:00",
+      "Finished": "2026-10-24T10:12:44.369411-04:00",
+      "PID": 37319,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "da2db52054354ad43e245af444ba550652724d31026e4b96fe3e70fa0fa605ac",
+      "Stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Error": ""
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "top",
+        "989343cba57a3658a033bb9f68bf145b337d01f15e2efb75235575b19420a64e"
+      ],
+      "Started": "2026-10-24T10:12:44.406444-04:00",
+      "Finished": "2026-10-24T10:12:44.422742-04:00",
+      "PID": 37320,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stderr": "b85322d0681ba778fdd73916fd41103805b1fe37e9f867ab4fb6529a70e3ee94",
+      "Error": "exit status 1"
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "exec",
+        "--user",
+        "1000:1000",
+        "989343cba57a3658a033bb9f68bf145b337d01f15e2efb75235575b19420a64e",
+        "/bin/true"
+      ],
+      "Started": "2026-10-24T10:12:44.456366-04:00",
+      "Finished": "2026-10-24T10:12:44.473502-04:00",
+      "PID": 37321,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stderr": "b85322d0681ba778fdd73916fd41103805b1fe37e9f867ab4fb6529a70e3ee94",
+      "Error": "exit status 1"
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "container",
+        "inspect",
+        "--format",
+        "{{json .}}",
+        "a30ef71ed0834100e00717e904945779c7e2f8c60f29bfa30b8ae348e29c6a92"
+      ],
+      "Started": "2026-10-24T10:12:44.505034-04:00",
+      "Finished": "2026-10-24T10:12:44.521781-04:00",
+      "PID": 37322,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "250980d1713349768a53cd158e1e12624427195ced41b786086df4b052f19011",
+      "Stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Error": ""
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "container",
+        "inspect",
+        "--format",
+        "{{json .}}",
+        "989343cba57a3658a033bb9f68bf145b337d01f15e2efb75235575b19420a64e"
+      ],
+      "Started": "2026-10-24T10:12:44.563773-04:00",
+      "Finished": "2026-10-24T10:12:44.580543-04:00",
+      "PID": 37323,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "da2db52054354ad43e245af444ba550652724d31026e4b96fe3e70fa0fa605ac",
+      "Stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Error": ""
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "container",
+        "rm",
+        "989343cba57a3658a033bb9f68bf145b337d01f15e2efb75235575b19420a64e"
+      ],
+      "Started": "2026-10-24T10:12:44.616704-04:00",
+      "Finished": "2026-10-24T10:12:44.637801-04:00",
+      "PID": 37324,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "4e2cbaaa0216e6eac95755e5e4b2936d4a8a2d18983d14a77eb33224a6dba295",
+      "Stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Error": ""
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "container",
+        "inspect",
+        "--format",
+        "{{json .}}",
+        "989343cba57a3658a033bb9f68bf145b337d01f15e2efb75235575b19420a64e"
+      ],
+      "Started": "2026-10-24T10:12:44.669177-04:00",
+      "Finished": "2026-10-24T10:12:44.686086-04:00",
+      "PID": 37325,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "Stderr": "d319eb73cbb7805842823ebf30fac4d2b573a01bb05377ced87e0e38ee173c27",
+      "Error": "exit status 1"
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "container",
+        "inspect",
+        "--format",
+        "{{json .}}",
+        "a30ef71ed0834100e00717e904945779c7e2f8c60f29bfa30b8ae348e29c6a92"
+      ],
+      "Started": "2026-10-24T10:12:44.72978-04:00",
+      "Finished": "2026-10-24T10:12:44.747206-04:00",
+      "PID": 37326,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "250980d1713349768a53cd158e1e12624427195ced41b786086df4b052f19011",
+      "Stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Error": ""
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "stop",
+        "--signal",
+        "SIGKILL",
+        "--timeout",
+        "0",
+        "a30ef71ed0834100e00717e904945779c7e2f8c60f29bfa30b8ae348e29c6a92"
+      ],
+      "Started": "2026-10-24T10:12:44.780838-04:00",
+      "Finished": "2026-10-24T10:12:44.824228-04:00",
+      "PID": 37327,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "1766961d93d93d8a4d1bf694832e16c2509d2369e4b4178c7297a6b819d41520",
+      "Stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Error": ""
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "container",
+        "inspect",
+        "--format",
+        "{{json .}}",
+        "a30ef71ed0834100e00717e904945779c7e2f8c60f29bfa30b8ae348e29c6a92"
+      ],
+      "Started": "2026-10-24T10:12:44.859996-04:00",
+      "Finished": "2026-10-24T10:12:44.876677-04:00",
+      "PID": 37328,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "b9048f21d68ec198564ed615cf518b0357fd9536ef3ef5f0f953675c04998aec",
+      "Stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Error": ""
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "container",
+        "rm",
+        "a30ef71ed0834100e00717e904945779c7e2f8c60f29bfa30b8ae348e29c6a92"
+      ],
+      "Started": "2026-10-24T10:12:44.911092-04:00",
+      "Finished": "2026-10-24T10:12:44.931164-04:00",
+      "PID": 37329,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "1766961d93d93d8a4d1bf694832e16c2509d2369e4b4178c7297a6b819d41520",
+      "Stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Error": ""
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "container",
+        "inspect",
+        "--format",
+        "{{json .}}",
+        "a30ef71ed0834100e00717e904945779c7e2f8c60f29bfa30b8ae348e29c6a92"
+      ],
+      "Started": "2026-10-24T10:12:44.963452-04:00",
+      "Finished": "2026-10-24T10:12:44.980273-04:00",
+      "PID": 37330,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "Stderr": "d55dde72bbb1c51bdf66f273d8afe595fb798cc073cf6e8071ba80efccaf4b1c",
+      "Error": "exit status 1"
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "volume",
+        "inspect",
+        "--format",
+        "{{json .}}",
+        "oro-guard-native-73164a1597a3e2e24c8119d060a6ddbf-source"
+      ],
+      "Started": "2026-10-24T10:12:45.02125-04:00",
+      "Finished": "2026-10-24T10:12:45.038292-04:00",
+      "PID": 37331,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "7e15d277ac4f88bf4d3c40ed3c18f2b45da24c74ed5d79c6c092faeddb8f847d",
+      "Stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Error": ""
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "volume",
+        "rm",
+        "oro-guard-native-73164a1597a3e2e24c8119d060a6ddbf-source"
+      ],
+      "Started": "2026-10-24T10:12:45.069089-04:00",
+      "Finished": "2026-10-24T10:12:45.086376-04:00",
+      "PID": 37332,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "12fe436e59347ece1709e212f1d3529a2d3e602968245afc498a3ccf3f4b446c",
+      "Stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Error": ""
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "volume",
+        "inspect",
+        "--format",
+        "{{json .}}",
+        "oro-guard-native-73164a1597a3e2e24c8119d060a6ddbf-source"
+      ],
+      "Started": "2026-10-24T10:12:45.11842-04:00",
+      "Finished": "2026-10-24T10:12:45.135625-04:00",
+      "PID": 37333,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "Stderr": "c4f11415ee358459b83bd62a161cf2551a9fb82aa3afed94d46f985a1ff38789",
+      "Error": "exit status 1"
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "image",
+        "inspect",
+        "--format",
+        "{{json .}}",
+        "sha256:d986c2a31311b84c7a14f3f713bea589efe67e5e17193b7857095a23f30634f2"
+      ],
+      "Started": "2026-10-24T10:12:45.176041-04:00",
+      "Finished": "2026-10-24T10:12:45.198925-04:00",
+      "PID": 37334,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "9ae8d632893d282f55bd8388e88f793c0f2615fc9f289b6eafe9bd00c3868c68",
+      "Stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Error": ""
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "image",
+        "rm",
+        "sha256:d986c2a31311b84c7a14f3f713bea589efe67e5e17193b7857095a23f30634f2"
+      ],
+      "Started": "2026-10-24T10:12:45.232149-04:00",
+      "Finished": "2026-10-24T10:12:45.258417-04:00",
+      "PID": 37335,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "9b2fcc8f0b84fb1d2f0a42434d6d203086ac2634d330b4d50bd7df85cd447358",
+      "Stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Error": ""
+    },
+    {
+      "Program": "/opt/homebrew/Cellar/docker/29.9.2/bin/docker",
+      "Args": [
+        "--config",
+        "/private/tmp/oro-factory-verify-ldhnhnvl/guard-image-native-73164a1597a3e2e24c8119d060a6ddbf/docker",
+        "--context",
+        "colima-oro-factory",
+        "image",
+        "inspect",
+        "--format",
+        "{{json .}}",
+        "sha256:d986c2a31311b84c7a14f3f713bea589efe67e5e17193b7857095a23f30634f2"
+      ],
+      "Started": "2026-10-24T10:12:45.290108-04:00",
+      "Finished": "2026-10-24T10:12:45.307729-04:00",
+      "PID": 37336,
+      "Retired": true,
+      "InputBytes": 0,
+      "InputSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "Stdout": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "Stderr": "a9142d365e77c6a65157939f950e01199b34eab5ec2204a6194db842776726d1",
+      "Error": "exit status 1"
+    }
+  ],
+  "ChargedCalls": 45,
+  "Resources": [
+    {
+      "Kind": "container",
+      "Name": "oro-guard-native-73164a1597a3e2e24c8119d060a6ddbf-sentinel",
+      "Role": "sentinel",
+      "Image": "sha256:27f2d3b83cfc5803c8078f8e730af0f7c431bf067afaec8f60a36fb763187cba",
+      "Labels": {
+        "dev.getoro.factory.native-guard": "73164a1597a3e2e24c8119d060a6ddbf",
+        "dev.getoro.factory.native-role": "sentinel"
+      },
+      "Attempted": true,
+      "Absent": true,
+      "Identity": {
+        "Id": "a30ef71ed0834100e00717e904945779c7e2f8c60f29bfa30b8ae348e29c6a92",
+        "Name": "/oro-guard-native-73164a1597a3e2e24c8119d060a6ddbf-sentinel",
+        "Created": "2026-10-24T14:12:13.528779819Z",
+        "CreatedAt": "",
+        "Image": "sha256:27f2d3b83cfc5803c8078f8e730af0f7c431bf067afaec8f60a36fb763187cba",
+        "Driver": "overlayfs",
+        "Labels": null,
+        "Options": null,
+        "RepoTags": null,
+        "Config": {
+          "User": "65534:65534",
+          "Labels": {
+            "dev.getoro.factory.native-guard": "73164a1597a3e2e24c8119d060a6ddbf",
+            "dev.getoro.factory.native-role": "sentinel"
+          },
+          "Entrypoint": [
+            "/bin/sleep"
+          ],
+          "Cmd": [
+            "120"
+          ]
+        },
+        "State": {
+          "Status": "created",
+          "StartedAt": "0001-01-01T00:00:00Z",
+          "FinishedAt": "0001-01-01T00:00:00Z",
+          "Error": "",
+          "Running": false,
+          "Paused": false,
+          "Restarting": false,
+          "Dead": false,
+          "OOMKilled": false,
+          "Pid": 0,
+          "ExitCode": 0
+        },
+        "HostConfig": {
+          "ReadonlyRootfs": true,
+          "Privileged": false,
+          "NetworkMode": "none",
+          "PidMode": "",
+          "IpcMode": "private",
+          "CgroupnsMode": "private",
+          "Memory": 67108864,
+          "MemorySwap": 67108864,
+          "NanoCpus": 500000000,
+          "PidsLimit": 64,
+          "ShmSize": 1048576,
+          "Binds": null,
+          "CapAdd": null,
+          "CapDrop": [
+            "ALL"
+          ],
+          "SecurityOpt": [
+            "no-new-privileges"
+          ],
+          "Tmpfs": {
+            "/tmp": "rw,nosuid,nodev,noexec,size=4194304,nr_inodes=1024,mode=1777"
+          },
+          "LogConfig": {
+            "Type": "none"
+          }
+        },
+        "Mounts": []
+      }
+    },
+    {
+      "Kind": "volume",
+      "Name": "oro-guard-native-73164a1597a3e2e24c8119d060a6ddbf-source",
+      "Role": "source",
+      "Image": "",
+      "Labels": {
+        "dev.getoro.factory.native-guard": "73164a1597a3e2e24c8119d060a6ddbf",
+        "dev.getoro.factory.native-role": "source"
+      },
+      "Attempted": true,
+      "Absent": true,
+      "Identity": {
+        "Id": "",
+        "Name": "oro-guard-native-73164a1597a3e2e24c8119d060a6ddbf-source",
+        "Created": "",
+        "CreatedAt": "2026-10-24T10:12:13-04:00",
+        "Image": "",
+        "Driver": "local",
+        "Labels": {
+          "dev.getoro.factory.native-guard": "73164a1597a3e2e24c8119d060a6ddbf",
+          "dev.getoro.factory.native-role": "source"
+        },
+        "Options": {
+          "device": "tmpfs",
+          "o": "size=1048576,nr_inodes=32,uid=1000,gid=1000",
+          "type": "tmpfs"
+        },
+        "RepoTags": null,
+        "Config": {
+          "User": "",
+          "Labels": null,
+          "Entrypoint": null,
+          "Cmd": null
+        },
+        "State": {
+          "Status": "",
+          "StartedAt": "",
+          "FinishedAt": "",
+          "Error": "",
+          "Running": false,
+          "Paused": false,
+          "Restarting": false,
+          "Dead": false,
+          "OOMKilled": false,
+          "Pid": 0,
+          "ExitCode": 0
+        },
+        "HostConfig": {
+          "ReadonlyRootfs": false,
+          "Privileged": false,
+          "NetworkMode": "",
+          "PidMode": "",
+          "IpcMode": "",
+          "CgroupnsMode": "",
+          "Memory": 0,
+          "MemorySwap": 0,
+          "NanoCpus": 0,
+          "PidsLimit": 0,
+          "ShmSize": 0,
+          "Binds": null,
+          "CapAdd": null,
+          "CapDrop": null,
+          "SecurityOpt": null,
+          "Tmpfs": null,
+          "LogConfig": {
+            "Type": ""
+          }
+        },
+        "Mounts": null
+      }
+    },
+    {
+      "Kind": "container",
+      "Name": "oro-guard-native-73164a1597a3e2e24c8119d060a6ddbf-guard",
+      "Role": "guard",
+      "Image": "sha256:d986c2a31311b84c7a14f3f713bea589efe67e5e17193b7857095a23f30634f2",
+      "Labels": {
+        "dev.getoro.factory.guard-build": "11dc0060bbf9b17b35df1bd133fb6673",
+        "dev.getoro.factory.native-guard": "73164a1597a3e2e24c8119d060a6ddbf",
+        "dev.getoro.factory.native-role": "guard"
+      },
+      "Attempted": true,
+      "Absent": true,
+      "Identity": {
+        "Id": "989343cba57a3658a033bb9f68bf145b337d01f15e2efb75235575b19420a64e",
+        "Name": "/oro-guard-native-73164a1597a3e2e24c8119d060a6ddbf-guard",
+        "Created": "2026-10-24T14:12:14.006158606Z",
+        "CreatedAt": "",
+        "Image": "sha256:d986c2a31311b84c7a14f3f713bea589efe67e5e17193b7857095a23f30634f2",
+        "Driver": "overlayfs",
+        "Labels": null,
+        "Options": null,
+        "RepoTags": null,
+        "Config": {
+          "User": "65534:65534",
+          "Labels": {
+            "dev.getoro.factory.guard-build": "11dc0060bbf9b17b35df1bd133fb6673",
+            "dev.getoro.factory.native-guard": "73164a1597a3e2e24c8119d060a6ddbf",
+            "dev.getoro.factory.native-role": "guard"
+          },
+          "Entrypoint": [
+            "/usr/local/bin/oro-factory-guard"
+          ],
+          "Cmd": [
+            "--deadline",
+            "2026-10-24T14:12:43.903622Z"
+          ]
+        },
+        "State": {
+          "Status": "created",
+          "StartedAt": "0001-01-01T00:00:00Z",
+          "FinishedAt": "0001-01-01T00:00:00Z",
+          "Error": "",
+          "Running": false,
+          "Paused": false,
+          "Restarting": false,
+          "Dead": false,
+          "OOMKilled": false,
+          "Pid": 0,
+          "ExitCode": 0
+        },
+        "HostConfig": {
+          "ReadonlyRootfs": true,
+          "Privileged": false,
+          "NetworkMode": "none",
+          "PidMode": "",
+          "IpcMode": "private",
+          "CgroupnsMode": "private",
+          "Memory": 67108864,
+          "MemorySwap": 67108864,
+          "NanoCpus": 500000000,
+          "PidsLimit": 64,
+          "ShmSize": 1048576,
+          "Binds": null,
+          "CapAdd": null,
+          "CapDrop": [
+            "ALL"
+          ],
+          "SecurityOpt": [
+            "no-new-privileges"
+          ],
+          "Tmpfs": {
+            "/tmp": "rw,nosuid,nodev,noexec,size=4194304,nr_inodes=1024,mode=1777"
+          },
+          "LogConfig": {
+            "Type": "none"
+          }
+        },
+        "Mounts": [
+          {
+            "Type": "volume",
+            "Name": "oro-guard-native-73164a1597a3e2e24c8119d060a6ddbf-source",
+            "Destination": "/source",
+            "RW": true
+          }
+        ]
+      }
+    }
+  ],
+  "Image": {
+    "version": 1,
+    "base_reference": "golang@sha256:27f2d3b83cfc5803c8078f8e730af0f7c431bf067afaec8f60a36fb763187cba",
+    "base_id": "sha256:27f2d3b83cfc5803c8078f8e730af0f7c431bf067afaec8f60a36fb763187cba",
+    "guard_sha256": "651b3fb967efb3c896c212ae7f27dc1d98b16e0c62a44255aa60d7b60e1eef78",
+    "platform": "linux/arm64",
+    "image_id": "sha256:d986c2a31311b84c7a14f3f713bea589efe67e5e17193b7857095a23f30634f2",
+    "build_label": "11dc0060bbf9b17b35df1bd133fb6673"
+  }
+}
