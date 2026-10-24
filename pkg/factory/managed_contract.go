@@ -122,8 +122,18 @@ type HostRuntime interface {
 type ScopeAuthority interface {
 	RecordHello(context.Context, ScopeHandle, int, int) error
 	Granted(context.Context, ScopeHandle) (bool, error)
+	Observe(context.Context, ScopeHandle) (ScopeObservation, error)
 	MarkQuiescent(context.Context, ScopeHandle) error
 	Close() error
+}
+
+// ScopeObservation exposes persisted ownership for exact-scope retirement.
+// Reading a revoked epoch never authorizes execution in that epoch.
+type ScopeObservation struct {
+	Phase    string
+	PID      int
+	PGID     int
+	Deadline time.Time
 }
 
 // SupervisorBackend owns controllers, reconciliation, and durable release.
@@ -393,9 +403,11 @@ func managedImageIdentity(image string) bool {
 }
 
 func validateManagedResources(r RuntimePolicy) error {
-	values := []int64{r.MemoryBytes, r.SourceBytes, r.ScratchBytes, r.HostRequiredBytes, r.HostReserveBytes,
+	values := []int64{
+		r.MemoryBytes, r.SourceBytes, r.ScratchBytes, r.HostRequiredBytes, r.HostReserveBytes,
 		int64(r.PIDs), int64(r.MaxFiles), int64(r.SourceInodes), int64(r.ScratchInodes),
-		int64(r.MaxModelCalls), int64(r.MaxModelTurns), int64(r.MaxToolCalls), int64(r.MaxHostInvocations)}
+		int64(r.MaxModelCalls), int64(r.MaxModelTurns), int64(r.MaxToolCalls), int64(r.MaxHostInvocations),
+	}
 	for _, value := range values {
 		if value <= 0 {
 			return errors.New("managed runtime resource limits must be positive")
@@ -419,8 +431,11 @@ func validateManagedProducts(spec ManagedSpec) error {
 	if err != nil {
 		return err
 	}
-	for _, pair := range [][2]int64{{cents, int64(r.MaxModelCalls)}, {r.SourceBytes, int64(spec.MaxAttempts)},
-		{int64(r.MaxModelCalls), int64(r.MaxModelTurns)}} {
+	for _, pair := range [][2]int64{
+		{cents, int64(r.MaxModelCalls)},
+		{r.SourceBytes, int64(spec.MaxAttempts)},
+		{int64(r.MaxModelCalls), int64(r.MaxModelTurns)},
+	} {
 		if pair[0] > math.MaxInt64/pair[1] {
 			return errors.New("managed aggregate resource budget overflows")
 		}
