@@ -71,6 +71,27 @@ type startedGateProbe struct {
 	output      *bytes.Buffer
 }
 
+// gateProbeRepository owns its Git metadata. Linked probe worktrees must never
+// register themselves in the checkout running the tests.
+func gateProbeRepository(t *testing.T) string {
+	t.Helper()
+	source := worktreeRoot(t)
+	repo := filepath.Join(t.TempDir(), "repository")
+	head, err := exec.Command("git", "-C", source, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("resolve probe source revision: %v", err)
+	}
+	clone := exec.Command("git", "clone", "--no-hardlinks", "--no-checkout", "--", source, repo)
+	if out, cloneErr := clone.CombinedOutput(); cloneErr != nil {
+		t.Fatalf("clone independent probe repository: %v\n%s", cloneErr, out)
+	}
+	checkout := exec.Command("git", "-C", repo, "-c", "core.hooksPath=/dev/null", "checkout", "--detach", strings.TrimSpace(string(head)))
+	if out, checkoutErr := checkout.CombinedOutput(); checkoutErr != nil {
+		t.Fatalf("check out probe source revision: %v\n%s", checkoutErr, out)
+	}
+	return repo
+}
+
 func startGateProbe(
 	t *testing.T,
 	repoRoot, worktreeParent, markerDir, lockRoot, qgTmp, ambientGo, ambientLint, id string,
@@ -200,11 +221,23 @@ func TestConcurrentQualityGatesUseDistinctGoCaches(t *testing.T) {
 		}
 	}
 
-	first := startGateProbe(t, worktreeRoot(t), worktreeParent, markerDir, lockRoot, qgTmp, ambientGo, ambientLint, "cache-a")
-	second := startGateProbe(t, worktreeRoot(t), worktreeParent, markerDir, lockRoot, qgTmp, ambientGo, ambientLint, "cache-b")
+	repoRoot := gateProbeRepository(t)
+	first := startGateProbe(t, repoRoot, worktreeParent, markerDir, lockRoot, qgTmp, ambientGo, ambientLint, "cache-a")
+	second := startGateProbe(t, repoRoot, worktreeParent, markerDir, lockRoot, qgTmp, ambientGo, ambientLint, "cache-b")
 	results := []cacheProbeResult{first.wait(t), second.wait(t)}
 
 	for _, result := range results {
+		common, err := exec.Command("git", "-C", result.worktree, "rev-parse", "--path-format=absolute", "--git-common-dir").Output()
+		if err != nil {
+			t.Fatalf("resolve probe Git metadata: %v", err)
+		}
+		wantCommon, err := filepath.EvalSymlinks(filepath.Join(repoRoot, ".git"))
+		if err != nil {
+			t.Fatalf("resolve owned Git metadata: %v", err)
+		}
+		if strings.TrimSpace(string(common)) != wantCommon {
+			t.Errorf("probe metadata %q is outside owned repository %q", common, wantCommon)
+		}
 		if result.exit != 0 {
 			t.Fatalf("gate %s failed: exit=%d\n%s", result.id, result.exit, result.output)
 		}
@@ -589,7 +622,7 @@ func TestConcurrentFullQualityGatesUseIsolatedGoCaches(t *testing.T) {
 		}
 	}
 
-	repoRoot := worktreeRoot(t)
+	repoRoot := gateProbeRepository(t)
 	prepareFullGateSharedRoot(t, lockRoot)
 	writeFullGateProxies(t, proxyDir)
 	first := startFullGateProbe(ctx, t, repoRoot, worktreeParent, proxyDir, evidenceRoot, oroHomeRoot, lockRoot, qgTmp, ambientGo, ambientLint, "full-a")
