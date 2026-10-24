@@ -272,6 +272,40 @@ getter/decoder/target checks had 100%. C is supervisor recovery authority after
 controller retirement; a live controller uses ordinary H for routine retirement.
 The fixed Docker helper and launchd wiring remain separate required work.
 
+Commit `51df7500` defines and reads the frozen runtime configuration and exact
+private Docker context snapshot. It verifies canonical bytes, hashes, file and
+directory identities, ownership, and the dedicated Unix endpoint without
+creating state or granting authority. Independent root race verification passed
+in 1.691 seconds; the author's affected suite passed in 9.397 seconds, with
+90.32% production coverage and CLI package lint passing. Foreign-owner rejection
+is covered by the metadata predicate; its filesystem subcase skips for non-root
+users and is not a native foreign-UID proof. CLI start/resume must still produce
+the artifact and compare it with the immutable admission identity.
+
+Commit `73855c20` repairs a measured Go rooted-file behavior: `os.Root` can follow
+contained symlinks despite `O_NOFOLLOW`. Managed artifact and initialization-marker
+reads now bind a regular leaf before and after opening to the same inode.
+Only genuine initial absence can reach initialization logic. Actual filesystem
+replacement regressions cover aliases, FIFOs, disappearing paths, and unchanged
+existing database state. The full affected race suite passed in 64.876 seconds;
+root's independent focused run passed in 2.488 seconds and package lint passed.
+The shared opener reached 94.7% coverage and the marker reader 100%.
+
+Commit `6aefdff8` adds the shared canonical cleanup-result codec. It validates
+exact permit/resource identity and all 36 operation, observation, and
+acknowledgment combinations, including constrained discovery of an unknown
+container or volume lifetime. Independent race verification passed in 1.472
+seconds; extra map-independence and 16,385-byte rejection checks passed in 1.284
+seconds. Decoder/validation coverage was 100%, encoder coverage 91.7%, and package
+lint passed. A result never establishes pending-request drain or quiescence.
+
+The combined factory core through `6aefdff8` passed a full package run with race
+detection and test-order shuffling in 231.042 seconds, with 87.2% statement
+coverage. Evidence is `factory-core-components.log` and
+`factory-core-components.cover` under the verification directory above. This
+checks the combined core changes; live Docker/launchd integration and unattended
+delivery remain separate operational qualification requirements.
+
 ## Remaining evidence
 
 Managed contract validation, immutable admission, durable execution ownership,
