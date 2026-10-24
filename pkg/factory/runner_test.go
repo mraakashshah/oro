@@ -17,8 +17,8 @@ func TestBoundedExecution(t *testing.T) {
 	t.Run("literal argv and one input document", runnerTestProtocol)
 	t.Run("private environment", runnerTestEnvironment)
 	t.Run("nonzero process", runnerTestFailure)
-	t.Run("deadline kills group", runnerTestDeadline)
-	t.Run("cancellation kills group", runnerTestCancellation)
+	t.Run("deadline kills group", func(t *testing.T) { runnerTestGroupStop(t, false) })
+	t.Run("cancellation kills group", func(t *testing.T) { runnerTestGroupStop(t, true) })
 	t.Run("stdout overflow", func(t *testing.T) { runnerTestOverflow(t, false) })
 	t.Run("stderr overflow", func(t *testing.T) { runnerTestOverflow(t, true) })
 	t.Run("descendant holds pipe", runnerTestHeldPipe)
@@ -117,25 +117,17 @@ func runnerTestFailure(t *testing.T) {
 	}
 }
 
-func runnerTestDeadline(t *testing.T) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 400*time.Millisecond)
-	defer cancel()
-	runnerTestGroupStop(t, ctx, nil, context.DeadlineExceeded)
-}
-
-func runnerTestCancellation(t *testing.T) {
-	t.Helper()
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	runnerTestGroupStop(t, ctx, cancel, context.Canceled)
-}
-
-func runnerTestGroupStop(t *testing.T, ctx context.Context, cancel context.CancelFunc, want error) {
+func runnerTestGroupStop(t *testing.T, explicitCancel bool) {
 	t.Helper()
 	worktree := t.TempDir()
 	command := runnerTestPolicy(t, "(sleep 1; printf escaped > escaped) &\nprintf ready\nsleep 30\n")
-	if cancel != nil {
+	ctx, cancel := context.WithTimeout(t.Context(), 400*time.Millisecond)
+	defer cancel()
+	want := context.DeadlineExceeded
+	if explicitCancel {
+		ctx, cancel = context.WithCancel(t.Context())
+		defer cancel()
+		want = context.Canceled
 		timer := time.AfterFunc(400*time.Millisecond, cancel)
 		defer timer.Stop()
 	}
