@@ -361,13 +361,7 @@ func testDockerVolumeRollback(t *testing.T) {
 			case "last insert":
 				dockerVolumeSQL(t, f.journal, "CREATE TRIGGER reject_intent BEFORE INSERT ON managed_docker_intents BEGIN SELECT RAISE(ABORT,'injected final insert failure'); END")
 			case "one scope left":
-				limit, err := journalRecordLimit(f.journal.admission)
-				if err != nil {
-					t.Fatal(err)
-				}
-				for i := int64(0); i < limit-1; i++ {
-					dockerVolumeSQL(t, f.journal, "INSERT INTO managed_scopes(id,nonce,backend,name,body,phase) VALUES(?,?, 'docker',?, '{}','quiescent')", fmt.Sprint(i), fmt.Sprint(i), fmt.Sprint(i))
-				}
+				seedDockerVolumeScopeLimit(t, f)
 			case "source versions":
 				limits, err := ManagedHostRetention(f.manifest.Spec)
 				if err != nil {
@@ -397,15 +391,85 @@ func testDockerVolumeRollback(t *testing.T) {
 				dockerVolumeSQL(t, f.journal, "UPDATE managed_supervision SET revision=?,body=?", state.Revision, body)
 			}
 			before := dockerVolumeCounts(t, f.journal)
+			beforeState := snapshotDockerVolumeAuthority(t, f.journal)
 			got, err := reserveManagedDockerVolume(t.Context(), f.manifest, f.journal, f.generation, f.deadline, strings.Repeat("a", 64))
 			if err == nil || !reflect.DeepEqual(got, managedDockerVolumeIntent{}) {
 				t.Fatalf("invalid reservation %+v %v", got, err)
 			}
+			wantError := map[string]string{
+				"one scope left":  "managed scope budget exhausted",
+				"source versions": "managed Docker source version budget exhausted",
+				"host tokens":     "managed host budget exhausted",
+				"event ceiling":   "managed event budget exhausted",
+			}[mode]
+			if wantError != "" && err.Error() != wantError {
+				t.Fatalf("%s failed before its intended budget: got %q, want %q", mode, err, wantError)
+			}
 			if after := dockerVolumeCounts(t, f.journal); before != after {
 				t.Fatalf("partial reservation %v -> %v", before, after)
 			}
+			if snapshotDockerVolumeAuthority(t, f.journal) != beforeState {
+				t.Fatal("rejected reservation changed exact authority state")
+			}
 		})
 	}
+}
+
+func seedDockerVolumeScopeLimit(t *testing.T, f dockerVolumeFixture) {
+	t.Helper()
+	limit, err := journalRecordLimit(f.journal.admission)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var scopes []ScopeHandle
+	// Batch only fixture construction through the real canonical encoder and
+	// scope limit, avoiding quadratic admission scans before the test begins.
+	if err := f.journal.mutate(t.Context(), "test-scope-cap", "fixture", func(tx *sql.Tx, _ *managedSupervision) (bool, error) {
+		for range limit - 1 {
+			scope := newManagedDockerVolumeIntent(f.journal, f.generation, f.deadline, strings.Repeat("a", 64)).Volume
+			if _, err := f.journal.insertScope(t.Context(), tx, scope, f.deadline); err != nil {
+				return false, err
+			}
+			scopes = append(scopes, scope)
+		}
+		return true, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, scope := range scopes {
+		if err := f.journal.MarkQuiescent(t.Context(), scope); err != nil {
+			t.Fatal(err)
+		}
+	}
+	records, err := f.journal.scopes(t.Context())
+	if err != nil || int64(len(records)) != limit-1 {
+		t.Fatalf("fixture must leave exactly one valid scope slot: count=%d limit=%d error=%v", len(records), limit, err)
+	}
+	for _, record := range records {
+		if record.Phase != "quiescent" || record.CleanupEvidence == "" {
+			t.Fatal("capacity fixture lacks positive scope retirement")
+		}
+	}
+}
+
+func seedDockerVolumeLiveCleanup(t *testing.T, f dockerVolumeFixture) {
+	t.Helper()
+	intent := f.reserve(t)
+	if err := f.journal.MarkQuiescent(t.Context(), intent.CreateHost); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reserveManagedCleanupInvocation(t.Context(), f.journal, f.generation, intent.Volume, DockerCleanupInspect, intent.Binding, f.journal.admission.HardStop); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func snapshotDockerVolumeAuthority(t *testing.T, j *managedJournal) string {
+	t.Helper()
+	var intents string
+	if err := j.conn.QueryRowContext(t.Context(), "SELECT coalesce(group_concat(volume_scope_id||':'||create_scope_id||':'||hex(body),'|'),'') FROM (SELECT * FROM managed_docker_intents ORDER BY volume_scope_id)").Scan(&intents); err != nil {
+		t.Fatal(err)
+	}
+	return snapshotCleanupIntegrity(t, j) + "\n" + intents
 }
 
 func dockerVolumeSQL(t *testing.T, j *managedJournal, query string, args ...any) {
@@ -663,14 +727,20 @@ func testDockerVolumeAuthority(t *testing.T) {
 			case "digest":
 				digest = "bad"
 			case "live cleanup":
-				dockerVolumeSQL(t, f.journal, "INSERT INTO managed_scopes(id,nonce,backend,name,body,phase) VALUES('cleanup','cleanup','launchd','cleanup','{\"kind\":\"cleanup\"}','reserved')")
+				seedDockerVolumeLiveCleanup(t, f)
 			}
 			before := dockerVolumeCounts(t, f.journal)
+			beforeState := snapshotDockerVolumeAuthority(t, f.journal)
 			if _, err := reserveManagedDockerVolume(ctx, f.manifest, f.journal, generation, deadline, digest); err == nil {
 				t.Fatal("inactive authority accepted")
+			} else if mode == "live cleanup" && err.Error() != "ordinary work requires positive cleanup-helper retirement" {
+				t.Fatalf("live cleanup failed before its exclusion gate: %v", err)
 			}
 			if after := dockerVolumeCounts(t, f.journal); after != before {
 				t.Fatal("denial spent resources")
+			}
+			if snapshotDockerVolumeAuthority(t, f.journal) != beforeState {
+				t.Fatal("denial changed exact authority state")
 			}
 		})
 	}
