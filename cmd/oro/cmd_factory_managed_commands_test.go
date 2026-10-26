@@ -323,11 +323,26 @@ func testFactoryManagedCommandsCountedSupervisor(t *testing.T, mode string) {
 		t.Fatal(err)
 	}
 	fixtureState := filepath.Join(base, "docker-state.json")
-	oroProgram := []byte(fmt.Sprintf("#!/bin/sh\nexec %s -test.run=^TestFactoryManagedReadyProgram$ -- \"$@\"\n", strconv.Quote(exe)))
-	dockerProgram := []byte(fmt.Sprintf("#!/bin/sh\nexec %s -test.run=^TestFactoryManagedDockerProgram$ -- %s \"$@\"\n", strconv.Quote(exe), strconv.Quote(fixtureState)))
+	helperCoverage := filepath.Join(base, "helper-coverage")
+	if err := os.Mkdir(helperCoverage, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	oroProgram := []byte(fmt.Sprintf("#!/bin/sh\nexport GOCOVERDIR=%s\nexec %s -test.run=^TestFactoryManagedReadyProgram$ -- \"$@\"\n", strconv.Quote(helperCoverage), strconv.Quote(exe)))
+	dockerProgram := []byte(fmt.Sprintf("#!/bin/sh\nexport GOCOVERDIR=%s\nexec %s -test.run=^TestFactoryManagedDockerProgram$ -- %s \"$@\"\n", strconv.Quote(helperCoverage), strconv.Quote(exe), strconv.Quote(fixtureState)))
 	for path, program := range map[string][]byte{oro: oroProgram, docker: dockerProgram} {
 		if err := os.WriteFile(path, program, 0o500); err != nil {
 			t.Fatal(err)
+		}
+	}
+	if mode == "core" {
+		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+		defer cancel()
+		command := exec.CommandContext(ctx, docker, "--config", "/tmp/config", "--context", "fixture", "volume", "create", "--driver", "local", "fixture-volume")
+		command.Env = []string{"PATH=/usr/bin:/bin", "LC_ALL=C", "LANG=C"}
+		var stdout, stderr bytes.Buffer
+		command.Stdout, command.Stderr = &stdout, &stderr
+		if err := command.Run(); err != nil || stdout.String() != "fixture-volume\n" || stderr.Len() != 0 {
+			t.Fatalf("fixture protocol: exit=%v stdout=%q stderr=%q", err, stdout.String(), stderr.String())
 		}
 	}
 	config := factoryRuntimeConfig{Version: 1, StateRoot: root, ObjectiveID: spec.ID, PolicyHash: view.PolicyHash, OroPath: oro, OroSHA256: factoryHostDigest(oroProgram), GitPath: view.GitPath, GitSHA256: view.GitSHA256, Repository: repo, TargetRef: view.TargetRef, Deadline: view.Deadline, HardStop: view.HardStop, CleanupTimeoutSeconds: view.CleanupTimeoutSeconds, DockerPath: docker, DockerSHA256: factoryHostDigest(dockerProgram), DockerContext: view.DockerContext, DockerEndpoint: "unix://" + endpoint}
