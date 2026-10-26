@@ -35,6 +35,7 @@ type factoryStore struct {
 	db      *sql.DB
 	conn    *sql.Conn
 	managed bool
+	owner   *managedControllerOwner
 }
 
 func openStore(ctx context.Context, dir string) (*factoryStore, error) {
@@ -115,6 +116,14 @@ func (s *factoryStore) save(ctx context.Context, next snapshot, expected int64) 
 		return fmt.Errorf("begin factory transition: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if s.owner != nil {
+		if !s.managed {
+			return errors.New("managed owner requires managed store")
+		}
+		if err := s.owner.validateNext(ctx, tx, next); err != nil {
+			return err
+		}
+	}
 	if err := writeSnapshot(ctx, tx, body, expected); err != nil {
 		return err
 	}
