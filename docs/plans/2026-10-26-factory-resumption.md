@@ -5,7 +5,55 @@ guide. Implementation is authorized to continue; this is a context handoff, not
 a new user-requested pause. Preserve the full unattended factory goal and the
 Astra architect / Terra engineer role agreement.
 
-## Latest continuation: core supervisor exists, source consumer remains
+## Latest CLI continuation
+
+This section supersedes historical checkpoints below. `d3ea8d2d` implements core
+source execution; full shuffled race passed in 477.308 seconds with 82.3% coverage.
+Formatting was repaired in `8ace9029`; `e208d2ba` adds verified pending identity
+classification. `9e1e6877` implements authenticated controller launch;
+`0e5d7fc6` implements immutable runtime publication; `fb2fd519` fixes recording
+peer cleanup. `0e38106b` now registers actual hidden `_supervise` / `_controller`
+callers. All component source and evidence followups received review and root
+verification; do not reimplement accepted leaves because tracker status remains
+in progress under broader qualification constraints.
+
+The [CLI foundations proof](../proofs/2026-10-26-managed-cli-foundations.md)
+records scope and evidence. At `0e5d7fc6`, factory-related CLI race passed in
+78.565 seconds / 89.672 seconds harness; the gate passed fifteen checks and
+failed only five dead exports. Lint/NilAway and formatting passed. Integrated
+command checks at `0e38106b` are terminal: the coverage-enabled CLI race failed
+the exact Docker-create acknowledgment check (101.439 seconds harness); the gate
+passed fifteen checks and failed only three dead exports (163.681 seconds).
+Remaining exports are AdmitManaged, ActivateManaged and DecodeDockerCleanupResult.
+Evidence is under `/private/tmp/oro-factory-verify-ldhnhnvl/`, prefixes
+`managed-commands-integrated-race` and `managed-commands-integrated-gate`.
+Task `oro-mf-command-coverage-protocol` investigates the instrumented helper;
+coverage telemetry on stderr is a hypothesis, not a confirmed cause. Preserve
+the production exact acknowledgment contract. All older jobs are terminal.
+
+The accepted hidden-command source is
+exactly Terra `7c2a5136`; root final race passed in 23.149 seconds. Preserve worker
+worktrees for provenance, not as unfinished implementation. Recording helpers
+exercise real kernel peers and host wrappers but fake Docker; no native runtime
+or complete delivery qualification follows.
+
+Next: implement durable service registration, then public start consuming the
+existing strict managed-spec decoder. Use
+`<root>/.managed/locks/<id>/service.lock`, outside the objective and distinct from
+core's `objective.lock`. Release the budget allocation lock first; then service
+lock covers existing-read/admit-if-needed, publication/activation and locked
+registration. Active replay must not reacquire the supervisor's lifetime lock.
+The [CLI contract](2026-10-26-managed-cli-contract.md) records the resolved order.
+
+Terra is investigating coverage in `.worktrees/factory-command-coverage` and
+ordinary host retirement in `.worktrees/factory-host-retirement`, task
+`oro-mf-host-retirement-bound`. Astra is decomposing service/public-start wiring.
+Service-bootstrap uncertainty still needs a proven ownership/reconciliation
+mechanism. Candidate execution, independent acceptance, native qualification and
+real-model sustained delivery/self-healing trials remain unfinished. The full
+goal is active, not paused or complete.
+
+## Earlier controller-source checkpoint
 
 The updates below supersede the earlier verification and next-work snapshot.
 `1847b365` and `6d572f54` fix keeper cardinality and Git listing-vector NilAway
@@ -71,11 +119,9 @@ passed in 20.145 seconds. See the
 No implementation agent remains active for this leaf; preserve its worktree for
 provenance and do not repeat it without a new defect.
 
-New full integrated verification is live at `d3ea8d2d`: modes
-`controller-source-integrated-full` / `controller-source-integrated-gate`, sessions
-`71024` / `82922`. Only documentation changes during verification. Recover those
-handles and their terminal result files before starting new runs. The earlier
-`c627f6c3` full pass does not qualify this new entry's full package.
+Full verification at `d3ea8d2d` is terminal: race PASS477.308 seconds / 82.3%;
+the initial gate failed formatting and was later corrected. Earlier profiles
+must not be attributed to later revisions.
 
 The workspace, interruption, owner and supervisor component implementations are
 accepted and integrated, not awaiting reimplementation merely because tracker

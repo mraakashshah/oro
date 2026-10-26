@@ -1,8 +1,9 @@
 # Managed CLI continuation contract
 
-Status: Astra proposal, unimplemented. Core controller source consumption is
-being implemented as `oro-mf-controller-source`. Do not call nonexistent core
-APIs or claim startup/delivery/recovery qualification from this proposal.
+Status: core consumer, concrete launch wrapper, runtime publication and hidden
+commands implemented. Public start and durable service registration below remain
+proposals. Do not claim native startup, delivery or recovery qualification from
+this document.
 Keep `oro-mf-cli-start` and the full autonomy objective open through real wiring.
 
 ## First actual core callers and authenticated controller launch
@@ -28,12 +29,11 @@ admission/active reference, verifies runtime bytes, constructs the real host
 runtime and `newFactoryDockerConfigReader(view, ref.Path, ref.SHA256)`, then calls
 the implemented `factory.RunManagedController` with scope generation and ID.
 
-Concrete backend must implement StartController, Retire, Quiescent and
-ReleaseHostReservation while reusing the existing host runtime. Controller
-retirement needs its own exact persisted request lifecycle; ordinary host
-invocation state assumes result publication. Resolve whether to use the earlier
-proposed supervisor-backend wrapper or narrowly extend the runtime before
-implementation. Keep `Invoke` rejecting controllers. Positive group absence
+The implemented concrete supervisor wrapper provides StartController, Retire,
+Quiescent and ReleaseHostReservation while reusing the existing host runtime.
+Controller startup completes after GO; ordinary host invocation continues through
+PUBLISHED. Separate records and tombstones preserve that distinction. Keep
+`Invoke` rejecting controllers. Positive group absence
 and durable exact ownership establish quiescence; probe errors are uncertainty.
 Release delegates to the existing ledger and core eligibility check.
 
@@ -66,16 +66,53 @@ Activation follows verified publication; publication alone grants no execution.
 
 ## Public start and durable service registration
 
+Next bounded registration leaf: new `cmd_factory_service.go`,
+`cmd_factory_service_darwin.go`, `cmd_factory_service_other.go` and one focused
+test file. Private `registerFactoryService(ctx, view, ref) error` uses immutable
+versioned `factoryServiceIntent` (root/id, nonce, label, runtime ref, HardStop,
+plist digest) and `factoryServiceRegistration` (version, intent digest, phase).
+Phases are prepared, dispatching and registered. Canonical records are at most
+16 KiB each; plist at most 64 KiB; fixed files/stages and metadata must fit the
+existing fixed 1 MiB allowance without a quota increase.
+
+Keep immutable intent/plist and bounded registration in a fixed private objective
+service directory; the lock stays outside it. Verify current admission, active
+reference, published runtime and live original work deadline under the lock.
+Prepared may perform the first dispatch. Persist dispatching before bootstrap;
+only exit zero permits registered. Dispatching replay returns uncertainty without
+redispatch, false acknowledgement or a new nonce. Missing/corrupt identity fails
+closed. Registration acknowledgement is not service health or completed delivery.
+Uncertain-bootstrap ownership reconciliation is a required later design, not
+something inferred from an existing plist or launchctl print output.
+
 Order: bounded strict spec, real host-budget admission, AdmitManaged,
 ReadManagedAdmission, runtime publication/verification, ActivateManaged, durable
 service intent, then bootstrap. Reject unsupported platforms before reservation.
 Keep legacy run behavior and managed-ID rejection intact.
 
+The public-start consumer change should expose and call existing strict
+`decodeManagedSpec` as `factory.DecodeManagedSpec(io.Reader)`, preserving its
+1 MiB/duplicate/case-alias/unknown/trailing validation. Do not introduce a
+permissive second decoder. Initial options are spec, state-dir, Docker executable
+and explicit Unix endpoint; initial Oro is the invoking executable. Existing
+active start verifies the identical reservation/spec and committed admission
+without blindly calling AdmitManaged while its supervisor lock is held.
+Only errors.Is with ErrManagedRuntimePending selects publication; all other
+reference-read errors stop. Active replay uses the authoritative reference and
+never reconstructs artifacts or manufactures authority from fresh hashes.
+
 Immutable bounded service intent binds root/id, active reference, HardStop,
 frozen Oro, exact plist digest and one persisted random nonce. Stable name:
 `dev.getoro.factory.<objectiveHash16>.supervisor.<persistedNonce32>`.
-Serialize with a dedicated objective service lock, not the supervisor lock held
-throughout Supervise. Persist bootstrap-issued before launchctl and acknowledged
+Use `<root>/.managed/locks/<id>/service.lock`, distinct from core's
+`objective.lock`. Complete/release budget allocation first, then acquire the
+context-aware service lock BEFORE existing-admission reading or guarded admission.
+This serializes duplicate starts without creating an objective before its managed
+marker. Reuse verified committed admission without reacquiring a running
+supervisor's lifetime lock. Hold service lock through publication/activation and
+registration; expose private locked registration to avoid recursive locking.
+Never replace or unlink the lock inode.
+Persist bootstrap-issued before launchctl and acknowledged
 only after success. Repeated acknowledged start reuses intent; lost
 acknowledgment preserves uncertainty and capacity without a replacement identity.
 
