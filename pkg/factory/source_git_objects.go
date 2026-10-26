@@ -123,7 +123,11 @@ func buildSourceTree(entries []sourceEntry, limits sourceLimits, width int) (sou
 		}
 		dir.files = append(dir.files, sourceGitTreeItem{name: parts[len(parts)-1], mode: strconv.FormatUint(uint64(entry.Mode), 8), oid: oid})
 	}
-	result.oid = root.encode(width, &result)
+	var err error
+	result.oid, err = root.encode(width, &result)
+	if err != nil {
+		return result, err
+	}
 	if int64(len(result.input)) > limits.MaxArchiveBytes {
 		return result, errors.New("source tree metadata exceeds admitted transport bound")
 	}
@@ -138,7 +142,13 @@ type (
 	}
 )
 
-func (dir *sourceGitDirectory) encode(width int, result *sourceTree) string {
+func (dir *sourceGitDirectory) encode(width int, result *sourceTree) (string, error) {
+	if dir == nil {
+		return "", errors.New("source tree contains a nil directory")
+	}
+	if result == nil {
+		return "", errors.New("source tree encoding result is nil")
+	}
 	items := append([]sourceGitTreeItem(nil), dir.files...)
 	children := make([]string, 0, len(dir.children))
 	for name := range dir.children {
@@ -146,7 +156,11 @@ func (dir *sourceGitDirectory) encode(width int, result *sourceTree) string {
 	}
 	slices.Sort(children)
 	for _, name := range children {
-		items = append(items, sourceGitTreeItem{name: name, mode: "40000", oid: dir.children[name].encode(width, result)})
+		oid, err := dir.children[name].encode(width, result)
+		if err != nil {
+			return "", fmt.Errorf("source tree directory %q: %w", name, err)
+		}
+		items = append(items, sourceGitTreeItem{name: name, mode: "40000", oid: oid})
 	}
 	// Git compares directory names with a trailing '/', unlike plain lexical
 	// sorting when a file and directory share a name prefix.
@@ -174,5 +188,5 @@ func (dir *sourceGitDirectory) encode(width int, result *sourceTree) string {
 	result.input = append(result.input, 0)
 	oid := sourceObjectID("tree", raw.Bytes(), width)
 	result.trees = append(result.trees, oid)
-	return oid
+	return oid, nil
 }
