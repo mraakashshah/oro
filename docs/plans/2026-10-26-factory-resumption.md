@@ -24,6 +24,9 @@ Branch: `feature/factory-core`.
   Behavioral RED exposed panics, spent authority, and poisoned state; the fix
   removes both source_git.go NilAway findings. Astra review found no defects;
   root independently ran the command/authority race tests successfully (7.893 s).
+- `e16b7079` (Terra source commit `717261ab`): invalid internal Git directory
+  topology returns an error instead of panicking or producing an accepted tree.
+  Astra found no defects; root's raw-Git/topology race run passed (19.373 s).
 - These code commits were pushed. A documentation commit may follow this checkpoint.
 - Latest full factory shuffled race run at `16f55188` passed in **364.538 seconds**,
   with **89.2%** statement coverage. The later Git guard has focused raw-Git race
@@ -84,13 +87,22 @@ comparison.
 
 ## Next: clear the remaining gates and advance production delivery
 
-`oro-mf-git-tree-topology` is actively delegated to Terra in
-`/Users/as21/codehouse/oro/.worktrees/factory-git-tree-topology`, branch
-`feature/factory-git-tree-topology`, base `47827496`. Agent task name:
-`/root/terra_git_tree_topology`. It owns only `source_git_objects.go` and new
-`source_git_objects_test.go`. Do not duplicate its implementation. Observe actual
-agent/process status; a polling timeout is not evidence that it stopped. Review
-and integrate its committed result before the next combined gate run.
+`oro-mf-git-tree-topology` is implemented, reviewed, and integrated. Its worker
+branch/worktree remains preserved for provenance, not active implementation.
+Do not repeat either Git repair without a new defect. The combined integrated
+raw-Git race passed (26.509 s package / 30.693 s harness). The repository-scope
+NilAway recheck, using the gate's exact flags, reports only the three remaining
+production findings below. Evidence prefixes are `git-guards-integrated` and
+`git-guards-nilaway-gate` in the existing private evidence directory. The earlier
+`git-guards-nilaway` run used default test-file reporting and is not the required
+gate scope. Revalidate result/session status before rerunning anything; an
+observation timeout is not evidence of termination.
+
+The remaining nil-safety work concerns keeper running-inspection `raw[0]`, raw
+Git listing `sizes`, and CLI host runtime's prepared-result pointer. The latter
+two parser/vector findings need invariant-preserving fixes, not checker
+suppression. Pair gate repairs with the real startup integration below; do not
+keep expanding disconnected infrastructure while delaying production wiring.
 
 The [startup producer/consumer proposal](2026-10-26-managed-startup-contract.md)
 resolves the missing authority producer and explicit config-reader handoff. It is
@@ -161,10 +173,9 @@ unknown daemon/VM epoch recovery remain the previously documented prerequisites.
   `oro-mf-qualification`; parent `oro-factory-autonomy` is open and unachieved.
 - No task was closed merely because scoped tests passed while the full gate and
   integration requirements remain unresolved.
-- At this checkpoint the tree-topology Terra agent is active; the other current
-  implementation/review agents and verification sessions finished. No native
-  fixture resources were created by these increments.
+- All current implementation/review agents and integrated verification sessions
+  finished. No native fixture resources were created by these increments.
 - Preserve unrelated primary-checkout changes and all existing Colima state.
 - Read this checkpoint plus the earlier resume guide before selecting work. The
   user's proceed instruction remains in force; do not ask to resume again solely
-  because the older guide or goal metadata still says paused.
+  because an older checkpoint says paused. The thread goal is now active.
