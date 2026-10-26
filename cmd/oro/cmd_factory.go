@@ -15,9 +15,9 @@ import (
 func newFactoryCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "factory",
-		Short: "Experimental autonomous delivery with trusted command adapters",
-		Long: "Experimental autonomous delivery and recovery using trusted command adapters.\n" +
-			"Use disposable or externally isolated repositories; this command does not sandbox programs.\n" +
+		Short: "Experimental factory execution and managed service registration",
+		Long: "Legacy factory run executes trusted host command adapters and does not sandbox them.\n" +
+			"Managed factory start registers a supervisor service; managed delivery is not yet implemented or qualified.\n" +
 			"State is stored only in the explicitly supplied state directory.",
 		Args: cobra.NoArgs,
 	}
