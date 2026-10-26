@@ -98,10 +98,10 @@ seconds. Evidence is `/tmp/oro-workspace-state-20261026/`.
 
 At `c627f6c3`, the full gate passed fifteen checks and failed only six dead
 exports, in 175.878 seconds. Lint and production NilAway passed. The new full
-shuffled factory race is still running in mode
-`workspace-interruption-integrated-full`, session `45927`; read its terminal
-result before another run. Its source revision is frozen; only checkpoint
-documentation changes during verification. None of these APIs is a substitute
+shuffled factory race passed in mode `workspace-interruption-integrated-full`:
+480.631 seconds package, 487.817 seconds harness, 85.2% statement coverage.
+Its frozen Go source is `c627f6c3`; final HEAD `fc635415` adds checkpoint docs only.
+Both verification handles are terminal. None of these APIs is a substitute
 for the actual managed controller consumer, currently under implementation.
 
 Root used Go 1.26.10, race detection and count one. Supervisor selection was

@@ -54,9 +54,10 @@ supervisor race tests. The original failure remains preserved in mode
 
 `e3df6dde` integrates managed interruption propagation. `c627f6c3` integrates
 workspace persistence after independent Astra review and root focused races.
-The new full race is live in mode `workspace-interruption-integrated-full`,
-session `45927`, at frozen code `c627f6c3`. Inspect its terminal result in
-`/private/tmp/oro-factory-verify-ldhnhnvl/` before rerunning. Mode
+The new full race **passed** in mode `workspace-interruption-integrated-full`:
+480.631 seconds, 85.2% statement coverage, 487.817 seconds harness, at frozen Go
+code `c627f6c3`. Its terminal result is in
+`/private/tmp/oro-factory-verify-ldhnhnvl/`; do not rerun absent new changes. Mode
 `workspace-interruption-integrated-gate` is terminal: 175.878 seconds, fifteen
 checks passed, six dead exports remain; lint/NilAway passed. Only checkpoint
 documentation changes in the core worktree during this run.
@@ -64,9 +65,16 @@ documentation changes in the core worktree during this run.
 Active Terra: `/root/terra_controller_source`, task `oro-mf-controller-source`,
 worktree/branch `factory-controller-source` / `feature/factory-controller-source`,
 base `c627f6c3`. Owns new `managed_engine.go`, `managed_backend.go`,
-`managed_backend_checkout.go`, `managed_engine_test.go` only. Its draft now reaches
-the real eight-call preparation path through the real entry, but final matrix,
-race, lint and review remain. **No frozen commit has been accepted yet.** It
+`managed_backend_checkout.go`, `managed_engine_test.go` only. Frozen `41436cdf`
+reaches the real entry, six Git calls and eight preparation calls, ready workspace
+and one spent attempt. Worker race passed in 43.391 seconds, root entry race in
+16.220 seconds, worker full non-race package in 190.305 seconds. Source review
+found typed-nil HostRuntime could panic after spending an attempt. Evidence review
+requires actual running-keeper continuity and public-entry owner-binding tests,
+plus explicit candidate-stage interruption assertion. Terra has behavioral RED
+for the panic and is verifying the followup. **No source-consumer revision is
+accepted or integrated yet.** Review the final immutable followup, not merely the
+earlier passing matrix. It
 initially stopped after orientation without code; root explicitly continued the
 execution. Minimal compile scaffolding after writing a test is allowed; only the
 subsequent behavioral RED counts. Do not restart or duplicate this active worker.
@@ -80,6 +88,8 @@ must follow these prerequisites to connect raw export and production source
 preparation to `controller.attempt`. No new public preparation API or fake
 production caller is permitted. Keep real CLI/service publication after that
 core consumer exists; candidate execution and full delivery remain unfinished.
+Both integrated verification handles are terminal. Only Terra's source followup
+is active; do not restart old full suites or duplicate its four files.
 
 Typed HELLO/GO and generic controller-scope denial are implemented. Real
 controller/backend and CLI consumers remain. Existing generic budget tests
