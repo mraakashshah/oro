@@ -114,7 +114,8 @@ func TestManagedControllerWorkerCheckout(t *testing.T) {
 		token      string
 		reader     ManagedDockerConfigReader
 	}{
-		{gen + 1, scope.ID, reader}, {gen, strings.Repeat("0", 32), reader},
+		{gen + 1, scope.ID, reader},
+		{gen, strings.Repeat("0", 32), reader},
 		{gen, scope.ID, func(context.Context) (ManagedDockerConfig, error) {
 			changed := config
 			changed.RuntimeConfigSHA256 = strings.Repeat("f", 64)
@@ -355,6 +356,7 @@ func (r *managedEngineRuntime) Invoke(ctx context.Context, call HostInvocation) 
 	}
 	return HostResult{}, errors.New("unexpected managed host path")
 }
+
 func (r *managedEngineRuntime) Retire(ctx context.Context, scope ScopeHandle) error {
 	return r.git.Retire(ctx, scope)
 }

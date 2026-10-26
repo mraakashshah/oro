@@ -39,6 +39,7 @@ func newManagedDeliveryBackend(ctx context.Context, owner *managedControllerOwne
 	}
 	return &managedDeliveryBackend{ctx: ctx, owner: owner, git: git, docker: docker}, nil
 }
+
 func (b *managedDeliveryBackend) checkOwner(ctx context.Context) error {
 	return b.owner.journal.mutate(ctx, "", "", func(tx *sql.Tx, _ *managedSupervision) (bool, error) {
 		s, e := validateActivationSnapshot(ctx, tx, b.owner.manifest)
@@ -48,12 +49,15 @@ func (b *managedDeliveryBackend) checkOwner(ctx context.Context) error {
 		return false, b.owner.validateNext(ctx, tx, s)
 	})
 }
+
 func interrupt(stage string, err error) error {
 	return &managedInterruptionError{stage: stage, cause: err}
 }
+
 func unavailable(stage string) error {
 	return interrupt(stage, errors.New("managed operation unavailable"))
 }
+
 func (b *managedDeliveryBackend) verifyPolicies() error {
 	m, err := loadManagedManifest(b.ctx, b.owner.manifest.Reservation.StateRoot, b.owner.manifest.Spec.ID)
 	if err != nil {
@@ -83,24 +87,31 @@ func (b *managedDeliveryBackend) target(ctx context.Context, deadline time.Time)
 	}
 	return oid, nil
 }
+
 func (b *managedDeliveryBackend) pristine(context.Context, string, string, time.Time) error {
 	return unavailable("pristine")
 }
+
 func (b *managedDeliveryBackend) execute(context.Context, string, commandInput, time.Time) commandResult {
 	return commandResult{ExitCode: -1, Err: unavailable("candidate")}
 }
+
 func (b *managedDeliveryBackend) commit(context.Context, string, string, time.Time) (string, error) {
 	return "", unavailable("commit")
 }
+
 func (b *managedDeliveryBackend) exists(context.Context, string, time.Time) error {
 	return unavailable("exists")
 }
+
 func (b *managedDeliveryBackend) promote(context.Context, string, string, time.Time) error {
 	return unavailable("promote")
 }
+
 func (b *managedDeliveryBackend) observeTarget(context.Context) (string, error) {
 	return "", unavailable("observe target")
 }
+
 func (b *managedDeliveryBackend) completedArtifact(context.Context, string) error {
 	return unavailable("completed artifact")
 }
