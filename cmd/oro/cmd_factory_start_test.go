@@ -33,6 +33,7 @@ func TestFactoryStart(t *testing.T) {
 	t.Run("active deadline", factoryStartActiveDeadlineTest)
 	t.Run("pending", factoryStartPendingTest)
 	t.Run("reservation mismatch", factoryStartReservationMismatchTest)
+	t.Run("spec mismatch same reservation", factoryStartSpecMismatchReservationTest)
 	t.Run("strict", factoryStartStrictTest)
 	t.Run("budget", factoryStartBudgetTest)
 	t.Run("disk probe", factoryStartDiskProbeTest)
@@ -448,5 +449,23 @@ func factoryStartActiveDeadlineTest(t *testing.T) {
 	}
 	if got := publicationJournalState(t, filepath.Join(f.root, f.spec.ID)); got != journalBefore {
 		t.Error("journal changed")
+	}
+}
+
+func factoryStartSpecMismatchReservationTest(t *testing.T) {
+	f := newFactoryStartFixture(t)
+	reservation, err := admitFactoryHostBudget(t.Context(), f.root, f.spec, factoryBudgetProbe(math.MaxInt64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := f.spec
+	other.Objective = "different objective"
+	if _, err := factory.AdmitManaged(t.Context(), f.root, other, reservation); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	deps := factoryStartDependencies{probe: factoryBudgetProbe(math.MaxInt64), executable: func() (string, error) { return f.oro, nil }, supported: func() error { return nil }, bootstrap: func(context.Context, string) error { calls++; return nil }}
+	if _, err := runFactoryStartFixture(t, f, deps); err == nil || calls != 0 {
+		t.Fatalf("different admitted spec accepted: %v calls %d", err, calls)
 	}
 }
