@@ -123,10 +123,19 @@ Integrated CLI race/coverage at `51af5307` passed in 117.967 seconds package /
 130.401 seconds harness, 25.1% CLI statements. The gate failed only the same three
 dead exports in 190.617 seconds (fifteen checks passed). Formatting, lint and
 NilAway passed. Both jobs are terminal, prefixes `service-state-integrated-race`
-and `service-state-integrated-gate`. The registration consumer is implemented in
-Terra `cac818ac` but awaits a correction for intermediate lock-path alias/mode
-validation; it is not yet accepted or integrated.
+and `service-state-integrated-gate`.
 
-Public start/service registration, uncertain-bootstrap ownership reconciliation,
+The registration consumer is integrated in `7cf9ff75` / `bacf6937`. It persists
+dispatching before bootstrap, records registered only after success, and refuses
+uncertain redispatch. Review corrected intermediate lock-path validation; the
+final version rechecks the complete canonical private chain and held inode before
+dispatch and acknowledgement. Real host-ledger/admission/publication/activation
+fixtures cover lost acknowledgement, persistence failure, concurrent starts,
+child death at bootstrap and retained capacity. Astra accepted Terra `f59f5706`;
+root final protected race with coverage passed in 24.036 seconds harness, prefix
+`service-register-final-race`. This is durable registration acknowledgement, not
+native launch/service health or autonomous uncertain-bootstrap recovery.
+
+Public start, uncertain-bootstrap ownership reconciliation,
 candidate execution, independent acceptance, native qualification and sustained
 real-model unattended delivery/recovery remain outstanding.

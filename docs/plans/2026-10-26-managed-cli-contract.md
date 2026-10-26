@@ -1,8 +1,8 @@
 # Managed CLI continuation contract
 
 Status: core consumer, concrete launch wrapper, runtime publication and hidden
-commands implemented. Public start and durable service registration below remain
-proposals. Do not claim native startup, delivery or recovery qualification from
+commands, durable prepared service and registration implemented. Public start
+below remains under implementation. Do not claim native startup, delivery or recovery qualification from
 this document.
 Keep `oro-mf-cli-start` and the full autonomy objective open through real wiring.
 

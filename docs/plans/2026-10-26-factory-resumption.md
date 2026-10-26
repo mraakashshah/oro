@@ -74,10 +74,23 @@ and only three dead exports failed (AdmitManaged, ActivateManaged and
 DecodeDockerCleanupResult). Formatting, lint and NilAway passed; later runtime
 qualification does not follow. Evidence is in the same private directory.
 
-Registration `cac818ac` is not integrated. Root's scoped race with coverage passed
-(26.244 seconds harness), but Astra found held lock validation follows aliases in
-intermediate directories and does not recheck their private modes. Terra is
-correcting this with post-acquisition path-mutation regressions before acceptance.
+Registration is now accepted and integrated in `7cf9ff75` / `bacf6937`. Review
+found held lock validation followed intermediate aliases and did not recheck
+private modes. The correction validates the complete private canonical chain and
+held lock inode before dispatch and acknowledgement. Symlink, mode, missing-path
+and post-bootstrap mutation regressions pass. Astra accepted final Terra
+`f59f5706`; root's final protected race with coverage passed in 24.036 seconds
+harness, prefix `service-register-final-race`. Real ledger/admission/publication/
+activation fixtures prove unchanged reservations across uncertainty, exactly one
+bootstrap, durable dispatch-before-transport and no uncertain replay. Native
+service health and uncertainty recovery remain unqualified.
+
+Terra is implementing `oro-mf-start-command` in `.worktrees/factory-start-command`,
+branch `feature/factory-start-command`, base `bacf6937`. It must register the real
+Cobra consumer of strict decoding, budget, admission, publication/activation and
+service registration. Do not run native services as part of this unit task. All
+integrated verification jobs listed above are terminal; there are no active root
+verification handles at this checkpoint.
 Service-bootstrap uncertainty still needs a proven ownership/reconciliation
 mechanism. Candidate execution, independent acceptance, native qualification and
 real-model sustained delivery/self-healing trials remain unfinished. The full
