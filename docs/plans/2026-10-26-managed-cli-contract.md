@@ -126,6 +126,22 @@ Only errors.Is with ErrManagedRuntimePending selects publication; all other
 reference-read errors stop. Active replay uses the authoritative reference and
 never reconstructs artifacts or manufactures authority from fresh hashes.
 
+The CLI budget ledger already compares the complete caller specification on
+replay. Close the separate committed-reservation link with the narrow immediate
+consumer `factory.VerifyManagedHostReservation(ctx, stateDir, id, want) error`.
+Use the existing read-only openManagedActivation verifier under a 30-second bound
+and compare its manifest reservation tuple exactly; do not canonicalize original
+executable paths or add a second spec decoder/hash. This helper does not activate
+anything, despite the reused internal verifier's name. Cover mismatch, corrupt
+identity, removed original executables and unchanged journal state.
+
+The production disk probe walks only ENOENT upward to a canonical existing
+directory, creates nothing, and uses checked capacity/available-byte arithmetic
+from Statfs (Bavail, not Bfree). Check context around traversal and the syscall;
+the syscall itself is not context-interruptible. Active replay still requires the
+admitted external Docker executable/endpoint; original Oro/model/Git inputs may
+be absent because their frozen copies are authoritative.
+
 Immutable bounded service intent binds root/id, active reference, HardStop,
 frozen Oro, exact plist digest and one persisted random nonce. Stable name:
 `dev.getoro.factory.<objectiveHash16>.supervisor.<persistedNonce32>`.
