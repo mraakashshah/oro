@@ -15,13 +15,17 @@ func managedContractFixture() ManagedSpec {
 	return ManagedSpec{
 		ID: "calculator", Objective: "Implement addition", Repository: "/private/tmp/repository", TargetBranch: "factory/calculator",
 		RequiredChecks: []string{"addition"}, MaxAttempts: 3, TimeoutSeconds: 300, StepTimeoutSeconds: 60,
-		Recovery: RecoveryPolicy{MaxControllerStarts: 5, MaxSupervisorStarts: 8, RestartDelaySeconds: 1,
-			CleanupTimeoutSeconds: 10, ReconciliationSeconds: 15, MaxReconciliationInvocations: 4, MaxCleanupInvocations: 4},
-		Runtime: RuntimePolicy{DockerContext: "colima-oro-factory", ImageDigest: "sha256:" + strings.Repeat("a", 64),
+		Recovery: RecoveryPolicy{
+			MaxControllerStarts: 5, MaxSupervisorStarts: 8, RestartDelaySeconds: 1,
+			CleanupTimeoutSeconds: 10, ReconciliationSeconds: 15, MaxReconciliationInvocations: 4, MaxCleanupInvocations: 4,
+		},
+		Runtime: RuntimePolicy{
+			DockerContext: "colima-oro-factory", ImageDigest: "sha256:" + strings.Repeat("a", 64),
 			MemoryBytes: 256 << 20, ScratchBytes: 64 << 20, SourceBytes: 16 << 20, HostRequiredBytes: 1 << 30, HostReserveBytes: 128 << 20,
 			CPUs: 1.5, PIDs: 64, MaxFiles: 100, SourceInodes: 200, ScratchInodes: 200,
 			MaxModelCalls: 10, MaxModelTurns: 20, MaxToolCalls: 50, MaxHostInvocations: 100,
-			Model: "claude-sonnet-4-6", ModelExecutable: "/usr/local/bin/claude", GitExecutable: "/usr/bin/git", MaxModelInvocationUSD: "1.25"},
+			Model: "claude-sonnet-4-6", ModelExecutable: "/usr/local/bin/claude", GitExecutable: "/usr/bin/git", MaxModelInvocationUSD: "1.25",
+		},
 		Acceptance:         []Check{{ID: "addition", Args: []string{"./calculator", "2", "3"}, Stdin: "", ExpectedStdout: "5\n", ExpectedExit: 0}},
 		ReviewInstructions: "Independently verify the implementation and exact acceptance results.",
 	}

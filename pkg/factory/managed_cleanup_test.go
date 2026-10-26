@@ -71,8 +71,10 @@ func newCleanupFixtureState(t *testing.T, kind string, late bool) cleanupFixture
 			t.Fatal(err)
 		}
 	}
-	binding := DockerCleanupBinding{Kind: "container", Context: a.Runtime.DockerContext, Name: target.Name, ContainerID: strings.Repeat("b", 64),
-		CreatedAt: a.Deadline.Add(-time.Minute).Format(time.RFC3339Nano), ImageID: "sha256:" + strings.Repeat("c", 64), Labels: map[string]string{}}
+	binding := DockerCleanupBinding{
+		Kind: "container", Context: a.Runtime.DockerContext, Name: target.Name, ContainerID: strings.Repeat("b", 64),
+		CreatedAt: a.Deadline.Add(-time.Minute).Format(time.RFC3339Nano), ImageID: "sha256:" + strings.Repeat("c", 64), Labels: map[string]string{},
+	}
 	for key, value := range map[string]string{"objective": objective, "scope": target.ID, "nonce": target.Nonce, "generation": strconv.FormatUint(generation, 10), "kind": target.Kind, "policy": a.ManifestHash} {
 		binding.Labels["dev.getoro.factory."+key] = value
 	}

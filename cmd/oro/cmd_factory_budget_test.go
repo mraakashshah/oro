@@ -547,12 +547,16 @@ func factoryBudgetFixture(t *testing.T) (string, factory.ManagedSpec) {
 	spec := factory.ManagedSpec{
 		ID: "first", Objective: "add numbers", Repository: repository, TargetBranch: "factory/first",
 		RequiredChecks: []string{"addition"}, MaxAttempts: 1, TimeoutSeconds: 30, StepTimeoutSeconds: 10,
-		Recovery: factory.RecoveryPolicy{MaxControllerStarts: 1, MaxSupervisorStarts: 1, RestartDelaySeconds: 1,
-			CleanupTimeoutSeconds: 1, ReconciliationSeconds: 1, MaxReconciliationInvocations: 1, MaxCleanupInvocations: 1},
-		Runtime: factory.RuntimePolicy{DockerContext: "factory-test", ImageDigest: "sha256:" + strings.Repeat("a", 64),
+		Recovery: factory.RecoveryPolicy{
+			MaxControllerStarts: 1, MaxSupervisorStarts: 1, RestartDelaySeconds: 1,
+			CleanupTimeoutSeconds: 1, ReconciliationSeconds: 1, MaxReconciliationInvocations: 1, MaxCleanupInvocations: 1,
+		},
+		Runtime: factory.RuntimePolicy{
+			DockerContext: "factory-test", ImageDigest: "sha256:" + strings.Repeat("a", 64),
 			MemoryBytes: 1024, ScratchBytes: 1024, SourceBytes: 1024, HostRequiredBytes: 1, HostReserveBytes: 100,
 			CPUs: 1, PIDs: 1, MaxFiles: 1, SourceInodes: 1, ScratchInodes: 1, MaxModelCalls: 1, MaxModelTurns: 1,
-			MaxToolCalls: 1, MaxHostInvocations: 1, Model: "test", ModelExecutable: "/usr/bin/true", GitExecutable: "/usr/bin/git", MaxModelInvocationUSD: "0.01"},
+			MaxToolCalls: 1, MaxHostInvocations: 1, Model: "test", ModelExecutable: "/usr/bin/true", GitExecutable: "/usr/bin/git", MaxModelInvocationUSD: "0.01",
+		},
 		Acceptance: []factory.Check{{ID: "addition", Args: []string{"/bin/true"}}}, ReviewInstructions: "verify",
 	}
 	limits, err := factory.ManagedHostRetention(spec)

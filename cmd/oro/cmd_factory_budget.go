@@ -58,8 +58,10 @@ func admitFactoryHostBudgetWithHooks(ctx context.Context, stateDir string, spec 
 	if err := ctx.Err(); err != nil {
 		return factory.HostReservation{}, fmt.Errorf("host budget probe context: %w", err)
 	}
-	entry := factoryBudgetEntry{ID: randomFactoryBudgetID(), ObjectiveID: spec.ID, Bytes: spec.Runtime.HostRequiredBytes,
-		ReserveBytes: spec.Runtime.HostReserveBytes, SpecSHA256: specHash}
+	entry := factoryBudgetEntry{
+		ID: randomFactoryBudgetID(), ObjectiveID: spec.ID, Bytes: spec.Runtime.HostRequiredBytes,
+		ReserveBytes: spec.Runtime.HostReserveBytes, SpecSHA256: specHash,
+	}
 	ledger.Entries = append(ledger.Entries, entry)
 	slices.SortFunc(ledger.Entries, func(a, b factoryBudgetEntry) int { return strings.Compare(a.ObjectiveID, b.ObjectiveID) })
 	ledger.Revision++

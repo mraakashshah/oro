@@ -7,5 +7,11 @@
 		"enabled": true,
 		"clientKind": "git",
 		"useIgnoreFile": true
-	}
+	},
+	"overrides": [
+		{
+			"includes": ["docs/proofs/2026-10-24-factory-native/**/*.json"],
+			"formatter": { "enabled": false }
+		}
+	]
 }

@@ -39,8 +39,10 @@ type managedRecordBounds struct {
 // helper has one invocation, one scope, one epoch and one bounded permit. The
 // conservative scope allowance also covers supervisor/controller reservations.
 func managedRecordLimits(recovery RecoveryPolicy, runtime RuntimePolicy) (managedRecordBounds, error) {
-	for _, count := range []int{recovery.MaxSupervisorStarts, recovery.MaxControllerStarts, recovery.MaxReconciliationInvocations,
-		recovery.MaxCleanupInvocations, runtime.MaxHostInvocations, runtime.MaxModelCalls, runtime.MaxToolCalls} {
+	for _, count := range []int{
+		recovery.MaxSupervisorStarts, recovery.MaxControllerStarts, recovery.MaxReconciliationInvocations,
+		recovery.MaxCleanupInvocations, runtime.MaxHostInvocations, runtime.MaxModelCalls, runtime.MaxToolCalls,
+	} {
 		if count <= 0 {
 			return managedRecordBounds{}, errors.New("managed record limits must be positive")
 		}

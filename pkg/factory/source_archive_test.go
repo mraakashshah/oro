@@ -129,8 +129,10 @@ func testSourceLinksRejected(t *testing.T) {
 		"symlink parent":     {sourceLinkFixture("link", "file"), sourceLinkFileFixture("link/child"), sourceLinkFileFixture("file")},
 		"parent after child": {sourceLinkFileFixture("link/child"), sourceLinkFixture("link", "file"), sourceLinkFileFixture("file")},
 		// An empty tar-only directory has no Git leaf and cannot survive export.
-		"empty directory traversal": {sourceLinkFixture("link", "empty/../file"), sourceLinkFileFixture("file"),
-			{header: tar.Header{Name: "empty/", Mode: 0o755, Typeflag: tar.TypeDir}}},
+		"empty directory traversal": {
+			sourceLinkFixture("link", "empty/../file"), sourceLinkFileFixture("file"),
+			{header: tar.Header{Name: "empty/", Mode: 0o755, Typeflag: tar.TypeDir}},
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			assertCandidateArchiveRejected(t, candidateArchive(t, files...), sourceLinkLimits())
