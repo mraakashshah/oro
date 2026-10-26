@@ -91,6 +91,9 @@ func parseManagedDockerRunningKeeperInspection(result HostResult, keeper managed
 	if err := json.Unmarshal(result.Stdout, &raw); err != nil {
 		return "", fmt.Errorf("read raw keeper start time: %w", err)
 	}
+	if len(raw) != 1 {
+		return "", errors.New("keeper inspection requires one object")
+	}
 	started, err := CanonicalDockerCreatedAt(raw[0].State.StartedAt)
 	if err != nil {
 		return "", fmt.Errorf("normalize keeper start time: %w", err)
