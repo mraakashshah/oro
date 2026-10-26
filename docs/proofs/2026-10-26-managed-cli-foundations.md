@@ -75,6 +75,18 @@ unqualified. Both jobs are terminal. Environment, log and result files remain in
 integration flags; skipped native
 fixtures are not evidence. No native launchctl, Docker, VM or model call ran.
 
+The helper failure was reproduced directly: its instrumented executable emitted
+`warning: GOCOVERDIR not set, no coverage data emitted` on stderr. Test-only
+`278af5fd`, integrated as `cedfc534`, provides a private helper coverage directory
+and asserts exact stdout and empty stderr under the restricted environment.
+Astra accepted the isolated fix. Root's fresh integrated shuffled CLI race with
+coverage passed in 103.080 seconds package / 115.132 seconds harness, 23.8%
+statement coverage (`command-coverage-repaired-race` evidence prefix). This is
+CLI coverage, not the full factory package profile. A separate worker cleanup
+fixture failure did not reproduce under the protected canonical temporary root:
+focused cleanup CLI race with coverage passed in 30.089 seconds harness. Do not
+weaken admitted executable canonical-path checks to accommodate fixture paths.
+
 ## Test maintenance and remaining work
 
 An earlier failed recording test left an orphaned controller peer. Root verified

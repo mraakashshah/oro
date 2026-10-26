@@ -29,8 +29,11 @@ Evidence is under `/private/tmp/oro-factory-verify-ldhnhnvl/`, prefixes
 `managed-commands-integrated-race` and `managed-commands-integrated-gate`.
 Task `oro-mf-command-coverage-protocol` investigates the instrumented helper;
 Terra reproduced the cause directly: the instrumented test helper emits a
-GOCOVERDIR warning on stderr. A test-only fix is undergoing broader checks. Preserve
-the production exact acknowledgment contract. All older jobs are terminal.
+GOCOVERDIR warning on stderr. The isolated fix `cedfc534` passed Astra review;
+root's fresh integrated shuffled CLI race with coverage passed in 103.080 seconds
+package / 115.132 seconds harness, 23.8% statement coverage, evidence prefix
+`command-coverage-repaired-race`. Production exact acknowledgment is unchanged.
+All older jobs are terminal.
 
 The accepted hidden-command source is
 exactly Terra `7c2a5136`; root final race passed in 23.149 seconds. Preserve worker
@@ -46,8 +49,8 @@ lock covers existing-read/admit-if-needed, publication/activation and locked
 registration. Active replay must not reacquire the supervisor's lifetime lock.
 The [CLI contract](2026-10-26-managed-cli-contract.md) records the resolved order.
 
-Terra is investigating coverage in `.worktrees/factory-command-coverage` and
-ordinary host retirement in `.worktrees/factory-host-retirement`, task
+The accepted coverage worker is complete in `.worktrees/factory-command-coverage`.
+Terra implemented ordinary host retirement in `.worktrees/factory-host-retirement`, task
 `oro-mf-host-retirement-bound`. Terra has started `oro-mf-service-state` in
 `.worktrees/factory-service-state`; its sequential consumers are
 `oro-mf-service-register` and `oro-mf-start-command`. Astra's decomposition is
