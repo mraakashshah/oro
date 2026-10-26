@@ -673,6 +673,9 @@ func existingManagedAdmission(ctx context.Context, store *factoryStore, manifest
 	if !reflect.DeepEqual(admission, managedJournalIdentity(manifest)) {
 		return Status{}, errors.New("managed journal identity differs from frozen admission")
 	}
+	if _, err := loadManagedActivation(ctx, store.conn, body, admission.Reservation.StateRoot, admission.ObjectiveID); err != nil {
+		return Status{}, err
+	}
 	return snapshotStatus(state), nil
 }
 

@@ -83,6 +83,11 @@ CREATE TABLE IF NOT EXISTS managed_cleanup_permits (
 	if err != nil {
 		return fmt.Errorf("initialize managed journal: %w", err)
 	}
+	if err := initManagedDockerSchema(ctx, conn, `CREATE TABLE IF NOT EXISTS managed_activation (
+ id INTEGER PRIMARY KEY CHECK(id=1), body BLOB NOT NULL CHECK(length(body)<=2048)
+);`); err != nil {
+		return err
+	}
 	if err := initManagedDockerVolumeSchema(ctx, conn); err != nil {
 		return err
 	}
@@ -147,13 +152,21 @@ func insertManagedAdmission(ctx context.Context, tx *sql.Tx, a managedJournalAdm
 		if !bytes.Equal(existing, body) {
 			return errors.New("managed admission identity is immutable")
 		}
-		return nil
+		_, err = loadManagedActivation(ctx, tx, existing, a.Reservation.StateRoot, a.ObjectiveID)
+		return err
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("read managed admission: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO managed_admissions(id,body) VALUES(1,?)", body); err != nil {
 		return fmt.Errorf("persist managed admission: %w", err)
+	}
+	activation, err := json.Marshal(managedActivation{Version: 1, AdmissionSHA256: contentHash(body), Phase: "pending"})
+	if err != nil {
+		return fmt.Errorf("encode pending activation: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO managed_activation(id,body) VALUES(1,?)", activation); err != nil {
+		return fmt.Errorf("persist pending activation: %w", err)
 	}
 	initial, err := json.Marshal(managedSupervision{Revision: 1, DesiredState: "running"})
 	if err != nil {
