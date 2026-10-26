@@ -9,7 +9,7 @@ import (
 
 func factoryServicePlist(intent factoryServiceIntent) ([]byte, error) {
 	argv := factoryJobXMLNode("array", "")
-	for _, arg := range []string{intent.OroPath, "_supervise", "--state-dir", intent.Root, "--id", intent.ID, "--runtime-config", intent.Runtime.Path, "--runtime-config-sha256", intent.Runtime.SHA256, "--hard-stop", intent.HardStop.UTC().Format(time.RFC3339Nano)} {
+	for _, arg := range []string{intent.OroPath, "factory", "_supervise", "--state-dir", intent.Root, "--id", intent.ID, "--runtime-config", intent.Runtime.Path, "--runtime-config-sha256", intent.Runtime.SHA256, "--hard-stop", intent.HardStop.UTC().Format(time.RFC3339Nano)} {
 		argv.Children = append(argv.Children, factoryJobXMLNode("string", arg))
 	}
 	keep := factoryJobXMLNode("dict", "")

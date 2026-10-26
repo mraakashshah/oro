@@ -92,6 +92,8 @@ type factoryServiceRegistration struct {
 func (access *factoryServiceAccess) prepare(ctx context.Context, view factory.ManagedAdmissionView, ref factory.ManagedRuntimeReference) (factoryServiceIntent, factoryServiceRegistration, error) {
 	var empty factoryServiceIntent
 	var registration factoryServiceRegistration
+	ctx, cancel := context.WithDeadline(ctx, view.Deadline)
+	defer cancel()
 	if err := access.validateAuthority(ctx, view, ref); err != nil {
 		return empty, registration, err
 	}
@@ -112,12 +114,18 @@ func (access *factoryServiceAccess) prepare(ctx context.Context, view factory.Ma
 		if _, stageErr := objective.Lstat(".service.stage"); !errors.Is(stageErr, os.ErrNotExist) {
 			return empty, registration, errors.New("uncertain service stage alongside final bundle")
 		}
+		if err := syncFactoryBudgetDirectory(objective); err != nil {
+			return empty, registration, err
+		}
+		if err := ctx.Err(); err != nil {
+			return empty, registration, fmt.Errorf("service replay: %w", err)
+		}
 		return intent, registration, nil
 	}
 	if _, statErr := objective.Lstat("service"); !errors.Is(statErr, os.ErrNotExist) {
 		return empty, registration, fmt.Errorf("service bundle: %w", err)
 	}
-	intent, registration, err = access.recoverOrCreateServiceStage(objective, view, ref, config)
+	intent, registration, err = access.recoverOrCreateServiceStage(ctx, objective, view, ref, config)
 	if err != nil {
 		return empty, registration, err
 	}
@@ -168,7 +176,7 @@ func (access *factoryServiceAccess) validateAuthority(ctx context.Context, view 
 	return nil
 }
 
-func (access *factoryServiceAccess) createServiceStage(objective *os.Root, view factory.ManagedAdmissionView, ref factory.ManagedRuntimeReference, config factoryDockerCleanupConfig) (factoryServiceIntent, factoryServiceRegistration, error) {
+func (access *factoryServiceAccess) createServiceStage(ctx context.Context, objective *os.Root, view factory.ManagedAdmissionView, ref factory.ManagedRuntimeReference, config factoryDockerCleanupConfig) (factoryServiceIntent, factoryServiceRegistration, error) {
 	var empty, intent factoryServiceIntent
 	var registration factoryServiceRegistration
 	var nonce [16]byte
@@ -191,6 +199,9 @@ func (access *factoryServiceAccess) createServiceStage(objective *os.Root, view 
 	if err != nil {
 		return empty, registration, fmt.Errorf("service registration: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		return empty, registration, fmt.Errorf("service publication: %w", err)
+	}
 	if err := objective.Mkdir(".service.stage", 0o700); err != nil {
 		return empty, registration, fmt.Errorf("service stage: %w", err)
 	}
@@ -199,6 +210,10 @@ func (access *factoryServiceAccess) createServiceStage(objective *os.Root, view 
 		return empty, registration, err
 	}
 	for name, contents := range map[string][]byte{"intent.json": data, "service.plist": plist, "registration.json": reg} {
+		if err := ctx.Err(); err != nil {
+			_ = stage.Close()
+			return empty, registration, fmt.Errorf("service publication: %w", err)
+		}
 		if err := writeFactoryPublicationFile(stage, name, contents); err != nil {
 			_ = stage.Close()
 			return empty, registration, err
@@ -213,15 +228,18 @@ func (access *factoryServiceAccess) createServiceStage(objective *os.Root, view 
 	return intent, registration, nil
 }
 
-func (access *factoryServiceAccess) recoverOrCreateServiceStage(objective *os.Root, view factory.ManagedAdmissionView, ref factory.ManagedRuntimeReference, config factoryDockerCleanupConfig) (factoryServiceIntent, factoryServiceRegistration, error) {
+func (access *factoryServiceAccess) recoverOrCreateServiceStage(ctx context.Context, objective *os.Root, view factory.ManagedAdmissionView, ref factory.ManagedRuntimeReference, config factoryDockerCleanupConfig) (factoryServiceIntent, factoryServiceRegistration, error) {
 	if _, err := objective.Lstat(".service.stage"); errors.Is(err, os.ErrNotExist) {
-		return access.createServiceStage(objective, view, ref, config)
+		return access.createServiceStage(ctx, objective, view, ref, config)
 	} else if err != nil {
 		return factoryServiceIntent{}, factoryServiceRegistration{}, fmt.Errorf("service stage: %w", err)
 	}
 	intent, registration, err := readFactoryServiceBundle(objective, ".service.stage", view, ref, config.OroPath, config.OroSHA256)
 	if err != nil || registration.Phase != "prepared" {
 		return factoryServiceIntent{}, factoryServiceRegistration{}, errors.New("uncertain service stage")
+	}
+	if err := syncFactoryServiceStage(objective); err != nil {
+		return factoryServiceIntent{}, factoryServiceRegistration{}, err
 	}
 	return intent, registration, nil
 }

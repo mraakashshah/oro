@@ -63,6 +63,8 @@ func (access *factoryServiceAccess) transition(ctx context.Context, intent facto
 	if err != nil {
 		return fmt.Errorf("service transition: %w", err)
 	}
+	ctx, cancel := context.WithDeadline(ctx, view.Deadline)
+	defer cancel()
 	actual, reg, err := access.prepare(ctx, view, intent.Runtime)
 	if err != nil {
 		return err
@@ -110,6 +112,9 @@ func (access *factoryServiceAccess) writeServiceTransition(ctx context.Context, 
 	if err != nil {
 		return fmt.Errorf("service transition: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("service transition: %w", err)
+	}
 	if err := writeFactoryPublicationFile(objective, ".registration.stage", data); err != nil {
 		return fmt.Errorf("service transition uncertain: %w", err)
 	}
@@ -120,4 +125,24 @@ func (access *factoryServiceAccess) writeServiceTransition(ctx context.Context, 
 		return fmt.Errorf("service transition: %w", err)
 	}
 	return syncFactoryBudgetDirectory(objective)
+}
+
+func syncFactoryServiceStage(objective *os.Root) error {
+	stage, err := openFactoryRuntimeDirectory(objective, ".service.stage")
+	if err != nil {
+		return err
+	}
+	defer stage.Close()
+	for _, name := range []string{"intent.json", "registration.json", "service.plist"} {
+		file, err := openFactoryBudgetFile(stage, name, os.O_RDONLY, 0)
+		if err != nil {
+			return err
+		}
+		err = file.Sync()
+		_ = file.Close()
+		if err != nil {
+			return fmt.Errorf("sync service stage: %w", err)
+		}
+	}
+	return syncFactoryBudgetDirectory(stage)
 }
