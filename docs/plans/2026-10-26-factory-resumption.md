@@ -54,14 +54,23 @@ Ordinary host retirement is reviewed and integrated in `77497aeb` / `6e5c79f6`,
 task `oro-mf-host-retirement-bound`; root's independent repeated race passed,
 including ordinary GO/PUBLISHED. Integrated race prefix
 `host-retirement-integrated-race` passed in 41.858 seconds harness and is terminal.
-Terra has started `oro-mf-service-state` in
-`.worktrees/factory-service-state`; its sequential consumers are
-`oro-mf-service-register` and `oro-mf-start-command`. Astra's decomposition is
-recorded in the CLI contract and the tracker. No native services are being run.
-Initial service-state `25210323` is not accepted or integrated: review found a
-missing factory argv component, deadline-crossing publication, and missing
-recovered-publication durability barriers. Terra is correcting all three and
-adding independent plist, alias and corrupt-stage regressions before acceptance.
+Prepared service state is accepted and integrated in `de946982` / `51af5307`.
+Initial review found a missing factory argv component, deadline-crossing
+publication, and missing recovered-publication durability barriers. All three
+were corrected, independently reviewed and verified by root's scoped race with
+coverage (6.241 seconds package / 18.442 seconds harness, 9.9% CLI statements).
+Independent plist/Cobra, alias, hardlink, private-mode and corrupt-stage checks
+are present. Injected fsync failure and power-loss durability remain unproven.
+Terra is now implementing `oro-mf-service-register` in
+`.worktrees/factory-service-register`, branch `feature/factory-service-register`,
+base `51af5307`. The next actual consumer is `oro-mf-start-command`. Preserve the
+accepted service-state worker worktree for provenance. Astra's decomposition is
+recorded in the CLI contract and tracker. No native services are being run.
+
+Fresh integrated jobs at `51af5307` are live: `service-state-integrated-race`
+session `30713` and `service-state-integrated-gate` session `4704`. Evidence is in
+the same private directory. Recover exact terminal result files before rerunning;
+only documentation changes while these checks run.
 Service-bootstrap uncertainty still needs a proven ownership/reconciliation
 mechanism. Candidate execution, independent acceptance, native qualification and
 real-model sustained delivery/self-healing trials remain unfinished. The full

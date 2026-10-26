@@ -108,6 +108,22 @@ GO/PUBLISHED/result/retirement (3.772 seconds package / 16.694 seconds harness).
 Evidence prefix is `host-retirement-reviewed-race`. Integrated command checks at
 `6e5c79f6` passed in 41.858 seconds harness, evidence prefix
 `host-retirement-integrated-race`; the job is terminal. No native launchd was invoked.
+Prepared service state is implemented in `de946982` / `51af5307`. It uses the
+separate stable service lock, a complete staged initial bundle, immutable intent
+and nonce, and exact bounded registration transitions. Review corrected the
+missing factory argv, original-deadline crossing and recovered-stage durability
+barriers. The final plist is independently parsed and traverses actual Cobra;
+aliases, hardlinks, permissions and corrupt stages are rejected. Astra accepted
+Terra `b5fd0453`; root independently passed scoped race with coverage in 6.241
+seconds package / 18.442 seconds harness (9.9% CLI statements), prefix
+`service-state-reviewed-race`. Recovery was exercised, but no injected fsync
+failure or power-loss test ran. This layer performs no bootstrap.
+
+Integrated CLI race/coverage and gate are running at `51af5307`, prefixes
+`service-state-integrated-race` and `service-state-integrated-gate`, sessions
+`30713` / `4704`. Recover terminal results before repeating. Terra is implementing
+the real registration consumer in the next leaf.
+
 Public start/service registration, uncertain-bootstrap ownership reconciliation,
 candidate execution, independent acceptance, native qualification and sustained
 real-model unattended delivery/recovery remain outstanding.
