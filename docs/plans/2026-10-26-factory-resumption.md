@@ -62,37 +62,34 @@ code `c627f6c3`. Its terminal result is in
 checks passed, six dead exports remain; lint/NilAway passed. Only checkpoint
 documentation changes in the core worktree during this run.
 
-Active Terra: `/root/terra_controller_source`, task `oro-mf-controller-source`,
-worktree/branch `factory-controller-source` / `feature/factory-controller-source`,
-base `c627f6c3`. Owns new `managed_engine.go`, `managed_backend.go`,
-`managed_backend_checkout.go`, `managed_engine_test.go` only. Frozen `41436cdf`
-reaches the real entry, six Git calls and eight preparation calls, ready workspace
-and one spent attempt. Worker race passed in 43.391 seconds, root entry race in
-16.220 seconds, worker full non-race package in 190.305 seconds. Source review
-found typed-nil HostRuntime could panic after spending an attempt. Evidence review
-requires actual running-keeper continuity and public-entry owner-binding tests,
-plus explicit candidate-stage interruption assertion. Terra has behavioral RED
-for the panic and is verifying the followup. **No source-consumer revision is
-accepted or integrated yet.** Review the final immutable followup, not merely the
-earlier passing matrix. It
-initially stopped after orientation without code; root explicitly continued the
-execution. Minimal compile scaffolding after writing a test is allowed; only the
-subsequent behavioral RED counts. Do not restart or duplicate this active worker.
+`oro-mf-controller-source` is now accepted and integrated in `d3ea8d2d`, exact
+four-file parity with Terra's final `4a008b48`. Both independent Astra reviews
+accepted the typed-nil fix and actual continuity/public-owner/candidate-stage
+regressions. Worker final matrix passed in 42.995 seconds; root final entry race
+passed in 20.145 seconds. See the
+[actual source-consumer proof](../proofs/2026-10-26-managed-controller-source.md).
+No implementation agent remains active for this leaf; preserve its worktree for
+provenance and do not repeat it without a new defect.
+
+New full integrated verification is live at `d3ea8d2d`: modes
+`controller-source-integrated-full` / `controller-source-integrated-gate`, sessions
+`71024` / `82922`. Only documentation changes during verification. Recover those
+handles and their terminal result files before starting new runs. The earlier
+`c627f6c3` full pass does not qualify this new entry's full package.
 
 The workspace, interruption, owner and supervisor component implementations are
 accepted and integrated, not awaiting reimplementation merely because tracker
 statuses remain in progress under broader qualification constraints.
 
-Root owns integration. Actual managed backend checkout and `RunManagedController`
-must follow these prerequisites to connect raw export and production source
-preparation to `controller.attempt`. No new public preparation API or fake
-production caller is permitted. Keep real CLI/service publication after that
-core consumer exists; candidate execution and full delivery remain unfinished.
-Both integrated verification handles are terminal. Only Terra's source followup
-is active; do not restart old full suites or duplicate its four files.
+Root owns integration. Actual managed backend checkout and RunManagedController
+now connect raw export and production source preparation to controller.attempt.
+Next: decompose and implement real CLI/service callers and authenticated launch;
+no new public preparation API or fake production reference. Candidate execution
+and full delivery remain unfinished. Both prior verification handles are
+terminal; the new entry's two verification jobs above are the only live checks.
 
 Typed HELLO/GO and generic controller-scope denial are implemented. Real
-controller/backend and CLI consumers remain. Existing generic budget tests
+CLI consumers remain. Existing generic budget tests
 continue to pass; controller-kind fixtures now use the typed producer. No component
 task is a substitute for the full startup or autonomous delivery milestone.
 The parent autonomy goal remains active and unachieved.
