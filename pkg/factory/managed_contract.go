@@ -221,8 +221,10 @@ type SupervisorBackend interface {
 // command-output budgets. Larger specifications must be reduced before admission.
 const managedSpecMaxBytes = 1 << 20
 
-// decodeManagedSpec bounds the entire input, then rejects aliases, duplicate
-// keys, unknown fields and trailing JSON. It performs no admission side effects.
+// DecodeManagedSpec reads a bounded, strict managed specification.
+func DecodeManagedSpec(reader io.Reader) (ManagedSpec, error) { return decodeManagedSpec(reader) }
+
+// decodeManagedSpec rejects aliases, duplicate keys, unknown fields and trailing JSON.
 func decodeManagedSpec(reader io.Reader) (ManagedSpec, error) {
 	var spec ManagedSpec
 	if reader == nil {
@@ -591,6 +593,21 @@ func validateHostReservation(reservation HostReservation, spec ManagedSpec, stat
 	if !managedIdentifier(reservation.ID) || !managedAbsolutePath(stateRoot) || reservation.StateRoot != stateRoot ||
 		reservation.ObjectiveID != spec.ID || reservation.Bytes <= 0 || reservation.Bytes != spec.Runtime.HostRequiredBytes {
 		return errors.New("host reservation does not match admitted root, objective and byte budget")
+	}
+	return nil
+}
+
+// VerifyManagedHostReservation compares a committed admission with the exact host reservation.
+func VerifyManagedHostReservation(ctx context.Context, stateDir, id string, want HostReservation) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	journal, manifest, err := openManagedActivation(ctx, stateDir, id)
+	if err != nil {
+		return err
+	}
+	defer journal.Close()
+	if manifest.Reservation != want {
+		return errors.New("managed host reservation differs from committed admission")
 	}
 	return nil
 }

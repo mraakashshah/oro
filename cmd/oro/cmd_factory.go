@@ -21,7 +21,7 @@ func newFactoryCmd() *cobra.Command {
 			"State is stored only in the explicitly supplied state directory.",
 		Args: cobra.NoArgs,
 	}
-	cmd.AddCommand(newFactoryRunCmd(), newFactoryStatusCmd(), newFactoryHostExecCmd(), newFactoryDockerReadyCmd(), newFactoryDockerCleanupCmd(), newFactoryControllerCmd(), newFactorySuperviseCmd())
+	cmd.AddCommand(newFactoryStartCmd(), newFactoryRunCmd(), newFactoryStatusCmd(), newFactoryHostExecCmd(), newFactoryDockerReadyCmd(), newFactoryDockerCleanupCmd(), newFactoryControllerCmd(), newFactorySuperviseCmd())
 	return cmd
 }
 

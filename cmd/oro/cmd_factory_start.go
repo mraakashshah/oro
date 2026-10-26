@@ -1,0 +1,228 @@
+package main
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"math"
+	"os"
+	"path/filepath"
+	"strings"
+	"syscall"
+
+	"oro/pkg/factory"
+	"oro/pkg/storage"
+
+	"github.com/spf13/cobra"
+	"golang.org/x/sys/unix"
+)
+
+type factoryStartDependencies struct {
+	probe      storage.DiskProbe
+	executable func() (string, error)
+	supported  func() error
+	bootstrap  func(context.Context, string) error
+}
+
+func newFactoryStartCmd() *cobra.Command {
+	return buildFactoryStartCmd(factoryStartDependencies{probe: factoryStartDiskProbe, executable: os.Executable, supported: factoryServicePlatformSupported})
+}
+
+func buildFactoryStartCmd(deps factoryStartDependencies) *cobra.Command {
+	var specPath, root, docker, endpoint string
+	cmd := &cobra.Command{Use: "start", Short: "Register a managed factory supervisor", Args: cobra.NoArgs, SilenceUsage: true, RunE: func(cmd *cobra.Command, _ []string) error {
+		if err := deps.supported(); err != nil {
+			return err
+		}
+		spec, err := readFactoryManagedSpec(specPath)
+		if err != nil {
+			return fmt.Errorf("managed specification: %w", err)
+		}
+		if !factoryJobAbsolutePath(root) || !factoryJobAbsolutePath(docker) || !strings.HasPrefix(endpoint, "unix://") || !factoryJobAbsolutePath(strings.TrimPrefix(endpoint, "unix://")) || strings.ContainsAny(strings.TrimPrefix(endpoint, "unix://"), " ?#%") {
+			return errors.New("start requires absolute state and Docker paths and an explicit Unix endpoint")
+		}
+		status, err := startFactoryManaged(cmd.Context(), root, spec, docker, endpoint, deps)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(cmd.OutOrStdout()).Encode(struct {
+			Registration string         `json:"registration"`
+			Status       factory.Status `json:"status"`
+		}{"registered", status})
+	}}
+	cmd.Flags().StringVar(&specPath, "spec", "", "managed specification JSON")
+	cmd.Flags().StringVar(&root, "state-dir", "", "factory state directory")
+	cmd.Flags().StringVar(&docker, "docker", "", "Docker executable for initial publication")
+	cmd.Flags().StringVar(&endpoint, "docker-endpoint", "", "explicit Docker Unix endpoint for initial publication")
+	for _, flag := range []string{"spec", "state-dir", "docker", "docker-endpoint"} {
+		_ = cmd.MarkFlagRequired(flag)
+	}
+	return cmd
+}
+
+func startFactoryManaged(ctx context.Context, root string, spec factory.ManagedSpec, docker, endpoint string, deps factoryStartDependencies) (factory.Status, error) {
+	reservation, err := admitFactoryHostBudget(ctx, root, spec, deps.probe)
+	if err != nil {
+		return factory.Status{}, fmt.Errorf("factory host admission: %w", err)
+	}
+	root = reservation.StateRoot
+	access, err := lockFactoryService(ctx, root, spec.ID)
+	if err != nil {
+		return factory.Status{}, fmt.Errorf("factory service lock: %w", err)
+	}
+	defer access.Close()
+	view, err := factory.ReadManagedAdmission(ctx, root, spec.ID)
+	if err != nil {
+		if _, err := factory.AdmitManaged(ctx, root, spec, reservation); err != nil {
+			return factory.Status{}, fmt.Errorf("managed admission: %w", err)
+		}
+		view, err = factory.ReadManagedAdmission(ctx, root, spec.ID)
+		if err != nil {
+			return factory.Status{}, fmt.Errorf("read admission: %w", err)
+		}
+	}
+	ctx, cancel := context.WithDeadline(ctx, view.Deadline)
+	defer cancel()
+	if err := factory.VerifyManagedHostReservation(ctx, root, spec.ID, reservation); err != nil {
+		return factory.Status{}, fmt.Errorf("verify host reservation: %w", err)
+	}
+	ref, err := factory.ReadManagedRuntimeReference(ctx, root, spec.ID)
+	if errors.Is(err, factory.ErrManagedRuntimePending) {
+		ref, err = publishFactoryStartRuntime(ctx, view, docker, endpoint, deps.executable)
+		if err != nil {
+			return factory.Status{}, err
+		}
+		if err := factory.ActivateManaged(ctx, root, spec.ID, ref); err != nil {
+			return factory.Status{}, fmt.Errorf("activate runtime: %w", err)
+		}
+	} else if err != nil {
+		return factory.Status{}, fmt.Errorf("read active runtime: %w", err)
+	}
+	if err := verifyFactoryPublishedRuntime(ctx, view, ref); err != nil {
+		return factory.Status{}, fmt.Errorf("verify active runtime: %w", err)
+	}
+	register := registerFactoryServiceLocked
+	if deps.bootstrap != nil {
+		register = func(ctx context.Context, access *factoryServiceAccess, view factory.ManagedAdmissionView, ref factory.ManagedRuntimeReference) error {
+			return registerFactoryServiceLockedWithBootstrap(ctx, access, view, ref, deps.bootstrap)
+		}
+	}
+	if err := register(ctx, access, view, ref); err != nil {
+		return factory.Status{}, fmt.Errorf("register service: %w", err)
+	}
+	status, err := factory.ReadStatus(ctx, root, spec.ID)
+	if err != nil {
+		return factory.Status{}, fmt.Errorf("read factory status: %w", err)
+	}
+	return status, nil
+}
+
+func publishFactoryStartRuntime(ctx context.Context, view factory.ManagedAdmissionView, docker, endpoint string, executable func() (string, error)) (factory.ManagedRuntimeReference, error) {
+	path, err := executable()
+	if err != nil {
+		return factory.ManagedRuntimeReference{}, fmt.Errorf("find Oro executable: %w", err)
+	}
+	path, err = filepath.EvalSymlinks(path)
+	if err != nil {
+		return factory.ManagedRuntimeReference{}, fmt.Errorf("resolve Oro executable: %w", err)
+	}
+	oroHash, err := factoryStartProgramDigest(ctx, path)
+	if err != nil {
+		return factory.ManagedRuntimeReference{}, err
+	}
+	dockerHash, err := factoryStartProgramDigest(ctx, docker)
+	if err != nil {
+		return factory.ManagedRuntimeReference{}, err
+	}
+	return publishFactoryRuntime(ctx, view, factoryRuntimeInputs{OroPath: path, OroSHA256: oroHash, DockerPath: docker, DockerSHA256: dockerHash, DockerEndpoint: endpoint})
+}
+
+func factoryStartProgramDigest(ctx context.Context, path string) (string, error) {
+	file, _, err := openFactoryPublicationOroSource(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	hash := sha256.New()
+	n, err := io.Copy(hash, io.LimitReader(file, (512<<20)+1))
+	if err != nil || n == 0 || n > 512<<20 {
+		return "", errors.New("cannot hash bounded executable")
+	}
+	digest := hex.EncodeToString(hash.Sum(nil))
+	if err := verifyFactoryRuntimeUniqueProgram(ctx, path, digest); err != nil {
+		return "", err
+	}
+	return digest, nil
+}
+
+func factoryStartDiskProbe(ctx context.Context, path string) (storage.DiskUsage, error) {
+	if err := ctx.Err(); err != nil {
+		return storage.DiskUsage{}, fmt.Errorf("disk probe: %w", err)
+	}
+	for {
+		info, err := os.Lstat(path)
+		if err == nil {
+			if !info.IsDir() {
+				return storage.DiskUsage{}, errors.New("disk probe ancestor is not a directory")
+			}
+			canonical, err := filepath.EvalSymlinks(path)
+			if err != nil || canonical != path {
+				return storage.DiskUsage{}, errors.New("disk probe ancestor is aliased")
+			}
+			break
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return storage.DiskUsage{}, fmt.Errorf("disk probe: %w", err)
+		}
+		next := filepath.Dir(path)
+		if next == path {
+			return storage.DiskUsage{}, errors.New("disk probe has no existing ancestor")
+		}
+		path = next
+	}
+	var stat unix.Statfs_t
+	if err := unix.Statfs(path, &stat); err != nil {
+		return storage.DiskUsage{}, fmt.Errorf("disk probe: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return storage.DiskUsage{}, fmt.Errorf("disk probe: %w", err)
+	}
+	if stat.Bsize <= 0 {
+		return storage.DiskUsage{}, errors.New("invalid disk block size")
+	}
+	size := uint64(stat.Bsize)
+	if stat.Blocks > math.MaxInt64/size || stat.Bavail > math.MaxInt64/size {
+		return storage.DiskUsage{}, errors.New("disk size overflow")
+	}
+	return storage.DiskUsage{CapacityBytes: stat.Blocks * size, FreeBytes: stat.Bavail * size}, nil
+}
+
+func readFactoryManagedSpec(path string) (factory.ManagedSpec, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return factory.ManagedSpec{}, fmt.Errorf("resolve specification: %w", err)
+	}
+	dir, err := os.OpenRoot(filepath.Dir(absolute))
+	if err != nil {
+		return factory.ManagedSpec{}, fmt.Errorf("open specification directory: %w", err)
+	}
+	defer dir.Close()
+	file, err := dir.OpenFile(filepath.Base(absolute), os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return factory.ManagedSpec{}, fmt.Errorf("open managed specification: %w", err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return factory.ManagedSpec{}, errors.New("specification must be a regular file")
+	}
+	spec, err := factory.DecodeManagedSpec(file)
+	if err != nil {
+		return factory.ManagedSpec{}, fmt.Errorf("decode specification: %w", err)
+	}
+	return spec, nil
+}
