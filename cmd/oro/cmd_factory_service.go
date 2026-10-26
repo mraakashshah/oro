@@ -38,15 +38,24 @@ func registerFactoryServiceLockedWithBootstrap(ctx context.Context, access *fact
 	default:
 		return errors.New("invalid service registration phase")
 	}
+	if err := validateFactoryServiceAccess(access, bootstrap); err != nil {
+		return err
+	}
 	if err := access.transition(ctx, intent, "prepared", "dispatching"); err != nil {
 		return fmt.Errorf("service dispatch uncertain: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("service dispatch uncertain: %w", err)
 	}
+	if err := validateFactoryServiceAccess(access, bootstrap); err != nil {
+		return fmt.Errorf("service dispatch uncertain: %w", err)
+	}
 	plist := filepath.Join(access.root, access.id, "service", "service.plist")
 	if err := bootstrap(ctx, plist); err != nil {
 		return fmt.Errorf("service bootstrap uncertain: %w", err)
+	}
+	if err := validateFactoryServiceAccess(access, bootstrap); err != nil {
+		return fmt.Errorf("service acknowledgement uncertain: %w", err)
 	}
 	if err := access.transition(ctx, intent, "dispatching", "registered"); err != nil {
 		return fmt.Errorf("service acknowledgement uncertain: %w", err)
@@ -73,11 +82,39 @@ func validateFactoryServiceAccess(access *factoryServiceAccess, bootstrap func(c
 	if err != nil {
 		return fmt.Errorf("service lock unavailable: %w", err)
 	}
-	lockPath := filepath.Join(access.root, ".managed", "locks", access.id, "service.lock")
-	entry, err := os.Lstat(lockPath)
+	dir, err := openFactoryServiceLockDirectory(access)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	entry, err := dir.Lstat("service.lock")
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if err != nil || !os.SameFile(info, entry) || !entry.Mode().IsRegular() || info.Mode().Perm() != 0o600 || info.Size() != 0 || !ok || stat.Uid != uint32(os.Getuid()) || stat.Nlink != 1 {
 		return errors.New("service lock identity changed")
 	}
 	return nil
+}
+
+func openFactoryServiceLockDirectory(access *factoryServiceAccess) (*os.Root, error) {
+	if err := validateFactoryServiceRoot(access.root, access.id); err != nil {
+		return nil, fmt.Errorf("service lock root: %w", err)
+	}
+	dir, err := os.OpenRoot(access.root)
+	if err != nil {
+		return nil, fmt.Errorf("open service lock root: %w", err)
+	}
+	if err := bindFactoryRuntimeRoot(dir, access.root); err != nil {
+		_ = dir.Close()
+		return nil, fmt.Errorf("service lock root: %w", err)
+	}
+	for _, name := range []string{".managed", "locks", access.id} {
+		next, err := openFactoryRuntimeDirectory(dir, name)
+		if err != nil {
+			_ = dir.Close()
+			return nil, fmt.Errorf("service lock directory: %w", err)
+		}
+		_ = dir.Close()
+		dir = next
+	}
+	return dir, nil
 }

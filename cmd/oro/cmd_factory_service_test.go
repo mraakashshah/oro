@@ -159,6 +159,8 @@ func TestFactoryServiceRegistration(t *testing.T) {
 	}
 	t.Run("death", factoryServiceDeathTest)
 	t.Run("invalid identity", factoryServiceInvalidIdentityTest)
+	t.Run("lock ancestor", factoryServiceLockAncestorTest)
+	t.Run("lock change during bootstrap", factoryServiceLockChangeDuringBootstrapTest)
 	t.Run("pre-dispatch failure", factoryServicePreDispatchFailureTest)
 	t.Run("deadline", factoryServiceRegistrationDeadlineTest)
 	t.Run("registered", factoryServiceRegistrationTest)
@@ -415,5 +417,89 @@ func factoryServicePreDispatchFailureTest(t *testing.T) {
 	}
 	if intent.Nonce == "" {
 		t.Fatal("missing nonce")
+	}
+}
+
+func factoryServiceLockAncestorTest(t *testing.T) {
+	for _, kind := range []string{"symlink", "permissions", "missing"} {
+		t.Run(kind, func(t *testing.T) {
+			root, view, ref := factoryServiceRegistrationFixture(t, 30)
+			access, err := lockFactoryService(t.Context(), root, view.ObjectiveID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer access.Close()
+			intent, before, err := access.prepare(t.Context(), view, ref)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := filepath.Join(root, ".managed", "locks", view.ObjectiveID)
+			moved := dir + "-moved"
+			switch kind {
+			case "symlink", "missing":
+				if err := os.Rename(dir, moved); err != nil {
+					t.Fatal(err)
+				}
+				if kind == "symlink" {
+					if err := os.Symlink(moved, dir); err != nil {
+						t.Fatal(err)
+					}
+				}
+			case "permissions":
+				if err := os.Chmod(dir, 0o777); err != nil {
+					t.Fatal(err)
+				}
+			}
+			calls := 0
+			err = registerFactoryServiceLockedWithBootstrap(t.Context(), access, view, ref, func(context.Context, string) error { calls++; return nil })
+			switch kind {
+			case "symlink":
+				if err := os.Remove(dir); err != nil {
+					t.Fatal(err)
+				}
+				fallthrough
+			case "missing":
+				if err := os.Rename(moved, dir); err != nil {
+					t.Fatal(err)
+				}
+			case "permissions":
+				if err := os.Chmod(dir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err == nil || calls != 0 {
+				t.Fatalf("%s lock ancestor accepted: %v, calls %d", kind, err, calls)
+			}
+			afterIntent, after, err := access.prepare(t.Context(), view, ref)
+			if err != nil || afterIntent != intent || after != before {
+				t.Fatalf("phase changed: %+v %+v %v", afterIntent, after, err)
+			}
+		})
+	}
+}
+
+func factoryServiceLockChangeDuringBootstrapTest(t *testing.T) {
+	root, view, ref := factoryServiceRegistrationFixture(t, 30)
+	access, err := lockFactoryService(t.Context(), root, view.ObjectiveID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer access.Close()
+	intent, _, err := access.prepare(t.Context(), view, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, ".managed", "locks", view.ObjectiveID)
+	calls := 0
+	err = registerFactoryServiceLockedWithBootstrap(t.Context(), access, view, ref, func(context.Context, string) error { calls++; return os.Chmod(dir, 0o777) })
+	if chmodErr := os.Chmod(dir, 0o700); chmodErr != nil {
+		t.Fatal(chmodErr)
+	}
+	if err == nil || calls != 1 {
+		t.Fatalf("lock change acknowledged: %v, calls %d", err, calls)
+	}
+	actual, reg, err := access.prepare(t.Context(), view, ref)
+	if err != nil || actual != intent || reg.Phase != "dispatching" {
+		t.Fatalf("changed lock state: %+v %+v %v", actual, reg, err)
 	}
 }
