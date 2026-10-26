@@ -13,6 +13,9 @@ import (
 	"time"
 )
 
+// ErrManagedRuntimePending identifies verified historical pending metadata; it does not authorize activation or execution.
+var ErrManagedRuntimePending = errors.New("managed runtime is pending")
+
 // ManagedRuntimeReference identifies a frozen runtime artifact; it grants no execution authority.
 type (
 	ManagedRuntimeReference struct {
@@ -122,7 +125,7 @@ func ReadManagedRuntimeReference(ctx context.Context, stateDir, id string) (Mana
 			return false, err
 		}
 		if a.Phase != "active" {
-			return false, errors.New("managed runtime is pending")
+			return false, ErrManagedRuntimePending
 		}
 		if err := verifyActivationEvent(ctx, tx, a.Runtime); err != nil {
 			return false, err

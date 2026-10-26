@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,108 @@ import (
 	"testing"
 	"time"
 )
+
+func TestManagedActivationPendingClassification(t *testing.T) {
+	root, spec, _, ref := activationFixture(t)
+	store, err := openManagedFactoryStore(t.Context(), filepath.Join(root, spec.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.close()
+	var before, after int
+	if err := store.conn.QueryRowContext(t.Context(), "PRAGMA data_version").Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadManagedRuntimeReference(t.Context(), root, spec.ID)
+	if got != (ManagedRuntimeReference{}) || !errors.Is(err, ErrManagedRuntimePending) {
+		t.Fatalf("pending reference = %+v, %v", got, err)
+	}
+	if err := store.conn.QueryRowContext(t.Context(), "PRAGMA data_version").Scan(&after); err != nil || after != before {
+		t.Fatalf("pending read mutated database: %d -> %d, %v", before, after, err)
+	}
+	if err := ActivateManaged(t.Context(), root, spec.ID, ref); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.conn.QueryRowContext(t.Context(), "PRAGMA data_version").Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	got, err = ReadManagedRuntimeReference(t.Context(), root, spec.ID)
+	if err != nil || got != ref {
+		t.Fatalf("active reference = %+v, %v", got, err)
+	}
+	if err := store.conn.QueryRowContext(t.Context(), "PRAGMA data_version").Scan(&after); err != nil || after != before {
+		t.Fatalf("active read mutated database: %d -> %d, %v", before, after, err)
+	}
+	for _, tc := range []struct{ name, query string }{
+		{"missing activation row", "DELETE FROM managed_activation"},
+		{"missing activation table", "DROP TABLE managed_activation"},
+		{"corrupt activation", "UPDATE managed_activation SET body='{}'"},
+		{"missing admission row", "DELETE FROM managed_admissions"},
+		{"missing admission table", "DROP TABLE managed_admissions"},
+		{"corrupt admission", "UPDATE managed_admissions SET body='{}'"},
+		{"missing snapshot row", "DELETE FROM snapshots"},
+		{"missing snapshot table", "DROP TABLE snapshots"},
+		{"corrupt snapshot", "UPDATE snapshots SET body='{}'"},
+		{"missing original event", "DELETE FROM events WHERE revision=1"},
+		{"corrupt original event", "UPDATE events SET body='{}' WHERE revision=1"},
+		{"missing event table", "DROP TABLE events"},
+		{"missing history table", "DROP TABLE managed_docker_sources"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, spec, _, _ := activationFixture(t)
+			store, err := openManagedFactoryStore(t.Context(), filepath.Join(root, spec.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.close()
+			if _, err := store.conn.ExecContext(t.Context(), tc.query); err != nil {
+				t.Fatal(err)
+			}
+			var before, after int
+			if err := store.conn.QueryRowContext(t.Context(), "PRAGMA data_version").Scan(&before); err != nil {
+				t.Fatal(err)
+			}
+			got, err := ReadManagedRuntimeReference(t.Context(), root, spec.ID)
+			if err == nil || errors.Is(err, ErrManagedRuntimePending) || got != (ManagedRuntimeReference{}) {
+				t.Fatalf("corruption classified as pending: %+v, %v", got, err)
+			}
+			if err := store.conn.QueryRowContext(t.Context(), "PRAGMA data_version").Scan(&after); err != nil || after != before {
+				t.Fatalf("read mutated database: %d -> %d, %v", before, after, err)
+			}
+		})
+	}
+	for _, tc := range []struct{ name, query string }{
+		{"missing activation event", "DELETE FROM managed_events WHERE revision=2"},
+		{"corrupt activation event", "UPDATE managed_events SET body='{}' WHERE revision=2"},
+		{"missing active history", "DROP TABLE managed_docker_sources"},
+	} {
+		t.Run("active/"+tc.name, func(t *testing.T) {
+			root, spec, _, ref := activationFixture(t)
+			if err := ActivateManaged(t.Context(), root, spec.ID, ref); err != nil {
+				t.Fatal(err)
+			}
+			store, err := openManagedFactoryStore(t.Context(), filepath.Join(root, spec.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.close()
+			if _, err := store.conn.ExecContext(t.Context(), tc.query); err != nil {
+				t.Fatal(err)
+			}
+			var before, after int
+			if err := store.conn.QueryRowContext(t.Context(), "PRAGMA data_version").Scan(&before); err != nil {
+				t.Fatal(err)
+			}
+			got, err := ReadManagedRuntimeReference(t.Context(), root, spec.ID)
+			if err == nil || errors.Is(err, ErrManagedRuntimePending) || got != (ManagedRuntimeReference{}) {
+				t.Fatalf("active corruption classified as pending: %+v, %v", got, err)
+			}
+			if err := store.conn.QueryRowContext(t.Context(), "PRAGMA data_version").Scan(&after); err != nil || after != before {
+				t.Fatalf("read mutated database: %d -> %d, %v", before, after, err)
+			}
+		})
+	}
+}
 
 func TestManagedActivation(t *testing.T) {
 	t.Run("pending", testManagedActivationPending)
