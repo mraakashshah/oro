@@ -107,8 +107,16 @@ SpecSHA256 in HostReservation, verify it against submitted spec before executabl
 path canonicalization, and persist it in manifest/journal identity. Repository
 normalization must match the ledger; original program aliases may disappear on
 active replay. Historical missing digest fails closed, never backfilled from
-mutable inputs or normalized manifest. Exact core/issuer scope is being finalized;
-no production identity fix has been applied. Do not waive the cross-API case.
+mutable inputs or normalized manifest. Terra is implementing the correction as
+`oro-mf-reservation-spec-identity` in the same public-start worktree/branch.
+Shared `PrepareManagedSpecIdentity` reproduces the existing issuer algorithm:
+retention/minimum validation, repository-only normalization, revalidation and
+whole JSON digest. Admission checks equality before executable normalization or
+effects; journal partial-spec callers validate digest shape only. The issuer
+returns its existing stored digest without changing ledger format. Four source
+files and legitimate fixture updates are owned by this one correction. Full
+affected CLI and factory race checks are required after this contract change.
+No production identity fix has yet been accepted. Do not waive the cross-API case.
 Service-bootstrap uncertainty still needs a proven ownership/reconciliation
 mechanism. Candidate execution, independent acceptance, native qualification and
 real-model sustained delivery/self-healing trials remain unfinished. The full
