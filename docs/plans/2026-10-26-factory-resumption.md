@@ -20,12 +20,18 @@ Branch: `feature/factory-core`.
 - `16f55188`: Terra implemented durable keeper cleanup authority. Reservation and
   permit reload compare complete identity against the canonical keeper record in
   the current transaction. Astra found no defects; root independently verified.
+- `47827496`: Terra rejected empty managed Git command vectors before effects.
+  Behavioral RED exposed panics, spent authority, and poisoned state; the fix
+  removes both source_git.go NilAway findings. Astra review found no defects;
+  root independently ran the command/authority race tests successfully (7.893 s).
 - These code commits were pushed. A documentation commit may follow this checkpoint.
-- Latest full factory shuffled race run passed in **364.538 seconds**, with **89.2%**
-  statement coverage. Package lint passed with zero issues.
-- Full repository gate remains **red**: formatting fixes exposed six nil-safety
-  diagnostics and three managed APIs without production callers. Broad Go runtime,
-  security, and build tiers were not reached by that gate.
+- Latest full factory shuffled race run at `16f55188` passed in **364.538 seconds**,
+  with **89.2%** statement coverage. The later Git guard has focused raw-Git race
+  verification and package lint; do not attribute the earlier full profile to it.
+- Last full repository gate at `16f55188` was **red**: six nil-safety diagnostics
+  and three managed APIs without production callers. The later Git guard removes
+  two findings in the package check; a combined repository rerun remains pending.
+  Broad Go runtime/security/build tiers were not reached by that earlier gate.
 
 See the [initial verification record](../proofs/2026-10-26-factory-resumption.md)
 and [cleanup binding record](../proofs/2026-10-26-keeper-cleanup-binding.md) for
@@ -77,6 +83,22 @@ or recovery; that remains unresolved and must not be manufactured by weakening
 comparison.
 
 ## Next: clear the remaining gates and advance production delivery
+
+`oro-mf-git-tree-topology` is actively delegated to Terra in
+`/Users/as21/codehouse/oro/.worktrees/factory-git-tree-topology`, branch
+`feature/factory-git-tree-topology`, base `47827496`. Agent task name:
+`/root/terra_git_tree_topology`. It owns only `source_git_objects.go` and new
+`source_git_objects_test.go`. Do not duplicate its implementation. Observe actual
+agent/process status; a polling timeout is not evidence that it stopped. Review
+and integrate its committed result before the next combined gate run.
+
+The [startup producer/consumer proposal](2026-10-26-managed-startup-contract.md)
+resolves the missing authority producer and explicit config-reader handoff. It is
+an unimplemented integration design, not three tiny executable tasks. The next
+context must reconcile it against current code and existing task contracts,
+then split its large phases into bounded leaves while retaining real producer
+and consumer wiring. Do not substitute an unused startup helper or fake test
+authority for the actual supervisor/controller path.
 
 Astra traced the existing flow:
 
@@ -131,15 +153,17 @@ unknown daemon/VM epoch recovery remain the previously documented prerequisites.
 ## Tracker snapshot and continuation rules
 
 - In progress: `oro-mf-keeper-image-labels`, `oro-mf-source-prepare`,
-  `oro-mf-gate-format`, `oro-mf-keeper-cleanup-binding`, plus prior
+  `oro-mf-gate-format`, `oro-mf-keeper-cleanup-binding`,
+  `oro-mf-git-command-guard`, `oro-mf-git-tree-topology`, plus prior
   storage/READY/backend component claims. Cleanup code is verified and integrated;
   its task notes explain the remaining qualification state.
 - Open downstream: `oro-mf-managed-delivery`, `oro-mf-cli-start`,
   `oro-mf-qualification`; parent `oro-factory-autonomy` is open and unachieved.
 - No task was closed merely because scoped tests passed while the full gate and
   integration requirements remain unresolved.
-- At this checkpoint all implementation/review agents finished, all verification
-  sessions exited, and no native fixture resources were created by this increment.
+- At this checkpoint the tree-topology Terra agent is active; the other current
+  implementation/review agents and verification sessions finished. No native
+  fixture resources were created by these increments.
 - Preserve unrelated primary-checkout changes and all existing Colima state.
 - Read this checkpoint plus the earlier resume guide before selecting work. The
   user's proceed instruction remains in force; do not ask to resume again solely
