@@ -157,7 +157,7 @@ func verifyActivationHistory(ctx context.Context, tx *sql.Tx, manifest managedMa
 			return errors.New("managed activation requires original delivery history")
 		}
 	}
-	for _, table := range []string{"managed_reservations", "managed_scopes", "managed_events", "managed_cleanup_permits", "managed_docker_intents", "managed_docker_keepers", "managed_docker_sources"} {
+	for _, table := range []string{"managed_reservations", "managed_scopes", "managed_events", "managed_cleanup_permits", "managed_docker_intents", "managed_docker_keepers", "managed_docker_sources", "managed_workspaces"} {
 		var n int
 		if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM "+table).Scan(&n); err != nil {
 			return fmt.Errorf("count %s: %w", table, err)

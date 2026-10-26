@@ -83,6 +83,9 @@ CREATE TABLE IF NOT EXISTS managed_cleanup_permits (
 	if err != nil {
 		return fmt.Errorf("initialize managed journal: %w", err)
 	}
+	if err := initManagedWorkspaceSchema(ctx, conn); err != nil {
+		return err
+	}
 	if err := initManagedDockerSchema(ctx, conn, `CREATE TABLE IF NOT EXISTS managed_activation (
  id INTEGER PRIMARY KEY CHECK(id=1), body BLOB NOT NULL CHECK(length(body)<=2048)
 );`); err != nil {
