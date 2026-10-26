@@ -96,6 +96,7 @@ func (g *managedGitRepository) export(ctx context.Context, oid string) ([]source
 
 func decodeSourceListing(data []byte, limits sourceLimits, width int) (entries []sourceEntry, oids []string, sizes []int64, err error) {
 	nodes := make(map[string]sourcePathNode)
+	sizes = make([]int64, 0)
 	var total int64
 	for len(data) > 0 {
 		row, rest, found := bytes.Cut(data, []byte{0})
