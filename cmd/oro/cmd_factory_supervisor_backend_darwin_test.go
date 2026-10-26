@@ -192,17 +192,21 @@ func testFactorySupervisorRealLaunch(t *testing.T, mode string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer backend.Close()
+	t.Cleanup(func() { _ = backend.Close() })
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	if mode == "blocked-grant" || mode == "revoked-grant" {
 		backend.host.authority = &factoryControllerAuthorityBarrier{ScopeAuthority: backend.host.authority, entered: entered, release: release}
 	}
 	var child *exec.Cmd
+	childCtx, childCancel := context.WithCancel(context.Background())
 	var target string
 	var childMu sync.Mutex
 	launched := make(chan factoryControllerRequest, 1)
 	bootstrapRelease := make(chan struct{})
+	var releaseOnce, bootstrapOnce sync.Once
+	releaseBarrier := func() { releaseOnce.Do(func() { close(release) }) }
+	releaseBootstrap := func() { bootstrapOnce.Do(func() { close(bootstrapRelease) }) }
 	bootouts := make(chan struct{}, 4)
 	backend.host.launchctl = func(ctx context.Context, args ...string) (int, error) {
 		if args[0] == "bootout" {
@@ -270,7 +274,7 @@ func testFactorySupervisorRealLaunch(t *testing.T, mode string) {
 			return -1, e
 		}
 		childMu.Lock()
-		child = exec.Command(exe, "-test.run=^TestFactorySupervisorControllerPeer$")
+		child = exec.CommandContext(childCtx, exe, "-test.run=^TestFactorySupervisorControllerPeer$")
 		child.Env = []string{"FACTORY_CONTROLLER_SOCKET=" + socket, "FACTORY_CONTROLLER_REQUEST=" + reqPath, "FACTORY_CONTROLLER_DIGEST=" + digest, "FACTORY_CONTROLLER_GO=" + filepath.Join(base, "go"), "FACTORY_CONTROLLER_MODE=" + mode, "GORACE=atexit_sleep_ms=0"}
 		child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		if e = child.Start(); e != nil {
@@ -286,7 +290,26 @@ func testFactorySupervisorRealLaunch(t *testing.T, mode string) {
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	result := make(chan error, 1)
-	go func() { _, e := factory.Supervise(ctx, root, spec.ID, backend); result <- e }()
+	supervisorDone := make(chan struct{})
+	t.Cleanup(func() {
+		cancel()
+		childCancel()
+		releaseBarrier()
+		releaseBootstrap()
+		childMu.Lock()
+		if child != nil && child.Process != nil {
+			_ = child.Process.Kill()
+			_ = child.Wait()
+			child = nil
+		}
+		childMu.Unlock()
+		<-supervisorDone
+	})
+	go func() {
+		defer close(supervisorDone)
+		_, e := factory.Supervise(ctx, root, spec.ID, backend)
+		result <- e
+	}()
 	var request factoryControllerRequest
 	select {
 	case request = <-launched:
@@ -312,7 +335,7 @@ func testFactorySupervisorRealLaunch(t *testing.T, mode string) {
 			t.Fatal("bootout raced ahead of pending bootstrap")
 		case <-time.After(30 * time.Millisecond):
 		}
-		close(bootstrapRelease)
+		releaseBootstrap()
 		select {
 		case e := <-retired:
 			if e != nil {
@@ -381,7 +404,7 @@ func testFactorySupervisorRealLaunch(t *testing.T, mode string) {
 				t.Fatal(e)
 			}
 		}
-		close(release)
+		releaseBarrier()
 		if mode == "blocked-grant" {
 			if e := backend.Retire(t.Context(), request.Scope); e != nil {
 				t.Fatal(e)
@@ -586,6 +609,8 @@ func TestFactorySupervisorControllerPeer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	timer := time.AfterFunc(time.Until(request.Deadline), func() { os.Exit(0) })
+	defer timer.Stop()
 	conn, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: socket, Net: "unix"})
 	if err != nil {
 		t.Fatal(err)
@@ -711,15 +736,25 @@ func testFactorySupervisorHostInvocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer host.Close()
+	t.Cleanup(func() { _ = host.Close() })
 	backend := &factorySupervisorBackend{host: host, controllers: make(map[string]*factoryControllerCall), gate: make(chan struct{}, 1)}
 	var child *exec.Cmd
+	childCtx, childCancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		childCancel()
+		if child != nil && child.Process != nil {
+			_ = child.Process.Kill()
+			_ = child.Wait()
+			child = nil
+		}
+	})
 	bootouts := 0
 	host.launchctl = func(ctx context.Context, args ...string) (int, error) {
 		if args[0] == "bootout" {
 			bootouts++
 			if child != nil {
 				_ = child.Wait()
+				child = nil
 			}
 			return 0, nil
 		}
@@ -727,7 +762,7 @@ func testFactorySupervisorHostInvocation(t *testing.T) {
 		if e != nil {
 			return -1, e
 		}
-		child = exec.Command(exe, "-test.run=^TestFactorySupervisorHostPeer$")
+		child = exec.CommandContext(childCtx, exe, "-test.run=^TestFactorySupervisorHostPeer$")
 		child.Env = []string{"FACTORY_SUPERVISOR_HOST_PLIST=" + args[2], "GORACE=atexit_sleep_ms=0"}
 		child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		if e := child.Start(); e != nil {
@@ -783,5 +818,62 @@ func TestFactorySupervisorHostPeer(t *testing.T) {
 	command.SetArgs(args[3:])
 	if err := command.ExecuteContext(t.Context()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestFactorySupervisorPeerLifetime(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := os.MkdirTemp("/private/tmp", "fpl-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "s")
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: socket, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	scope := factory.ScopeHandle{ID: strings.Repeat("a", 32), Nonce: strings.Repeat("b", 32), Kind: "controller", Backend: "launchd", Generation: 1}
+	scope.Name = "dev.getoro.factory." + factoryLaunchdObjectiveHash(factoryLaunchdConfig{StateRoot: root, ObjectiveID: "lifetime"}) + ".controller." + scope.ID + "." + scope.Nonce
+	request := factoryControllerRequest{Version: 1, Scope: scope, StateRoot: root, ObjectiveID: "lifetime", Runtime: factory.ManagedRuntimeReference{Path: filepath.Join(root, "lifetime", "runtime", "runtime.json"), SHA256: strings.Repeat("c", 64)}, Deadline: time.Now().UTC().Add(1500 * time.Millisecond)}
+	data, err := encodeFactoryControllerRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "request.json")
+	if err := os.WriteFile(path, data, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := exec.Command(executable, "-test.run=^TestFactorySupervisorControllerPeer$")
+	child.Env = []string{"FACTORY_CONTROLLER_SOCKET=" + socket, "FACTORY_CONTROLLER_REQUEST=" + path, "FACTORY_CONTROLLER_DIGEST=" + factoryHostDigest(data), "FACTORY_CONTROLLER_GO=" + filepath.Join(dir, "go"), "FACTORY_CONTROLLER_MODE=handshake-retire", "GORACE=atexit_sleep_ms=0"}
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- child.Wait() }()
+	waited := false
+	t.Cleanup(func() {
+		if !waited {
+			_ = child.Process.Kill()
+			<-done
+		}
+	})
+	waitFactoryControllerFile(t, filepath.Join(dir, "connected"), time.Now().Add(time.Second))
+	select {
+	case err := <-done:
+		waited = true
+		if err != nil {
+			t.Fatalf("peer did not exit naturally: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("peer outlived its request deadline")
 	}
 }
