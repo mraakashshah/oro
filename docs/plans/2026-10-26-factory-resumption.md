@@ -5,7 +5,7 @@ guide. Implementation is authorized to continue; this is a context handoff, not
 a new user-requested pause. Preserve the full unattended factory goal and the
 Astra architect / Terra engineer role agreement.
 
-## Latest continuation: activation integrated, controller producer started
+## Latest continuation: controller intent integrated, grant enforcement started
 
 The updates below supersede the earlier verification and next-work snapshot.
 `1847b365` and `6d572f54` fix keeper cardinality and Git listing-vector NilAway
@@ -22,14 +22,26 @@ lint passed. The integrated CLI race passed; full shuffled factory race passed
 in 409.564 seconds with 89.0% statement coverage (415.953 seconds harness).
 All three verification jobs are terminal; do not repeat them absent new changes.
 
-Next tracked implementation: `oro-mf-controller-intent`, Terra on isolated
-`feature/factory-controller-intent` based on `f83e17f9`, owning only new
-`managed_controller.go` and `managed_controller_test.go`. It atomically reserves
+`oro-mf-controller-intent` is implemented in `c8dc8169`, with exact content parity
+to Terra's reviewed `eadcaa80`. It atomically reserves
 the counted controller token, canonical scope and event after checking active
 activation, current supervisor/generation, original deadline, elapsed backoff,
 no active cleanup, and positive quiescence of every old scope. The supervisor
 reservation's initial generation may be below the current epoch; it must remain
 positive and no greater than the current generation.
+
+The [controller-intent proof](../proofs/2026-10-26-controller-intent.md) records
+Astra acceptance, root independent final race (25.245 seconds), integrated race
+(26.031 seconds), and zero package lint issues. Full package coverage and full
+repository gate above predate this new producer. Do not reimplement it merely
+because task status remains in progress pending broader qualification.
+
+Active Terra work: `oro-mf-controller-grant`, isolated worktree
+`factory-controller-grant`, branch `feature/factory-controller-grant`, base
+`c8dc8169`. Owned files are `managed_controller.go`, `managed_store.go` and new
+`managed_controller_grant_test.go`. It must enforce counted authority in existing
+RecordHello/Granted transactions, reject generic controller scopes, preserve
+ordinary peer semantics and archive its behavioral RED. Root owns integration.
 
 This producer leaf precedes required controller-specific HELLO/GO checks and
 generic controller-scope denial, then real Supervise/controller/backend and CLI
@@ -37,6 +49,9 @@ consumers. Existing generic controller-budget tests need no broad fixture
 migration: there are no current controller-kind scope fixtures. No component
 task is a substitute for the full startup or autonomous delivery milestone.
 The parent autonomy goal remains active and unachieved.
+The next executable supervisor lifecycle is detailed in the updated
+[startup contract](2026-10-26-managed-startup-contract.md). It supplies the first
+actual producer caller before adding retry/reconciliation and delivery behavior.
 
 ## Current code and verification
 

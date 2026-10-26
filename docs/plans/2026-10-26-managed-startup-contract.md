@@ -1,6 +1,7 @@
 # Managed startup authority and first source consumer
 
-Status: activation persistence implemented in `26d3858d`; the remaining contracts
+Status: activation persistence implemented in `26d3858d`, counted controller
+reservation implemented in `c8dc8169`; the remaining contracts
 are Astra design proposals, not implemented or runtime-qualified. Reconcile the
 existing task contracts and split each large contract into bounded sequential
 leaves before implementation. The first source milestone is not delivery or
@@ -76,6 +77,46 @@ Private requireManagedController(ctx,tx,j,state,scope) verifies complete canonic
 Acceptance: atomic failure rollback; exhausted budgets; duplicate producer race; inactive/changed activation; revoked/late/wrong-generation HELLO/GO; missing controller reservation; unchanged deadlines and counters on replay. Zero backend effects on failure. Existing generic tests that synthesize controller scopes must be replaced with typed startup fixtures rather than a production bypass.
 
 ## Contract 2 — actual core producer and worker-checkout consumer
+
+### Next executable supervisor leaf
+
+After typed grant enforcement, implement one counted controller lifecycle in
+`supervisor.go` with `TestSuperviseControllerStart` in `supervisor_test.go`.
+Use the existing `SupervisorBackend`; no new method or managed-delivery
+dependency is needed for this startup-only leaf. It must call the actual
+`reserveManagedController` and `backend.StartController`, not synthetic grants.
+
+Hold `lockManagedSupervisor` through the lifecycle and retirement, revalidate
+committed admission/activation under that lock, and never hold the objective lock
+while the controller runs. Never initialize missing state. Stopped supervision
+returns existing status without effects. Spend a fresh supervisor incarnation
+through `beginGeneration` before backend actions; retire all old launchd scopes
+in deterministic order and require both positive backend quiescence and durable
+exact-scope quiescence. Honor frozen backoff within the original work deadline.
+
+Reserve and start exactly one controller. Start success means authenticated
+HELLO/GO, followed by independent `j.Granted` verification; it does not mean
+controller completion. Start error remains an uncertain counted launch, never
+permission to bootstrap again. Observe durable supervision, delivery snapshot
+and controller quiescence until terminal delivery, premature exit, cancellation
+or original deadline. Return truthful incomplete errors for nonterminal exit.
+No retry loop, fabricated delivery success or reservation release in this leaf.
+
+On failure revoke through stopping supervision before bounded retirement. Use
+an uncancelled cleanup context capped by both frozen cleanup timeout and original
+HardStop. Only seal stopped after every scope is positively quiescent. Generic
+backend retirement must not bypass counted Docker cleanup permits: unretired
+Docker scopes yield explicit reconciliation-unavailable, retain charged capacity,
+and prevent successor startup. Promoting requires the later counted exact-target
+observation path; it cannot start a new controller or infer completion here.
+
+Tests exercise the real producer, committed scope before StartController,
+duplicate supervisor exclusion, exact deadline/backoff, old-scope retirement,
+false acknowledgment/start failure without relaunch, uncertain retirement,
+Docker/promoting denial, cancellation and truthful terminal/premature outcomes.
+This is the first real caller, not automatic recovery or native qualification.
+
+### Remaining controller and source integration
 
 New pkg/factory/supervisor.go, managed_engine.go, managed_backend.go, managed_workspace.go; minimal workspace DDL in managed_store.go. These are sequential leaves inside this contract, not a claimed seven-minute task. Tests: supervisor_test.go and managed_engine_test.go. Do not include candidate/model/acceptance implementation here.
 
