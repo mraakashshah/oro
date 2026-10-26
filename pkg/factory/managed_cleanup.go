@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -38,6 +39,9 @@ func reserveManagedCleanupInvocation(ctx context.Context, j *managedJournal, gen
 			return false, err
 		}
 		if err := requireCleanupTarget(ctx, tx, target); err != nil {
+			return false, err
+		}
+		if err := requireCleanupKeeperBinding(ctx, tx, j, permit); err != nil {
 			return false, err
 		}
 		if err := requireCleanupHostQuiescence(ctx, tx, scope.ID); err != nil {
@@ -96,6 +100,9 @@ func (j *managedJournal) loadCleanupPermit(ctx context.Context, tx *sql.Tx, stat
 	if err := requireCleanupTarget(ctx, tx, permit.Target); err != nil {
 		return DockerCleanupPermit{}, err
 	}
+	if err := requireCleanupKeeperBinding(ctx, tx, j, permit); err != nil {
+		return DockerCleanupPermit{}, err
+	}
 	if err := requireCleanupHostQuiescence(ctx, tx, scope.ID); err != nil {
 		return DockerCleanupPermit{}, err
 	}
@@ -104,6 +111,27 @@ func (j *managedJournal) loadCleanupPermit(ctx context.Context, tx *sql.Tx, stat
 		return DockerCleanupPermit{}, errors.Join(errors.New("cleanup permit lacks its exact budget reservation"), err)
 	}
 	return permit, nil
+}
+
+func requireCleanupKeeperBinding(ctx context.Context, tx *sql.Tx, j *managedJournal, permit DockerCleanupPermit) error {
+	if permit.Target.Kind != "keeper" {
+		return nil
+	}
+	keeper, err := readManagedDockerKeeper(ctx, tx, j, permit.Target)
+	if err != nil {
+		return err
+	}
+	want := keeper.Binding
+	if want.CreatedAt == "" {
+		if permit.Operation != DockerCleanupInspect {
+			return errors.New("unbound keeper permits inspection only")
+		}
+		want.ContainerID, want.CreatedAt = "", ""
+	}
+	if !reflect.DeepEqual(permit.Binding, want) {
+		return errors.New("cleanup keeper binding differs from durable identity")
+	}
+	return nil
 }
 
 func decodeCleanupPermit(a managedJournalAdmission, scope ScopeHandle, body []byte) (DockerCleanupPermit, error) {

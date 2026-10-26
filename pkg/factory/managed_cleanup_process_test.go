@@ -13,7 +13,7 @@ import (
 
 func testManagedCleanupKinds(t *testing.T) {
 	t.Helper()
-	for _, kind := range []string{"container", "keeper", "volume"} {
+	for _, kind := range []string{"container", "volume"} {
 		t.Run(kind, func(t *testing.T) {
 			f := newCleanupKindFixture(t, kind)
 			unknown := f.binding
@@ -61,6 +61,175 @@ func testManagedCleanupKinds(t *testing.T) {
 			if err := f.j.RecordHello(t.Context(), last, 101, 101); err == nil {
 				t.Fatal("final seal admitted a late HELLO")
 			}
+		})
+	}
+	t.Run("keeper", testCleanupKeeperBinding)
+}
+
+func testCleanupKeeperBinding(t *testing.T) {
+	for _, operation := range []DockerCleanupOp{DockerCleanupInspect, DockerCleanupStop, DockerCleanupRemove} {
+		t.Run(string(operation), func(t *testing.T) {
+			f, keeper, _ := keeperInheritedFixture(t)
+			if err := f.journal.setDesired(t.Context(), f.generation, "stopping", "cleanup", time.Time{}); err != nil {
+				t.Fatal(err)
+			}
+			for _, mode := range []string{"added", "changed", "removed", "image", "lifetime", "unknown"} {
+				binding := cloneManagedDockerBinding(keeper.Binding)
+				switch mode {
+				case "added", "changed", "removed":
+					changeKeeperInheritedLabel(binding.Labels, mode)
+				case "image":
+					binding.ImageID = "sha256:" + strings.Repeat("e", 64)
+				case "lifetime":
+					binding.CreatedAt = "2026-10-24T06:00:00Z"
+				case "unknown":
+					binding.ContainerID, binding.CreatedAt = "", ""
+				}
+				before := snapshotCleanupIntegrity(t, f.journal)
+				if scope, err := reserveManagedCleanupInvocation(t.Context(), f.journal, f.generation, keeper.Keeper, operation, binding, f.manifest.HardStop); err == nil || scope != (ScopeHandle{}) {
+					t.Errorf("%s accepted %s", operation, mode)
+				}
+				assertCleanupIntegrityUnchanged(t, f.journal, before)
+			}
+			scope, err := reserveManagedCleanupInvocation(t.Context(), f.journal, f.generation, keeper.Keeper, operation, keeper.Binding, f.manifest.HardStop)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.journal.CleanupPermit(t.Context(), scope); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	for _, alreadyGranted := range []bool{false, true} {
+		t.Run(fmt.Sprintf("tampered permit granted=%v", alreadyGranted), func(t *testing.T) {
+			f, keeper, _ := keeperInheritedFixture(t)
+			if err := f.journal.setDesired(t.Context(), f.generation, "stopping", "cleanup", time.Time{}); err != nil {
+				t.Fatal(err)
+			}
+			scope, err := reserveManagedCleanupInvocation(t.Context(), f.journal, f.generation, keeper.Keeper, DockerCleanupInspect, keeper.Binding, f.manifest.HardStop)
+			if err != nil {
+				t.Fatal(err)
+			}
+			permit, err := f.journal.CleanupPermit(t.Context(), scope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if alreadyGranted {
+				if err := f.journal.RecordHello(t.Context(), scope, 101, 101); err != nil {
+					t.Fatal(err)
+				}
+			}
+			permit.Binding = cloneManagedDockerBinding(permit.Binding)
+			changeKeeperInheritedLabel(permit.Binding.Labels, "changed")
+			body, err := encodeCleanupPermit(f.journal.admission, permit)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.journal.conn.ExecContext(t.Context(), "UPDATE managed_cleanup_permits SET body=? WHERE scope_id=?", body, scope.ID); err != nil {
+				t.Fatal(err)
+			}
+			before := snapshotCleanupIntegrity(t, f.journal)
+			if _, err := f.journal.CleanupPermit(t.Context(), scope); err == nil {
+				t.Error("tampered permit returned")
+			}
+			if err := f.journal.RecordHello(t.Context(), scope, 101, 101); err == nil {
+				t.Error("tampered permit granted HELLO")
+			}
+			if granted, err := f.journal.Granted(t.Context(), scope); granted || (alreadyGranted && err == nil) {
+				t.Error("tampered permit granted execution")
+			}
+			assertCleanupIntegrityUnchanged(t, f.journal, before)
+		})
+	}
+	for _, phase := range []string{"prepared", "dispatching", "acknowledged"} {
+		t.Run(phase, func(t *testing.T) {
+			f := newSourceKeeperFixture(t)
+			keeper := f.prepare(t)
+			if phase != "prepared" {
+				if _, err := dispatchManagedDockerKeeper(t.Context(), f.journal, keeper.Keeper, keeper.RuntimeConfigSHA256); err != nil {
+					t.Fatal(err)
+				}
+			}
+			sourcePrepareRetire(t, f.journal, keeper.CreateHost)
+			if phase == "acknowledged" {
+				if err := acknowledgeManagedDockerKeeper(t.Context(), f.journal, keeper.Keeper, keeper.CreateHost, strings.Repeat("d", 64)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			keeper, err := loadManagedDockerKeeper(t.Context(), f.journal, keeper.Keeper)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.journal.setDesired(t.Context(), f.generation, "stopping", "cleanup", time.Time{}); err != nil {
+				t.Fatal(err)
+			}
+			unknown := cloneManagedDockerBinding(keeper.Binding)
+			unknown.ContainerID, unknown.CreatedAt = "", ""
+			for _, mode := range []string{"labels", "lifetime", "remove", "stop"} {
+				binding := cloneManagedDockerBinding(unknown)
+				op := DockerCleanupInspect
+				switch mode {
+				case "labels":
+					binding.Labels["image.extra"] = "new"
+				case "lifetime":
+					binding.ContainerID, binding.CreatedAt = strings.Repeat("d", 64), "2026-10-24T06:00:00Z"
+				case "remove":
+					op = DockerCleanupRemove
+				case "stop":
+					op = DockerCleanupStop
+				}
+				before := snapshotCleanupIntegrity(t, f.journal)
+				if scope, err := reserveManagedCleanupInvocation(t.Context(), f.journal, f.generation, keeper.Keeper, op, binding, f.manifest.HardStop); err == nil || scope != (ScopeHandle{}) {
+					t.Errorf("unbound accepted %s", mode)
+				}
+				assertCleanupIntegrityUnchanged(t, f.journal, before)
+			}
+			if _, err := reserveManagedCleanupInvocation(t.Context(), f.journal, f.generation, keeper.Keeper, DockerCleanupInspect, unknown, f.manifest.HardStop); err != nil {
+				t.Fatal(err)
+			}
+			before := snapshotCleanupIntegrity(t, f.journal)
+			observed := cloneManagedDockerBinding(keeper.Binding)
+			observed.ContainerID, observed.CreatedAt = strings.Repeat("d", 64), "2026-10-24T06:00:00Z"
+			if err := bindManagedDockerKeeper(t.Context(), f.journal, f.generation, keeper.Keeper, observed); err == nil {
+				t.Error("cleanup inspection allowed lifetime adoption")
+			}
+			if _, err := dispatchManagedDockerKeeper(t.Context(), f.journal, keeper.Keeper, keeper.RuntimeConfigSHA256); err == nil {
+				t.Error("cleanup inspection allowed create replay")
+			}
+			assertCleanupIntegrityUnchanged(t, f.journal, before)
+		})
+	}
+	for _, mode := range []string{"missing", "corrupt"} {
+		t.Run(mode, func(t *testing.T) {
+			f, keeper, _ := keeperInheritedFixture(t)
+			if err := f.journal.setDesired(t.Context(), f.generation, "stopping", "cleanup", time.Time{}); err != nil {
+				t.Fatal(err)
+			}
+			scope, err := reserveManagedCleanupInvocation(t.Context(), f.journal, f.generation, keeper.Keeper, DockerCleanupInspect, keeper.Binding, f.manifest.HardStop)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.journal.RecordHello(t.Context(), scope, 101, 101); err != nil {
+				t.Fatal(err)
+			}
+			query := "DELETE FROM managed_docker_keepers WHERE keeper_scope_id=?"
+			if mode == "corrupt" {
+				query = "UPDATE managed_docker_keepers SET body='{}' WHERE keeper_scope_id=?"
+			}
+			if _, err := f.journal.conn.ExecContext(t.Context(), query, keeper.Keeper.ID); err != nil {
+				t.Fatal(err)
+			}
+			before := snapshotCleanupIntegrity(t, f.journal)
+			if _, err := reserveManagedCleanupInvocation(t.Context(), f.journal, f.generation, keeper.Keeper, DockerCleanupInspect, keeper.Binding, f.manifest.HardStop); err == nil {
+				t.Error("invalid keeper accepted")
+			}
+			if _, err := f.journal.CleanupPermit(t.Context(), scope); err == nil {
+				t.Error("invalid keeper returned permit")
+			}
+			if granted, err := f.journal.Granted(t.Context(), scope); err == nil || granted {
+				t.Error("invalid keeper preserved grant")
+			}
+			assertCleanupIntegrityUnchanged(t, f.journal, before)
 		})
 	}
 }
