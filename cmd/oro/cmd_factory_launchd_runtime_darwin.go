@@ -73,6 +73,9 @@ func (runtime *factoryLaunchdRuntime) Invoke(ctx context.Context, invocation fac
 	if err := errors.Join(invokeErr, retireErr); err != nil {
 		return factory.HostResult{}, err
 	}
+	if prepared == nil {
+		return factory.HostResult{}, errors.New("factory invocation has no prepared request")
+	}
 	return readFactoryRetiredResult(prepared.request, publication)
 }
 
