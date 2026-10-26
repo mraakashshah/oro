@@ -16,6 +16,69 @@ func TestManagedKeeperInheritedLabels(t *testing.T) {
 	t.Run("bound labels cannot change through inspection or replay", testKeeperInheritedContinuity)
 	t.Run("first discovery enforces exact ownership and descriptor bounds", testKeeperInheritedBounds)
 	t.Run("first binding is atomic and unbound records remain exact six", testKeeperInheritedAtomicity)
+	t.Run("raw inherited label values must remain strings", testKeeperInheritedRawValues)
+}
+
+func testKeeperInheritedRawValues(t *testing.T) {
+	f, keeper, volume := keeperLabelDiscovery(t)
+	before := dockerVolumeCounts(t, f.journal)
+	withValue := func(result HostResult, value any) HostResult {
+		t.Helper()
+		var objects []map[string]any
+		if err := json.Unmarshal(result.Stdout, &objects); err != nil {
+			t.Fatal(err)
+		}
+		objects[0]["Config"].(map[string]any)["Labels"].(map[string]any)["image.empty"] = value
+		var err error
+		result.Stdout, err = json.Marshal(objects)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	for _, tc := range []struct {
+		name  string
+		value any
+	}{
+		{"null", nil},
+		{"number", 0},
+		{"boolean", false},
+		{"array", []string{}},
+		{"object", map[string]string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := withValue(sourceKeeperInspection(t, keeper, volume), tc.value)
+			if _, err := parseManagedDockerKeeperInspection(result, keeper, volume); err == nil {
+				t.Fatal("first inspection accepted a non-string inherited label")
+			}
+		})
+	}
+	if dockerVolumeCounts(t, f.journal) != before {
+		t.Fatal("malformed discovery changed authority")
+	}
+	result := withValue(sourceKeeperInspection(t, keeper, volume), "")
+	binding, err := parseManagedDockerKeeperInspection(result, keeper, volume)
+	if err != nil {
+		t.Fatal("valid empty string label rejected", err)
+	}
+	if err := bindManagedDockerKeeper(t.Context(), f.journal, f.generation, keeper.Keeper, binding); err != nil {
+		t.Fatal(err)
+	}
+	keeper, err = loadManagedDockerKeeper(t.Context(), f.journal, keeper.Keeper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before = dockerVolumeCounts(t, f.journal)
+	if _, err := parseManagedDockerKeeperInspection(withValue(result, nil), keeper, volume); err == nil {
+		t.Error("bound stopped inspection normalized null into the pinned empty string")
+	}
+	running := sourcePrepareRunning(t, keeper, volume, "2026-10-24T06:00:00Z")
+	if _, err := parseManagedDockerRunningKeeperInspection(withValue(running, nil), keeper, volume, "2026-10-24T06:00:00Z"); err == nil {
+		t.Error("bound running inspection normalized null into the pinned empty string")
+	}
+	if dockerVolumeCounts(t, f.journal) != before {
+		t.Fatal("malformed continuity inspection changed authority")
+	}
 }
 
 // Captured independently from production image call-18 and guard call-20 in

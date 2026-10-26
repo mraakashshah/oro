@@ -219,8 +219,26 @@ func decodeManagedKeeperValue(data json.RawMessage, value reflect.Value) error {
 	if bytes.Equal(data, []byte("null")) && value.Kind() != reflect.Map && value.Kind() != reflect.Slice {
 		return errors.New("keeper inspection has a null scalar")
 	}
+	if value.Type() == reflect.TypeFor[map[string]string]() {
+		if err := validateManagedKeeperStringMap(data); err != nil {
+			return err
+		}
+	}
 	if err := json.Unmarshal(data, value.Addr().Interface()); err != nil {
 		return fmt.Errorf("decode keeper value: %w", err)
+	}
+	return nil
+}
+
+func validateManagedKeeperStringMap(data json.RawMessage) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return fmt.Errorf("decode keeper ownership map: %w", err)
+	}
+	for _, raw := range fields {
+		if bytes.Equal(raw, []byte("null")) {
+			return errors.New("keeper ownership map requires string values")
+		}
 	}
 	return nil
 }
