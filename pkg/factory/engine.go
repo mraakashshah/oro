@@ -188,10 +188,16 @@ func (c *controller) attempt(ctx context.Context) error {
 	}
 	base, err := c.backend.target(ctx, c.state.Deadline)
 	if err != nil {
+		if isManagedInterruption(err) {
+			return err
+		}
 		return c.fail(ctx, err)
 	}
 	path, err := c.backend.checkout(ctx, "worker", c.state.Attempts, base, c.state.Deadline)
 	if err != nil {
+		if isManagedInterruption(err) {
+			return err
+		}
 		return c.reject(ctx, err)
 	}
 	next = c.state
@@ -201,10 +207,16 @@ func (c *controller) attempt(ctx context.Context) error {
 	}
 	result := c.execute(ctx, "worker", path)
 	if err := commandFailure(result); err != nil {
+		if isManagedInterruption(err) {
+			return err
+		}
 		return c.reject(ctx, err)
 	}
 	candidate, err := c.backend.commit(ctx, path, base, c.state.Deadline)
 	if err != nil {
+		if isManagedInterruption(err) {
+			return err
+		}
 		return c.reject(ctx, err)
 	}
 	next = c.state
