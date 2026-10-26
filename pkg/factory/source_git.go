@@ -58,6 +58,9 @@ func (g *managedGitRepository) operation(ctx context.Context) (context.Context, 
 }
 
 func (g *managedGitRepository) invoke(ctx context.Context, input []byte, args ...string) (HostResult, error) {
+	if len(args) == 0 {
+		return HostResult{}, errors.New("managed Git command is empty")
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.failed != nil {
@@ -105,6 +108,9 @@ func (g *managedGitRepository) invoke(ctx context.Context, input []byte, args ..
 }
 
 func (g *managedGitRepository) run(ctx context.Context, input []byte, args ...string) ([]byte, error) {
+	if len(args) == 0 {
+		return nil, errors.New("managed Git command is empty")
+	}
 	result, err := g.invoke(ctx, input, args...)
 	if err != nil {
 		return nil, err

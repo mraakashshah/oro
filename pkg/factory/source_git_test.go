@@ -514,6 +514,65 @@ func TestManagedGitAuthority(t *testing.T) {
 	t.Run("request bounds precede backend effects", testSourceGitRequestBounds)
 }
 
+func TestManagedGitEmptyCommand(t *testing.T) {
+	for _, method := range []string{"invoke", "run"} {
+		for _, vector := range []string{"nil", "empty"} {
+			for _, outcome := range []string{"runtime failure", "nonzero"} {
+				t.Run(method+"/"+vector+"/"+outcome, func(t *testing.T) {
+					g, runtime, _, base := sourceGitFixture(t, nil, func(spec *ManagedSpec) { spec.Runtime.MaxHostInvocations = 1 })
+					ctx, cancel := g.operation(t.Context())
+					defer cancel()
+					deadline, _ := ctx.Deadline()
+					if outcome == "runtime failure" {
+						runtime.failure = errors.New("injected runtime failure")
+					} else {
+						runtime.alter = func(_ HostInvocation, result HostResult) HostResult { result.ExitCode = 17; return result }
+					}
+					counts := func() [3]int {
+						t.Helper()
+						var got [3]int
+						for i, query := range []string{"SELECT count(*) FROM managed_reservations WHERE kind='host'", "SELECT count(*) FROM managed_scopes", "SELECT count(*) FROM managed_events"} {
+							if err := runtime.j.conn.QueryRowContext(t.Context(), query).Scan(&got[i]); err != nil {
+								t.Fatal(err)
+							}
+						}
+						return got
+					}
+					before := counts()
+					var args []string
+					if vector == "empty" {
+						args = []string{}
+					}
+					func() {
+						defer func() {
+							if recovered := recover(); recovered != nil {
+								t.Errorf("empty command panicked: %v", recovered)
+							}
+						}()
+						var err error
+						if method == "invoke" {
+							_, err = g.invoke(ctx, nil, args...)
+						} else {
+							_, err = g.run(ctx, nil, args...)
+						}
+						if err == nil || err.Error() == "" {
+							t.Error("empty command did not return an error")
+						}
+					}()
+					if after := counts(); after != before || len(runtime.calls) != 0 {
+						t.Errorf("empty command changed authority: counts %v -> %v, calls %d", before, after, len(runtime.calls))
+					}
+					runtime.failure, runtime.alter = nil, nil
+					out, err := g.run(ctx, nil, "rev-parse", "refs/heads/delivery")
+					if err != nil || strings.TrimSpace(string(out)) != base || len(runtime.calls) != 1 || !runtime.calls[0].Deadline.Equal(deadline) {
+						t.Errorf("valid command lost original authority: output %q, error %v, calls %d", out, err, len(runtime.calls))
+					}
+				})
+			}
+		}
+	}
+}
+
 // This adapter exercises real Git and real journal transactions. It deliberately
 // does not qualify native process isolation; the launchd integration owns that.
 type sourceGitRuntime struct {
