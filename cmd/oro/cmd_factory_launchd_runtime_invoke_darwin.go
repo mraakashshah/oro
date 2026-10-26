@@ -56,6 +56,21 @@ func (runtime *factoryLaunchdRuntime) validateInvocation(ctx context.Context, in
 }
 
 func (runtime *factoryLaunchdRuntime) register(scope factory.ScopeHandle, call *factoryLaunchdCall) error {
+	return runtime.registerContext(context.Background(), scope, call)
+}
+
+func (runtime *factoryLaunchdRuntime) registerContext(ctx context.Context, scope factory.ScopeHandle, call *factoryLaunchdCall) error {
+	if err := runtime.lockGrant(ctx); err != nil {
+		return err
+	}
+	defer func() { <-runtime.gate }()
+	observation, err := runtime.authority.Observe(ctx, scope)
+	if err != nil {
+		return fmt.Errorf("observe factory registration: %w", err)
+	}
+	if observation.Phase != "reserved" {
+		return errors.New("factory scope no longer reserved")
+	}
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
 	if _, exists := runtime.active[scope.ID]; exists {
@@ -140,8 +155,10 @@ func (runtime *factoryLaunchdRuntime) grant(ctx context.Context, connection *net
 func (runtime *factoryLaunchdRuntime) recordGrant(ctx context.Context, invocation factory.HostInvocation, call *factoryLaunchdCall, pid, pgid int) error {
 	// Serializing grant with retirement ensures retirement observes any recorded
 	// group before stopping the job; cancellation prevents subsequent GO writes.
-	runtime.mu.Lock()
-	defer runtime.mu.Unlock()
+	if err := runtime.lockGrant(ctx); err != nil {
+		return err
+	}
+	defer func() { <-runtime.gate }()
 	if call.retiring {
 		return errors.New("factory scope is already retiring")
 	}

@@ -21,6 +21,7 @@ type factoryLaunchdRuntime struct {
 	launchctl func(context.Context, ...string) (int, error)
 	probe     func(int) error
 	mu        sync.Mutex
+	gate      chan struct{}
 	active    map[string]*factoryLaunchdCall
 }
 
@@ -41,6 +42,7 @@ func openFactoryLaunchdRuntime(ctx context.Context, config factoryLaunchdConfig)
 	}
 	return &factoryLaunchdRuntime{
 		config: config, authority: authority, launchctl: runFactoryLaunchctl, active: make(map[string]*factoryLaunchdCall),
+		gate:  make(chan struct{}, 1),
 		probe: func(group int) error { return syscall.Kill(-group, 0) },
 	}, nil
 }
@@ -60,16 +62,17 @@ func (runtime *factoryLaunchdRuntime) Invoke(ctx context.Context, invocation fac
 	if err := runtime.validateInvocation(ctx, invocation); err != nil {
 		return factory.HostResult{}, err
 	}
+	cleanupCtx := context.WithoutCancel(ctx)
 	ctx, cancel := context.WithDeadline(ctx, invocation.Deadline)
 	defer cancel()
 	call := &factoryLaunchdCall{cancel: cancel, done: make(chan struct{})}
-	if err := runtime.register(invocation.Scope, call); err != nil {
+	if err := runtime.registerContext(ctx, invocation.Scope, call); err != nil {
 		return factory.HostResult{}, err
 	}
 	defer runtime.unregister(invocation.Scope)
 	prepared, publication, invokeErr := runtime.perform(ctx, invocation, call)
 	close(call.done)
-	retireErr := runtime.Retire(ctx, invocation.Scope)
+	retireErr := runtime.Retire(cleanupCtx, invocation.Scope)
 	if err := errors.Join(invokeErr, retireErr); err != nil {
 		return factory.HostResult{}, err
 	}
@@ -83,7 +86,7 @@ func (runtime *factoryLaunchdRuntime) Retire(ctx context.Context, scope factory.
 	if err := runtime.validateScope(scope); err != nil {
 		return err
 	}
-	deadline, err := runtime.retirementDeadline()
+	deadline, err := runtime.hostRetirementDeadline(ctx)
 	if err != nil {
 		return err
 	}
@@ -91,7 +94,10 @@ func (runtime *factoryLaunchdRuntime) Retire(ctx context.Context, scope factory.
 	// original hard stop. It never extends execution or publication permission.
 	cleanup, cancel := context.WithDeadline(context.WithoutCancel(ctx), deadline)
 	defer cancel()
-	observation, err := runtime.retirementObservation(cleanup, scope)
+	observation, release, err := runtime.retirementObservation(cleanup, scope)
+	if release != nil {
+		defer release()
+	}
 	if err != nil {
 		return err
 	}
@@ -102,6 +108,16 @@ func (runtime *factoryLaunchdRuntime) Retire(ctx context.Context, scope factory.
 	if err != nil || (code != 0 && code != int(syscall.ESRCH)) {
 		return fmt.Errorf("retire exact factory launchd service (exit %d): %w", code, errors.Join(err, errors.New("bootout not confirmed")))
 	}
+	if err := runtime.waitRetirementGroup(cleanup, observation); err != nil {
+		return err
+	}
+	if err := runtime.authority.MarkQuiescent(cleanup, scope); err != nil {
+		return fmt.Errorf("record factory scope quiescence: %w", err)
+	}
+	return nil
+}
+
+func (runtime *factoryLaunchdRuntime) waitRetirementGroup(cleanup context.Context, observation factory.ScopeObservation) error {
 	if observation.PID != 0 || observation.PGID != 0 {
 		if observation.PID <= 1 || observation.PGID != observation.PID {
 			return errors.New("factory retirement lacks authenticated job process-group identity")
@@ -112,10 +128,21 @@ func (runtime *factoryLaunchdRuntime) Retire(ctx context.Context, scope factory.
 	} else if observation.Phase == "granted" {
 		return errors.New("granted factory scope has no authenticated group")
 	}
-	if err := runtime.authority.MarkQuiescent(cleanup, scope); err != nil {
-		return fmt.Errorf("record factory scope quiescence: %w", err)
-	}
 	return nil
+}
+
+func (runtime *factoryLaunchdRuntime) hostRetirementDeadline(ctx context.Context) (time.Time, error) {
+	deadline, err := runtime.retirementDeadline()
+	if err != nil {
+		return time.Time{}, err
+	}
+	if parentDeadline, ok := ctx.Deadline(); ok && parentDeadline.Before(deadline) {
+		deadline = parentDeadline
+	}
+	if !time.Now().Before(deadline) {
+		return time.Time{}, context.DeadlineExceeded
+	}
+	return deadline, nil
 }
 
 func (runtime *factoryLaunchdRuntime) retirementDeadline() (time.Time, error) {
@@ -130,32 +157,42 @@ func (runtime *factoryLaunchdRuntime) retirementDeadline() (time.Time, error) {
 	return deadline, nil
 }
 
-func (runtime *factoryLaunchdRuntime) retirementObservation(ctx context.Context, scope factory.ScopeHandle) (factory.ScopeObservation, error) {
+func (runtime *factoryLaunchdRuntime) retirementObservation(ctx context.Context, scope factory.ScopeHandle) (factory.ScopeObservation, func(), error) {
+	if err := runtime.lockGrant(ctx); err != nil {
+		return factory.ScopeObservation{}, nil, err
+	}
 	runtime.mu.Lock()
 	call := runtime.active[scope.ID]
 	if call != nil && call.scope != scope {
 		runtime.mu.Unlock()
-		return factory.ScopeObservation{}, errors.New("factory retirement handle differs from active invocation")
+		<-runtime.gate
+		return factory.ScopeObservation{}, nil, errors.New("factory retirement handle differs from active invocation")
 	}
 	if call != nil {
 		call.retiring = true
 		call.cancel()
 	}
 	runtime.mu.Unlock()
+	var release func()
+	if call == nil {
+		release = func() { <-runtime.gate }
+	} else {
+		<-runtime.gate
+	}
 	// A canceled bootstrap may still be completing its launchd request. Wait for
 	// the owned control command before bootout so late creation cannot escape it.
 	if call != nil && call.done != nil {
 		select {
 		case <-call.done:
 		case <-ctx.Done():
-			return factory.ScopeObservation{}, fmt.Errorf("wait for owned factory bootstrap: %w", ctx.Err())
+			return factory.ScopeObservation{}, release, fmt.Errorf("wait for owned factory bootstrap: %w", ctx.Err())
 		}
 	}
 	observation, err := runtime.authority.Observe(ctx, scope)
 	if err != nil {
-		return observation, fmt.Errorf("observe factory retirement ownership: %w", err)
+		return observation, release, fmt.Errorf("observe factory retirement ownership: %w", err)
 	}
-	return observation, nil
+	return observation, release, nil
 }
 
 func (runtime *factoryLaunchdRuntime) validateScope(scope factory.ScopeHandle) error {
@@ -186,3 +223,16 @@ func runFactoryLaunchctl(ctx context.Context, args ...string) (int, error) {
 }
 
 var _ factory.HostRuntime = (*factoryLaunchdRuntime)(nil)
+
+func (runtime *factoryLaunchdRuntime) lockGrant(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("wait for factory grant serialization: %w", ctx.Err())
+	case runtime.gate <- struct{}{}:
+		if err := ctx.Err(); err != nil {
+			<-runtime.gate
+			return fmt.Errorf("wait for factory grant serialization: %w", err)
+		}
+		return nil
+	}
+}
