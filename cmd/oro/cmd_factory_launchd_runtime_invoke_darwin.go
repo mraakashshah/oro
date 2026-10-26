@@ -84,7 +84,9 @@ func (runtime *factoryLaunchdRuntime) registerContext(ctx context.Context, scope
 func (runtime *factoryLaunchdRuntime) unregister(scope factory.ScopeHandle) {
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
-	delete(runtime.active, scope.ID)
+	if call := runtime.active[scope.ID]; call != nil && !call.retiring {
+		delete(runtime.active, scope.ID)
+	}
 }
 
 func (runtime *factoryLaunchdRuntime) perform(ctx context.Context, invocation factory.HostInvocation, call *factoryLaunchdCall) (*factoryLaunchdPrepared, factoryHostExecPublished, error) {

@@ -62,7 +62,7 @@ func (runtime *factoryLaunchdRuntime) Invoke(ctx context.Context, invocation fac
 	if err := runtime.validateInvocation(ctx, invocation); err != nil {
 		return factory.HostResult{}, err
 	}
-	cleanupCtx := context.WithoutCancel(ctx)
+	cleanupCtx := ctx
 	ctx, cancel := context.WithDeadline(ctx, invocation.Deadline)
 	defer cancel()
 	call := &factoryLaunchdCall{cancel: cancel, done: make(chan struct{})}
@@ -102,6 +102,7 @@ func (runtime *factoryLaunchdRuntime) Retire(ctx context.Context, scope factory.
 		return err
 	}
 	if observation.Phase == "quiescent" {
+		runtime.forgetRetired(scope)
 		return nil
 	}
 	code, err := runtime.launchctl(cleanup, "bootout", runtime.serviceTarget(scope))
@@ -114,7 +115,16 @@ func (runtime *factoryLaunchdRuntime) Retire(ctx context.Context, scope factory.
 	if err := runtime.authority.MarkQuiescent(cleanup, scope); err != nil {
 		return fmt.Errorf("record factory scope quiescence: %w", err)
 	}
+	runtime.forgetRetired(scope)
 	return nil
+}
+
+func (runtime *factoryLaunchdRuntime) forgetRetired(scope factory.ScopeHandle) {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if call := runtime.active[scope.ID]; call != nil && call.scope == scope && call.retiring {
+		delete(runtime.active, scope.ID)
+	}
 }
 
 func (runtime *factoryLaunchdRuntime) waitRetirementGroup(cleanup context.Context, observation factory.ScopeObservation) error {

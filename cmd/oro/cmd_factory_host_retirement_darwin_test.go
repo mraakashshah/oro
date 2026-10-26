@@ -248,3 +248,92 @@ func TestFactoryHostRetirementPeer(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestFactoryHostInvokeCleanupDeadline(t *testing.T) {
+	cfg := factoryScopeConfigFixture(t)
+	db := factoryScopeSeedJournal(t, &cfg)
+	workDeadline := time.Now().Add(200 * time.Millisecond)
+	callerDeadline := workDeadline.Add(400 * time.Millisecond)
+	scope := factoryScopeSeed(t, db, cfg, "f", workDeadline, "reserved", 0)
+	runtime, err := openFactoryLaunchdRuntime(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	t.Cleanup(func() { _ = os.RemoveAll("/private/tmp/of-" + factoryLaunchdObjectiveHash(cfg)) })
+	var gotDeadline time.Time
+	runtime.launchctl = func(ctx context.Context, args ...string) (int, error) {
+		if args[0] == "bootstrap" {
+			<-ctx.Done()
+			return -1, ctx.Err()
+		}
+		gotDeadline, _ = ctx.Deadline()
+		return int(syscall.ESRCH), nil
+	}
+	ctx, cancel := context.WithDeadline(t.Context(), callerDeadline)
+	defer cancel()
+	invocation := factory.HostInvocation{Scope: scope, Path: cfg.GitPath, Dir: cfg.Repository, Deadline: workDeadline, OutputLimit: 256}
+	_, err = runtime.Invoke(ctx, invocation)
+	if err == nil {
+		t.Fatal("expected expired execution")
+	}
+	if !gotDeadline.Equal(callerDeadline) {
+		t.Fatalf("cleanup deadline %v; want caller deadline %v", gotDeadline, callerDeadline)
+	}
+	observation, err := runtime.authority.Observe(t.Context(), scope)
+	if err != nil || observation.Phase != "quiescent" {
+		t.Fatalf("legal cleanup did not finish: %+v %v", observation, err)
+	}
+}
+
+func TestFactoryHostRetirementActiveUnregister(t *testing.T) {
+	cfg := factoryScopeConfigFixture(t)
+	db := factoryScopeSeedJournal(t, &cfg)
+	scope := factoryScopeSeed(t, db, cfg, "9", time.Now().Add(time.Minute), "reserved", 0)
+	runtime, err := openFactoryLaunchdRuntime(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	canceled, done := make(chan struct{}), make(chan struct{})
+	call := &factoryLaunchdCall{cancel: func() { close(canceled) }, done: done}
+	if err := runtime.register(scope, call); err != nil {
+		t.Fatal(err)
+	}
+	bootout, release := make(chan struct{}), make(chan struct{})
+	runtime.launchctl = func(context.Context, ...string) (int, error) { close(bootout); <-release; return 0, nil }
+	retired := make(chan error, 1)
+	go func() { retired <- runtime.Retire(t.Context(), scope) }()
+	<-canceled
+	close(done)
+	<-bootout
+	runtime.unregister(scope)
+	registered := make(chan error, 1)
+	go func() {
+		registered <- runtime.register(scope, &factoryLaunchdCall{cancel: func() {}, done: make(chan struct{})})
+	}()
+	select {
+	case err := <-registered:
+		if err == nil {
+			t.Error("registered while active retirement in progress")
+		}
+		close(release)
+		if err := <-retired; err != nil {
+			t.Fatal(err)
+		}
+		return
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(release)
+	if err := <-retired; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-registered:
+		if err == nil {
+			t.Error("registered retired scope")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("registration stuck")
+	}
+}
