@@ -5,6 +5,39 @@ guide. Implementation is authorized to continue; this is a context handoff, not
 a new user-requested pause. Preserve the full unattended factory goal and the
 Astra architect / Terra engineer role agreement.
 
+## Latest continuation: activation integrated, controller producer started
+
+The updates below supersede the earlier verification and next-work snapshot.
+`1847b365` and `6d572f54` fix keeper cardinality and Git listing-vector NilAway
+findings; `f83e17f9` fixes the CLI prepared-result finding. Activation persistence
+is integrated in `26d3858d` after Terra implementation and independent Astra
+review, including regressions for all three review findings. Root independently
+verified the activation/admission/journal/view race suite before integration.
+See the [activation proof](../proofs/2026-10-26-managed-activation.md) for evidence
+and the exact limited acceptance boundary.
+
+At `f83e17f9`, the full repository gate passed 15 checks and failed only dead
+exports: five managed APIs still lack production callers. NilAway and package
+lint passed. The integrated CLI race passed; full shuffled factory race passed
+in 409.564 seconds with 89.0% statement coverage (415.953 seconds harness).
+All three verification jobs are terminal; do not repeat them absent new changes.
+
+Next tracked implementation: `oro-mf-controller-intent`, Terra on isolated
+`feature/factory-controller-intent` based on `f83e17f9`, owning only new
+`managed_controller.go` and `managed_controller_test.go`. It atomically reserves
+the counted controller token, canonical scope and event after checking active
+activation, current supervisor/generation, original deadline, elapsed backoff,
+no active cleanup, and positive quiescence of every old scope. The supervisor
+reservation's initial generation may be below the current epoch; it must remain
+positive and no greater than the current generation.
+
+This producer leaf precedes required controller-specific HELLO/GO checks and
+generic controller-scope denial, then real Supervise/controller/backend and CLI
+consumers. Existing generic controller-budget tests need no broad fixture
+migration: there are no current controller-kind scope fixtures. No component
+task is a substitute for the full startup or autonomous delivery milestone.
+The parent autonomy goal remains active and unachieved.
+
 ## Current code and verification
 
 Worktree: `/Users/as21/codehouse/oro/.worktrees/factory-core`.

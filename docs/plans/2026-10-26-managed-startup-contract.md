@@ -1,8 +1,12 @@
 # Managed startup authority and first source consumer
 
-Status: Astra design proposal, not implemented or runtime-qualified. Reconcile the existing task contracts and split each large contract into bounded sequential leaves before implementation. The first source milestone is not delivery or autonomous recovery.
+Status: activation persistence implemented in `26d3858d`; the remaining contracts
+are Astra design proposals, not implemented or runtime-qualified. Reconcile the
+existing task contracts and split each large contract into bounded sequential
+leaves before implementation. The first source milestone is not delivery or
+autonomous recovery. See the [activation proof](../proofs/2026-10-26-managed-activation.md).
 
-Decision: use three sequential, compiling contracts below as ONE integration milestone. The first two are prerequisites, not production-wiring acceptance on their own. Do not add a CLI call to a nonexistent RunManagedController. Do not expose a source-preparation API. No current code implements Supervise, RunManagedController, controller launch, or activation; docs/plans/2026-10-23-unattended-factory-tasks.md explicitly leaves activation decomposition open. Generic reserveBudget/controller and reserveScope are not an authenticated startup producer.
+Decision: use three sequential, compiling contracts below as ONE integration milestone. The first two are prerequisites, not production-wiring acceptance on their own. Do not add a CLI call to a nonexistent RunManagedController. Do not expose a source-preparation API. Activation persistence exists; no current code implements Supervise, RunManagedController, or controller launch. Generic reserveBudget/controller and reserveScope are not an authenticated startup producer.
 
 Existing reuse: managed_store.go beginGeneration/advanceEpoch, reserveManagedToken, insertScope, RecordHello/Granted/Observe; managed_admission.go committed manifest and snapshot; managed_admission_view.go immutable view; cmd_factory_budget.go persistent allocation; cmd_factory_runtime_config*.go verified runtime format/reader; cmd_factory_docker_storage_config.go newFactoryDockerConfigReader; launchd host socket peer-authentication, strict frames, exact-label retirement; raw source_git export; managedDockerVolumes.prepareSource. Preserve the controller/backend seam and legacy Run.
 
