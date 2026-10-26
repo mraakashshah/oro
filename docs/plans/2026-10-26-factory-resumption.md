@@ -5,7 +5,7 @@ guide. Implementation is authorized to continue; this is a context handoff, not
 a new user-requested pause. Preserve the full unattended factory goal and the
 Astra architect / Terra engineer role agreement.
 
-## Latest continuation: controller intent integrated, grant enforcement started
+## Latest continuation: core supervisor exists, source consumer remains
 
 The updates below supersede the earlier verification and next-work snapshot.
 `1847b365` and `6d572f54` fix keeper cardinality and Git listing-vector NilAway
@@ -36,24 +36,62 @@ Astra acceptance, root independent final race (25.245 seconds), integrated race
 repository gate above predate this new producer. Do not reimplement it merely
 because task status remains in progress pending broader qualification.
 
-Active Terra work: `oro-mf-controller-grant`, isolated worktree
-`factory-controller-grant`, branch `feature/factory-controller-grant`, base
-`c8dc8169`. Owned files are `managed_controller.go`, `managed_store.go` and new
-`managed_controller_grant_test.go`. It must enforce counted authority in existing
-RecordHello/Granted transactions, reject generic controller scopes, preserve
-ordinary peer semantics and archive its behavioral RED. Root owns integration.
+Grant enforcement is now integrated in `9bdcf40a`; its full shuffled factory
+race passed in 453.366 seconds with 89.0% coverage. `6b374d62` implements the
+first actual `Supervise → reserveManagedController → StartController` lifecycle.
+`055e56f8` adds the optional process-bound snapshot ownership guard. Both received
+independent Astra acceptance and root focused race verification. The owner guard
+is not yet bound by an actual `RunManagedController` constructor. See the
+[startup and ownership proof](../proofs/2026-10-26-controller-startup.md).
 
-This producer leaf precedes required controller-specific HELLO/GO checks and
-generic controller-scope denial, then real Supervise/controller/backend and CLI
-consumers. Existing generic controller-budget tests need no broad fixture
-migration: there are no current controller-kind scope fixtures. No component
+At `055e56f8`, the full gate passed 15 checks and failed only six dead exports,
+including the new `Supervise` awaiting its CLI caller. NilAway and lint passed.
+The combined full race at that revision **failed** after 481.003 seconds on the
+supervisor cancellation-cause race; it is terminal, not a passing profile.
+`6269d528` fixes that reproduced defect and passed independent review and root
+supervisor race tests. The original failure remains preserved in mode
+`supervisor-owner-integrated-full` (exit one, 488.537 seconds harness).
+
+`e3df6dde` integrates managed interruption propagation. `c627f6c3` integrates
+workspace persistence after independent Astra review and root focused races.
+The new full race is live in mode `workspace-interruption-integrated-full`,
+session `45927`, at frozen code `c627f6c3`. Inspect its terminal result in
+`/private/tmp/oro-factory-verify-ldhnhnvl/` before rerunning. Mode
+`workspace-interruption-integrated-gate` is terminal: 175.878 seconds, fifteen
+checks passed, six dead exports remain; lint/NilAway passed. Only checkpoint
+documentation changes in the core worktree during this run.
+
+Active Terra: `/root/terra_controller_source`, task `oro-mf-controller-source`,
+worktree/branch `factory-controller-source` / `feature/factory-controller-source`,
+base `c627f6c3`. Owns new `managed_engine.go`, `managed_backend.go`,
+`managed_backend_checkout.go`, `managed_engine_test.go` only. Its draft now reaches
+the real eight-call preparation path through the real entry, but final matrix,
+race, lint and review remain. **No frozen commit has been accepted yet.** It
+initially stopped after orientation without code; root explicitly continued the
+execution. Minimal compile scaffolding after writing a test is allowed; only the
+subsequent behavioral RED counts. Do not restart or duplicate this active worker.
+
+The workspace, interruption, owner and supervisor component implementations are
+accepted and integrated, not awaiting reimplementation merely because tracker
+statuses remain in progress under broader qualification constraints.
+
+Root owns integration. Actual managed backend checkout and `RunManagedController`
+must follow these prerequisites to connect raw export and production source
+preparation to `controller.attempt`. No new public preparation API or fake
+production caller is permitted. Keep real CLI/service publication after that
+core consumer exists; candidate execution and full delivery remain unfinished.
+
+Typed HELLO/GO and generic controller-scope denial are implemented. Real
+controller/backend and CLI consumers remain. Existing generic budget tests
+continue to pass; controller-kind fixtures now use the typed producer. No component
 task is a substitute for the full startup or autonomous delivery milestone.
 The parent autonomy goal remains active and unachieved.
-The next executable supervisor lifecycle is detailed in the updated
-[startup contract](2026-10-26-managed-startup-contract.md). It supplies the first
-actual producer caller before adding retry/reconciliation and delivery behavior.
+The updated [startup contract](2026-10-26-managed-startup-contract.md) preserves
+the actual consumer contract. Astra's next CLI proposal is in
+[the CLI contract](2026-10-26-managed-cli-contract.md); it still needs bounded
+task decomposition and concrete runtime/retirement reconciliation before coding.
 
-## Current code and verification
+## Earlier implementation and verification history
 
 Worktree: `/Users/as21/codehouse/oro/.worktrees/factory-core`.
 Branch: `feature/factory-core`.
