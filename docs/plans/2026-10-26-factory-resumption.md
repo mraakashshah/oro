@@ -17,28 +17,33 @@ Branch: `feature/factory-core`.
 - `c2f8e932`: gofumpt-only corrections in six factory-related Go files and a
   formatting-only Biome exception for the exact archived native JSON directory.
   JSON checking remains enabled; all ten evidence hashes still match.
-- Both code commits were pushed. A documentation commit may follow this checkpoint.
-- Full factory shuffled race run passed in **366.800 seconds**, with **89.1%**
+- `16f55188`: Terra implemented durable keeper cleanup authority. Reservation and
+  permit reload compare complete identity against the canonical keeper record in
+  the current transaction. Astra found no defects; root independently verified.
+- These code commits were pushed. A documentation commit may follow this checkpoint.
+- Latest full factory shuffled race run passed in **364.538 seconds**, with **89.2%**
   statement coverage. Package lint passed with zero issues.
 - Full repository gate remains **red**: formatting fixes exposed six nil-safety
   diagnostics and three managed APIs without production callers. Broad Go runtime,
   security, and build tiers were not reached by that gate.
 
-See the [verification record](../proofs/2026-10-26-factory-resumption.md) for exact
-commands, scope, commit provenance, and remaining gate findings. No Docker/VM
-qualification, Terra worker, or real autonomous delivery trial ran in this
-increment. Astra performed bounded read-only repair and architecture reviews.
-The configured Terra worker model is `gpt-5.6-terra` in local `.oro/config.yaml`;
-this observation is not proof of a successful model invocation.
+See the [initial verification record](../proofs/2026-10-26-factory-resumption.md)
+and [cleanup binding record](../proofs/2026-10-26-keeper-cleanup-binding.md) for
+commands, scope, provenance, and remaining gate findings. No Docker/VM
+qualification or real autonomous delivery trial ran. The cleanup increment used
+a direct `gpt-6.1-terra` implementation agent and `gpt-6-astra` reviewer. This is
+development coordination, not a managed Oro factory trial. Local `.oro/config.yaml`
+still names `gpt-5.6-terra`; it was not changed to launch this direct worker.
 
-## First next task: enforce durable cleanup identity
+## Cleanup identity task: implemented, qualification pending
 
-`oro-mf-keeper-cleanup-binding` is open and ready. It is a child/dependency of
-`oro-mf-keeper-image-labels`, which remains in progress. The parser fix alone does
-not complete that parent: existing cleanup transport tests compare against the
-provided permit but do not link it back to the saved keeper record.
+`oro-mf-keeper-cleanup-binding` is implemented in `16f55188` and remains tracked
+in progress pending global gate/qualification constraints. It is not awaiting
+more Terra implementation. Do not repeat it without a new defect. The following
+contract is retained for review and regression protection. Its parent
+`oro-mf-keeper-image-labels` and the full autonomy objective remain in progress.
 
-Astra's concrete decision is to enforce identity **inside existing reservation
+Astra's implemented decision enforces identity **inside existing reservation
 and permit-reload transactions**, not only in a future controller caller:
 
 - In `pkg/factory/managed_cleanup.go`, add private
@@ -71,7 +76,7 @@ unknown inspect shape. This does not prove successful unknown-create discovery
 or recovery; that remains unresolved and must not be manufactured by weakening
 comparison.
 
-## After that: advance the real production path
+## Next: clear the remaining gates and advance production delivery
 
 Astra traced the existing flow:
 
@@ -99,6 +104,18 @@ deadlines/budgets, and the explicit backend interface. A managed workspace strin
 must resolve to journaled identity rather than candidate-controlled host paths.
 Partial wiring must fail closed before execution/receipts; it is not delivery.
 
+Astra recommends an explicit `ManagedDockerConfigReader` argument on the
+not-yet-implemented `RunManagedController`, reusing CLI
+`newFactoryDockerConfigReader` instead of extending every HostRuntime or adding a
+provider/options framework. This changes a proposed signature, not existing Go
+callers. A material prerequisite remains: select and implement the actual counted,
+authenticated controller startup/activation producer and matching core gate.
+Finding a token in `managed_reservations` alone is not authority to allocate
+sources. The proposed hidden CLI controller command must consume startup-bound
+runtime identity and valid activation; never invent the producer only in tests.
+Reconcile this proposal with the existing startup/supervisor task contracts before
+creating or implementing the next slice.
+
 Next stages must reload seeded keeper/volume identity, run the candidate as
 UID1000 with bounded scratch, positively stop and inspect the exact candidate,
 recheck keeper continuity, decode bounded stopped export, and use existing
@@ -114,14 +131,15 @@ unknown daemon/VM epoch recovery remain the previously documented prerequisites.
 ## Tracker snapshot and continuation rules
 
 - In progress: `oro-mf-keeper-image-labels`, `oro-mf-source-prepare`,
-  `oro-mf-gate-format`, plus prior storage/READY/backend component claims.
-- Open ready next leaf: `oro-mf-keeper-cleanup-binding`.
+  `oro-mf-gate-format`, `oro-mf-keeper-cleanup-binding`, plus prior
+  storage/READY/backend component claims. Cleanup code is verified and integrated;
+  its task notes explain the remaining qualification state.
 - Open downstream: `oro-mf-managed-delivery`, `oro-mf-cli-start`,
   `oro-mf-qualification`; parent `oro-factory-autonomy` is open and unachieved.
 - No task was closed merely because scoped tests passed while the full gate and
   integration requirements remain unresolved.
-- At this checkpoint both independent agents finished, all verification sessions
-  exited, and no native fixture resources were created by this increment.
+- At this checkpoint all implementation/review agents finished, all verification
+  sessions exited, and no native fixture resources were created by this increment.
 - Preserve unrelated primary-checkout changes and all existing Colima state.
 - Read this checkpoint plus the earlier resume guide before selecting work. The
   user's proceed instruction remains in force; do not ask to resume again solely
