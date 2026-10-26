@@ -145,6 +145,12 @@ normalizes repository only, matching the issuer; never resolve vanished original
 program aliases on active replay. Old manifest reservations missing this digest
 must fail closed. This correction is required before public-start acceptance;
 the previous narrow verifier is not a substitute for the durable spec binding.
+The shared identity helper validates the spec and canonicalizes Repository only;
+current retention/minimum allocation checks remain in the CLI issuer, separate
+from core metadata admission. Valid digest-bound historical B32 metadata remains
+readable/resumable, while existing Git construction and CLI minima deny its
+execution/new allocation. Preserve this compatibility test rather than changing
+it to expect rejection merely to accommodate the new hash helper.
 
 The production disk probe walks only ENOENT upward to a canonical existing
 directory, creates nothing, and uses checked capacity/available-byte arithmetic

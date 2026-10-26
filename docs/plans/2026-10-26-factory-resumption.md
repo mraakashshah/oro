@@ -109,9 +109,14 @@ normalization must match the ledger; original program aliases may disappear on
 active replay. Historical missing digest fails closed, never backfilled from
 mutable inputs or normalized manifest. Terra is implementing the correction as
 `oro-mf-reservation-spec-identity` in the same public-start worktree/branch.
-Shared `PrepareManagedSpecIdentity` reproduces the existing issuer algorithm:
-retention/minimum validation, repository-only normalization, revalidation and
-whole JSON digest. Admission checks equality before executable normalization or
+Shared `PrepareManagedSpecIdentity` performs spec validation, repository-only
+normalization, revalidation and whole JSON digest. Allocation policy stays in the
+CLI issuer: its existing retention/minimum checks remain before identity
+preparation and after normalization. This preserves valid digest-bound historical
+B32 metadata reads/resume while existing execution and CLI allocation minima
+still deny underallocated work. The initial proposal incorrectly moved allocation
+policy into metadata admission; preserve the existing compatibility assertions.
+Admission checks digest equality before executable normalization or
 effects; journal partial-spec callers validate digest shape only. The issuer
 returns its existing stored digest without changing ledger format. Four source
 files and legitimate fixture updates are owned by this one correction. Full
