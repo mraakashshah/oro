@@ -506,6 +506,9 @@ func loadManagedScope(ctx context.Context, reader managedRowReader, scope ScopeH
 }
 
 func (j *managedJournal) reserveScope(ctx context.Context, scope ScopeHandle, deadline, now time.Time) (bool, error) {
+	if scope.Kind == "controller" {
+		return false, errors.New("controller scope requires atomic typed reservation")
+	}
 	if err := validateManagedScope(scope); err != nil {
 		return false, err
 	}
@@ -586,7 +589,7 @@ func (j *managedJournal) insertScope(ctx context.Context, tx *sql.Tx, scope Scop
 // RecordHello persists a grant only after the backend authenticates the real
 // peer PID/UID. Claimed subprocess JSON is not an authenticated identity.
 func (j *managedJournal) RecordHello(ctx context.Context, scope ScopeHandle, pid, pgid int) error {
-	if pid <= 1 || pgid <= 1 {
+	if pid <= 1 || pgid <= 1 || (scope.Kind == "controller" && pid != pgid) {
 		return errors.New("authenticated host PID and PGID must exceed one")
 	}
 	return j.mutate(ctx, "scope-granted", scope.ID, func(tx *sql.Tx, state *managedSupervision) (bool, error) {
@@ -597,10 +600,8 @@ func (j *managedJournal) RecordHello(ctx context.Context, scope ScopeHandle, pid
 		if err := j.activeScope(state, record, time.Now()); err != nil {
 			return false, err
 		}
-		if scope.Kind == "cleanup" {
-			if _, err := j.loadCleanupPermit(ctx, tx, state, scope); err != nil {
-				return false, err
-			}
+		if err := j.validateScopeHello(ctx, tx, state, record); err != nil {
+			return false, err
 		}
 		if record.Phase == "granted" && record.PID == pid && record.PGID == pgid {
 			return false, nil
@@ -615,6 +616,18 @@ func (j *managedJournal) RecordHello(ctx context.Context, scope ScopeHandle, pid
 	})
 }
 
+func (j *managedJournal) validateScopeHello(ctx context.Context, tx *sql.Tx, state *managedSupervision, record managedScopeRecord) error {
+	switch record.Kind {
+	case "controller":
+		return validateManagedControllerGrant(ctx, tx, j, state, record)
+	case "cleanup":
+		_, err := j.loadCleanupPermit(ctx, tx, state, record.ScopeHandle)
+		return err
+	default:
+		return nil
+	}
+}
+
 // Granted checks the bound objective, full scope identity, epoch and live phase.
 func (j *managedJournal) Granted(ctx context.Context, scope ScopeHandle) (bool, error) {
 	var granted bool
@@ -624,6 +637,12 @@ func (j *managedJournal) Granted(ctx context.Context, scope ScopeHandle) (bool, 
 			return false, err
 		}
 		granted = record.Phase == "granted" && j.activeScope(state, record, time.Now()) == nil
+		if granted && scope.Kind == "controller" {
+			if err := validateManagedControllerGrant(ctx, tx, j, state, record); err != nil {
+				granted = false
+				return false, err
+			}
+		}
 		if granted && scope.Kind == "cleanup" {
 			_, err := j.loadCleanupPermit(ctx, tx, state, scope)
 			if err != nil {

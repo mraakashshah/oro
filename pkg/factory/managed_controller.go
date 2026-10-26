@@ -75,3 +75,43 @@ func checkManagedControllerAuthority(ctx context.Context, tx *sql.Tx, j *managed
 		return nil
 	})
 }
+
+// validateManagedControllerGrant checks typed authority in the handshake transaction.
+func validateManagedControllerGrant(ctx context.Context, tx *sql.Tx, j *managedJournal, state *managedSupervision, record managedScopeRecord) error {
+	scope := record.ScopeHandle
+	expected := "dev.getoro.factory." + cleanupObjectiveHash(j.admission) + ".controller." + scope.ID + "." + scope.Nonce
+	if scope.Kind != "controller" || scope.Backend != "launchd" || scope.Name != expected || !record.Deadline.Equal(j.admission.Deadline) {
+		return errors.New("controller scope differs from admitted identity")
+	}
+	if record.Phase == "granted" && record.PID != record.PGID {
+		return errors.New("controller grant requires its authenticated process leader")
+	}
+	if err := validateManagedControllerActivation(ctx, tx, j); err != nil {
+		return err
+	}
+	if err := activeManagedGeneration(state, scope.Generation, time.Now(), j.admission.Deadline); err != nil {
+		return err
+	}
+	if !managedIdentifier(state.SupervisorToken) {
+		return errors.New("controller requires current supervisor")
+	}
+	var reserved uint64
+	if err := tx.QueryRowContext(ctx, "SELECT generation FROM managed_reservations WHERE kind='supervisor' AND token=?", state.SupervisorToken).Scan(&reserved); err != nil || reserved == 0 || reserved > scope.Generation {
+		return errors.Join(errors.New("controller requires supervisor reservation"), err)
+	}
+	if err := tx.QueryRowContext(ctx, "SELECT generation FROM managed_reservations WHERE kind='controller' AND token=?", scope.ID).Scan(&reserved); err != nil || reserved != scope.Generation {
+		return errors.Join(errors.New("controller requires exact counted reservation"), err)
+	}
+	return requireNoManagedCleanup(ctx, tx)
+}
+
+func validateManagedControllerActivation(ctx context.Context, tx *sql.Tx, j *managedJournal) error {
+	activation, err := loadManagedActivation(ctx, tx, j.identity, j.admission.Reservation.StateRoot, j.admission.ObjectiveID)
+	if err != nil {
+		return err
+	}
+	if activation.Phase != "active" {
+		return errors.New("controller requires active runtime")
+	}
+	return verifyActivationEvent(ctx, tx, activation.Runtime)
+}
