@@ -4,6 +4,11 @@ Date: 2026-10-24. Status: implementation paused at the user's request.
 This is the durable entry point for a session returning after an extended break.
 Documentation preservation does not resume the implementation goal.
 
+**Update 2026-10-26:** The user explicitly resumed implementation. Continue from
+the [resumption checkpoint](2026-10-26-factory-resumption.md) and its linked fresh
+verification results. The original pause statements below are historical; no new
+pause or additional implementation approval was requested.
+
 ## Objective and working agreement
 
 Build a trustworthy, fully autonomous, self-healing software factory. Routine
