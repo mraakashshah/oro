@@ -135,6 +135,17 @@ executable paths or add a second spec decoder/hash. This helper does not activat
 anything, despite the reused internal verifier's name. Cover mismatch, corrupt
 identity, removed original executables and unchanged journal state.
 
+**Review correction:** comparing the existing reservation tuple alone is
+insufficient. A reservation issued for A could be used to admit B with the same
+ID and resource budget; then start A passed both disjoint checks. Carry the
+ledger's existing complete-input SpecSHA256 in HostReservation and verify it at
+core admission before executable-path canonicalization. Persist the digest
+through the exact manifest/journal identity and compare it on replay. The hash
+normalizes repository only, matching the issuer; never resolve vanished original
+program aliases on active replay. Old manifest reservations missing this digest
+must fail closed. This correction is required before public-start acceptance;
+the previous narrow verifier is not a substitute for the durable spec binding.
+
 The production disk probe walks only ENOENT upward to a canonical existing
 directory, creates nothing, and uses checked capacity/available-byte arithmetic
 from Statfs (Bavail, not Bfree). Check context around traversal and the syscall;

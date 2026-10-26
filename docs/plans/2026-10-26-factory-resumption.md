@@ -91,6 +91,24 @@ Cobra consumer of strict decoding, budget, admission, publication/activation and
 service registration. Do not run native services as part of this unit task. All
 integrated verification jobs listed above are terminal; there are no active root
 verification handles at this checkpoint.
+
+Public start Terra `f6cddc34` passed scoped root race with coverage (21.646 seconds
+package / 35.849 seconds harness, 13.1% CLI statements) and Linux amd64 test-binary
+compilation (22.518 seconds harness), but is **not accepted or integrated**.
+Astra found a real API-level identity gap: reserve spec A, admit spec B with the
+same reservation tuple, then start A can activate/register B. No SQL tampering
+is needed. The earlier reservation-only verifier design authenticated disjoint
+contracts. The RED regression is committed in `8ccc7ee3`; help copy follows in
+`cb73ffc9`, current public-start worker branch tip. That one regression is
+intentionally failing until the identity fix; do not report the branch as green.
+
+The architect's correction is to carry the ledger's existing complete-input
+SpecSHA256 in HostReservation, verify it against submitted spec before executable
+path canonicalization, and persist it in manifest/journal identity. Repository
+normalization must match the ledger; original program aliases may disappear on
+active replay. Historical missing digest fails closed, never backfilled from
+mutable inputs or normalized manifest. Exact core/issuer scope is being finalized;
+no production identity fix has been applied. Do not waive the cross-API case.
 Service-bootstrap uncertainty still needs a proven ownership/reconciliation
 mechanism. Candidate execution, independent acceptance, native qualification and
 real-model sustained delivery/self-healing trials remain unfinished. The full
