@@ -151,7 +151,7 @@ func assertFactoryBudgetHistoricalIdentity(t *testing.T, root string, spec facto
 		t.Fatalf("historical committed revision changed: %+v", state.ledger)
 	}
 	entry := state.ledger.Entries[0]
-	want := factory.HostReservation{ID: strings.Repeat("a", 32), StateRoot: root, ObjectiveID: spec.ID, Bytes: spec.Runtime.HostRequiredBytes}
+	want := factory.HostReservation{ID: strings.Repeat("a", 32), StateRoot: root, ObjectiveID: spec.ID, Bytes: spec.Runtime.HostRequiredBytes, SpecSHA256: factoryBudgetCompatibilitySpecHash(t, spec)}
 	if entry.reservation(root) != want || entry.SpecSHA256 != factoryBudgetCompatibilitySpecHash(t, spec) || entry.Released != released {
 		t.Fatalf("historical tuple/hash/phase is not exact: %+v", entry)
 	}

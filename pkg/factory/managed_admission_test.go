@@ -123,7 +123,16 @@ func managedAdmissionFixture(t *testing.T) (string, ManagedSpec, HostReservation
 		t.Fatal(err)
 	}
 	state := filepath.Join(root, "state")
-	reservation := HostReservation{ID: "reservation-1", StateRoot: state, ObjectiveID: spec.ID, Bytes: spec.Runtime.HostRequiredBytes}
+	limits, err := ManagedHostRetention(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.Runtime.HostRequiredBytes = max(spec.Runtime.HostRequiredBytes, limits.MinimumBytes)
+	_, digest, err := PrepareManagedSpecIdentity(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation := HostReservation{ID: "reservation-1", StateRoot: state, ObjectiveID: spec.ID, Bytes: spec.Runtime.HostRequiredBytes, SpecSHA256: digest}
 	return state, spec, reservation
 }
 
@@ -241,6 +250,7 @@ func testManagedAdmissionAliases(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	reservation = reservationForIntendedSpec(t, reservation, spec)
 	if _, err := AdmitManaged(t.Context(), aliasRoot, spec, reservation); err != nil {
 		t.Fatalf("safe aliases rejected: %v", err)
 	}
@@ -439,4 +449,14 @@ func testManagedAdmissionLock(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, spec.ID)); !os.IsNotExist(err) {
 		t.Fatalf("lock contender created objective: %v", err)
 	}
+}
+
+func reservationForIntendedSpec(t *testing.T, reservation HostReservation, spec ManagedSpec) HostReservation {
+	t.Helper()
+	_, digest, err := PrepareManagedSpecIdentity(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation.SpecSHA256 = digest
+	return reservation
 }

@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -79,21 +78,15 @@ func prepareFactoryBudgetSpec(spec *factory.ManagedSpec) (string, error) {
 	if spec.Runtime.HostRequiredBytes < limits.MinimumBytes {
 		return "", fmt.Errorf("host required bytes must cover retained-byte bound %d", limits.MinimumBytes)
 	}
-	repository, err := filepath.EvalSymlinks(spec.Repository)
+	prepared, digest, err := factory.PrepareManagedSpecIdentity(*spec)
 	if err != nil {
-		return "", fmt.Errorf("resolve budget repository: %w", err)
+		return "", fmt.Errorf("prepare host budget specification: %w", err)
 	}
-	spec.Repository = repository
-	// Revalidate containment after canonicalization, before encoding the bounded
-	// complete identity. A path alias cannot create a second logical reservation.
-	if _, err := factory.ManagedHostRetention(*spec); err != nil {
+	if _, err := factory.ManagedHostRetention(prepared); err != nil {
 		return "", fmt.Errorf("validate canonical host retention: %w", err)
 	}
-	data, err := json.Marshal(spec)
-	if err != nil {
-		return "", fmt.Errorf("encode host budget specification: %w", err)
-	}
-	return factoryBudgetHash(data), nil
+	*spec = prepared
+	return digest, nil
 }
 
 func checkFactoryBudget(ctx context.Context, access *factoryBudgetAccess, ledger factoryBudgetSnapshot, spec factory.ManagedSpec, probe storage.DiskProbe) error {

@@ -38,7 +38,7 @@ func journalFixture(t *testing.T) (string, managedJournalAdmission, *factoryStor
 		ObjectiveID: spec.ID, ManifestHash: strings.Repeat("a", 64), Deadline: deadline,
 		HardStop: deadline.Add(time.Duration(spec.Recovery.CleanupTimeoutSeconds+spec.Recovery.ReconciliationSeconds) * time.Second),
 		Recovery: spec.Recovery, Runtime: spec.Runtime,
-		Reservation: HostReservation{ID: "reservation1", StateRoot: root, ObjectiveID: spec.ID, Bytes: spec.Runtime.HostRequiredBytes},
+		Reservation: HostReservation{ID: "reservation1", StateRoot: root, ObjectiveID: spec.ID, Bytes: spec.Runtime.HostRequiredBytes, SpecSHA256: strings.Repeat("a", 64)},
 	}
 	dir := filepath.Join(root, a.ObjectiveID)
 	if err := os.Mkdir(dir, 0o700); err != nil {

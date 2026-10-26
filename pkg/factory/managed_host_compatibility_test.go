@@ -69,6 +69,7 @@ func testManagedHostReservationCompatibility(t *testing.T, reserved, current int
 	assertManagedHostCompatibilityUnchanged(t, root, spec.ID, journal, before)
 	if reserved < current {
 		spec.Runtime.HostRequiredBytes, reservation.Bytes = current, current
+		reservation = reservationForIntendedSpec(t, reservation, spec)
 		if _, err := AdmitManaged(t.Context(), root, spec, reservation); err == nil || !strings.Contains(err.Error(), "changed since admission") {
 			t.Fatalf("larger incoming reservation amended historical admission: %v", err)
 		}
@@ -84,6 +85,7 @@ func managedHostCompatibilityFixture(t *testing.T, reserved int64) (string, Mana
 	spec.Repository, spec.TargetBranch = paths.Repository, paths.TargetBranch
 	spec.Runtime.ModelExecutable, spec.Runtime.GitExecutable = paths.Runtime.ModelExecutable, paths.Runtime.GitExecutable
 	spec.Runtime.HostRequiredBytes, reservation.Bytes = reserved, reserved
+	reservation = reservationForIntendedSpec(t, reservation, spec)
 	// Keep the actual source tree inside this one-entry historical policy too.
 	gitTestRun(t, spec.Repository, "rm", ".gitignore")
 	gitTestRun(t, spec.Repository, "commit", "-m", "one-entry compatibility source")

@@ -117,6 +117,7 @@ type HostReservation struct {
 	StateRoot   string `json:"state_root"`
 	ObjectiveID string `json:"objective_id"`
 	Bytes       int64  `json:"bytes"`
+	SpecSHA256  string `json:"spec_sha256"`
 }
 
 // ScopeHandle identifies one journaled execution scope and ownership epoch.
@@ -591,7 +592,7 @@ func managedPolicyHash(spec ManagedSpec, executableDigests map[string]string) (s
 
 func validateHostReservation(reservation HostReservation, spec ManagedSpec, stateRoot string) error {
 	if !managedIdentifier(reservation.ID) || !managedAbsolutePath(stateRoot) || reservation.StateRoot != stateRoot ||
-		reservation.ObjectiveID != spec.ID || reservation.Bytes <= 0 || reservation.Bytes != spec.Runtime.HostRequiredBytes {
+		reservation.ObjectiveID != spec.ID || reservation.Bytes <= 0 || reservation.Bytes != spec.Runtime.HostRequiredBytes || !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(reservation.SpecSHA256) {
 		return errors.New("host reservation does not match admitted root, objective and byte budget")
 	}
 	return nil
@@ -610,4 +611,24 @@ func VerifyManagedHostReservation(ctx context.Context, stateDir, id string, want
 		return errors.New("managed host reservation differs from committed admission")
 	}
 	return nil
+}
+
+// PrepareManagedSpecIdentity canonicalizes the repository and hashes the complete original managed specification.
+func PrepareManagedSpecIdentity(spec ManagedSpec) (ManagedSpec, string, error) {
+	if err := validateManagedSpec(spec); err != nil {
+		return spec, "", fmt.Errorf("validate managed specification: %w", err)
+	}
+	repository, err := filepath.EvalSymlinks(spec.Repository)
+	if err != nil {
+		return spec, "", fmt.Errorf("resolve budget repository: %w", err)
+	}
+	spec.Repository = repository
+	if err := validateManagedSpec(spec); err != nil {
+		return spec, "", fmt.Errorf("validate canonical specification: %w", err)
+	}
+	data, err := json.Marshal(&spec)
+	if err != nil {
+		return spec, "", fmt.Errorf("encode host budget specification: %w", err)
+	}
+	return spec, contentHash(data), nil
 }

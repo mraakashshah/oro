@@ -516,7 +516,7 @@ func mutateManagedLeaf(value reflect.Value, path []string) {
 func testManagedReservationIdentity(t *testing.T) {
 	t.Helper()
 	spec := managedContractFixture()
-	reservation := HostReservation{ID: "reservation-123", StateRoot: "/private/tmp/state", ObjectiveID: spec.ID, Bytes: spec.Runtime.HostRequiredBytes}
+	reservation := HostReservation{ID: "reservation-123", StateRoot: "/private/tmp/state", ObjectiveID: spec.ID, Bytes: spec.Runtime.HostRequiredBytes, SpecSHA256: strings.Repeat("a", 64)}
 	if err := validateHostReservation(reservation, spec, reservation.StateRoot); err != nil {
 		t.Fatal(err)
 	}
@@ -524,6 +524,7 @@ func testManagedReservationIdentity(t *testing.T) {
 		func(r *HostReservation) { r.ID = "" }, func(r *HostReservation) { r.ID = "../other" },
 		func(r *HostReservation) { r.ObjectiveID = "other" }, func(r *HostReservation) { r.StateRoot += "/other" },
 		func(r *HostReservation) { r.Bytes-- }, func(r *HostReservation) { r.Bytes = -1 },
+		func(r *HostReservation) { r.SpecSHA256 = "" }, func(r *HostReservation) { r.SpecSHA256 = strings.Repeat("A", 64) },
 	} {
 		changed := reservation
 		mutate(&changed)

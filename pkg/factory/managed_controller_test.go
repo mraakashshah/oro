@@ -23,6 +23,7 @@ func controllerFixtureWithLimit(t *testing.T, limit int) (*managedJournal, uint6
 	root, spec, reservation := managedAdmissionFixture(t)
 	if limit > 0 {
 		spec.Recovery.MaxControllerStarts = limit
+		reservation = reservationForIntendedSpec(t, reservation, spec)
 	}
 	if _, err := AdmitManaged(t.Context(), root, spec, reservation); err != nil {
 		t.Fatal(err)
@@ -187,6 +188,7 @@ func TestManagedControllerReservation(t *testing.T) {
 		root, spec, reservation := managedAdmissionFixture(t)
 		spec.TimeoutSeconds = 2
 		spec.StepTimeoutSeconds = 1
+		reservation = reservationForIntendedSpec(t, reservation, spec)
 		if _, err := AdmitManaged(t.Context(), root, spec, reservation); err != nil {
 			t.Fatal(err)
 		}

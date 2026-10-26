@@ -52,7 +52,11 @@ func TestFactoryRuntimePublication(t *testing.T) {
 		t.Fatal(err)
 	}
 	spec.Runtime.ModelExecutable = model
-	reservation := factory.HostReservation{ID: "reservation-1", StateRoot: root, ObjectiveID: spec.ID, Bytes: spec.Runtime.HostRequiredBytes}
+	_, digest, err := factory.PrepareManagedSpecIdentity(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation := factory.HostReservation{ID: "reservation-1", StateRoot: root, ObjectiveID: spec.ID, Bytes: spec.Runtime.HostRequiredBytes, SpecSHA256: digest}
 	if _, err := factory.AdmitManaged(t.Context(), root, spec, reservation); err != nil {
 		t.Fatal(err)
 	}

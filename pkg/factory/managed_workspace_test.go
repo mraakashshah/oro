@@ -228,6 +228,7 @@ func testWorkspaceReady(t *testing.T) {
 	root, spec, reservation := managedAdmissionFixture(t)
 	spec.Runtime.HostRequiredBytes = 1 << 40
 	reservation.Bytes = spec.Runtime.HostRequiredBytes
+	reservation = reservationForIntendedSpec(t, reservation, spec)
 	if _, err := AdmitManaged(t.Context(), root, spec, reservation); err != nil {
 		t.Fatal(err)
 	}

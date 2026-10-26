@@ -467,6 +467,7 @@ func testManagedActivationExpired(t *testing.T) {
 	root, spec, reservation := managedAdmissionFixture(t)
 	spec.TimeoutSeconds = 2
 	spec.StepTimeoutSeconds = 1
+	reservation = reservationForIntendedSpec(t, reservation, spec)
 	if _, err := AdmitManaged(t.Context(), root, spec, reservation); err != nil {
 		t.Fatal(err)
 	}
@@ -477,6 +478,7 @@ func testManagedActivationExpired(t *testing.T) {
 	pendingRoot, pendingSpec, pendingReservation := managedAdmissionFixture(t)
 	pendingSpec.TimeoutSeconds = 2
 	pendingSpec.StepTimeoutSeconds = 1
+	pendingReservation = reservationForIntendedSpec(t, pendingReservation, pendingSpec)
 	if _, err := AdmitManaged(t.Context(), pendingRoot, pendingSpec, pendingReservation); err != nil {
 		t.Fatal(err)
 	}

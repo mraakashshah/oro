@@ -45,6 +45,7 @@ func TestManagedControllerWorkerCheckout(t *testing.T) {
 	}
 	spec.Runtime.HostRequiredBytes = 1 << 40
 	reservation.Bytes = spec.Runtime.HostRequiredBytes
+	reservation = reservationForIntendedSpec(t, reservation, spec)
 	if _, err := AdmitManaged(t.Context(), root, spec, reservation); err != nil {
 		t.Fatal(err)
 	}

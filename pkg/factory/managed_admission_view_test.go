@@ -38,6 +38,7 @@ func testManagedAdmissionViewIdentity(t *testing.T) {
 			if strings.Contains(branch, "/") {
 				spec.Runtime.ImageDigest = "registry.example/factory@sha256:" + strings.Repeat("b", 64)
 			}
+			reservation = reservationForIntendedSpec(t, reservation, spec)
 			if _, err := AdmitManaged(t.Context(), root, spec, reservation); err != nil {
 				t.Fatal(err)
 			}
@@ -142,6 +143,7 @@ func testManagedAdmissionViewFrozen(t *testing.T) {
 		t.Fatal(err)
 	}
 	gitTestWrite(t, specPath, string(encoded), 0o600)
+	reservation = reservationForIntendedSpec(t, reservation, spec)
 	if _, err := AdmitManaged(t.Context(), root, spec, reservation); err != nil {
 		t.Fatal(err)
 	}

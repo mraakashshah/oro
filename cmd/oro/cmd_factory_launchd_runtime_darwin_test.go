@@ -457,7 +457,7 @@ CREATE TABLE managed_reservations(kind TEXT NOT NULL,token TEXT NOT NULL,generat
 	cfg.HardStop = deadline.Add(2 * time.Second)
 	resources := factory.RuntimePolicy{MemoryBytes: 1, SourceBytes: 1, ScratchBytes: 1, HostRequiredBytes: 1, HostReserveBytes: 1, CPUs: 1, PIDs: 1, MaxFiles: 1, SourceInodes: 1, ScratchInodes: 1, MaxModelCalls: 1, MaxModelTurns: 1, MaxToolCalls: 1, MaxHostInvocations: 100}
 	recovery := factory.RecoveryPolicy{MaxControllerStarts: 5, MaxSupervisorStarts: 5, MaxReconciliationInvocations: 5, MaxCleanupInvocations: 5, RestartDelaySeconds: 1, CleanupTimeoutSeconds: 1, ReconciliationSeconds: 1}
-	admission := map[string]any{"ObjectiveID": cfg.ObjectiveID, "ManifestHash": strings.Repeat("a", 64), "Deadline": deadline, "HardStop": cfg.HardStop, "Recovery": recovery, "Runtime": resources, "Reservation": factory.HostReservation{ID: "scope-proof", StateRoot: cfg.StateRoot, ObjectiveID: cfg.ObjectiveID, Bytes: 1}}
+	admission := map[string]any{"ObjectiveID": cfg.ObjectiveID, "ManifestHash": strings.Repeat("a", 64), "Deadline": deadline, "HardStop": cfg.HardStop, "Recovery": recovery, "Runtime": resources, "Reservation": factory.HostReservation{ID: "scope-proof", StateRoot: cfg.StateRoot, ObjectiveID: cfg.ObjectiveID, Bytes: 1, SpecSHA256: strings.Repeat("a", 64)}}
 	body, err := json.Marshal(admission)
 	if err != nil {
 		t.Fatal(err)

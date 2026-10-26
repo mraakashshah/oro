@@ -294,7 +294,11 @@ func testFactoryManagedCommandsCountedSupervisor(t *testing.T, mode string) {
 	}
 	spec.Runtime.HostRequiredBytes = limits.MinimumBytes
 	root := filepath.Join(base, "state")
-	reservation := factory.HostReservation{ID: "fixture-reservation", StateRoot: root, ObjectiveID: spec.ID, Bytes: spec.Runtime.HostRequiredBytes}
+	_, digest, err := factory.PrepareManagedSpecIdentity(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation := factory.HostReservation{ID: "fixture-reservation", StateRoot: root, ObjectiveID: spec.ID, Bytes: spec.Runtime.HostRequiredBytes, SpecSHA256: digest}
 	if _, err := factory.AdmitManaged(t.Context(), root, spec, reservation); err != nil {
 		t.Fatal(err)
 	}

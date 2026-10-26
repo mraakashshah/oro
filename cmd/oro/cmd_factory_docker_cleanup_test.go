@@ -136,7 +136,7 @@ CREATE TABLE managed_cleanup_permits(scope_id TEXT PRIMARY KEY,body BLOB NOT NUL
 	}
 	resources := factory.RuntimePolicy{MemoryBytes: 1, SourceBytes: 1, ScratchBytes: 1, HostRequiredBytes: 1, HostReserveBytes: 1, CPUs: 1, PIDs: 1, MaxFiles: 1, SourceInodes: 1, ScratchInodes: 1, MaxModelCalls: 1, MaxModelTurns: 1, MaxToolCalls: 1, MaxHostInvocations: 100, DockerContext: c.DockerContext}
 	recovery := factory.RecoveryPolicy{MaxControllerStarts: 5, MaxSupervisorStarts: 5, MaxReconciliationInvocations: 5, MaxCleanupInvocations: 5, RestartDelaySeconds: 1, CleanupTimeoutSeconds: 60, ReconciliationSeconds: 1}
-	admission := map[string]any{"ObjectiveID": c.ObjectiveID, "ManifestHash": c.PolicyHash, "Deadline": c.Deadline, "HardStop": c.HardStop, "Recovery": recovery, "Runtime": resources, "Reservation": factory.HostReservation{ID: "cleanup-proof", StateRoot: c.StateRoot, ObjectiveID: c.ObjectiveID, Bytes: 1}}
+	admission := map[string]any{"ObjectiveID": c.ObjectiveID, "ManifestHash": c.PolicyHash, "Deadline": c.Deadline, "HardStop": c.HardStop, "Recovery": recovery, "Runtime": resources, "Reservation": factory.HostReservation{ID: "cleanup-proof", StateRoot: c.StateRoot, ObjectiveID: c.ObjectiveID, Bytes: 1, SpecSHA256: strings.Repeat("a", 64)}}
 	factoryCleanupExecJSON(t, db, "INSERT INTO managed_admissions VALUES(1,?)", admission)
 	factoryCleanupExecJSON(t, db, "INSERT INTO managed_supervision VALUES(1,1,?)", map[string]any{"Revision": 1, "Generation": 2, "SupervisorToken": "owner", "DesiredState": "stopping"})
 	for _, scope := range []factory.ScopeHandle{f.permit.Target, f.permit.Scope} {

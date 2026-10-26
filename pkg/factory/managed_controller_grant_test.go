@@ -286,6 +286,7 @@ func TestManagedControllerGrant(t *testing.T) {
 		root, spec, reservation := managedAdmissionFixture(t)
 		spec.TimeoutSeconds = 2
 		spec.StepTimeoutSeconds = 1
+		reservation = reservationForIntendedSpec(t, reservation, spec)
 		if _, err := AdmitManaged(t.Context(), root, spec, reservation); err != nil {
 			t.Fatal(err)
 		}

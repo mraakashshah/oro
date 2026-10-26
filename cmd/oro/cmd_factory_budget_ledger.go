@@ -47,7 +47,7 @@ type factoryBudgetEntry struct {
 }
 
 func (entry factoryBudgetEntry) reservation(root string) factory.HostReservation {
-	return factory.HostReservation{ID: entry.ID, StateRoot: root, ObjectiveID: entry.ObjectiveID, Bytes: entry.Bytes}
+	return factory.HostReservation{ID: entry.ID, StateRoot: root, ObjectiveID: entry.ObjectiveID, Bytes: entry.Bytes, SpecSHA256: entry.SpecSHA256}
 }
 
 func (ledger factoryBudgetSnapshot) objective(id string) (factoryBudgetEntry, bool) {

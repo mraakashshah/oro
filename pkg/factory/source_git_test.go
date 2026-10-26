@@ -655,6 +655,7 @@ func sourceGitFixture(t *testing.T, setup func(string), change func(*ManagedSpec
 	if setup != nil {
 		setup(spec.Repository)
 	}
+	reservation = reservationForIntendedSpec(t, reservation, spec)
 	if _, err := AdmitManaged(t.Context(), root, spec, reservation); err != nil {
 		t.Fatal(err)
 	}

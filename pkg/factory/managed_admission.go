@@ -55,6 +55,14 @@ func admitManaged(ctx context.Context, stateDir string, spec ManagedSpec, reserv
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	prepared, digest, err := PrepareManagedSpecIdentity(spec)
+	if err != nil {
+		return Status{}, err
+	}
+	if reservation.SpecSHA256 != digest {
+		return Status{}, errors.New("host reservation specification identity mismatch")
+	}
+	spec = prepared
 	root, spec, err := canonicalManagedPaths(stateDir, spec)
 	if err != nil {
 		return Status{}, err

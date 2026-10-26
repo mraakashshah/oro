@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -33,6 +35,8 @@ func TestFactoryStart(t *testing.T) {
 	t.Run("active deadline", factoryStartActiveDeadlineTest)
 	t.Run("pending", factoryStartPendingTest)
 	t.Run("reservation mismatch", factoryStartReservationMismatchTest)
+	t.Run("spec identity", factoryStartSpecIdentityTest)
+	t.Run("historical digest", factoryStartHistoricalDigestTest)
 	t.Run("spec mismatch same reservation", factoryStartSpecMismatchReservationTest)
 	t.Run("strict", factoryStartStrictTest)
 	t.Run("budget", factoryStartBudgetTest)
@@ -140,6 +144,10 @@ func factoryStartActualTest(t *testing.T) {
 	}
 	if !strings.Contains(output, `"registration":"registered"`) || calls != 1 {
 		t.Fatalf("output %s calls %d", output, calls)
+	}
+	deps.probe = func(context.Context, string) (storage.DiskUsage, error) {
+		t.Error("active replay probed capacity")
+		return storage.DiskUsage{}, errors.New("unexpected probe")
 	}
 	refBefore, err := factory.ReadManagedRuntimeReference(t.Context(), f.root, f.spec.ID)
 	if err != nil {
@@ -460,6 +468,17 @@ func factoryStartSpecMismatchReservationTest(t *testing.T) {
 	}
 	other := f.spec
 	other.Objective = "different objective"
+	if _, err := factory.AdmitManaged(t.Context(), f.root, other, reservation); err == nil {
+		t.Fatal("A reservation admitted B")
+	}
+	if _, err := os.Lstat(filepath.Join(f.root, ".managed", f.spec.ID+".json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("mismatched admission wrote marker: %v", err)
+	}
+	_, digest, err := factory.PrepareManagedSpecIdentity(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation.SpecSHA256 = digest
 	if _, err := factory.AdmitManaged(t.Context(), f.root, other, reservation); err != nil {
 		t.Fatal(err)
 	}
@@ -468,4 +487,131 @@ func factoryStartSpecMismatchReservationTest(t *testing.T) {
 	if _, err := runFactoryStartFixture(t, f, deps); err == nil || calls != 0 {
 		t.Fatalf("different admitted spec accepted: %v calls %d", err, calls)
 	}
+}
+
+func factoryStartSpecIdentityTest(t *testing.T) {
+	f := newFactoryStartFixture(t)
+	_, original, err := factory.PrepareManagedSpecIdentity(f.spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(filepath.Dir(f.root), "repo-alias")
+	if err := os.Symlink(f.spec.Repository, alias); err != nil {
+		t.Fatal(err)
+	}
+	other := f.spec
+	other.Repository = alias
+	_, same, err := factory.PrepareManagedSpecIdentity(other)
+	if err != nil || same != original {
+		t.Fatalf("repository alias identity %s: %v", same, err)
+	}
+	other = f.spec
+	other.Runtime.ModelExecutable += "-different"
+	_, changed, err := factory.PrepareManagedSpecIdentity(other)
+	if err != nil || changed == original {
+		t.Fatalf("program path identity %s: %v", changed, err)
+	}
+}
+
+func factoryStartHistoricalDigestTest(t *testing.T) {
+	for _, kind := range []string{"marker-missing", "marker-malformed", "journal-missing", "journal-malformed"} {
+		t.Run(kind, func(t *testing.T) {
+			f := newFactoryStartFixture(t)
+			calls := 0
+			deps := factoryStartDependencies{probe: factoryBudgetProbe(math.MaxInt64), executable: func() (string, error) { return f.oro, nil }, supported: func() error { return nil }, bootstrap: func(context.Context, string) error { calls++; return nil }}
+			if _, err := runFactoryStartFixture(t, f, deps); err != nil {
+				t.Fatal(err)
+			}
+			marker := filepath.Join(f.root, ".managed", f.spec.ID+".json")
+			dbPath := filepath.Join(f.root, f.spec.ID, "state.db")
+			if strings.HasPrefix(kind, "marker") {
+				mutateFactoryStartMarker(t, marker, kind)
+			} else {
+				mutateFactoryStartJournal(t, dbPath, kind)
+			}
+			before := readFactoryStartDigestArtifact(t, marker, dbPath, kind)
+			if _, err := factory.ReadManagedAdmission(t.Context(), f.root, f.spec.ID); err == nil {
+				t.Fatal("old or malformed admission accepted")
+			}
+			if _, err := factory.ReadManagedRuntimeReference(t.Context(), f.root, f.spec.ID); err == nil {
+				t.Fatal("old or malformed runtime reference accepted")
+			}
+			after := readFactoryStartDigestArtifact(t, marker, dbPath, kind)
+			if !bytes.Equal(before, after) {
+				t.Fatal("historical authority was changed")
+			}
+			if calls != 1 {
+				t.Fatalf("unexpected bootstrap: %d", calls)
+			}
+		})
+	}
+}
+
+func mutateFactoryStartDigest(t *testing.T, data []byte, kind string) []byte {
+	t.Helper()
+	pattern := regexp.MustCompile(`,"spec_sha256":"[0-9a-f]{64}"`)
+	if len(pattern.FindAll(data, -1)) != 1 {
+		t.Fatal("missing original reservation digest")
+	}
+	replacement := []byte(nil)
+	if strings.HasSuffix(kind, "malformed") {
+		replacement = []byte(`,"spec_sha256":"invalid"`)
+	}
+	return pattern.ReplaceAll(data, replacement)
+}
+
+func mutateFactoryStartMarker(t *testing.T, path, kind string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = mutateFactoryStartDigest(t, data, kind)
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o400); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mutateFactoryStartJournal(t *testing.T, path, kind string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var data []byte
+	if err := db.QueryRowContext(t.Context(), "SELECT body FROM managed_admissions WHERE id=1").Scan(&data); err != nil {
+		t.Fatal(err)
+	}
+	data = mutateFactoryStartDigest(t, data, kind)
+	if _, err := db.ExecContext(t.Context(), "UPDATE managed_admissions SET body=? WHERE id=1", data); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readFactoryStartDigestArtifact(t *testing.T, marker, path, kind string) []byte {
+	t.Helper()
+	if strings.HasPrefix(kind, "marker") {
+		data, err := os.ReadFile(marker)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var data []byte
+	if err := db.QueryRowContext(t.Context(), "SELECT body FROM managed_admissions WHERE id=1").Scan(&data); err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
