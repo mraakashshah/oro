@@ -579,3 +579,38 @@ func TestSuperviseRetiresLaterLaunchdAfterFailure(t *testing.T) {
 		t.Fatalf("later scope=%+v error=%v retired=%v", obs, e, b.retired)
 	}
 }
+
+func TestSuperviseCancellationCause(t *testing.T) {
+	root, spec, reservation := managedAdmissionFixture(t)
+	if _, err := AdmitManaged(t.Context(), root, spec, reservation); err != nil {
+		t.Fatal(err)
+	}
+	ref := ManagedRuntimeReference{Path: filepath.Join(root, spec.ID, "runtime", "runtime.json"), SHA256: strings.Repeat("a", 64)}
+	if err := ActivateManaged(t.Context(), root, spec.ID, ref); err != nil {
+		t.Fatal(err)
+	}
+	j, err := openManagedJournal(t.Context(), root, spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	operation := errors.New("recognizable start failure")
+	b := &supervisorTestBackend{j: j, acknowledge: true, onStart: func(context.Context, ScopeHandle) error { cancel(); return operation }}
+	_, err = Supervise(ctx, root, spec.ID, b)
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, operation) {
+		t.Fatalf("missing cancellation or operation cause: %v", err)
+	}
+	if b.starts != 1 || len(b.retired) != 1 {
+		t.Fatalf("starts=%d retired=%v", b.starts, b.retired)
+	}
+	scopes, err := j.scopes(t.Context())
+	if err != nil || len(scopes) != 1 || scopes[0].Phase != "quiescent" {
+		t.Fatalf("scopes=%+v err=%v", scopes, err)
+	}
+	state, err := j.supervision(t.Context())
+	if err != nil || state.DesiredState != "stopped" {
+		t.Fatalf("state=%+v err=%v", state, err)
+	}
+}

@@ -89,6 +89,9 @@ func (r *supervisorRun) execute(ctx context.Context) (Status, error) {
 	work, cancel := context.WithDeadline(ctx, r.j.admission.Deadline)
 	defer cancel()
 	err = r.startAndMonitor(work, state, supervision)
+	if err != nil {
+		err = errors.Join(err, work.Err())
+	}
 	return r.finish(ctx, err)
 }
 
