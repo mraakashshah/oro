@@ -96,8 +96,18 @@ before closing authority and has an independent request deadline. Normal runtime
 retirement assertions remain before fallback teardown. This manual maintenance
 is not an autonomous recovery trial.
 
-Ordinary host retirement has a separate unresolved deadline/serialization task,
-`oro-mf-host-retirement-bound`; the controller-wrapper fix does not resolve it.
+Ordinary host retirement is now implemented in `77497aeb` / `6e5c79f6`
+(`oro-mf-host-retirement-bound`). Review found and corrected two initial gaps:
+Invoke stripped the original caller deadline, and unregister could remove an
+active retiring call before quiescence. The final runtime preserves the original
+caller bound, permits cleanup after cancellation, and retains retiring ownership
+until positive quiescence. Registration cannot reopen a retired scope. Astra's
+final review found no blockers. Root's independent race run at Terra `f3aa5dee`
+passed three repetitions of retirement/host-scope tests and ordinary recording
+GO/PUBLISHED/result/retirement (3.772 seconds package / 16.694 seconds harness).
+Evidence prefix is `host-retirement-reviewed-race`. Integrated command checks at
+`6e5c79f6` passed in 41.858 seconds harness, evidence prefix
+`host-retirement-integrated-race`; the job is terminal. No native launchd was invoked.
 Public start/service registration, uncertain-bootstrap ownership reconciliation,
 candidate execution, independent acceptance, native qualification and sustained
 real-model unattended delivery/recovery remain outstanding.

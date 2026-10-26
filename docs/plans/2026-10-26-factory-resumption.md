@@ -50,11 +50,18 @@ registration. Active replay must not reacquire the supervisor's lifetime lock.
 The [CLI contract](2026-10-26-managed-cli-contract.md) records the resolved order.
 
 The accepted coverage worker is complete in `.worktrees/factory-command-coverage`.
-Terra implemented ordinary host retirement in `.worktrees/factory-host-retirement`, task
-`oro-mf-host-retirement-bound`. Terra has started `oro-mf-service-state` in
+Ordinary host retirement is reviewed and integrated in `77497aeb` / `6e5c79f6`,
+task `oro-mf-host-retirement-bound`; root's independent repeated race passed,
+including ordinary GO/PUBLISHED. Integrated race prefix
+`host-retirement-integrated-race` passed in 41.858 seconds harness and is terminal.
+Terra has started `oro-mf-service-state` in
 `.worktrees/factory-service-state`; its sequential consumers are
 `oro-mf-service-register` and `oro-mf-start-command`. Astra's decomposition is
 recorded in the CLI contract and the tracker. No native services are being run.
+Initial service-state `25210323` is not accepted or integrated: review found a
+missing factory argv component, deadline-crossing publication, and missing
+recovered-publication durability barriers. Terra is correcting all three and
+adding independent plist, alias and corrupt-stage regressions before acceptance.
 Service-bootstrap uncertainty still needs a proven ownership/reconciliation
 mechanism. Candidate execution, independent acceptance, native qualification and
 real-model sustained delivery/self-healing trials remain unfinished. The full
