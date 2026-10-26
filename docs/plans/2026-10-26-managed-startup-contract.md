@@ -6,6 +6,57 @@ Decision: use three sequential, compiling contracts below as ONE integration mil
 
 Existing reuse: managed_store.go beginGeneration/advanceEpoch, reserveManagedToken, insertScope, RecordHello/Granted/Observe; managed_admission.go committed manifest and snapshot; managed_admission_view.go immutable view; cmd_factory_budget.go persistent allocation; cmd_factory_runtime_config*.go verified runtime format/reader; cmd_factory_docker_storage_config.go newFactoryDockerConfigReader; launchd host socket peer-authentication, strict frames, exact-label retirement; raw source_git export; managedDockerVolumes.prepareSource. Preserve the controller/backend seam and legacy Run.
 
+## First executable leaf: activation persistence
+
+The first part of contract 1 is scoped to new `managed_activation.go`, existing
+`managed_store.go` and `managed_admission.go`, and new `managed_activation_test.go`.
+It does not yet enforce controller grants, publish runtime artifacts, register
+services, or complete initialization abort/release. The typed-controller leaf
+will consume this state, followed by the real supervisor and CLI consumers.
+
+Use `ManagedRuntimeReference` with `Path`/`SHA256` strings and explicit JSON fields
+`path`/`sha256`. The complete activation record has version, admission SHA256,
+phase, and runtime reference with no omitted fields; cap the whole canonical JSON
+at 2048 bytes. Pending requires a zero reference; active requires exact
+`root/id/runtime/runtime.json` and a lowercase 64-character digest. Load bounded
+bytes plus stored length, compare canonical encoding, and reject malformed,
+unknown/duplicate/noncanonical fields and changed identity.
+
+Create the one-row `managed_activation` table through the existing private
+fresh-admission/history schema guard. Insert pending inside the same transaction
+as admission and initial supervision, hashing the exact canonical admission
+bytes. Repeated admission validates retained activation without resetting it;
+both admission replay paths must reject missing/corrupt activation history.
+Ordinary `ReadManagedAdmission` remains its narrower existing metadata reader.
+
+`ActivateManaged` verifies canonical root/id, frozen manifest and committed
+admission, then uses one existing `j.mutate` transaction. Pending activation
+requires a live original work deadline, pristine supervision (revision 1,
+generation 0, running, zero token/reason/next-start), the original pending
+snapshot (revision 1, attempts 0, no work/base/candidate/feedback/reason/evidence),
+and zero rows in every execution reservation/scope/event/cleanup/Docker intent,
+keeper and source table. Retired rows still count; missing tables deny.
+It writes active identity and one ordinary event, without tokens, scopes,
+deadline changes or delivery-snapshot changes.
+
+Identical active replay is read-only even after expiry, execution or stopping;
+it confirms historical identity and grants no new startup permission. A changed
+reference fails. The reader returns only valid active identity, including after
+expiry/stop; pending is not activated. Neither API repairs missing state.
+The future trusted CLI publisher verifies the runtime bytes before activation;
+this API binds the immutable reference rather than parsing the runtime bundle.
+
+Keep the 64 MiB database cap, 256 MiB storage allowance and existing event ceiling
+unchanged. Pending adds no separate event; activation consumes one. Failed
+encoding, event exhaustion, capacity or commit must roll back atomically. Tests
+must use real admission for the public APIs, and cover replay, original bounds,
+history rejection, corruption/missing state, concurrency and rollback. Start
+with a compiling behavioral RED proving fresh admission lacks activation
+persistence; do not label a missing-symbol compiler error a behavioral result.
+
+The new public APIs will temporarily lack CLI callers. Record that fact rather
+than adding dummy references or claiming integrated startup.
+
 ## Contract 1 — persist activation and counted controller intent
 
 New pkg/factory/managed_startup.go; minimal DDL in managed_store.go; startup checks in RecordHello/Granted in managed_store.go. Tests: new managed_startup_test.go. The eventual actual consumers are Supervise and RunManagedController in contract 2; CLI publication in contract 3. Do not close this as integrated before contract 3.
