@@ -67,10 +67,17 @@ base `51af5307`. The next actual consumer is `oro-mf-start-command`. Preserve th
 accepted service-state worker worktree for provenance. Astra's decomposition is
 recorded in the CLI contract and tracker. No native services are being run.
 
-Fresh integrated jobs at `51af5307` are live: `service-state-integrated-race`
-session `30713` and `service-state-integrated-gate` session `4704`. Evidence is in
-the same private directory. Recover exact terminal result files before rerunning;
-only documentation changes while these checks run.
+Integrated jobs at `51af5307` are terminal: `service-state-integrated-race`
+passed in 117.967 seconds package / 130.401 seconds harness, 25.1% CLI statements.
+`service-state-integrated-gate` failed in 190.617 seconds, fifteen checks passed
+and only three dead exports failed (AdmitManaged, ActivateManaged and
+DecodeDockerCleanupResult). Formatting, lint and NilAway passed; later runtime
+qualification does not follow. Evidence is in the same private directory.
+
+Registration `cac818ac` is not integrated. Root's scoped race with coverage passed
+(26.244 seconds harness), but Astra found held lock validation follows aliases in
+intermediate directories and does not recheck their private modes. Terra is
+correcting this with post-acquisition path-mutation regressions before acceptance.
 Service-bootstrap uncertainty still needs a proven ownership/reconciliation
 mechanism. Candidate execution, independent acceptance, native qualification and
 real-model sustained delivery/self-healing trials remain unfinished. The full

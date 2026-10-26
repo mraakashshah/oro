@@ -156,3 +156,37 @@ Cover changed digest, forged peer, revoked GO, lost bootstrap acknowledgment,
 concurrent starts, low disk, publication crash and retained reservations. Then
 perform separately enabled native Darwin launchd/Docker qualification; recording
 tests do not qualify native behavior. No native action was run by this proposal.
+
+## Production execution after public start
+
+Astra traced the next real failure point to managedDeliveryBackend.execute,
+called by controller.attempt after saving the ready workspace. No restricted
+model/MCP execution or managed acceptance implementation exists yet. Do not
+replace the unavailable result with the legacy worker or a shell in the keeper.
+The engineer provider must support the user's Terra role; historical Claude-only
+adapter filenames are design history, not a decision to use Claude for engineering.
+
+The proposed next pair of leaves is a durable candidate-container intent and its
+actual worker-stage consumer. Bind the exact granted owner, attempt/workspace/base,
+runtime reference, original worker deadline, container and host handles, dispatch
+phase, complete ID and lifetime identity. Derive resources/labels from admission.
+Use a separate container namespace with admitted source volume and bounded scratch,
+not the keeper. Existing READY supports container scopes, but core must verify
+exact admitted mounts/resources/image/labels/guard lifetime, beyond READY's generic
+finite-limit checks. Unknown dispatch remains charged and non-redispatchable.
+
+Before making executable tasks, resolve the exact deadline semantics from current
+controller/source/workspace code: a checkout operation deadline must not be
+mistaken for a new worker-stage allowance, nor refreshed during recovery. This
+research is not an accepted implementation contract. The next consumer must run
+through actual RunManagedController/attempt and remain explicitly model-unavailable
+until the restricted tool/model boundary exists.
+
+Real model execution then needs an admitted tool bridge bound to the exact ready
+container, counted tool/host/model calls, fixed UID1000/cwd/endpoint, bounded output
+and original deadlines. Model-controlled input cannot choose host paths, container,
+environment or Docker flags. Frozen model/tool-inventory qualification is required.
+Finally, commit must follow positive candidate retirement, keeper continuity,
+bounded stopped export and existing managed Git exact commit/CAS. Independent
+acceptance and review remain separate protected stages. Namespace startup is not
+worker execution, delivery or autonomous recovery qualification.

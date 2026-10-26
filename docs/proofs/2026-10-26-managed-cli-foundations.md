@@ -119,10 +119,13 @@ seconds package / 18.442 seconds harness (9.9% CLI statements), prefix
 `service-state-reviewed-race`. Recovery was exercised, but no injected fsync
 failure or power-loss test ran. This layer performs no bootstrap.
 
-Integrated CLI race/coverage and gate are running at `51af5307`, prefixes
-`service-state-integrated-race` and `service-state-integrated-gate`, sessions
-`30713` / `4704`. Recover terminal results before repeating. Terra is implementing
-the real registration consumer in the next leaf.
+Integrated CLI race/coverage at `51af5307` passed in 117.967 seconds package /
+130.401 seconds harness, 25.1% CLI statements. The gate failed only the same three
+dead exports in 190.617 seconds (fifteen checks passed). Formatting, lint and
+NilAway passed. Both jobs are terminal, prefixes `service-state-integrated-race`
+and `service-state-integrated-gate`. The registration consumer is implemented in
+Terra `cac818ac` but awaits a correction for intermediate lock-path alias/mode
+validation; it is not yet accepted or integrated.
 
 Public start/service registration, uncertain-bootstrap ownership reconciliation,
 candidate execution, independent acceptance, native qualification and sustained
