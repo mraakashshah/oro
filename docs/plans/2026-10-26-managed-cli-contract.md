@@ -66,7 +66,32 @@ Activation follows verified publication; publication alone grants no execution.
 
 ## Public start and durable service registration
 
-Next bounded registration leaf: new `cmd_factory_service.go`,
+Execute this contract in three sequential leaves:
+
+1. `oro-mf-service-state`: new `cmd_factory_service_state.go`,
+   `cmd_factory_service_files.go`, `cmd_factory_service_plist.go` and one test.
+   `lockFactoryService(ctx, root, id)` returns an owned `factoryServiceAccess`
+   with Close, prepare and transition methods. Publish the initial intent,
+   plist and prepared registration as a complete staged directory, then rename
+   and parent fsync. Existing final content is verified, never regenerated.
+   Interrupted staging retains its nonce; recover only a fully validated
+   identical bundle, otherwise return uncertainty. Updates use a fixed exclusive
+   stage and atomic registration replacement with exact prior-phase comparison.
+2. `oro-mf-service-register` consumes that access through
+   `registerFactoryServiceLocked`.
+   Darwin's `bootstrapFactoryService` calls existing runFactoryLaunchctl with
+   bootstrap, gui/UID and the exact committed plist. A narrow private transport
+   parameter permits recording tests. Persist dispatching before the transport,
+   then registered only after success; neither uncertain nor registered replay
+   bootstraps again. No native launchctl during implementation tests.
+3. `oro-mf-start-command` exposes public `factory start`, consumes both previous
+   leaves and exposes the strict
+   decoder with its actual CLI caller. Use one new start source, existing command
+   registration and managed-contract source, plus one focused test. Exercise real
+   budget admission, publication, activation and registration through Cobra;
+   preserve active replay while the supervisor lifetime lock is held.
+
+The registration leaf uses new `cmd_factory_service.go`,
 `cmd_factory_service_darwin.go`, `cmd_factory_service_other.go` and one focused
 test file. Private `registerFactoryService(ctx, view, ref) error` uses immutable
 versioned `factoryServiceIntent` (root/id, nonce, label, runtime ref, HardStop,

@@ -28,7 +28,8 @@ Remaining exports are AdmitManaged, ActivateManaged and DecodeDockerCleanupResul
 Evidence is under `/private/tmp/oro-factory-verify-ldhnhnvl/`, prefixes
 `managed-commands-integrated-race` and `managed-commands-integrated-gate`.
 Task `oro-mf-command-coverage-protocol` investigates the instrumented helper;
-coverage telemetry on stderr is a hypothesis, not a confirmed cause. Preserve
+Terra reproduced the cause directly: the instrumented test helper emits a
+GOCOVERDIR warning on stderr. A test-only fix is undergoing broader checks. Preserve
 the production exact acknowledgment contract. All older jobs are terminal.
 
 The accepted hidden-command source is
@@ -47,7 +48,10 @@ The [CLI contract](2026-10-26-managed-cli-contract.md) records the resolved orde
 
 Terra is investigating coverage in `.worktrees/factory-command-coverage` and
 ordinary host retirement in `.worktrees/factory-host-retirement`, task
-`oro-mf-host-retirement-bound`. Astra is decomposing service/public-start wiring.
+`oro-mf-host-retirement-bound`. Terra has started `oro-mf-service-state` in
+`.worktrees/factory-service-state`; its sequential consumers are
+`oro-mf-service-register` and `oro-mf-start-command`. Astra's decomposition is
+recorded in the CLI contract and the tracker. No native services are being run.
 Service-bootstrap uncertainty still needs a proven ownership/reconciliation
 mechanism. Candidate execution, independent acceptance, native qualification and
 real-model sustained delivery/self-healing trials remain unfinished. The full
