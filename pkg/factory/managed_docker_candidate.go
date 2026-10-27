@@ -17,22 +17,29 @@ import (
 const managedCandidateBytes = 16 << 10
 
 type managedCandidateIntent struct {
-	Version            int                       `json:"version"`
-	AdmissionSHA256    string                    `json:"admission_sha256"`
-	Runtime            ManagedRuntimeReference   `json:"runtime"`
-	WorkspaceID        string                    `json:"workspace_id"`
-	Workspace          managedWorkspace          `json:"workspace"`
-	Source             managedDockerSourceRecord `json:"source"`
-	KeeperSHA256       string                    `json:"keeper_sha256"`
-	Container          ScopeHandle               `json:"container"`
-	CreateHost         ScopeHandle               `json:"create_host"`
-	StartHost          ScopeHandle               `json:"start_host"`
-	ExecutionStartedAt time.Time                 `json:"execution_started_at"`
-	ExecutionDeadline  time.Time                 `json:"execution_deadline"`
-	GuardDeadline      time.Time                 `json:"guard_deadline"`
-	Phase              string                    `json:"phase"`
-	Binding            DockerCleanupBinding      `json:"binding"`
-	ContainerStartedAt string                    `json:"container_started_at"`
+	Version            int                         `json:"version"`
+	AdmissionSHA256    string                      `json:"admission_sha256"`
+	Runtime            ManagedRuntimeReference     `json:"runtime"`
+	WorkspaceID        string                      `json:"workspace_id"`
+	Workspace          managedWorkspace            `json:"workspace"`
+	Source             managedDockerSourceRecord   `json:"source"`
+	KeeperSHA256       string                      `json:"keeper_sha256"`
+	Container          ScopeHandle                 `json:"container"`
+	CreateHost         ScopeHandle                 `json:"create_host"`
+	StartHost          ScopeHandle                 `json:"start_host"`
+	ExecutionStartedAt time.Time                   `json:"execution_started_at"`
+	ExecutionDeadline  time.Time                   `json:"execution_deadline"`
+	GuardDeadline      time.Time                   `json:"guard_deadline"`
+	Phase              string                      `json:"phase"`
+	Binding            DockerCleanupBinding        `json:"binding"`
+	ContainerStartedAt string                      `json:"container_started_at"`
+	Retirement         *managedCandidateRetirement `json:"retirement,omitempty"`
+}
+
+type managedCandidateRetirement struct {
+	StartedAt time.Time   `json:"started_at"`
+	Scope     ScopeHandle `json:"scope"`
+	Deadline  time.Time   `json:"deadline"`
 }
 
 func initManagedCandidateSchema(ctx context.Context, conn *sql.Conn) error {
@@ -159,11 +166,28 @@ func validateCandidateDetails(j *managedJournal, i managedCandidateIntent) error
 }
 
 func readManagedCandidate(ctx context.Context, tx *sql.Tx, owner *managedControllerOwner, workspaceID string) (managedCandidateIntent, error) {
+	if owner == nil || owner.journal == nil {
+		return managedCandidateIntent{}, errors.New("candidate requires owner")
+	}
+	i, err := readManagedCandidateStructural(ctx, tx, owner.journal, workspaceID)
+	if err != nil {
+		return managedCandidateIntent{}, err
+	}
+	if !candidateColumnsMatch(i, owner, workspaceID, i.Container.ID, i.CreateHost.ID) {
+		return managedCandidateIntent{}, errors.New("candidate owner differs")
+	}
+	if err := validateCandidateReferences(ctx, tx, owner, i); err != nil {
+		return managedCandidateIntent{}, err
+	}
+	return i, nil
+}
+
+func readManagedCandidateStructural(ctx context.Context, tx *sql.Tx, j *managedJournal, workspaceID string) (managedCandidateIntent, error) {
 	var i managedCandidateIntent
 	var container, host string
 	var size int
 	var body []byte
-	if owner == nil || owner.journal == nil {
+	if j == nil {
 		return i, errors.New("candidate requires owner")
 	}
 	if err := validateCandidateHistory(ctx, tx); err != nil {
@@ -175,12 +199,9 @@ func readManagedCandidate(ctx context.Context, tx *sql.Tx, owner *managedControl
 	if size <= 0 || size > managedCandidateBytes || size != len(body) || json.Unmarshal(body, &i) != nil {
 		return managedCandidateIntent{}, errors.New("invalid candidate encoding")
 	}
-	encoded, err := encodeManagedCandidate(owner.journal, i)
-	if err != nil || !bytes.Equal(body, encoded) || !candidateColumnsMatch(i, owner, workspaceID, container, host) {
+	encoded, err := encodeManagedCandidate(j, i)
+	if err != nil || !bytes.Equal(body, encoded) || (i.WorkspaceID != workspaceID || i.Container.ID != container || i.CreateHost.ID != host) {
 		return managedCandidateIntent{}, errors.Join(errors.New("candidate canonical identity differs"), err)
-	}
-	if err := validateCandidateReferences(ctx, tx, owner, i); err != nil {
-		return managedCandidateIntent{}, err
 	}
 	return i, nil
 }
@@ -355,6 +376,57 @@ func validateCandidateHistory(ctx context.Context, tx *sql.Tx) error {
 	if rows != events || orphaned != 0 {
 		return errors.New("candidate history is missing or inconsistent")
 	}
+	return validateCandidateRetirementHistory(ctx, tx)
+}
+
+func validateCandidateRetirementHistory(ctx context.Context, tx *sql.Tx) error {
+	var bad, retiringEvents, retiredEvents, retiringRows, retiredRows int64
+	query := `SELECT count(*) FROM managed_docker_candidates c WHERE
+	 json_valid(c.body)!=1 OR coalesce(json_extract(c.body,'$.phase'),'') NOT IN ('prepared','create_dispatching','created','inspected','start_prepared','start_dispatching','start_acknowledged','ready','retiring','retired') OR
+	 ((json_type(c.body,'$.retirement') IS NOT NULL) != (json_extract(c.body,'$.phase') IN ('retiring','retired'))) OR
+	 (SELECT count(*) FROM managed_events e WHERE e.kind='candidate-retiring' AND e.ref=c.workspace_id) != CASE WHEN json_extract(c.body,'$.phase') IN ('retiring','retired') THEN 1 ELSE 0 END OR
+	 (SELECT count(*) FROM managed_events e WHERE e.kind='candidate-retired' AND e.ref=c.workspace_id) != CASE WHEN json_extract(c.body,'$.phase')='retired' THEN 1 ELSE 0 END OR
+	 (json_extract(c.body,'$.phase')='retired' AND NOT EXISTS (SELECT 1 FROM managed_scopes s WHERE s.id=c.container_id AND s.nonce=json_extract(c.body,'$.container.nonce') AND s.backend=json_extract(c.body,'$.container.backend') AND s.name=json_extract(c.body,'$.container.name') AND json_extract(s.body,'$.kind')=json_extract(c.body,'$.container.kind') AND json_extract(s.body,'$.generation')=json_extract(c.body,'$.container.generation') AND json_extract(s.body,'$.Deadline')=json_extract(c.body,'$.execution_deadline') AND s.phase='quiescent' AND s.cleanup!='')) OR
+	 (json_extract(c.body,'$.phase')='retired' AND NOT EXISTS (SELECT 1 FROM managed_scopes h WHERE h.id=json_extract(c.body,'$.retirement.scope.id') AND h.nonce=json_extract(c.body,'$.retirement.scope.nonce') AND h.backend=json_extract(c.body,'$.retirement.scope.backend') AND h.name=json_extract(c.body,'$.retirement.scope.name') AND json_extract(h.body,'$.kind')=json_extract(c.body,'$.retirement.scope.kind') AND json_extract(h.body,'$.generation')=json_extract(c.body,'$.retirement.scope.generation') AND json_extract(h.body,'$.Deadline')=json_extract(c.body,'$.retirement.deadline') AND h.phase='quiescent' AND h.cleanup!='')) OR
+	 (json_extract(c.body,'$.phase')='retired' AND NOT EXISTS (SELECT 1 FROM managed_events a JOIN managed_events b ON a.ref=b.ref AND a.revision<b.revision WHERE a.ref=c.workspace_id AND a.kind='candidate-retiring' AND b.kind='candidate-retired'))`
+	if err := tx.QueryRowContext(ctx, query).Scan(&bad); err != nil {
+		return fmt.Errorf("check candidate retirement history: %w", err)
+	}
+	query = `SELECT (SELECT count(*) FROM managed_events WHERE kind='candidate-retiring'), (SELECT count(*) FROM managed_events WHERE kind='candidate-retired'), (SELECT count(*) FROM managed_docker_candidates WHERE json_extract(body,'$.phase') IN ('retiring','retired')), (SELECT count(*) FROM managed_docker_candidates WHERE json_extract(body,'$.phase')='retired')`
+	if err := tx.QueryRowContext(ctx, query).Scan(&retiringEvents, &retiredEvents, &retiringRows, &retiredRows); err != nil {
+		return fmt.Errorf("count candidate retirement history: %w", err)
+	}
+	if bad != 0 || retiringEvents != retiringRows || retiredEvents != retiredRows {
+		return errors.New("candidate retirement history differs")
+	}
+	return validateCandidateRetirementRows(ctx, tx)
+}
+
+func validateCandidateRetirementRows(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, "SELECT workspace_id,container_id,length(CAST(body AS BLOB)),substr(CAST(body AS BLOB),1,16385) FROM managed_docker_candidates")
+	if err != nil {
+		return fmt.Errorf("read retirement fence rows: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var size int
+		var workspace, container string
+		var body []byte
+		var candidate managedCandidateIntent
+		if err := rows.Scan(&workspace, &container, &size, &body); err != nil {
+			return fmt.Errorf("scan retirement fence row: %w", err)
+		}
+		if size <= 0 || size > managedCandidateBytes || size != len(body) || json.Unmarshal(body, &candidate) != nil {
+			return errors.New("invalid candidate retirement fence row")
+		}
+		canonical, err := json.Marshal(candidate)
+		if err != nil || !bytes.Equal(canonical, body) || candidate.WorkspaceID != workspace || candidate.Container.ID != container || ((candidate.Phase == "retiring" || candidate.Phase == "retired") != (candidate.Retirement != nil)) {
+			return errors.New("candidate retirement fence is not canonical")
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("finish retirement fence rows: %w", err)
+	}
 	return nil
 }
 
@@ -385,7 +457,7 @@ func checkCandidateAvailability(ctx context.Context, tx *sql.Tx, workspaceID str
 }
 
 func validateCandidatePhase(j *managedJournal, i managedCandidateIntent) error {
-	phase := slices.Index([]string{"prepared", "create_dispatching", "created", "inspected", "start_prepared", "start_dispatching", "start_acknowledged", "ready"}, i.Phase)
+	phase := slices.Index([]string{"prepared", "create_dispatching", "created", "inspected", "start_prepared", "start_dispatching", "start_acknowledged", "ready", "retiring", "retired"}, i.Phase)
 	if phase < 0 {
 		return errors.New("invalid candidate phase")
 	}
@@ -414,7 +486,39 @@ func validateCandidatePhase(j *managedJournal, i managedCandidateIntent) error {
 	if (phase < 7) != (i.ContainerStartedAt == "") {
 		return errors.New("candidate running lifetime differs from phase")
 	}
+	if err := validateCandidateRetirement(j, i, phase); err != nil {
+		return err
+	}
 	return validateCleanupCreatedAt(i.ContainerStartedAt)
+}
+
+func validateCandidateRetirement(j *managedJournal, i managedCandidateIntent, phase int) error {
+	if phase < 8 {
+		if i.Retirement != nil {
+			return errors.New("candidate retirement precedes ready")
+		}
+		return nil
+	}
+	if i.Retirement == nil {
+		return errors.New("candidate retirement identity missing")
+	}
+	r := i.Retirement
+	if err := validateManagedScope(r.Scope); err != nil {
+		return err
+	}
+	name := "dev.getoro.factory." + cleanupObjectiveHash(j.admission) + ".cleanup." + r.Scope.ID + "." + r.Scope.Nonce
+	if !retirementScopeValid(i, r, name) || !retirementDeadlineValid(j, r) {
+		return errors.New("candidate retirement identity differs")
+	}
+	return nil
+}
+
+func retirementScopeValid(i managedCandidateIntent, r *managedCandidateRetirement, name string) bool {
+	return r.Scope.Kind == "cleanup" && r.Scope.Backend == "launchd" && r.Scope.Generation == i.Container.Generation && r.Scope.Name == name
+}
+
+func retirementDeadlineValid(j *managedJournal, r *managedCandidateRetirement) bool {
+	return !r.StartedAt.IsZero() && r.StartedAt.Location() == time.UTC && !r.Deadline.IsZero() && r.Deadline.Location() == time.UTC && r.Deadline.After(r.StartedAt) && !r.Deadline.After(r.StartedAt.Add(time.Duration(j.admission.Recovery.CleanupTimeoutSeconds)*time.Second)) && !r.Deadline.After(j.admission.HardStop)
 }
 
 func validateCandidateStartHost(j *managedJournal, i managedCandidateIntent, phase int) error {

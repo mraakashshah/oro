@@ -38,6 +38,9 @@ func reserveManagedCleanupInvocation(ctx context.Context, j *managedJournal, gen
 		if err := activeManagedRecovery(state, generation, time.Now(), deadline); err != nil {
 			return false, err
 		}
+		if err := requireNoRetiringCandidate(ctx, tx); err != nil {
+			return false, err
+		}
 		if err := requireCleanupTarget(ctx, tx, target); err != nil {
 			return false, err
 		}
@@ -47,21 +50,28 @@ func reserveManagedCleanupInvocation(ctx context.Context, j *managedJournal, gen
 		if err := requireCleanupHostQuiescence(ctx, tx, scope.ID); err != nil {
 			return false, err
 		}
-		if _, err := reserveManagedToken(ctx, tx, "cleanup", scope.ID, generation, int64(j.admission.Recovery.MaxCleanupInvocations)); err != nil {
-			return false, err
-		}
-		if _, err := j.insertScope(ctx, tx, scope, deadline); err != nil {
-			return false, err
-		}
-		if _, err := tx.ExecContext(ctx, "INSERT INTO managed_cleanup_permits(scope_id,body) VALUES(?,?)", scope.ID, body); err != nil {
-			return false, fmt.Errorf("persist cleanup permit: %w", err)
-		}
-		return true, nil
+		return reserveManagedCleanupRecord(ctx, tx, j, permit, body)
 	})
 	if err != nil {
 		return ScopeHandle{}, err
 	}
 	return scope, nil
+}
+
+// reserveManagedCleanupRecord persists the counted permit after its caller has
+// validated the applicable target and quiescence rules in this transaction.
+func reserveManagedCleanupRecord(ctx context.Context, tx *sql.Tx, j *managedJournal, permit DockerCleanupPermit, body []byte) (bool, error) {
+	scope := permit.Scope
+	if _, err := reserveManagedToken(ctx, tx, "cleanup", scope.ID, scope.Generation, int64(j.admission.Recovery.MaxCleanupInvocations)); err != nil {
+		return false, err
+	}
+	if _, err := j.insertScope(ctx, tx, scope, permit.Deadline); err != nil {
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO managed_cleanup_permits(scope_id,body) VALUES(?,?)", scope.ID, body); err != nil {
+		return false, fmt.Errorf("persist cleanup permit: %w", err)
+	}
+	return true, nil
 }
 
 // CleanupPermit reads a current typed permit without granting execution.
@@ -87,14 +97,18 @@ func (j *managedJournal) loadCleanupPermit(ctx context.Context, tx *sql.Tx, stat
 	if err != nil {
 		return DockerCleanupPermit{}, err
 	}
-	record, err := loadManagedScope(ctx, tx, scope)
+	if err := validateCleanupScope(ctx, tx, state, scope, permit); err != nil {
+		return DockerCleanupPermit{}, err
+	}
+	typed, err := j.isRetirementCleanup(ctx, tx, state, permit)
 	if err != nil {
 		return DockerCleanupPermit{}, err
 	}
-	if (record.Phase != "reserved" && record.Phase != "granted") || !record.Deadline.Equal(permit.Deadline) {
-		return DockerCleanupPermit{}, errors.New("cleanup permit scope is retired or has a different deadline")
+	if typed {
+		return permit, nil
 	}
-	if err := activeManagedRecovery(state, scope.Generation, time.Now(), permit.Deadline); err != nil {
+
+	if err := requireNoRetiringCandidate(ctx, tx); err != nil {
 		return DockerCleanupPermit{}, err
 	}
 	if err := requireCleanupTarget(ctx, tx, permit.Target); err != nil {
@@ -111,6 +125,39 @@ func (j *managedJournal) loadCleanupPermit(ctx context.Context, tx *sql.Tx, stat
 		return DockerCleanupPermit{}, errors.Join(errors.New("cleanup permit lacks its exact budget reservation"), err)
 	}
 	return permit, nil
+}
+
+func validateCleanupScope(ctx context.Context, tx *sql.Tx, state *managedSupervision, scope ScopeHandle, permit DockerCleanupPermit) error {
+	record, err := loadManagedScope(ctx, tx, scope)
+	if err != nil {
+		return err
+	}
+	if (record.Phase != "reserved" && record.Phase != "granted") || !record.Deadline.Equal(permit.Deadline) {
+		return errors.New("cleanup permit scope is retired or has a different deadline")
+	}
+	return activeManagedRecovery(state, scope.Generation, time.Now(), permit.Deadline)
+}
+
+func (j *managedJournal) isRetirementCleanup(ctx context.Context, tx *sql.Tx, state *managedSupervision, permit DockerCleanupPermit) (bool, error) {
+	var workspace string
+	err := tx.QueryRowContext(ctx, "SELECT workspace_id FROM managed_docker_candidates WHERE container_id=?", permit.Target.ID).Scan(&workspace)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("find cleanup candidate: %w", err)
+	}
+	candidate, err := readManagedCandidateStructural(ctx, tx, j, workspace)
+	if err != nil {
+		return false, err
+	}
+	if candidate.Phase != "retiring" {
+		return false, nil
+	}
+	if _, err := validateRetiringPermit(ctx, tx, j, state, permit); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func requireCleanupKeeperBinding(ctx context.Context, tx *sql.Tx, j *managedJournal, permit DockerCleanupPermit) error {
@@ -168,12 +215,29 @@ func requireCleanupHostQuiescence(ctx context.Context, tx *sql.Tx, except string
 }
 
 func requireNoManagedCleanup(ctx context.Context, tx *sql.Tx) error {
+	if err := requireNoRetiringCandidate(ctx, tx); err != nil {
+		return err
+	}
 	return scanManagedCleanupScopes(ctx, tx, func(record managedScopeRecord) error {
 		if record.Phase != "quiescent" && record.Kind == "cleanup" {
 			return errors.New("ordinary work requires positive cleanup-helper retirement")
 		}
 		return nil
 	})
+}
+
+func requireNoRetiringCandidate(ctx context.Context, tx *sql.Tx) error {
+	if err := validateCandidateHistory(ctx, tx); err != nil {
+		return err
+	}
+	var active int
+	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM managed_docker_candidates WHERE json_extract(body,'$.phase')='retiring'").Scan(&active); err != nil {
+		return fmt.Errorf("check retiring candidates: %w", err)
+	}
+	if active != 0 {
+		return errors.New("ordinary work requires candidate retirement completion")
+	}
+	return nil
 }
 
 // Validate complete rows before any classification, including excluded Docker,

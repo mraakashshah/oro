@@ -28,7 +28,16 @@ func (b *managedDeliveryBackend) execute(ctx context.Context, stage string, inpu
 	if err != nil {
 		return commandResult{ExitCode: -1, Err: interrupt("candidate", err)}
 	}
-	if _, err = b.docker.prepareCandidate(ctx, b.owner, intent); err != nil {
+	intent, err = b.docker.prepareCandidate(ctx, b.owner, intent)
+	if err != nil {
+		return commandResult{ExitCode: -1, Err: interrupt("candidate", err)}
+	}
+	cleanupCtx, release, err := candidateCleanupContext(ctx, b.owner.manifest)
+	if err != nil {
+		return commandResult{ExitCode: -1, Err: interrupt("candidate", err)}
+	}
+	defer release()
+	if _, err = b.docker.retireCandidate(cleanupCtx, b.owner, intent); err != nil {
 		return commandResult{ExitCode: -1, Err: interrupt("candidate", err)}
 	}
 	return commandResult{ExitCode: -1, Err: interrupt("candidate", errors.New("engineer-adapter-unavailable"))}
