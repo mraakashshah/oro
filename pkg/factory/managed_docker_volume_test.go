@@ -375,20 +375,7 @@ func testDockerVolumeRollback(t *testing.T) {
 					dockerVolumeSQL(t, f.journal, "INSERT INTO managed_reservations(kind,token,generation) VALUES('host',?,1)", fmt.Sprint(i))
 				}
 			case "event ceiling":
-				state, err := f.journal.supervision(t.Context())
-				if err != nil {
-					t.Fatal(err)
-				}
-				limit, err := journalRecordLimit(f.journal.admission)
-				if err != nil {
-					t.Fatal(err)
-				}
-				state.Revision = 8*limit + 16
-				body, err := json.Marshal(state)
-				if err != nil {
-					t.Fatal(err)
-				}
-				dockerVolumeSQL(t, f.journal, "UPDATE managed_supervision SET revision=?,body=?", state.Revision, body)
+				padManagedEventsToCap(t, f.journal)
 			}
 			before := dockerVolumeCounts(t, f.journal)
 			beforeState := snapshotDockerVolumeAuthority(t, f.journal)

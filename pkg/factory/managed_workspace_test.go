@@ -441,39 +441,77 @@ func workspaceJournalBytes(t *testing.T, j *managedJournal) string {
 	return value
 }
 
-func workspaceAssertEventCap(t *testing.T, j *managedJournal, operation func(context.Context) error) {
+// padManagedEventsToCap preserves the journal revision/event continuity required
+// by the retirement fence while exercising the real event budget boundary.
+func padManagedEventsToCap(t *testing.T, j *managedJournal) func() {
 	t.Helper()
-	state, err := j.supervision(t.Context())
+	original, err := j.supervision(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	original := state
 	limit, err := journalRecordLimit(j.admission)
 	if err != nil {
 		t.Fatal(err)
 	}
-	state.Revision = 8*limit + 16
-	write := func(s managedSupervision) {
-		body, e := json.Marshal(s)
-		if e != nil {
-			t.Fatal(e)
-		}
-		if _, e = j.conn.ExecContext(t.Context(), "UPDATE managed_supervision SET revision=?,body=? WHERE id=1", s.Revision, body); e != nil {
-			t.Fatal(e)
+	capped := original
+	capped.Revision = 8*limit + 16
+	body, err := json.Marshal(capped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := j.conn.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	for rev := original.Revision + 1; rev <= capped.Revision; rev++ {
+		if _, err := tx.ExecContext(t.Context(), "INSERT INTO managed_events(revision,kind,ref,body) VALUES(?,'test-padding','test',?)", rev, body); err != nil {
+			t.Fatal(err)
 		}
 	}
-	write(state)
+	if _, err := tx.ExecContext(t.Context(), "UPDATE managed_supervision SET revision=?,body=? WHERE id=1", capped.Revision, body); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	return func() {
+		t.Helper()
+		body, err := json.Marshal(original)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tx, err := j.conn.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		if _, err := tx.ExecContext(t.Context(), "DELETE FROM managed_events WHERE revision>?", original.Revision); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(t.Context(), "UPDATE managed_supervision SET revision=?,body=? WHERE id=1", original.Revision, body); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func workspaceAssertEventCap(t *testing.T, j *managedJournal, operation func(context.Context) error) {
+	t.Helper()
+	restore := padManagedEventsToCap(t, j)
 	before := workspaceJournalBytes(t, j)
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
-	err = operation(ctx)
-	if err == nil || !strings.Contains(err.Error(), "managed event budget exhausted") {
+	err := operation(ctx)
+	if err == nil || err.Error() != "managed event budget exhausted" {
 		t.Fatalf("expected event cap: %v", err)
 	}
 	if after := workspaceJournalBytes(t, j); after != before {
 		t.Fatal("event cap changed workspace, revision or events")
 	}
-	write(original)
+	restore()
 }
 
 func workspaceAssertCommitFailure(t *testing.T, j *managedJournal, operation func(context.Context) error) {

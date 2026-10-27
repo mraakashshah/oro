@@ -4,7 +4,6 @@ package factory
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -358,22 +357,7 @@ func TestManagedControllerReservation(t *testing.T) {
 	})
 	t.Run("event cap", func(t *testing.T) {
 		j, gen := controllerFixture(t)
-		limit, err := journalRecordLimit(j.admission)
-		if err != nil {
-			t.Fatal(err)
-		}
-		state, err := j.supervision(t.Context())
-		if err != nil {
-			t.Fatal(err)
-		}
-		state.Revision = 8*limit + 16
-		body, err := json.Marshal(state)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := j.conn.ExecContext(t.Context(), "UPDATE managed_supervision SET revision=?,body=? WHERE id=1", state.Revision, body); err != nil {
-			t.Fatal(err)
-		}
+		padManagedEventsToCap(t, j)
 		assertControllerDeniedUnchanged(t, j, gen, "managed event budget exhausted")
 	})
 	for _, phase := range []string{"granted", "revoked"} {
