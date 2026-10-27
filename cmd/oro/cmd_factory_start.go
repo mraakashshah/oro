@@ -303,12 +303,8 @@ func canonicalFactoryCredentialParent(path string) (string, error) {
 		if !errors.Is(err, os.ErrNotExist) {
 			return "", fmt.Errorf("resolve credential parent: %w", err)
 		}
-		info, statErr := os.Lstat(path)
-		if statErr == nil && info.Mode()&os.ModeSymlink != 0 {
-			return "", errors.New("model credential parent is a dangling alias")
-		}
-		if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
-			return "", fmt.Errorf("inspect credential parent: %w", statErr)
+		if err := rejectDanglingCredentialParent(path); err != nil {
+			return "", err
 		}
 		next := filepath.Dir(path)
 		if next == path {
@@ -316,4 +312,28 @@ func canonicalFactoryCredentialParent(path string) (string, error) {
 		}
 		path = next
 	}
+}
+
+func rejectDanglingCredentialParent(path string) error {
+	parent, err := os.OpenRoot(filepath.Dir(path))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("open credential parent: %w", err)
+	}
+	info, statErr := parent.Lstat(filepath.Base(path))
+	if err := parent.Close(); err != nil {
+		return fmt.Errorf("close credential parent: %w", err)
+	}
+	if errors.Is(statErr, os.ErrNotExist) {
+		return nil
+	}
+	if statErr != nil {
+		return fmt.Errorf("inspect credential parent: %w", statErr)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("model credential parent is a dangling alias")
+	}
+	return nil
 }
