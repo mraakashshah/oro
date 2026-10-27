@@ -9,13 +9,16 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -175,7 +178,7 @@ func testFactoryManagedCommandsHandshake(t *testing.T, grant string) {
 	t.Cleanup(func() {
 		childCancel()
 		if child.Process != nil && child.ProcessState == nil {
-			_ = child.Process.Kill()
+			_ = syscall.Kill(-child.Process.Pid, syscall.SIGKILL)
 			_ = child.Wait()
 		}
 	})
@@ -200,7 +203,7 @@ func testFactoryManagedCommandsHandshake(t *testing.T, grant string) {
 	}
 	conn, err := listener.AcceptUnix()
 	if err != nil {
-		_ = child.Process.Kill()
+		_ = syscall.Kill(-child.Process.Pid, syscall.SIGKILL)
 		_ = child.Wait()
 		t.Fatalf("accept: %v child: %s", err, childOutput.String())
 	}
@@ -331,8 +334,8 @@ func testFactoryManagedCommandsCountedSupervisor(t *testing.T, mode string) {
 	if err := os.Mkdir(helperCoverage, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	oroProgram := []byte(fmt.Sprintf("#!/bin/sh\nexport GOCOVERDIR=%s\nexec %s -test.run=^TestFactoryManagedReadyProgram$ -- \"$@\"\n", strconv.Quote(helperCoverage), strconv.Quote(exe)))
-	dockerProgram := []byte(fmt.Sprintf("#!/bin/sh\nexport GOCOVERDIR=%s\nexec %s -test.run=^TestFactoryManagedDockerProgram$ -- %s \"$@\"\n", strconv.Quote(helperCoverage), strconv.Quote(exe), strconv.Quote(fixtureState)))
+	oroProgram := []byte(fmt.Sprintf("#!/bin/sh\nexport GORACE=atexit_sleep_ms=0\nexport GOCOVERDIR=%s\nexec %s -test.run=^TestFactoryManagedReadyProgram$ -- \"$@\"\n", strconv.Quote(helperCoverage), strconv.Quote(exe)))
+	dockerProgram := []byte(fmt.Sprintf("#!/bin/sh\nexport GORACE=atexit_sleep_ms=0\nexport GOCOVERDIR=%s\nexec %s -test.run=^TestFactoryManagedDockerProgram$ -- %s \"$@\"\n", strconv.Quote(helperCoverage), strconv.Quote(exe), strconv.Quote(fixtureState)))
 	for path, program := range map[string][]byte{oro: oroProgram, docker: dockerProgram} {
 		if err := os.WriteFile(path, program, 0o500); err != nil {
 			t.Fatal(err)
@@ -379,7 +382,7 @@ func testFactoryManagedCommandsCountedSupervisor(t *testing.T, mode string) {
 	t.Cleanup(func() {
 		childCancel()
 		if child != nil && child.Process != nil {
-			_ = child.Process.Kill()
+			_ = syscall.Kill(-child.Process.Pid, syscall.SIGKILL)
 			_ = child.Wait()
 			child = nil
 		}
@@ -403,8 +406,12 @@ func testFactoryManagedCommandsCountedSupervisor(t *testing.T, mode string) {
 					return -1, err
 				}
 				child = exec.CommandContext(childCtx, exe, "-test.run=^TestFactoryManagedCommandsCoreChild$")
+				managedForwardCoverage(child)
 				child.Env = append(os.Environ(), "TEST_MANAGED_PLIST="+args[2], "TEST_MANAGED_REVOKE="+mode, "TEST_MANAGED_MARKER="+filepath.Join(base, "revoked"), "GORACE=atexit_sleep_ms=0")
 				child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+				ownedChild := child
+				child.Cancel = func() error { return syscall.Kill(-ownedChild.Process.Pid, syscall.SIGKILL) }
+				child.WaitDelay = 3 * time.Second
 				if err := child.Start(); err != nil {
 					return -1, err
 				}
@@ -467,8 +474,96 @@ func testFactoryManagedCommandsCountedSupervisor(t *testing.T, mode string) {
 		if err != nil {
 			t.Fatalf("controller result: %v", err)
 		}
-		if !strings.Contains(string(result), "managed candidate interrupted: managed operation unavailable") {
-			t.Fatalf("unexpected controller result: %s", result)
+		if !strings.Contains(string(result), "managed candidate interrupted: engineer-adapter-unavailable") {
+			var supervision []byte
+			_ = db.QueryRowContext(t.Context(), "SELECT body FROM managed_supervision").Scan(&supervision)
+			hosts, _ := os.ReadFile(filepath.Join(base, "revoked-hosts"))
+			t.Fatalf("unexpected controller result: %s; supervision %s; host calls %d", result, supervision, bytes.Count(hosts, []byte("\n")))
+		}
+		var candidateBody []byte
+		var candidates int
+		if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM managed_docker_candidates").Scan(&candidates); err != nil || candidates != 1 {
+			t.Fatalf("candidate count %d: %v", candidates, err)
+		}
+		if err := db.QueryRowContext(t.Context(), "SELECT body FROM managed_docker_candidates").Scan(&candidateBody); err != nil {
+			t.Fatal(err)
+		}
+		var candidate map[string]any
+		if err := json.Unmarshal(candidateBody, &candidate); err != nil {
+			t.Fatal(err)
+		}
+		if candidate["phase"] != "ready" {
+			t.Fatalf("candidate not ready: %s", candidateBody)
+		}
+		fixtureData, err := os.ReadFile(fixtureState)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var dockerState managedFakeDockerState
+		if err := json.Unmarshal(fixtureData, &dockerState); err != nil {
+			t.Fatal(err)
+		}
+		wantDocker := []string{"volume-create", "volume-inspect", "keeper-create", "keeper-inspect", "keeper-ready-inspect", "keeper-start", "keeper-inspect", "source-seed", "keeper-inspect", "keeper-inspect", "candidate-create", "candidate-inspect", "candidate-ready-inspect", "candidate-start", "candidate-inspect", "keeper-inspect"}
+		if !slices.Equal(dockerState.Operations, wantDocker) {
+			t.Fatalf("Docker operations = %v, want %v", dockerState.Operations, wantDocker)
+		}
+		if dockerState.KeeperLabels["dev.fixture.image"] != "inherited" || dockerState.CandidateLabels["dev.fixture.image"] != "inherited" {
+			t.Fatal("image label was not inherited by both containers")
+		}
+		if dockerState.Name == dockerState.CandidateName || !dockerState.Running || !dockerState.CandidateRunning {
+			t.Fatalf("keeper/candidate identity or state: %+v", dockerState)
+		}
+		if candidate["guard_deadline"] != candidate["execution_deadline"] || candidate["guard_deadline"] != dockerState.CandidateDeadline || dockerState.Deadline != view.HardStop.Format(time.RFC3339Nano) {
+			t.Fatalf("keeper/candidate deadline mismatch: %s %+v", candidateBody, dockerState)
+		}
+		hostData, err := os.ReadFile(filepath.Join(base, "revoked-hosts"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		decoder := json.NewDecoder(bytes.NewReader(hostData))
+		var calls []factory.HostInvocation
+		for decoder.More() {
+			var call factory.HostInvocation
+			if err := decoder.Decode(&call); err != nil {
+				t.Fatal(err)
+			}
+			calls = append(calls, call)
+		}
+		wantPaths := []string{view.GitPath, view.GitPath, view.GitPath, view.GitPath, view.GitPath, view.GitPath, docker, docker, docker, docker, oro, docker, docker, docker, docker, docker, docker, oro, docker, docker}
+		if len(calls) != len(wantPaths) {
+			t.Fatalf("host calls = %d, want %d", len(calls), len(wantPaths))
+		}
+		workerDeadline, err := time.Parse(time.RFC3339Nano, dockerState.CandidateDeadline)
+		if err != nil {
+			t.Fatal(err)
+		}
+		started, err := time.Parse(time.RFC3339Nano, candidate["execution_started_at"].(string))
+		if err != nil || !workerDeadline.Equal(started.Add(time.Duration(spec.StepTimeoutSeconds)*time.Second)) || workerDeadline.After(view.Deadline) {
+			t.Fatalf("worker deadline changed: %s, %v", candidateBody, err)
+		}
+		for index, call := range calls {
+			if call.Path != wantPaths[index] {
+				t.Fatalf("host call %d path = %s, want %s", index, call.Path, wantPaths[index])
+			}
+			if index >= 14 && !call.Deadline.Equal(workerDeadline) {
+				t.Fatalf("candidate call %d deadline = %s, want %s", index, call.Deadline, workerDeadline)
+			}
+		}
+		var hostCount, unretired int
+		if err := db.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM managed_reservations WHERE kind='host'), (SELECT count(*) FROM managed_scopes WHERE name LIKE '%host%' AND phase != 'quiescent')").Scan(&hostCount, &unretired); err != nil || hostCount != 20 || unretired != 0 {
+			t.Fatalf("host reservations %d, unretired %d: %v", hostCount, unretired, err)
+		}
+		if candidate["container_started_at"] != "2026-10-24T06:00:00Z" {
+			t.Fatalf("candidate lifetime missing: %s", candidateBody)
+		}
+		afterView, err := factory.ReadManagedAdmission(t.Context(), root, spec.ID)
+		if err != nil || !afterView.Deadline.Equal(view.Deadline) {
+			t.Fatalf("objective deadline changed: %v", err)
+		}
+
+		var models int
+		if err := db.QueryRowContext(t.Context(), "SELECT count(*) FROM managed_reservations WHERE kind='model'").Scan(&models); err != nil || models != 0 {
+			t.Fatalf("model reservations %d: %v", models, err)
 		}
 		var workspace, stage string
 		var workspaceBody []byte
@@ -483,6 +578,13 @@ func testFactoryManagedCommandsCountedSupervisor(t *testing.T, mode string) {
 		seed, err := os.ReadFile(fixtureState + "-seed")
 		if err != nil || factoryHostDigest(seed) != workspaceData["seed_sha256"] || float64(len(seed)) != workspaceData["seed_bytes"] {
 			t.Fatalf("seed does not match ready workspace: %v", err)
+		}
+		if candidate["workspace_id"] != workspace {
+			t.Fatalf("candidate workspace differs: %s", candidateBody)
+		}
+		binding, ok := candidate["binding"].(map[string]any)
+		if !ok || binding["container_id"] != strings.Repeat("e", 64) || binding["image_id"] != spec.Runtime.ImageDigest {
+			t.Fatalf("candidate binding differs: %s", candidateBody)
 		}
 		if workspaceData["phase"] != "ready" {
 			t.Fatalf("workspace not ready: %s", workspaceBody)
@@ -592,7 +694,7 @@ func TestFactoryManagedCommandsCoreChild(t *testing.T) {
 		t.Cleanup(func() {
 			childCancel()
 			if child != nil && child.Process != nil {
-				_ = child.Process.Kill()
+				_ = syscall.Kill(-child.Process.Pid, syscall.SIGKILL)
 				_ = child.Wait()
 				child = nil
 			}
@@ -608,13 +710,20 @@ func TestFactoryManagedCommandsCoreChild(t *testing.T) {
 				}
 				return 0, nil
 			}
+			if err := managedRecordHostInvocation(args[2], os.Getenv("TEST_MANAGED_MARKER")+"-hosts"); err != nil {
+				return -1, err
+			}
 			exe, err := os.Executable()
 			if err != nil {
 				return -1, err
 			}
 			child = exec.CommandContext(childCtx, exe, "-test.run=^TestFactoryManagedHostPeer$")
+			managedForwardCoverage(child)
 			child.Env = append(os.Environ(), "FACTORY_SUPERVISOR_HOST_PLIST="+args[2], "GORACE=atexit_sleep_ms=0")
 			child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+			ownedChild := child
+			child.Cancel = func() error { return syscall.Kill(-ownedChild.Process.Pid, syscall.SIGKILL) }
+			child.WaitDelay = 3 * time.Second
 			if err := child.Start(); err != nil {
 				return -1, err
 			}
@@ -630,10 +739,64 @@ func TestFactoryManagedCommandsCoreChild(t *testing.T) {
 	}
 }
 
+func managedForwardCoverage(cmd *exec.Cmd) {
+	if f := flag.Lookup("test.gocoverdir"); f != nil && f.Value.String() != "" {
+		cmd.Args = append(cmd.Args, "-test.gocoverdir="+f.Value.String())
+	}
+}
+
+func managedRecordHostInvocation(plist, output string) error {
+	data, err := os.ReadFile(plist)
+	if err != nil {
+		return err
+	}
+	var doc factoryJobXMLValue
+	if err := xml.Unmarshal(data, &doc); err != nil {
+		return err
+	}
+	var args []string
+	var walk func(factoryJobXMLValue)
+	walk = func(node factoryJobXMLValue) {
+		if node.XMLName.Local == "array" {
+			for _, child := range node.Children {
+				args = append(args, child.Text)
+			}
+			return
+		}
+		for _, child := range node.Children {
+			walk(child)
+		}
+	}
+	walk(doc)
+	index := slices.Index(args, "--request")
+	if index < 0 || index+1 >= len(args) {
+		return errors.New("missing host request")
+	}
+	data, err = os.ReadFile(args[index+1])
+	if err != nil {
+		return err
+	}
+	var request factoryHostExecRequest
+	if err := json.Unmarshal(data, &request); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(output, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return json.NewEncoder(f).Encode(request.Invocation)
+}
+
 type managedFakeDockerState struct {
-	Volume, Name, Image, Deadline string
-	Labels, Options, KeeperLabels map[string]string
-	Running                       bool
+	Volume, Name, Image, Deadline                                   string
+	Labels, Options, KeeperLabels                                   map[string]string
+	Running                                                         bool
+	CandidateName, CandidateImage, CandidateDeadline                string
+	CandidateLabels                                                 map[string]string
+	CandidateRunning                                                bool
+	CandidateMemory, CandidateCPUs, CandidatePIDs, CandidateScratch string
+	Operations                                                      []string
 }
 
 func TestFactoryManagedReadyProgram(t *testing.T) {
@@ -688,6 +851,10 @@ func TestFactoryManagedDockerProgram(t *testing.T) {
 	}
 	//nolint:nestif // Capture the real volume invocation operands.
 	if len(args) >= 3 && args[0] == "volume" && args[1] == "create" {
+		if args[len(args)-1] != "fixture-volume" {
+			state.Operations = nil
+		}
+		state.Operations = append(state.Operations, "volume-create")
 		state.Labels = map[string]string{}
 		state.Options = map[string]string{}
 		state.Volume = args[len(args)-1]
@@ -710,43 +877,48 @@ func TestFactoryManagedDockerProgram(t *testing.T) {
 		os.Exit(0)
 	}
 	if len(args) == 3 && args[0] == "volume" && args[1] == "inspect" && args[2] == state.Volume {
+		state.Operations = append(state.Operations, "volume-inspect")
+		save()
 		emit([]any{map[string]any{"Name": state.Volume, "CreatedAt": "2026-10-24T05:49:04Z", "Driver": "local", "Labels": state.Labels, "Options": state.Options, "Mountpoint": "/var/lib/docker/volumes/owned/_data", "Scope": "local"}})
 		os.Exit(0)
 	}
-	//nolint:nestif // Capture the real keeper invocation operands.
 	if len(args) >= 6 && args[0] == "container" && args[1] == "create" {
-		state.KeeperLabels = map[string]string{}
-		state.Image = args[len(args)-3]
-		state.Deadline = args[len(args)-1]
-		for i := 2; i < len(args)-3; i++ {
-			if args[i] == "--pull=never" || args[i] == "--read-only" {
-				continue
-			}
-			if i+1 >= len(args)-3 {
-				os.Exit(2)
-			}
-			if args[i] == "--name" {
-				state.Name = args[i+1]
-			}
-			if args[i] == "--label" {
-				k, v, ok := strings.Cut(args[i+1], "=")
-				if !ok {
-					os.Exit(2)
-				}
-				state.KeeperLabels[k] = v
-			}
-			i++
+		candidate := slices.Contains(args, "--init=false")
+		if err := managedFakeCreate(&state, args, candidate); err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		id := strings.Repeat("d", 64)
+		if candidate {
+			id = strings.Repeat("e", 64)
+			state.Operations = append(state.Operations, "candidate-create")
+		} else {
+			state.Operations = append(state.Operations, "keeper-create")
 		}
 		save()
-		fmt.Println(strings.Repeat("d", 64))
+		fmt.Println(id)
 		os.Exit(0)
 	}
 	if len(args) >= 3 && ((args[0] == "container" && args[1] == "inspect") || (args[0] == "inspect" && args[1] == "--type")) {
-		emit([]any{managedFakeKeeper(state)})
+		value, err := managedFakeInspection(&state, args)
+		if err != nil {
+			os.Exit(2)
+		}
+		save()
+		emit([]any{value})
 		os.Exit(0)
 	}
 	if len(args) == 3 && args[0] == "start" && args[1] == "--attach" {
-		state.Running = true
+		switch args[2] {
+		case strings.Repeat("d", 64):
+			state.Running = true
+			state.Operations = append(state.Operations, "keeper-start")
+		case strings.Repeat("e", 64):
+			state.CandidateRunning = true
+			state.Operations = append(state.Operations, "candidate-start")
+		default:
+			os.Exit(2)
+		}
 		save()
 		fmt.Println("READY")
 		timer := time.NewTimer(45 * time.Second)
@@ -754,7 +926,10 @@ func TestFactoryManagedDockerProgram(t *testing.T) {
 		<-timer.C
 		os.Exit(2)
 	}
+
 	if len(args) == 3 && args[0] == "cp" && args[1] == "-" {
+		state.Operations = append(state.Operations, "source-seed")
+		save()
 		seed, err := io.ReadAll(io.LimitReader(os.Stdin, 1<<20))
 		if err != nil || os.WriteFile(path+"-seed", seed, 0o600) != nil {
 			os.Exit(2)
@@ -765,7 +940,100 @@ func TestFactoryManagedDockerProgram(t *testing.T) {
 	os.Exit(2)
 }
 
-func managedFakeKeeper(s managedFakeDockerState) map[string]any {
+func managedFakeInspection(state *managedFakeDockerState, args []string) (map[string]any, error) {
+	id := args[len(args)-1]
+	candidate := id == strings.Repeat("e", 64)
+	if !candidate && id != strings.Repeat("d", 64) {
+		return nil, errors.New("unknown container")
+	}
+	kind := "keeper"
+	if candidate {
+		kind = "candidate"
+	}
+	if args[0] == "inspect" {
+		kind += "-ready-inspect"
+	} else {
+		kind += "-inspect"
+	}
+	state.Operations = append(state.Operations, kind)
+	return managedFakeKeeper(*state, candidate), nil
+}
+
+func managedFakeCreate(s *managedFakeDockerState, args []string, candidate bool) error {
+	if len(args) < 5 || args[len(args)-2] != "--deadline" {
+		return errors.New("invalid create tail")
+	}
+	flags := map[string]string{}
+	labels := map[string]string{}
+	for i := 2; i < len(args)-3; i++ {
+		key := args[i]
+		if key == "--pull=never" || key == "--init=false" || key == "--read-only" {
+			if _, ok := flags[key]; ok {
+				return errors.New("duplicate create flag")
+			}
+			flags[key] = "true"
+			continue
+		}
+		if i+1 >= len(args)-3 {
+			return errors.New("missing create argument")
+		}
+		i++
+		if key == "--label" {
+			k, v, ok := strings.Cut(args[i], "=")
+			if !ok || labels[k] != "" {
+				return errors.New("invalid label")
+			}
+			labels[k] = v
+			continue
+		}
+		if _, ok := flags[key]; ok {
+			return errors.New("duplicate create argument")
+		}
+		flags[key] = args[i]
+	}
+	if len(labels) != 6 {
+		return errors.New("incorrect ownership labels")
+	}
+	expected := map[string]string{"--pull=never": "true", "--read-only": "true", "--network": "none", "--cap-drop": "ALL", "--security-opt": "no-new-privileges", "--ipc": "private", "--cgroupns": "private", "--restart": "no", "--log-driver": "none", "--pids-limit": "16", "--shm-size": "1048576", "--user": "65534:65534", "--entrypoint": "/usr/local/bin/oro-factory-guard", "--mount": "type=volume,source=" + s.Volume + ",target=/source,volume-nocopy"}
+	if candidate {
+		expected["--init=false"] = "true"
+		expected["--memory"] = "268435456"
+		expected["--memory-swap"] = "268435456"
+		expected["--cpus"] = "1.000000000"
+		expected["--tmpfs"] = "/scratch:rw,size=1048576,nr_inodes=16,uid=1000,gid=1000,mode=0700"
+	} else {
+		expected["--memory"] = "67108864"
+		expected["--memory-swap"] = "67108864"
+		expected["--cpus"] = "0.25"
+	}
+	name := flags["--name"]
+	delete(flags, "--name")
+	if name == "" || !maps.Equal(flags, expected) {
+		return fmt.Errorf("unexpected create arguments: %v", flags)
+	}
+	labels["dev.fixture.image"] = "inherited"
+	image, deadline := args[len(args)-3], args[len(args)-1]
+	if image != "sha256:"+strings.Repeat("a", 64) {
+		return errors.New("unexpected image")
+	}
+	if _, err := time.Parse(time.RFC3339Nano, deadline); err != nil {
+		return err
+	}
+	if candidate {
+		s.CandidateName, s.CandidateImage, s.CandidateDeadline, s.CandidateLabels = name, image, deadline, labels
+		s.CandidateMemory, s.CandidateCPUs, s.CandidatePIDs, s.CandidateScratch = flags["--memory"], "1000000000", flags["--pids-limit"], flags["--tmpfs"]
+	} else {
+		s.Name, s.Image, s.Deadline, s.KeeperLabels = name, image, deadline, labels
+	}
+	return nil
+}
+
+func managedFakeKeeper(s managedFakeDockerState, candidate bool) map[string]any {
+	id := strings.Repeat("d", 64)
+	if candidate {
+		id = strings.Repeat("e", 64)
+		s.Name, s.Image, s.Deadline, s.KeeperLabels, s.Running = s.CandidateName, s.CandidateImage, s.CandidateDeadline, s.CandidateLabels, s.CandidateRunning
+	}
 	status := map[string]any{"Status": "created", "Running": false, "Paused": false, "Restarting": false, "Dead": false, "Pid": 0, "ExitCode": 0, "Error": "", "StartedAt": "0001-01-01T00:00:00Z", "FinishedAt": "0001-01-01T00:00:00Z"}
 	if s.Running {
 		status["Status"] = "running"
@@ -773,12 +1041,22 @@ func managedFakeKeeper(s managedFakeDockerState) map[string]any {
 		status["Pid"] = 203
 		status["StartedAt"] = "2026-10-24T06:00:00Z"
 	}
-	return map[string]any{
-		"Id": strings.Repeat("d", 64), "Name": "/" + s.Name, "Image": s.Image, "Created": "2026-10-24T05:49:04Z",
+	object := map[string]any{
+		"Id": id, "Name": "/" + s.Name, "Image": s.Image, "Created": "2026-10-24T05:49:04Z",
 		"Config": map[string]any{"User": "65534:65534", "Entrypoint": []string{"/usr/local/bin/oro-factory-guard"}, "Cmd": []string{"--deadline", s.Deadline}, "Labels": s.KeeperLabels, "Tty": false, "OpenStdin": false, "AttachStdout": true}, "State": status,
 		"HostConfig": map[string]any{"NetworkMode": "none", "PidMode": "", "IpcMode": "private", "CgroupnsMode": "private", "ReadonlyRootfs": true, "Privileged": false, "CapAdd": nil, "CapDrop": []string{"ALL"}, "SecurityOpt": []string{"no-new-privileges"}, "Memory": int64(64 << 20), "MemorySwap": int64(64 << 20), "NanoCpus": int64(250000000), "PidsLimit": int64(16), "ShmSize": int64(1 << 20), "RestartPolicy": map[string]any{"Name": "no", "MaximumRetryCount": 0}, "LogConfig": map[string]any{"Type": "none", "Config": map[string]string{}}, "Binds": nil, "VolumesFrom": nil, "Tmpfs": nil, "Devices": nil, "DeviceRequests": nil, "Mounts": []any{map[string]any{"Type": "volume", "Source": s.Volume, "Target": "/source", "ReadOnly": false, "VolumeOptions": map[string]any{"NoCopy": true}}}},
 		"Mounts":     []any{map[string]any{"Type": "volume", "Name": s.Volume, "Source": "/var/lib/docker/volumes/owned/_data", "Destination": "/source", "Driver": "local", "RW": true, "Propagation": ""}},
 	}
+	if candidate {
+		host := object["HostConfig"].(map[string]any)
+		host["Memory"], _ = strconv.ParseInt(s.CandidateMemory, 10, 64)
+		host["MemorySwap"] = host["Memory"]
+		host["NanoCpus"], _ = strconv.ParseInt(s.CandidateCPUs, 10, 64)
+		host["PidsLimit"], _ = strconv.ParseInt(s.CandidatePIDs, 10, 64)
+		host["Tmpfs"] = map[string]string{"/scratch": strings.TrimPrefix(s.CandidateScratch, "/scratch:")}
+		host["UTSMode"], host["Init"] = "", false
+	}
+	return object
 }
 
 func TestFactoryManagedHostPeer(t *testing.T) {
