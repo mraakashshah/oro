@@ -423,7 +423,7 @@ func testFactoryCredentialCaseAlias(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !os.SameFile(realInfo, aliasInfo) {
-		t.Skip("case variant names a different directory")
+		t.Skip("case variant names a different object")
 	}
 	f.spec.Repository = repo
 	data, err := json.Marshal(f.spec)
@@ -540,15 +540,11 @@ func testFactoryDistinctCaseDirectories(t *testing.T) {
 func testFactoryCredentialMissingStateCaseAlias(t *testing.T) {
 	f := newFactoryStartFixture(t)
 	alias := filepath.Join(filepath.Dir(f.root), strings.ToUpper(filepath.Base(f.root)))
-	probeName := filepath.Join(filepath.Dir(f.root), "CaseProbe")
-	if err := os.Mkdir(probeName, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	a, err := os.Stat(probeName)
+	a, err := os.Stat(f.oro)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := os.Stat(filepath.Join(filepath.Dir(probeName), "cASEpROBE"))
+	b, err := os.Stat(filepath.Join(filepath.Dir(f.oro), strings.ToUpper(filepath.Base(f.oro))))
 	if errors.Is(err, os.ErrNotExist) {
 		t.Skip("filesystem distinguishes case")
 	}
