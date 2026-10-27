@@ -143,12 +143,13 @@ func runCandidateExecution(t *testing.T, mode string) {
 	runtime := &managedEngineRuntime{git: git, docker: docker}
 
 	recording := &candidateExecutionRuntime{base: runtime, journal: j, t: t, mode: mode, config: config}
-	status, err := RunManagedController(t.Context(), root, spec.ID, gen, scope.ID, recording, func(context.Context) (ManagedDockerConfig, error) { return config, nil })
+	transport := &managedCandidateRecordingRuntime{base: recording}
+	status, err := RunManagedController(t.Context(), root, spec.ID, gen, scope.ID, transport, func(context.Context) (ManagedDockerConfig, error) { return config, nil })
 	if !isManagedInterruption(err) || status.State != "running" || status.Attempts != 1 {
 		t.Fatalf("controller = %+v, %v", status, err)
 	}
 	var phase string
-	expected := map[string]string{"success": "ready", "before_stop": "create_dispatching", "before_epoch": "create_dispatching", "after_stop": "create_dispatching", "lost_create": "create_dispatching", "lost_start": "start_dispatching", "bad_memory": "created", "bad_mount": "created", "bad_labels": "created", "bad_scratch": "created", "bad_image": "created", "bad_guard": "created", "bad_uts": "created", "bad_uts_alias": "created", "bad_init_alias": "created", "bad_init": "created", "null_init": "created", "missing_init": "created", "bad_lifetime": "start_acknowledged", "bad_ready": "start_dispatching", "bad_running": "start_acknowledged"}[mode]
+	expected := map[string]string{"success": "retired", "before_stop": "create_dispatching", "before_epoch": "create_dispatching", "after_stop": "create_dispatching", "lost_create": "create_dispatching", "lost_start": "start_dispatching", "bad_memory": "created", "bad_mount": "created", "bad_labels": "created", "bad_scratch": "created", "bad_image": "created", "bad_guard": "created", "bad_uts": "created", "bad_uts_alias": "created", "bad_init_alias": "created", "bad_init": "created", "null_init": "created", "missing_init": "created", "bad_lifetime": "start_acknowledged", "bad_ready": "start_dispatching", "bad_running": "start_acknowledged"}[mode]
 	if err := j.conn.QueryRowContext(t.Context(), "SELECT json_extract(body,'$.phase') FROM managed_docker_candidates").Scan(&phase); err != nil || phase != expected {
 		t.Fatalf("candidate not ready: %s %v", phase, err)
 	}
@@ -171,6 +172,22 @@ func runCandidateExecution(t *testing.T, mode string) {
 	wantCalls := map[string]int{"success": 4, "before_stop": 1, "before_epoch": 1, "after_stop": 1, "lost_create": 1, "lost_start": 3, "bad_memory": 2, "bad_mount": 2, "bad_labels": 2, "bad_scratch": 2, "bad_image": 2, "bad_guard": 2, "bad_uts": 2, "bad_uts_alias": 2, "bad_init_alias": 2, "bad_init": 2, "null_init": 2, "missing_init": 2, "bad_lifetime": 4, "bad_ready": 3, "bad_running": 4}[mode]
 	if recording.calls != wantCalls {
 		t.Fatalf("candidate calls = %d, want %d", recording.calls, wantCalls)
+	}
+	wantCleanup := 0
+	if mode == "success" {
+		wantCleanup = 1
+	}
+	if len(transport.cleanup) != wantCleanup {
+		t.Fatalf("cleanup calls = %d, want %d", len(transport.cleanup), wantCleanup)
+	}
+	if mode == "success" {
+		if intent.Retirement == nil || transport.cleanup[0].Scope != intent.Retirement.Scope || observation.Phase != "quiescent" {
+			t.Fatalf("retirement = %+v, scope = %+v", intent.Retirement, observation)
+		}
+		cleanup, err := j.Observe(t.Context(), intent.Retirement.Scope)
+		if err != nil || cleanup.Phase != "quiescent" || !cleanup.Deadline.Equal(intent.Retirement.Deadline) {
+			t.Fatalf("cleanup scope = %+v, %v", cleanup, err)
+		}
 	}
 	var modelCount, candidateCount, createCount, startCount int
 	query := `SELECT (SELECT count(*) FROM managed_reservations WHERE kind='model'), (SELECT count(*) FROM managed_docker_candidates), (SELECT count(*) FROM managed_reservations WHERE kind='host' AND token=json_extract((SELECT body FROM managed_docker_candidates), '$.create_host.id')), (SELECT count(*) FROM managed_reservations WHERE kind='host' AND token=json_extract((SELECT body FROM managed_docker_candidates), '$.start_host.id'))`

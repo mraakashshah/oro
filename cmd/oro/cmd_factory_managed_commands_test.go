@@ -492,8 +492,8 @@ func testFactoryManagedCommandsCountedSupervisor(t *testing.T, mode string) {
 		if err := json.Unmarshal(candidateBody, &candidate); err != nil {
 			t.Fatal(err)
 		}
-		if candidate["phase"] != "ready" {
-			t.Fatalf("candidate not ready: %s", candidateBody)
+		if candidate["phase"] != "retired" {
+			t.Fatalf("candidate not retired: %s", candidateBody)
 		}
 		fixtureData, err := os.ReadFile(fixtureState)
 		if err != nil {
@@ -503,14 +503,14 @@ func testFactoryManagedCommandsCountedSupervisor(t *testing.T, mode string) {
 		if err := json.Unmarshal(fixtureData, &dockerState); err != nil {
 			t.Fatal(err)
 		}
-		wantDocker := []string{"volume-create", "volume-inspect", "keeper-create", "keeper-inspect", "keeper-ready-inspect", "keeper-start", "keeper-inspect", "source-seed", "keeper-inspect", "keeper-inspect", "candidate-create", "candidate-inspect", "candidate-ready-inspect", "candidate-start", "candidate-inspect", "keeper-inspect"}
+		wantDocker := []string{"volume-create", "volume-inspect", "keeper-create", "keeper-inspect", "keeper-ready-inspect", "keeper-start", "keeper-inspect", "source-seed", "keeper-inspect", "keeper-inspect", "candidate-create", "candidate-inspect", "candidate-ready-inspect", "candidate-start", "candidate-inspect", "keeper-inspect", "candidate-ready-inspect", "candidate-stop", "candidate-ready-inspect"}
 		if !slices.Equal(dockerState.Operations, wantDocker) {
 			t.Fatalf("Docker operations = %v, want %v", dockerState.Operations, wantDocker)
 		}
 		if dockerState.KeeperLabels["dev.fixture.image"] != "inherited" || dockerState.CandidateLabels["dev.fixture.image"] != "inherited" {
 			t.Fatal("image label was not inherited by both containers")
 		}
-		if dockerState.Name == dockerState.CandidateName || !dockerState.Running || !dockerState.CandidateRunning {
+		if dockerState.Name == dockerState.CandidateName || !dockerState.Running || dockerState.CandidateRunning {
 			t.Fatalf("keeper/candidate identity or state: %+v", dockerState)
 		}
 		if candidate["guard_deadline"] != candidate["execution_deadline"] || candidate["guard_deadline"] != dockerState.CandidateDeadline || dockerState.Deadline != view.HardStop.Format(time.RFC3339Nano) {
@@ -529,7 +529,7 @@ func testFactoryManagedCommandsCountedSupervisor(t *testing.T, mode string) {
 			}
 			calls = append(calls, call)
 		}
-		wantPaths := []string{view.GitPath, view.GitPath, view.GitPath, view.GitPath, view.GitPath, view.GitPath, docker, docker, docker, docker, oro, docker, docker, docker, docker, docker, docker, oro, docker, docker}
+		wantPaths := []string{view.GitPath, view.GitPath, view.GitPath, view.GitPath, view.GitPath, view.GitPath, docker, docker, docker, docker, oro, docker, docker, docker, docker, docker, docker, oro, docker, docker, oro}
 		if len(calls) != len(wantPaths) {
 			t.Fatalf("host calls = %d, want %d", len(calls), len(wantPaths))
 		}
@@ -545,9 +545,17 @@ func testFactoryManagedCommandsCountedSupervisor(t *testing.T, mode string) {
 			if call.Path != wantPaths[index] {
 				t.Fatalf("host call %d path = %s, want %s", index, call.Path, wantPaths[index])
 			}
-			if index >= 14 && !call.Deadline.Equal(workerDeadline) {
+			if index >= 14 && index < 20 && !call.Deadline.Equal(workerDeadline) {
 				t.Fatalf("candidate call %d deadline = %s, want %s", index, call.Deadline, workerDeadline)
 			}
+		}
+		var permit factory.DockerCleanupPermit
+		if err := json.Unmarshal(calls[20].Stdin, &permit); err != nil || permit.Operation != factory.DockerCleanupStop || permit.Target.Kind != "container" || permit.Binding.ContainerID != strings.Repeat("e", 64) || permit.Binding.Labels["dev.fixture.image"] != "inherited" || permit.Scope != calls[20].Scope || !permit.Deadline.Equal(calls[20].Deadline) || permit.Deadline.After(view.HardStop) || !slices.Equal(calls[20].Args, []string{"factory", "_docker-cleanup", "--runtime-config", ref.Path, "--runtime-config-sha256", ref.SHA256}) {
+			t.Fatalf("cleanup call/permit differs: %+v, %v", permit, err)
+		}
+		var targetPhase, cleanupPhase string
+		if err := db.QueryRowContext(t.Context(), "SELECT (SELECT phase FROM managed_scopes WHERE id=?), (SELECT phase FROM managed_scopes WHERE id=?)", permit.Target.ID, permit.Scope.ID).Scan(&targetPhase, &cleanupPhase); err != nil || targetPhase != "quiescent" || cleanupPhase != "quiescent" {
+			t.Fatalf("retirement phases = %q/%q: %v", targetPhase, cleanupPhase, err)
 		}
 		var hostCount, unretired int
 		if err := db.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM managed_reservations WHERE kind='host'), (SELECT count(*) FROM managed_scopes WHERE name LIKE '%host%' AND phase != 'quiescent')").Scan(&hostCount, &unretired); err != nil || hostCount != 20 || unretired != 0 {
@@ -795,6 +803,7 @@ type managedFakeDockerState struct {
 	CandidateName, CandidateImage, CandidateDeadline                string
 	CandidateLabels                                                 map[string]string
 	CandidateRunning                                                bool
+	CandidateStopped                                                bool
 	CandidateMemory, CandidateCPUs, CandidatePIDs, CandidateScratch string
 	Operations                                                      []string
 }
@@ -906,6 +915,14 @@ func TestFactoryManagedDockerProgram(t *testing.T) {
 		}
 		save()
 		emit([]any{value})
+		os.Exit(0)
+	}
+	if slices.Equal(args, []string{"stop", "--signal", "SIGKILL", "--timeout", "0", strings.Repeat("e", 64)}) && state.CandidateRunning {
+		state.CandidateRunning = false
+		state.CandidateStopped = true
+		state.Operations = append(state.Operations, "candidate-stop")
+		save()
+		fmt.Println(strings.Repeat("e", 64))
 		os.Exit(0)
 	}
 	if len(args) == 3 && args[0] == "start" && args[1] == "--attach" {
@@ -1039,6 +1056,10 @@ func managedFakeKeeper(s managedFakeDockerState, candidate bool) map[string]any 
 		status["Status"] = "running"
 		status["Running"] = true
 		status["Pid"] = 203
+		status["StartedAt"] = "2026-10-24T06:00:00Z"
+	}
+	if candidate && s.CandidateStopped {
+		status["Status"] = "exited"
 		status["StartedAt"] = "2026-10-24T06:00:00Z"
 	}
 	object := map[string]any{

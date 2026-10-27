@@ -10,6 +10,7 @@ import (
 	"errors"
 	"flag"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -124,14 +125,14 @@ func TestManagedControllerWorkerCheckout(t *testing.T) {
 		if _, err := RunManagedController(t.Context(), root, spec.ID, bad.generation, bad.token, runtime, bad.reader); err == nil {
 			t.Fatal("invalid grant or config accepted")
 		}
-		if len(git.calls) != 0 || len(docker.calls) != 0 || len(runtime.calls) != 0 {
+		if len(git.calls) != 0 || len(docker.calls) != 0 || len(runtime.calls) != 0 || len(runtime.cleanup) != 0 {
 			t.Fatal("invalid entry invoked host")
 		}
 	}
 	if _, err := j.conn.ExecContext(t.Context(), "UPDATE managed_scopes SET pid=? WHERE id=?", os.Getpid()+1, scope.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := RunManagedController(t.Context(), root, spec.ID, gen, scope.ID, runtime, reader); err == nil || len(git.calls) != 0 || len(docker.calls) != 0 {
+	if _, err := RunManagedController(t.Context(), root, spec.ID, gen, scope.ID, runtime, reader); err == nil || len(git.calls) != 0 || len(docker.calls) != 0 || len(runtime.calls) != 0 || len(runtime.cleanup) != 0 {
 		t.Fatalf("foreign process accepted: %v", err)
 	}
 	if _, err := j.conn.ExecContext(t.Context(), "UPDATE managed_scopes SET pid=? WHERE id=?", os.Getpid(), scope.ID); err != nil {
@@ -169,7 +170,7 @@ func TestManagedControllerWorkerCheckout(t *testing.T) {
 	status, runErr := RunManagedController(t.Context(), root, spec.ID, gen, scope.ID, runtime, reader)
 	if mode == "revoked-save" {
 		var after string
-		if err := j.conn.QueryRowContext(t.Context(), stateQuery).Scan(&after); err != nil || after != before || runErr == nil || status.State != "pending" || status.Attempts != 0 || len(git.calls) != 0 || len(docker.calls) != 0 {
+		if err := j.conn.QueryRowContext(t.Context(), stateQuery).Scan(&after); err != nil || after != before || runErr == nil || status.State != "pending" || status.Attempts != 0 || len(git.calls) != 0 || len(docker.calls) != 0 || len(runtime.calls) != 0 || len(runtime.cleanup) != 0 {
 			t.Fatalf("revoked public entry changed state or invoked host: %+v, %v, %v", status, runErr, err)
 		}
 		return
@@ -243,7 +244,7 @@ func TestManagedControllerWorkerCheckout(t *testing.T) {
 	if err := json.Unmarshal(body, &intent); err != nil {
 		t.Fatal(err)
 	}
-	if intent.Phase != "ready" || intent.WorkspaceID != state.Worktree || intent.Source.Keeper != workspace.Keeper || intent.Container == workspace.Keeper || intent.Binding.ContainerID == "" {
+	if intent.Phase != "retired" || intent.Retirement == nil || intent.WorkspaceID != state.Worktree || intent.Source.Keeper != workspace.Keeper || intent.Container == workspace.Keeper || intent.Binding.ContainerID == "" {
 		t.Fatalf("candidate identity or phase: %+v", intent)
 	}
 	observation, err := j.Observe(t.Context(), intent.Container)
@@ -256,6 +257,26 @@ func TestManagedControllerWorkerCheckout(t *testing.T) {
 	}
 	if len(runtime.calls) != 4 {
 		t.Fatalf("candidate calls = %d, want 4", len(runtime.calls))
+	}
+	if len(runtime.cleanup) != 1 || runtime.cleanup[0].Scope != intent.Retirement.Scope || !runtime.cleanup[0].Deadline.Equal(intent.Retirement.Deadline) {
+		t.Fatalf("cleanup calls = %+v, retirement = %+v", runtime.cleanup, intent.Retirement)
+	}
+	var cleanupPermit DockerCleanupPermit
+	if err := json.Unmarshal(runtime.cleanup[0].Stdin, &cleanupPermit); err != nil || cleanupPermit.Target != intent.Container || cleanupPermit.Binding.ContainerID != intent.Binding.ContainerID || cleanupPermit.Binding.Name != intent.Binding.Name || cleanupPermit.Binding.ImageID != intent.Binding.ImageID || cleanupPermit.Binding.CreatedAt != intent.Binding.CreatedAt || cleanupPermit.Operation != DockerCleanupStop {
+		t.Fatalf("cleanup target/binding = %+v, %v", cleanupPermit, err)
+	}
+	labels := maps.Clone(keeperIntent.Binding.Labels)
+	for key, value := range intent.Binding.Labels {
+		labels[key] = value
+	}
+	if !maps.Equal(cleanupPermit.Binding.Labels, labels) {
+		t.Fatalf("cleanup labels = %v, want %v", cleanupPermit.Binding.Labels, labels)
+	}
+	for _, scope := range []ScopeHandle{intent.Container, intent.Retirement.Scope} {
+		observed, err := j.Observe(t.Context(), scope)
+		if err != nil || observed.Phase != "quiescent" {
+			t.Fatalf("retired scope = %+v, %v", observed, err)
+		}
 	}
 	for i, call := range runtime.calls {
 		if !call.Deadline.Equal(intent.ExecutionDeadline) {
@@ -375,9 +396,9 @@ func TestManagedControllerWorkerCheckout(t *testing.T) {
 	if len(git.calls) != beforeExport+3 || len(docker.calls) != beforeContinuity+1 || !docker.calls[len(docker.calls)-1].Deadline.Equal(workspace.OperationDeadline) {
 		t.Fatal("ready replay failed to reexport and inspect under retained deadline")
 	}
-	beforeGit, beforeDocker, beforeCandidate := len(git.calls), len(docker.calls), len(runtime.calls)
+	beforeGit, beforeDocker, beforeCandidate, beforeCleanup := len(git.calls), len(docker.calls), len(runtime.calls), len(runtime.cleanup)
 	status, err = RunManagedController(t.Context(), root, spec.ID, gen, scope.ID, runtime, reader)
-	if !isManagedInterruption(err) || status.State != "running" || status.Attempts != expectedAttempt || len(git.calls) != beforeGit || len(docker.calls) != beforeDocker || len(runtime.calls) != beforeCandidate {
+	if !isManagedInterruption(err) || status.State != "running" || status.Attempts != expectedAttempt || len(git.calls) != beforeGit || len(docker.calls) != beforeDocker || len(runtime.calls) != beforeCandidate || len(runtime.cleanup) != beforeCleanup {
 		t.Fatalf("reentry = %+v, %v", status, err)
 	}
 	store.owner = owner
@@ -421,17 +442,46 @@ func runManagedEngineLeader(t *testing.T, mode string) {
 }
 
 type managedCandidateRecordingRuntime struct {
-	base  *candidateExecutionRuntime
-	calls []HostInvocation
+	base    *candidateExecutionRuntime
+	calls   []HostInvocation
+	cleanup []HostInvocation
 }
 
 func (r *managedCandidateRecordingRuntime) Invoke(ctx context.Context, call HostInvocation) (HostResult, error) {
+	if call.Scope.Kind == "cleanup" {
+		return r.invokeCleanup(ctx, call)
+	}
 	before := r.base.calls
 	result, err := r.base.Invoke(ctx, call)
 	if r.base.calls != before {
 		r.calls = append(r.calls, call)
 	}
 	return result, err
+}
+
+func (r *managedCandidateRecordingRuntime) invokeCleanup(ctx context.Context, call HostInvocation) (HostResult, error) {
+	r.cleanup = append(r.cleanup, call)
+	permit, err := r.base.journal.CleanupPermit(ctx, call.Scope)
+	if err != nil {
+		return HostResult{}, err
+	}
+	body, err := json.Marshal(permit)
+	if err != nil {
+		return HostResult{}, err
+	}
+	config := r.base.config
+	if call.Path != config.OroPath || call.Dir != config.StateRoot || !slices.Equal(call.Args, []string{"factory", "_docker-cleanup", "--runtime-config", config.RuntimeConfigPath, "--runtime-config-sha256", config.RuntimeConfigSHA256}) || !slices.Equal(call.Env, []string{"PATH=/usr/bin:/bin", "LC_ALL=C", "LANG=C"}) || !bytes.Equal(call.Stdin, body) || !call.Deadline.Equal(permit.Deadline) || call.OutputLimit != 1<<20 || permit.Operation != DockerCleanupStop {
+		return HostResult{}, errors.New("cleanup invocation differs from authenticated permit")
+	}
+	if err := r.base.journal.RecordHello(ctx, call.Scope, 103, 103); err != nil {
+		return HostResult{}, err
+	}
+	if err := r.base.journal.MarkQuiescent(ctx, call.Scope); err != nil {
+		return HostResult{}, err
+	}
+	result := DockerCleanupResult{Version: 1, PermitSHA256: contentHash(body), Scope: permit.Scope, Target: permit.Target, Operation: permit.Operation, Binding: permit.Binding, Observation: "stopped", MutationAcknowledged: true}
+	data, err := EncodeDockerCleanupResult(result, permit)
+	return HostResult{Stdout: data}, err
 }
 
 func (r *managedCandidateRecordingRuntime) Retire(ctx context.Context, scope ScopeHandle) error {
