@@ -119,13 +119,16 @@ func (r *sourceKeeperRuntime) Retire(ctx context.Context, scope ScopeHandle) err
 }
 
 func sourceKeeperObject(intent managedDockerKeeperIntent, volume managedDockerVolumeIntent) map[string]any {
-	return map[string]any{
+	object := map[string]any{
 		"Id": strings.Repeat("d", 64), "Name": "/" + intent.Keeper.Name, "Image": intent.Binding.ImageID, "Created": "2026-10-24T01:49:04-04:00",
 		"Config":     map[string]any{"User": "65534:65534", "Entrypoint": []string{"/usr/local/bin/oro-factory-guard"}, "Cmd": []string{"--deadline", intent.GuardDeadline.Format(time.RFC3339Nano)}, "Labels": intent.Binding.Labels, "Tty": false, "OpenStdin": false, "AttachStdout": true},
 		"State":      map[string]any{"Status": "created", "Running": false, "Paused": false, "Restarting": false, "Dead": false, "Pid": 0, "ExitCode": 0, "Error": "", "StartedAt": "0001-01-01T00:00:00Z", "FinishedAt": "0001-01-01T00:00:00Z"},
 		"HostConfig": map[string]any{"NetworkMode": "none", "PidMode": "", "IpcMode": "private", "CgroupnsMode": "private", "ReadonlyRootfs": true, "Privileged": false, "CapAdd": nil, "CapDrop": []string{"ALL"}, "SecurityOpt": []string{"no-new-privileges"}, "Memory": int64(64 << 20), "MemorySwap": int64(64 << 20), "NanoCpus": int64(250000000), "PidsLimit": int64(16), "ShmSize": int64(1 << 20), "RestartPolicy": map[string]any{"Name": "no", "MaximumRetryCount": 0}, "LogConfig": map[string]any{"Type": "none", "Config": map[string]string{}}, "Binds": nil, "VolumesFrom": nil, "Tmpfs": nil, "Devices": nil, "DeviceRequests": nil, "Mounts": []any{map[string]any{"Type": "volume", "Source": volume.Binding.Name, "Target": "/source", "ReadOnly": false, "VolumeOptions": map[string]any{"NoCopy": true}}}},
 		"Mounts":     []any{map[string]any{"Type": "volume", "Name": volume.Binding.Name, "Source": "/var/lib/docker/volumes/owned/_data", "Destination": "/source", "Driver": "local", "RW": true, "Propagation": ""}},
 	}
+	host := object["HostConfig"].(map[string]any)
+	host["Init"], host["UTSMode"] = false, ""
+	return object
 }
 
 func sourceKeeperInspection(t *testing.T, intent managedDockerKeeperIntent, volume managedDockerVolumeIntent) HostResult {
@@ -170,7 +173,7 @@ func testSourceKeeperCreate(t *testing.T) {
 	args := call.Args[6 : len(call.Args)-3]
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if arg == "--pull=never" || arg == "--read-only" {
+		if arg == "--pull=never" || arg == "--read-only" || arg == "--init=false" {
 			flags[arg] = true
 			continue
 		}
@@ -192,7 +195,7 @@ func testSourceKeeperCreate(t *testing.T) {
 		options[arg] = args[i]
 	}
 	want := map[string]string{"--name": got.Keeper.Name, "--network": "none", "--cap-drop": "ALL", "--security-opt": "no-new-privileges", "--ipc": "private", "--cgroupns": "private", "--restart": "no", "--log-driver": "none", "--memory": "67108864", "--memory-swap": "67108864", "--cpus": "0.25", "--pids-limit": "16", "--shm-size": "1048576", "--user": "65534:65534", "--entrypoint": "/usr/local/bin/oro-factory-guard", "--mount": "type=volume,source=" + got.Volume.Name + ",target=/source,volume-nocopy"}
-	if !reflect.DeepEqual(options, want) || !reflect.DeepEqual(labels, got.Binding.Labels) || !reflect.DeepEqual(flags, map[string]bool{"--pull=never": true, "--read-only": true}) {
+	if !reflect.DeepEqual(options, want) || !reflect.DeepEqual(labels, got.Binding.Labels) || !reflect.DeepEqual(flags, map[string]bool{"--pull=never": true, "--read-only": true, "--init=false": true}) {
 		t.Fatalf("wrong exact create options %v flags %v labels %v", options, flags, labels)
 	}
 	if !slices.Equal(call.Args[len(call.Args)-3:], []string{f.manifest.Spec.Runtime.ImageDigest, "--deadline", f.manifest.HardStop.Format(time.RFC3339Nano)}) {
@@ -332,7 +335,18 @@ func testSourceKeeperInspection(t *testing.T) {
 		t.Fatal(err)
 	}
 	changes := map[string]func(map[string]any){
-		"mount alias": func(v map[string]any) { v["Mounts"].([]any)[0].(map[string]any)["rw"] = true },
+		"init true":    func(v map[string]any) { v["HostConfig"].(map[string]any)["Init"] = true },
+		"init null":    func(v map[string]any) { v["HostConfig"].(map[string]any)["Init"] = nil },
+		"init type":    func(v map[string]any) { v["HostConfig"].(map[string]any)["Init"] = "false" },
+		"init missing": func(v map[string]any) { delete(v["HostConfig"].(map[string]any), "Init") },
+		"init alias":   func(v map[string]any) { v["HostConfig"].(map[string]any)["init"] = false },
+		"uts host":     func(v map[string]any) { v["HostConfig"].(map[string]any)["UTSMode"] = "host" },
+		"uts null":     func(v map[string]any) { v["HostConfig"].(map[string]any)["UTSMode"] = nil },
+		"uts type":     func(v map[string]any) { v["HostConfig"].(map[string]any)["UTSMode"] = false },
+		"uts missing":  func(v map[string]any) { delete(v["HostConfig"].(map[string]any), "UTSMode") },
+		"uts alias":    func(v map[string]any) { v["HostConfig"].(map[string]any)["utsmode"] = "" },
+		"host alias":   func(v map[string]any) { v["hostconfig"] = v["HostConfig"] },
+		"mount alias":  func(v map[string]any) { v["Mounts"].([]any)[0].(map[string]any)["rw"] = true },
 		"volume subpath": func(v map[string]any) {
 			v["HostConfig"].(map[string]any)["Mounts"].([]any)[0].(map[string]any)["VolumeOptions"].(map[string]any)["Subpath"] = "foreign"
 		},

@@ -421,11 +421,11 @@ func TestCandidateNamespaceExactFields(t *testing.T) {
 		`{"HostConfig":{"UTSMode":""}}`,
 		`{"HostConfig":{"UTSMode":"","Init":"false"}}`,
 	} {
-		if err := validateCandidateNamespaces(json.RawMessage(body)); err == nil {
+		if err := validateManagedGuardNamespaces(json.RawMessage(body)); err == nil {
 			t.Errorf("accepted invalid namespaces: %s", body)
 		}
 	}
-	if err := validateCandidateNamespaces(json.RawMessage(`{"HostConfig":{"UTSMode":"","Init":false}}`)); err != nil {
+	if err := validateManagedGuardNamespaces(json.RawMessage(`{"HostConfig":{"UTSMode":"","Init":false}}`)); err != nil {
 		t.Fatalf("rejected valid namespaces: %v", err)
 	}
 }

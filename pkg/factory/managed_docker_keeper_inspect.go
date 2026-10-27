@@ -128,6 +128,9 @@ func parseManagedKeeperInspection(result HostResult, expected managedDockerKeepe
 	if len(objects) != 1 {
 		return managedKeeperInspection{}, DockerCleanupBinding{}, errors.New("keeper inspection requires one object")
 	}
+	if err := validateManagedGuardNamespaces(objects[0]); err != nil {
+		return managedKeeperInspection{}, DockerCleanupBinding{}, fmt.Errorf("keeper namespaces: %w", err)
+	}
 	var value managedKeeperInspection
 	if err := decodeManagedKeeperObject(objects[0], reflect.ValueOf(&value).Elem()); err != nil {
 		return managedKeeperInspection{}, DockerCleanupBinding{}, err

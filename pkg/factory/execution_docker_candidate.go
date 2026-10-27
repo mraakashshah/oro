@@ -212,7 +212,7 @@ func parseManagedCandidateInspection(result HostResult, i managedCandidateIntent
 	if err != nil {
 		return "", err
 	}
-	if err := validateCandidateNamespaces(objects[0]); err != nil {
+	if err := validateManagedGuardNamespaces(objects[0]); err != nil {
 		return "", err
 	}
 	var value managedKeeperInspection
@@ -255,27 +255,27 @@ func candidateInspectionObjects(result HostResult) ([]json.RawMessage, error) {
 	return objects, nil
 }
 
-func validateCandidateNamespaces(object json.RawMessage) error {
+func validateManagedGuardNamespaces(object json.RawMessage) error {
 	var root map[string]json.RawMessage
-	if err := json.Unmarshal(object, &root); err != nil || rejectCandidateAliases(root, "HostConfig") {
-		return errors.New("candidate HostConfig is malformed")
+	if err := json.Unmarshal(object, &root); err != nil || rejectManagedGuardAliases(root, "HostConfig") {
+		return errors.New("docker HostConfig is malformed")
 	}
 	var host map[string]json.RawMessage
-	if err := json.Unmarshal(root["HostConfig"], &host); err != nil || rejectCandidateAliases(host, "UTSMode", "Init") {
-		return errors.New("candidate namespace fields are malformed")
+	if err := json.Unmarshal(root["HostConfig"], &host); err != nil || rejectManagedGuardAliases(host, "UTSMode", "Init") {
+		return errors.New("docker namespace fields are malformed")
 	}
 	var uts *string
 	var init *bool
 	if err := json.Unmarshal(host["UTSMode"], &uts); err != nil || uts == nil || *uts != "" {
-		return errors.New("candidate UTS namespace differs")
+		return errors.New("docker UTS namespace differs")
 	}
 	if err := json.Unmarshal(host["Init"], &init); err != nil || init == nil || *init {
-		return errors.New("candidate init differs")
+		return errors.New("docker init differs")
 	}
 	return nil
 }
 
-func rejectCandidateAliases(fields map[string]json.RawMessage, names ...string) bool {
+func rejectManagedGuardAliases(fields map[string]json.RawMessage, names ...string) bool {
 	for key := range fields {
 		for _, name := range names {
 			if strings.EqualFold(key, name) && key != name {

@@ -88,7 +88,7 @@ func (d *managedDockerVolumes) dispatchKeeperWithin(ctx context.Context, intent 
 
 func (d *managedDockerVolumes) keeperCreateInvocation(intent managedDockerKeeperIntent) HostInvocation {
 	args := make([]string, 0, 43+2*len(intent.Binding.Labels))
-	args = append(args, "--config", d.config.DockerConfig, "--context", d.config.DockerContext, "container", "create", "--name", intent.Keeper.Name, "--pull=never", "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--ipc", "private", "--cgroupns", "private", "--restart", "no", "--log-driver", "none", "--memory", "67108864", "--memory-swap", "67108864", "--cpus", "0.25", "--pids-limit", "16", "--shm-size", "1048576", "--user", "65534:65534", "--entrypoint", "/usr/local/bin/oro-factory-guard", "--mount", "type=volume,source="+intent.Volume.Name+",target=/source,volume-nocopy")
+	args = append(args, "--config", d.config.DockerConfig, "--context", d.config.DockerContext, "container", "create", "--name", intent.Keeper.Name, "--pull=never", "--init=false", "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--ipc", "private", "--cgroupns", "private", "--restart", "no", "--log-driver", "none", "--memory", "67108864", "--memory-swap", "67108864", "--cpus", "0.25", "--pids-limit", "16", "--shm-size", "1048576", "--user", "65534:65534", "--entrypoint", "/usr/local/bin/oro-factory-guard", "--mount", "type=volume,source="+intent.Volume.Name+",target=/source,volume-nocopy")
 	for _, key := range slices.Sorted(maps.Keys(intent.Binding.Labels)) {
 		args = append(args, "--label", key+"="+intent.Binding.Labels[key])
 	}
