@@ -225,12 +225,22 @@ passed in 67.491 seconds and factory covered race in 21.434 seconds. Root's
 independent exact-tip cross-package race passed in 48.575 seconds harness
 (`terra-entry-final-reviewed-race`); CLI package 38.408 seconds and factory
 22.052 seconds. These are scoped results, not full-package coverage. The merged
-repository gate is running as `terra-entry-integrated-gate`, launched at
-`56666d04`, tool session `1133`; inspect its authoritative terminal result before
-closing the entry task or claiming a green merged gate. The preceding full gate
-and full factory race cover `2924a464`, not this new code. The entry remains
-explicitly adapter-unavailable: no model/tool effects or delivery are established.
-Next implementation leaf is `oro-mf-terra-intent`, counted invocation authority.
+repository gate `terra-entry-integrated-gate` is terminal PASS: 630.606 seconds
+harness, 22 checks passed, zero failed, 85.6% main-plus-serial coverage. It launched
+at `56666d04`; root confirmed no cmd/oro or pkg/factory changes through the later
+documentation tip `ad2c6dc3`. No root verification job remains live. The gate does
+not run the full cmd suite; the explicit final-tip CLI/factory race above covers
+the entry acceptance, while full CLI/native qualification remains with the parent.
+The entry remains explicitly adapter-unavailable: no model/tool effects or
+delivery are established. See the [entry proof](../proofs/2026-10-27-terra-entry.md).
+
+`oro-mf-terra-intent` is released to Terra in isolated
+`.worktrees/factory-terra-intent`, branch `feature/factory-terra-intent`, based on
+`ad2c6dc3`. Its first protected schema RED is terminal and expected: fresh
+admission lacks the version1 marker, while historical byte-preservation passes
+(6.097 seconds harness). Terra owns implementation and tests; root owns review,
+integration and push. No live model/native/real credential actions are authorized
+by this unit implementation task. Preserve the full factory goal.
 
 The [restricted Terra adapter research](../proofs/2026-10-26-terra-adapter-research.md)
 proposes an Oro-owned Responses function loop; it is research, not an implemented
