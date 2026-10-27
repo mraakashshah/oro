@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
@@ -690,6 +691,9 @@ func TestCandidateLeaderHarness(t *testing.T) {
 
 func candidateLeaderCommand(ctx context.Context, timeout time.Duration) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestManagedCandidateIntent$", "-test.timeout="+timeout.String(), "-test.v")
+	if coverage := flag.Lookup("test.gocoverdir"); coverage != nil && coverage.Value.String() != "" {
+		cmd.Args = append(cmd.Args, "-test.gocoverdir="+coverage.Value.String())
+	}
 	cmd.Env = append(os.Environ(), "ORO_CANDIDATE_LEADER=1")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
@@ -724,5 +728,35 @@ func runCandidateLeader(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("leader: %v\n%s", err, out)
+	}
+}
+
+func TestCandidateLeaderCoverageFlag(t *testing.T) {
+	coverage := flag.Lookup("test.gocoverdir")
+	if coverage == nil {
+		t.Fatal("missing Go coverage flag")
+	}
+	original := coverage.Value.String()
+	t.Cleanup(func() {
+		if err := flag.Set("test.gocoverdir", original); err != nil {
+			t.Error(err)
+		}
+	})
+	directory := t.TempDir()
+	if err := flag.Set("test.gocoverdir", directory); err != nil {
+		t.Fatal(err)
+	}
+	cmd := candidateLeaderCommand(t.Context(), time.Second)
+	if !slices.Contains(cmd.Args, "-test.gocoverdir="+directory) {
+		t.Fatalf("coverage directory not forwarded: %v", cmd.Args)
+	}
+	if err := flag.Set("test.gocoverdir", ""); err != nil {
+		t.Fatal(err)
+	}
+	cmd = candidateLeaderCommand(t.Context(), time.Second)
+	for _, arg := range cmd.Args {
+		if strings.HasPrefix(arg, "-test.gocoverdir=") {
+			t.Fatalf("empty coverage directory forwarded: %v", cmd.Args)
+		}
 	}
 }
