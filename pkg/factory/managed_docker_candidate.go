@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"time"
 )
 
@@ -129,8 +130,8 @@ func validateManagedCandidate(j *managedJournal, i managedCandidateIntent) error
 }
 
 func validateCandidateDetails(j *managedJournal, i managedCandidateIntent) error {
-	if i.Phase != "prepared" || i.StartHost != (ScopeHandle{}) || i.ContainerStartedAt != "" {
-		return errors.New("invalid prepared candidate phase")
+	if err := validateCandidatePhase(j, i); err != nil {
+		return err
 	}
 	for _, scope := range []ScopeHandle{i.Container, i.CreateHost} {
 		if err := validateManagedScope(scope); err != nil {
@@ -150,6 +151,7 @@ func validateCandidateDetails(j *managedJournal, i managedCandidateIntent) error
 	binding.VolumeDriver = ""
 	binding.VolumeOptions = nil
 	binding.Labels["dev.getoro.factory.kind"] = "container"
+	binding.ContainerID, binding.CreatedAt = i.Binding.ContainerID, i.Binding.CreatedAt
 	if !reflect.DeepEqual(binding, i.Binding) {
 		return errors.New("candidate binding differs")
 	}
@@ -296,12 +298,25 @@ func validateCandidateReferences(ctx context.Context, tx *sql.Tx, owner *managed
 	if current.Attempts != w.Attempt || current.Worktree != w.ID || current.BaseSHA != w.SourceSHA || !reflect.DeepEqual(i.Workspace, w) || !reflect.DeepEqual(i.Source, source) || candidateKeeperDigest(owner.journal, keeper) != i.KeeperSHA256 {
 		return errors.New("candidate source identity changed")
 	}
+	return validateCandidateScopeReferences(ctx, tx, owner, i)
+}
+
+func validateCandidateScopeReferences(ctx context.Context, tx *sql.Tx, owner *managedControllerOwner, i managedCandidateIntent) error {
 	for _, item := range []struct {
 		scope    ScopeHandle
 		deadline time.Time
 	}{{i.Container, i.ExecutionDeadline}, {i.CreateHost, i.ExecutionDeadline}} {
 		if err := validateDockerIntentScope(ctx, tx, owner.journal.admission, item.scope, item.deadline); err != nil {
 			return err
+		}
+	}
+	if i.StartHost != (ScopeHandle{}) {
+		if err := validateDockerIntentScope(ctx, tx, owner.journal.admission, i.StartHost, i.ExecutionDeadline); err != nil {
+			return err
+		}
+		var generation uint64
+		if err := tx.QueryRowContext(ctx, "SELECT generation FROM managed_reservations WHERE kind='host' AND token=?", i.StartHost.ID).Scan(&generation); err != nil || generation != i.Container.Generation {
+			return errors.Join(errors.New("candidate start host reservation differs"), err)
 		}
 	}
 	var generation uint64
@@ -365,6 +380,150 @@ func checkCandidateAvailability(ctx context.Context, tx *sql.Tx, workspaceID str
 	}
 	if exists != 0 {
 		return errors.New("candidate workspace already reserved")
+	}
+	return nil
+}
+
+func validateCandidatePhase(j *managedJournal, i managedCandidateIntent) error {
+	phase := slices.Index([]string{"prepared", "create_dispatching", "created", "inspected", "start_prepared", "start_dispatching", "start_acknowledged", "ready"}, i.Phase)
+	if phase < 0 {
+		return errors.New("invalid candidate phase")
+	}
+	if phase < 2 {
+		if i.Binding.ContainerID != "" || i.Binding.CreatedAt != "" {
+			return errors.New("unacknowledged candidate has binding")
+		}
+	} else if !managedKeeperID(i.Binding.ContainerID) {
+		return errors.New("candidate requires full container ID")
+	}
+	if phase < 3 && i.Binding.CreatedAt != "" {
+		return errors.New("candidate creation lifetime precedes inspection")
+	}
+	if phase >= 3 && i.Binding.CreatedAt == "" {
+		return errors.New("candidate missing creation lifetime")
+	}
+	if err := validateCleanupCreatedAt(i.Binding.CreatedAt); err != nil {
+		return err
+	}
+	if (phase < 4) != (i.StartHost == (ScopeHandle{})) {
+		return errors.New("candidate start scope differs from phase")
+	}
+	if err := validateCandidateStartHost(j, i, phase); err != nil {
+		return err
+	}
+	if (phase < 7) != (i.ContainerStartedAt == "") {
+		return errors.New("candidate running lifetime differs from phase")
+	}
+	return validateCleanupCreatedAt(i.ContainerStartedAt)
+}
+
+func validateCandidateStartHost(j *managedJournal, i managedCandidateIntent, phase int) error {
+	if phase >= 4 {
+		object := cleanupObjectiveHash(j.admission)
+		if i.StartHost.Name != "dev.getoro.factory."+object+".host."+i.StartHost.ID+"."+i.StartHost.Nonce || i.StartHost.ID == i.Container.ID || i.StartHost.Nonce == i.Container.Nonce || i.StartHost.ID == i.Source.StartHost.ID || i.StartHost.Nonce == i.Source.StartHost.Nonce || i.StartHost.ID == i.Source.SeedHost.ID || i.StartHost.Nonce == i.Source.SeedHost.Nonce {
+			return errors.New("candidate start host identity differs")
+		}
+		if err := validateManagedScope(i.StartHost); err != nil {
+			return err
+		}
+		if i.StartHost.Kind != "host" || i.StartHost.Backend != "launchd" || i.StartHost.Generation != i.Container.Generation || i.StartHost.ID == i.CreateHost.ID || i.StartHost.Nonce == i.CreateHost.Nonce {
+			return errors.New("candidate start host differs")
+		}
+	}
+	return nil
+}
+
+func transitionManagedCandidate(ctx context.Context, owner *managedControllerOwner, expected managedCandidateIntent, from, to, value string) (managedCandidateIntent, error) {
+	var updated managedCandidateIntent
+	err := owner.journal.mutate(ctx, "candidate-"+to, expected.WorkspaceID, func(tx *sql.Tx, state *managedSupervision) (bool, error) {
+		current, err := readManagedCandidate(ctx, tx, owner, expected.WorkspaceID)
+		if err != nil {
+			return false, err
+		}
+		if !reflect.DeepEqual(current, expected) || current.Phase != from {
+			return false, errors.New("candidate phase or identity changed")
+		}
+		if err := activeManagedGeneration(state, owner.scope.Generation, time.Now(), current.ExecutionDeadline); err != nil {
+			return false, err
+		}
+		if err := requireNoManagedCleanup(ctx, tx); err != nil {
+			return false, err
+		}
+		if err := requireCandidateSourceScopes(ctx, tx, current.Source); err != nil {
+			return false, err
+		}
+		if err := applyCandidateTransition(ctx, tx, owner, state, &current, from, to, value); err != nil {
+			return false, err
+		}
+		body, err := encodeManagedCandidate(owner.journal, current)
+		if err != nil {
+			return false, err
+		}
+		if _, err := tx.ExecContext(ctx, "UPDATE managed_docker_candidates SET body=? WHERE workspace_id=?", body, current.WorkspaceID); err != nil {
+			return false, fmt.Errorf("persist candidate transition: %w", err)
+		}
+		updated = current
+		return true, nil
+	})
+	if err != nil {
+		return managedCandidateIntent{}, err
+	}
+	return updated, nil
+}
+
+func applyCandidateTransition(ctx context.Context, tx *sql.Tx, owner *managedControllerOwner, state *managedSupervision, i *managedCandidateIntent, from, to, value string) error {
+	switch from + "/" + to {
+	case "prepared/create_dispatching":
+	case "create_dispatching/created":
+		if !managedKeeperID(value) {
+			return errors.New("candidate creation lacks exact ID")
+		}
+		if err := requireCandidateHostQuiescent(ctx, tx, i.CreateHost); err != nil {
+			return err
+		}
+		i.Binding.ContainerID = value
+	case "created/inspected":
+		if err := validateCandidateLifetime(value); err != nil {
+			return err
+		}
+		i.Binding.CreatedAt = value
+	case "inspected/start_prepared":
+		generated := newManagedDockerVolumeIntent(owner.journal, i.Container.Generation, i.ExecutionDeadline, owner.runtime.SHA256)
+		i.StartHost = generated.CreateHost
+		if err := reserveManagedSourceHost(ctx, tx, owner.journal, state, i.StartHost, i.ExecutionDeadline); err != nil {
+			return err
+		}
+	case "start_prepared/start_dispatching":
+	case "start_dispatching/start_acknowledged":
+		if err := requireCandidateHostQuiescent(ctx, tx, i.StartHost); err != nil {
+			return err
+		}
+	case "start_acknowledged/ready":
+		if err := validateCandidateLifetime(value); err != nil {
+			return err
+		}
+		i.ContainerStartedAt = value
+	default:
+		return errors.New("invalid candidate transition")
+	}
+	i.Phase = to
+	return nil
+}
+
+func validateCandidateLifetime(value string) error {
+	if err := validateCleanupCreatedAt(value); err != nil || value == "" {
+		return errors.New("candidate lifetime invalid")
+	}
+	return nil
+}
+
+func requireCandidateHostQuiescent(ctx context.Context, tx *sql.Tx, scope ScopeHandle) error {
+	record, err := loadManagedScope(ctx, tx, scope)
+	if err != nil {
+		return err
+	}
+	if record.Phase != "quiescent" {
+		return errors.New("candidate host scope not retired")
 	}
 	return nil
 }

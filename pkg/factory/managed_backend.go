@@ -92,10 +92,6 @@ func (b *managedDeliveryBackend) pristine(context.Context, string, string, time.
 	return unavailable("pristine")
 }
 
-func (b *managedDeliveryBackend) execute(context.Context, string, commandInput, time.Time) commandResult {
-	return commandResult{ExitCode: -1, Err: unavailable("candidate")}
-}
-
 func (b *managedDeliveryBackend) commit(context.Context, string, string, time.Time) (string, error) {
 	return "", unavailable("commit")
 }
