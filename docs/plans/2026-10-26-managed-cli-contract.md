@@ -239,10 +239,12 @@ deadline: perform candidate-stage keeper continuity through existing inspection
 parser and the original binding/StartedAt, under a counted candidate-deadline
 host call. Never reseed or rewrite source authority. Create/READY/inspect a distinct
 hardened container, including exact resources, mounts and bounded scratch. Tests
-must reach actual RunManagedController/attempt/execute. After real preparation,
-return explicit engineer-adapter-unavailable interruption until the restricted
-Terra/Codex model/tool consumer exists; preserve candidate/workspace/attempt
-identity. Container readiness is not a completed worker result.
+must reach actual RunManagedController/attempt/execute. The integrated
+[ready-only retirement](../proofs/2026-10-26-candidate-retirement.md) now positively
+stops the candidate through counted authenticated cleanup before returning the
+explicit engineer-adapter-unavailable interruption. Preserve candidate/workspace/
+attempt identity. Future model execution belongs between preparation and
+retirement; container readiness is not a completed worker result.
 
 Real model execution then needs an admitted tool bridge bound to the exact ready
 container, counted tool/host/model calls, fixed UID1000/cwd/endpoint, bounded output

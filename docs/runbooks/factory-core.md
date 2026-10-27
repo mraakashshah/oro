@@ -16,10 +16,12 @@ requirements for a fully autonomous production factory.
 On Darwin, experimental `factory start` admits a strict `ManagedSpec`, freezes
 its runtime and registers a managed supervisor. This is a separate specification
 from the trusted-adapter example below. The current managed execution path
-prepares source and a separate hardened worker candidate, then returns `engineer-adapter-unavailable`. Real engineer
-execution, independent acceptance and complete delivery remain unimplemented.
-Recording tests qualify startup wiring,
-not native launchd/Docker operation or autonomous recovery.
+prepares source and a separate hardened worker candidate, positively retires the
+ready candidate through counted cleanup, then returns
+`engineer-adapter-unavailable`. Real engineer execution, independent acceptance
+and complete delivery remain unimplemented. Recording tests qualify wiring,
+not native launchd/Docker operation or autonomous recovery. Uncertain retirement
+remains fenced; automatic reconciliation is unfinished.
 
 ```sh
 ./oro factory start --spec /absolute/path/to/managed-spec.json \

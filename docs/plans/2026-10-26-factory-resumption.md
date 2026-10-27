@@ -146,38 +146,37 @@ harness (`keeper-boundary-integrated-race`), covering dbutil exact classificatio
 dependency boundary, journal transactions and keeper/raw namespace validation. No native
 qualification is implied. Existing Colima and user checkout changes remain intact.
 
-Ready-only candidate retirement is being implemented by Terra in
-`.worktrees/factory-candidate-retire`, branch `feature/factory-candidate-retire`,
-task `oro-mf-candidate-retire` under managed delivery. The actual execute path
-must reserve irreversible retirement, invoke authenticated counted cleanup,
-decode a positive exact stopped result, record quiescence, and retain the explicit
-engineer-adapter-unavailable interruption. No removal/export or success receipt.
-A typed exception may retain only the exact durable parent controller while all
-other non-Docker scopes are quiescent. Ordinary execution grants keep original
-work-deadline/no-cleanup gates. Shared identity-only extraction `84b66987` is
-reviewed but not integrated; all retirement authorization needs separate review.
-Full inherited labels remain exact; oversized existing 16KiB cleanup permits
-must fail before fence/token/scope mutation. Uncertain retirement never retries
-or renews its fixed deadline.
+Ready-only candidate retirement is reviewed and integrated through `8cb36db8`.
+See the [retirement proof](../proofs/2026-10-26-candidate-retirement.md) for exact
+worker/root commits, source and fixture reviews, failed predecessor evidence and
+scoped results. Terra's corrected combined retirement/context/cleanup/grant race
+passed in 392.306 seconds, 57.8%. Root independently verified critical tamper,
+concurrency, rollback and cancellation (72.627 seconds harness), the complete
+managed-command fixture (41.305 seconds), and merged smoke (16.953 seconds).
 
-Retirement remains WIP, not accepted. Preliminary review found omitted immutable
-snapshot checks in typed reload; Terra is restoring validateManagedOwnerSnapshot
-and regressions. A real tiny-source/inherited-label fixture also reproduced a
-permit larger than ArchiveBytes: typed cleanup preflights its existing 16KiB
-permit and complete 64MiB request envelope before committing the fence or token.
-Cleanup permit retention was already included in metadata allowances; no global
-source/archive quota change is permitted. Actual CLI helper validation must match.
+The real execute path now reserves irreversible retirement, invokes authenticated
+counted cleanup, decodes a positive exact stopped result, records quiescence, then
+returns engineer-adapter-unavailable. No model, removal, export or success receipt.
+Only the exact durable parent controller may remain granted during typed cleanup;
+other non-Docker scopes must be quiescent. Ordinary grants keep work-deadline and
+no-cleanup gates. Full inherited labels, canonical history and immutable snapshot
+checks remain exact. Tiny-source cleanup uses the already-budgeted 16KiB permit
+bound plus the complete 64MiB request envelope, before any fence/token mutation.
 
-Astra resolved initial reservation after objective expiry as recovery authority:
-validate the structural canonical candidate, saved immutable snapshot/source,
-exact granted parent PID/PGID, current running generation and runtime, under a
-fixed cleanup deadline no later than HardStop. Ordinary execution grants remain
-denied after work expiry. Only execute owns a separate bounded cleanup context;
-it may ignore an inherited DeadlineExceeded whose deadline equals the objective
-work deadline exactly. Earlier caller deadlines and explicit cancellation must
-propagate. Direct retireCandidate never detaches its supplied context. Legal
-stop/epoch revocation still disables the live-parent exception. These require
-frozen-source review and tests, not inference from the design.
+Retirement can start after objective expiry under recovery-only authority. Execute
+owns the fixed cleanup context, ignoring only an inherited deadline exactly equal
+to the objective deadline, with earlier caller bounds, explicit cancellation and
+HardStop preserved. Direct retireCandidate never detaches its caller. Legal
+stop/epoch revocation disables the live-parent exception. Uncertainty and failed
+final commits remain fenced; automatic reconciliation is still unfinished.
+
+Root's integrated repository gate is running at frozen Go `8cb36db8`, mode
+`candidate-retire-integrated-gate`, tool session `87302`. Do not restart while
+live. Run the full factory race after its static checks and terminal result;
+keep heavy lanes sequential after previous concurrent child timeouts. New
+retirement tests add real-expiry waits; use a measured sufficient package-level
+validation timeout without changing production authority or per-child bounds.
+Earlier full-suite/dependency and gate failures remain preserved above.
 
 
 The [restricted Terra adapter research](../proofs/2026-10-26-terra-adapter-research.md)
