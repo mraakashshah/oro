@@ -187,12 +187,25 @@ Worker final affected race passed in 41.485 seconds, 23.9%; root independent
 affected race passed in 47.805 seconds harness. Two extra Markdown blank lines
 were removed; complete Markdown lint reports zero errors.
 
-The gate remains failed until its rerun finishes. The rerun is live at Go
-`2924a464`, mode `candidate-retire-repaired-gate`, tool session `92754`.
-No full factory race is currently active. Keep heavy lanes sequential and
-preserve prior failed evidence. The frozen helper contract is undergoing
-fresh-context Astra adversarial review before implementation; its eight tracked
-leaves are still open, and no model/credential actions have run.
+The repaired gate at Go `2924a464` is terminal PASS: mode
+`candidate-retire-repaired-gate`, 610.559 seconds, twenty-two passes and zero
+failures, 85.6% merged coverage. Its task-close evidence covers scoped
+`oro-mf-event-cap-fixtures` and `oro-mf-candidate-retire`; both are now closed.
+Native execution, uncertain retirement recovery and delivery remain parent work.
+
+The full shuffled factory race is live: `candidate-retire-integrated-full-race`,
+tool session `3203`, source Go `2924a464` / launch HEAD `fde0d9a4`. Its 1500s
+package validation limit accommodates the measured prior 829.559s full run plus
+new 392.306s scoped cases and real-expiry waits. Production authority and owned
+child bounds are unchanged. Keep heavy lanes sequential and preserve failures.
+
+Fresh Astra helper-spec review returned FAIL on frozen contract SHA256
+`243f7dbb5783ba3bf78b8d591d5f2dee6d08f14beab4c3ce60995b3595dcca9d`:
+entry scope omitted two value-comparison consumers of the proposed optional
+pointer (`managed_docker.go:ready` and cleanup runtime verification). Recording
+process injection and composed plan/feedback bounds also need clarification.
+The author is revising the contract/task criteria for re-review. Its eight
+tracked leaves remain open and undispatched; no model/credential actions ran.
 
 The [restricted Terra adapter research](../proofs/2026-10-26-terra-adapter-research.md)
 proposes an Oro-owned Responses function loop; it is research, not an implemented

@@ -81,10 +81,24 @@ Reviewed fixture repair `2924a464` (Terra `28294945`) preserves actual quota
 assertions and production validation; its final worker race passed in 41.485
 seconds, and root independent affected race passed in 47.805 seconds harness.
 Two extra Markdown blank lines were removed and complete Markdown lint passed.
-This does not make the failed gate green. The rerun is live as
-`candidate-retire-repaired-gate` at Go `2924a464`, tool session `92754`.
-A fresh full race remains outstanding. The earlier dependency-boundary failure
-stays preserved.
+This does not retroactively make the failed gate green. The repaired rerun
+`candidate-retire-repaired-gate` passed at Go `2924a464` in 610.559 seconds:
+twenty-two passes, zero failures, 85.6% merged coverage. The scoped retirement
+and event-fixture tasks are closed against that evidence; parent qualification
+remains incomplete. A fresh shuffled full factory race is running as
+`candidate-retire-integrated-full-race`, tool session `3203`, with a 1500s
+package validation limit and unchanged production/child authority bounds.
+The earlier dependency-boundary failure stays preserved.
+
+Implementation review maps reservation and deadline rules to
+`reserveCandidateRetirement`/`candidateCleanupContext`, exact parent and snapshot
+rules to `requireRetirementParent`/`validateRetiringReferences`, replay/fence
+rules to `requireNoRetiringCandidate`/`validateCandidateRetirementHistory`, and
+positive receipt/quiescence/final commit to `retireCandidate`/
+`finishCandidateRetirement`. The actual execute caller and registered CLI helper
+are exercised by the reviewed controller and command fixtures. These satisfy
+the scoped task criteria, with the approved identity-only extraction preserving
+ordinary grant checks. They do not establish the operational items below.
 
 ## Remaining operational proof
 
