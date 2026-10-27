@@ -76,7 +76,7 @@ func TestManagedControllerWorkerCheckout(t *testing.T) {
 	keeper := &sourceKeeperRuntime{base: base}
 	docker := &sourcePrepareRuntime{base: keeper, t: t}
 	baseRuntime := &managedEngineRuntime{git: git, docker: docker}
-	candidate := &candidateExecutionRuntime{base: baseRuntime, journal: j, t: t, mode: "success"}
+	candidate := &candidateExecutionRuntime{base: baseRuntime, journal: j, t: t, mode: "success", config: config}
 	runtime := &managedCandidateRecordingRuntime{base: candidate}
 	mode := os.Getenv("ORO_MANAGED_ENGINE_MODE")
 	reads := 0
