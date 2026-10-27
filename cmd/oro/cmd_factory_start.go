@@ -286,7 +286,15 @@ func validateFactoryStartCredential(path, root, repository string) error {
 		return errors.New("model credential reference has an aliased parent")
 	}
 	resolved := filepath.Join(parent, filepath.Base(path))
-	return validateFactoryModelCredentialPath(resolved, canonicalRoot, canonicalRepo)
+	if err := validateFactoryModelCredentialPath(resolved, canonicalRoot, canonicalRepo); err != nil {
+		return err
+	}
+	for _, protected := range []string{canonicalRoot, canonicalRepo} {
+		if err := rejectCredentialPhysicalContainment(parent, protected); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func canonicalFactoryCredentialParent(path string) (string, error) {
@@ -336,4 +344,41 @@ func rejectDanglingCredentialParent(path string) error {
 		return errors.New("model credential parent is a dangling alias")
 	}
 	return nil
+}
+
+// Compare actual directory identities, including filesystems with case-folding
+// or Unicode aliases. Missing credential ancestors remain valid references.
+func rejectCredentialPhysicalContainment(parent, protected string) error {
+	target, err := os.OpenRoot(protected)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("open protected directory: %w", err)
+	}
+	defer target.Close()
+	targetInfo, err := target.Stat(".")
+	if err != nil {
+		return fmt.Errorf("stat protected directory: %w", err)
+	}
+	for {
+		directory, err := os.OpenRoot(parent)
+		if err == nil {
+			info, statErr := directory.Stat(".")
+			closeErr := directory.Close()
+			if statErr != nil || closeErr != nil {
+				return errors.Join(statErr, closeErr)
+			}
+			if os.SameFile(info, targetInfo) {
+				return errors.New("model credential reference is physically inside a protected directory")
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("open credential ancestor: %w", err)
+		}
+		next := filepath.Dir(parent)
+		if next == parent {
+			return nil
+		}
+		parent = next
+	}
 }
