@@ -26,7 +26,7 @@ func TestManagedCandidateExecution(t *testing.T) {
 		return
 	}
 	t.Run("expired checkout", candidateExecutionExpiredCheckout)
-	for _, mode := range []string{"success", "before_stop", "before_epoch", "after_stop", "lost_create", "lost_start", "bad_memory", "bad_mount", "bad_labels", "bad_scratch", "bad_image", "bad_guard", "bad_uts", "bad_init", "null_init", "missing_init", "bad_lifetime", "bad_ready", "bad_running"} {
+	for _, mode := range []string{"success", "before_stop", "before_epoch", "after_stop", "lost_create", "lost_start", "bad_memory", "bad_mount", "bad_labels", "bad_scratch", "bad_image", "bad_guard", "bad_uts", "bad_uts_alias", "bad_init", "bad_init_alias", "null_init", "missing_init", "bad_lifetime", "bad_ready", "bad_running"} {
 		t.Run(mode, func(t *testing.T) { runCandidateExecution(t, mode) })
 	}
 }
@@ -148,7 +148,7 @@ func runCandidateExecution(t *testing.T, mode string) {
 		t.Fatalf("controller = %+v, %v", status, err)
 	}
 	var phase string
-	expected := map[string]string{"success": "ready", "before_stop": "create_dispatching", "before_epoch": "create_dispatching", "after_stop": "create_dispatching", "lost_create": "create_dispatching", "lost_start": "start_dispatching", "bad_memory": "created", "bad_mount": "created", "bad_labels": "created", "bad_scratch": "created", "bad_image": "created", "bad_guard": "created", "bad_uts": "created", "bad_init": "created", "null_init": "created", "missing_init": "created", "bad_lifetime": "start_acknowledged", "bad_ready": "start_dispatching", "bad_running": "start_acknowledged"}[mode]
+	expected := map[string]string{"success": "ready", "before_stop": "create_dispatching", "before_epoch": "create_dispatching", "after_stop": "create_dispatching", "lost_create": "create_dispatching", "lost_start": "start_dispatching", "bad_memory": "created", "bad_mount": "created", "bad_labels": "created", "bad_scratch": "created", "bad_image": "created", "bad_guard": "created", "bad_uts": "created", "bad_uts_alias": "created", "bad_init_alias": "created", "bad_init": "created", "null_init": "created", "missing_init": "created", "bad_lifetime": "start_acknowledged", "bad_ready": "start_dispatching", "bad_running": "start_acknowledged"}[mode]
 	if err := j.conn.QueryRowContext(t.Context(), "SELECT json_extract(body,'$.phase') FROM managed_docker_candidates").Scan(&phase); err != nil || phase != expected {
 		t.Fatalf("candidate not ready: %s %v", phase, err)
 	}
@@ -168,7 +168,7 @@ func runCandidateExecution(t *testing.T, mode string) {
 		t.Fatalf("candidate scope deadline: %v, %v", observation.Deadline, observeErr)
 	}
 
-	wantCalls := map[string]int{"success": 4, "before_stop": 1, "before_epoch": 1, "after_stop": 1, "lost_create": 1, "lost_start": 3, "bad_memory": 2, "bad_mount": 2, "bad_labels": 2, "bad_scratch": 2, "bad_image": 2, "bad_guard": 2, "bad_uts": 2, "bad_init": 2, "null_init": 2, "missing_init": 2, "bad_lifetime": 4, "bad_ready": 3, "bad_running": 4}[mode]
+	wantCalls := map[string]int{"success": 4, "before_stop": 1, "before_epoch": 1, "after_stop": 1, "lost_create": 1, "lost_start": 3, "bad_memory": 2, "bad_mount": 2, "bad_labels": 2, "bad_scratch": 2, "bad_image": 2, "bad_guard": 2, "bad_uts": 2, "bad_uts_alias": 2, "bad_init_alias": 2, "bad_init": 2, "null_init": 2, "missing_init": 2, "bad_lifetime": 4, "bad_ready": 3, "bad_running": 4}[mode]
 	if recording.calls != wantCalls {
 		t.Fatalf("candidate calls = %d, want %d", recording.calls, wantCalls)
 	}
@@ -283,6 +283,10 @@ func (r *candidateExecutionRuntime) Invoke(ctx context.Context, call HostInvocat
 				object["Image"] = "sha256:" + strings.Repeat("f", 64)
 			case "bad_uts":
 				host["UTSMode"] = "host"
+			case "bad_uts_alias":
+				host["UTSMode"], host["utsmode"] = "host", ""
+			case "bad_init_alias":
+				host["Init"], host["init"] = true, false
 			case "bad_init":
 				host["Init"] = true
 			case "null_init":
@@ -404,4 +408,24 @@ func (r *candidateExecutionRuntime) rejectBeforeGrant(ctx context.Context, call 
 
 func (r *candidateExecutionRuntime) Retire(ctx context.Context, scope ScopeHandle) error {
 	return r.base.Retire(ctx, scope)
+}
+
+func TestCandidateNamespaceExactFields(t *testing.T) {
+	for _, body := range []string{
+		`{"HostConfig":{"UTSMode":"host","utsmode":"","Init":false}}`,
+		`{"HostConfig":{"UTSMode":"","Init":true,"init":false}}`,
+		`{"HostConfig":{"UTSMode":null,"Init":false}}`,
+		`{"HostConfig":{"Init":false}}`,
+		`{"HostConfig":{"UTSMode":1,"Init":false}}`,
+		`{"HostConfig":{"UTSMode":"","Init":null}}`,
+		`{"HostConfig":{"UTSMode":""}}`,
+		`{"HostConfig":{"UTSMode":"","Init":"false"}}`,
+	} {
+		if err := validateCandidateNamespaces(json.RawMessage(body)); err == nil {
+			t.Errorf("accepted invalid namespaces: %s", body)
+		}
+	}
+	if err := validateCandidateNamespaces(json.RawMessage(`{"HostConfig":{"UTSMode":"","Init":false}}`)); err != nil {
+		t.Fatalf("rejected valid namespaces: %v", err)
+	}
 }

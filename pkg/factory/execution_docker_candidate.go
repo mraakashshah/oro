@@ -256,16 +256,34 @@ func candidateInspectionObjects(result HostResult) ([]json.RawMessage, error) {
 }
 
 func validateCandidateNamespaces(object json.RawMessage) error {
-	var hostView struct {
-		HostConfig struct {
-			UTSMode *string `json:"UTSMode"`
-			Init    *bool   `json:"Init"`
-		} `json:"HostConfig"`
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(object, &root); err != nil || rejectCandidateAliases(root, "HostConfig") {
+		return errors.New("candidate HostConfig is malformed")
 	}
-	if err := json.Unmarshal(object, &hostView); err != nil || hostView.HostConfig.UTSMode == nil || *hostView.HostConfig.UTSMode != "" || hostView.HostConfig.Init == nil || *hostView.HostConfig.Init {
-		return errors.New("candidate UTS namespace or init differs")
+	var host map[string]json.RawMessage
+	if err := json.Unmarshal(root["HostConfig"], &host); err != nil || rejectCandidateAliases(host, "UTSMode", "Init") {
+		return errors.New("candidate namespace fields are malformed")
+	}
+	var uts *string
+	var init *bool
+	if err := json.Unmarshal(host["UTSMode"], &uts); err != nil || uts == nil || *uts != "" {
+		return errors.New("candidate UTS namespace differs")
+	}
+	if err := json.Unmarshal(host["Init"], &init); err != nil || init == nil || *init {
+		return errors.New("candidate init differs")
 	}
 	return nil
+}
+
+func rejectCandidateAliases(fields map[string]json.RawMessage, names ...string) bool {
+	for key := range fields {
+		for _, name := range names {
+			if strings.EqualFold(key, name) && key != name {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func candidateStartedAt(output []byte) (string, error) {
