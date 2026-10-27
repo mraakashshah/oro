@@ -428,6 +428,22 @@ func compareProspectiveCredentialParent(path string, protectedInfo os.FileInfo, 
 	if !os.SameFile(info, protectedInfo) {
 		return false, nil
 	}
+	// Existing sibling entries are disjoint when the prospective protected name
+	// is still absent; do not apply Unicode uncertainty to resolved directories.
+	_, candidateErr := parent.Lstat(filepath.Base(path))
+	if candidateErr == nil {
+		_, protectedErr := parent.Lstat(protectedName)
+		if errors.Is(protectedErr, os.ErrNotExist) {
+			return true, nil
+		}
+		if protectedErr == nil {
+			return true, errors.New("prospective protected directory appeared")
+		}
+		return true, fmt.Errorf("recheck prospective protected directory: %w", protectedErr)
+	}
+	if !errors.Is(candidateErr, os.ErrNotExist) {
+		return false, fmt.Errorf("inspect credential component: %w", candidateErr)
+	}
 	return true, compareProspectiveCredentialName(parent, filepath.Base(path), protectedName)
 }
 

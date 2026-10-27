@@ -131,6 +131,7 @@ func TestFactoryTerraEntry(t *testing.T) {
 	t.Run("missing state case alias rejects before allocation", testFactoryCredentialMissingStateCaseAlias)
 	t.Run("distinct case directories remain allowed", testFactoryDistinctCaseDirectories)
 	t.Run("prospective name policy", testFactoryProspectiveNamePolicy)
+	t.Run("existing Unicode sibling remains allowed", testFactoryExistingUnicodeSibling)
 }
 
 func testFactoryModelWire(t *testing.T, ref factory.ManagedRuntimeReference, helper factory.ModelAdapterConfig, root, id string, deadline time.Time) []byte {
@@ -614,5 +615,31 @@ func testFactoryProspectiveNamePolicy(t *testing.T) {
 	}
 	if (!known || !sensitive) && err == nil {
 		t.Fatal("ambiguous case alias accepted")
+	}
+}
+
+func testFactoryExistingUnicodeSibling(t *testing.T) {
+	f := newFactoryStartFixture(t)
+	directory := filepath.Join(filepath.Dir(f.root), "évidence")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	deps := factoryStartDependencies{probe: factoryBudgetProbe(math.MaxInt64), executable: func() (string, error) { return f.oro, nil }, supported: func() error { return nil }, bootstrap: func(context.Context, string) error { return nil }}
+	root := newRootCmd()
+	family, _, err := root.Find([]string{"factory"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, _, err := family.Find([]string{"start"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	family.RemoveCommand(old)
+	family.AddCommand(buildFactoryStartCmd(deps))
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
+	root.SetArgs([]string{"factory", "start", "--spec", f.specPath, "--state-dir", f.root, "--docker", f.docker, "--docker-endpoint", f.endpoint, "--model-credential-file", filepath.Join(directory, "missing", "credential")})
+	if err := root.ExecuteContext(t.Context()); err != nil {
+		t.Fatalf("existing outside Unicode directory rejected: %v", err)
 	}
 }
