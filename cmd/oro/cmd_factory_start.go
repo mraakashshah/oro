@@ -46,7 +46,7 @@ func buildFactoryStartCmd(deps factoryStartDependencies) *cobra.Command {
 			return errors.New("start requires absolute state and Docker paths and an explicit Unix endpoint")
 		}
 		if cmd.Flags().Changed("model-credential-file") {
-			if err := validateFactoryModelCredentialPath(credential, root, spec.Repository); err != nil {
+			if err := validateFactoryStartCredential(credential, root, spec.Repository); err != nil {
 				return err
 			}
 		}
@@ -262,4 +262,51 @@ func registerFactoryStart(ctx context.Context, access *factoryServiceAccess, vie
 	}
 
 	return nil
+}
+
+// Validate aliases before the host ledger can reserve capacity. Only parent
+// directories are inspected; the credential file itself is never opened.
+func validateFactoryStartCredential(path, root, repository string) error {
+	if err := validateFactoryModelCredentialPath(path, root, repository); err != nil {
+		return err
+	}
+	canonicalRoot, err := canonicalFactoryBudgetRoot(root)
+	if err != nil {
+		return fmt.Errorf("resolve state root: %w", err)
+	}
+	canonicalRepo, err := filepath.EvalSymlinks(repository)
+	if err != nil {
+		return fmt.Errorf("resolve repository: %w", err)
+	}
+	parent, err := canonicalFactoryCredentialParent(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	if parent != filepath.Dir(path) {
+		return errors.New("model credential reference has an aliased parent")
+	}
+	resolved := filepath.Join(parent, filepath.Base(path))
+	return validateFactoryModelCredentialPath(resolved, canonicalRoot, canonicalRepo)
+}
+
+func canonicalFactoryCredentialParent(path string) (string, error) {
+	original := path
+	for {
+		canonical, err := filepath.EvalSymlinks(path)
+		if err == nil {
+			suffix, err := filepath.Rel(path, original)
+			if err != nil {
+				return "", fmt.Errorf("resolve credential parent: %w", err)
+			}
+			return filepath.Join(canonical, suffix), nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("resolve credential parent: %w", err)
+		}
+		next := filepath.Dir(path)
+		if next == path {
+			return "", errors.New("credential parent has no existing ancestor")
+		}
+		path = next
+	}
 }

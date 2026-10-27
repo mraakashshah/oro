@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"oro/pkg/factory"
+	"oro/pkg/storage"
 )
 
 func TestFactoryTerraEntry(t *testing.T) {
@@ -120,6 +121,8 @@ func TestFactoryTerraEntry(t *testing.T) {
 	testFactoryModelCommand(t, ref, wire)
 	testFactoryUnqualifiedModelChild(t, f.root, f.spec.ID, ref, wire)
 	t.Run("different admitted model", testFactoryDifferentModel)
+	t.Run("repository alias rejects before allocation", testFactoryCredentialRepositoryAlias)
+	t.Run("state alias rejects before allocation", testFactoryCredentialStateAlias)
 }
 
 func testFactoryModelWire(t *testing.T, ref factory.ManagedRuntimeReference, helper factory.ModelAdapterConfig, root, id string, deadline time.Time) []byte {
@@ -282,5 +285,83 @@ func testFactoryDifferentModel(t *testing.T) {
 	command.SetArgs([]string{"factory", "_model-terra", "--runtime-config", ref.Path, "--runtime-config-sha256", ref.SHA256})
 	if err := command.ExecuteContext(t.Context()); err == nil || !strings.Contains(err.Error(), "model helper differs from admitted program") {
 		t.Fatalf("different executable accepted or failed early: %v", err)
+	}
+}
+
+func testFactoryCredentialRepositoryAlias(t *testing.T) {
+	f := newFactoryStartFixture(t)
+	canonical := f.spec.Repository
+	alias := filepath.Join(filepath.Dir(f.root), "repo-alias")
+	if err := os.Symlink(canonical, alias); err != nil {
+		t.Fatal(err)
+	}
+	f.spec.Repository = alias
+	spec, err := json.Marshal(f.spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.specPath, spec, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	probes := 0
+	deps := factoryStartDependencies{probe: func(ctx context.Context, path string) (storage.DiskUsage, error) {
+		probes++
+		return factoryBudgetProbe(math.MaxInt64)(ctx, path)
+	}, executable: func() (string, error) { return f.oro, nil }, supported: func() error { return nil }, bootstrap: func(context.Context, string) error { t.Fatal("invalid credential reached bootstrap"); return nil }}
+	root := newRootCmd()
+	family, _, err := root.Find([]string{"factory"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, _, err := family.Find([]string{"start"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	family.RemoveCommand(old)
+	family.AddCommand(buildFactoryStartCmd(deps))
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
+	root.SetArgs([]string{"factory", "start", "--spec", f.specPath, "--state-dir", f.root, "--docker", f.docker, "--docker-endpoint", f.endpoint, "--model-credential-file", filepath.Join(canonical, "credential")})
+	if err := root.ExecuteContext(t.Context()); err == nil {
+		t.Fatal("repository-contained credential accepted")
+	}
+	if probes != 0 {
+		t.Fatalf("invalid credential reached allocation probe %d times", probes)
+	}
+}
+
+func testFactoryCredentialStateAlias(t *testing.T) {
+	f := newFactoryStartFixture(t)
+	if err := os.Mkdir(f.root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(filepath.Dir(f.root), "state-alias")
+	if err := os.Symlink(f.root, alias); err != nil {
+		t.Fatal(err)
+	}
+	probes := 0
+	deps := factoryStartDependencies{probe: func(ctx context.Context, path string) (storage.DiskUsage, error) {
+		probes++
+		return factoryBudgetProbe(math.MaxInt64)(ctx, path)
+	}, executable: func() (string, error) { return f.oro, nil }, supported: func() error { return nil }, bootstrap: func(context.Context, string) error { t.Fatal("invalid credential reached bootstrap"); return nil }}
+	root := newRootCmd()
+	family, _, err := root.Find([]string{"factory"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, _, err := family.Find([]string{"start"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	family.RemoveCommand(old)
+	family.AddCommand(buildFactoryStartCmd(deps))
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
+	root.SetArgs([]string{"factory", "start", "--spec", f.specPath, "--state-dir", alias, "--docker", f.docker, "--docker-endpoint", f.endpoint, "--model-credential-file", filepath.Join(f.root, "credential")})
+	if err := root.ExecuteContext(t.Context()); err == nil {
+		t.Fatal("state-contained credential accepted")
+	}
+	if probes != 0 {
+		t.Fatalf("invalid credential reached allocation probe %d times", probes)
 	}
 }
