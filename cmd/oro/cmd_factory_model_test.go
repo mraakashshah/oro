@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -39,7 +40,7 @@ func TestFactoryTerraEntry(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	credential := filepath.Join(filepath.Dir(f.root), "absent-credential")
+	credential := filepath.Join(filepath.Dir(f.root), "missing-credential-directory", "absent-credential")
 	calls := 0
 	deps := factoryStartDependencies{probe: factoryBudgetProbe(math.MaxInt64), executable: func() (string, error) { return f.oro, nil }, supported: func() error { return nil }, bootstrap: func(context.Context, string) error { calls++; return nil }}
 	run := func(credential string) error {
@@ -123,6 +124,7 @@ func TestFactoryTerraEntry(t *testing.T) {
 	t.Run("different admitted model", testFactoryDifferentModel)
 	t.Run("repository alias rejects before allocation", testFactoryCredentialRepositoryAlias)
 	t.Run("state alias rejects before allocation", testFactoryCredentialStateAlias)
+	t.Run("dangling alias rejects before allocation", testFactoryCredentialDanglingAlias)
 }
 
 func testFactoryModelWire(t *testing.T, ref factory.ManagedRuntimeReference, helper factory.ModelAdapterConfig, root, id string, deadline time.Time) []byte {
@@ -231,11 +233,20 @@ func testFactoryUnqualifiedModelChild(t *testing.T, root, id string, ref factory
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	child := exec.CommandContext(ctx, filepath.Join(root, id, "model"), "-test.run=^TestFactoryTerraEntryChild$", "-test.count=1")
+	child := exec.CommandContext(ctx, filepath.Join(root, id, "model"), "-test.run=^TestFactoryTerraEntryChild$", "-test.count=1", "-test.timeout=20s")
 	if coverage := flag.Lookup("test.gocoverdir"); coverage != nil && coverage.Value.String() != "" {
 		child.Args = append(child.Args, "-test.gocoverdir="+coverage.Value.String())
 	}
 	child.Env = []string{"PATH=/usr/bin:/bin", "LC_ALL=C", "LANG=C", "TEST_FACTORY_TERRA_CHILD=1", "TEST_FACTORY_TERRA_PATH=" + ref.Path, "TEST_FACTORY_TERRA_DIGEST=" + ref.SHA256}
+	child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	child.Cancel = func() error { return syscall.Kill(-child.Process.Pid, syscall.SIGKILL) }
+	child.WaitDelay = 3 * time.Second
+	t.Cleanup(func() {
+		if child.Process != nil && child.ProcessState == nil {
+			_ = syscall.Kill(-child.Process.Pid, syscall.SIGKILL)
+			_ = child.Wait()
+		}
+	})
 	child.Stdin = bytes.NewReader(input)
 	if output, err := child.CombinedOutput(); err != nil {
 		t.Fatalf("unqualified actual helper: %s: %v", output, err)
@@ -363,5 +374,38 @@ func testFactoryCredentialStateAlias(t *testing.T) {
 	}
 	if probes != 0 {
 		t.Fatalf("invalid credential reached allocation probe %d times", probes)
+	}
+}
+
+func testFactoryCredentialDanglingAlias(t *testing.T) {
+	f := newFactoryStartFixture(t)
+	alias := filepath.Join(filepath.Dir(f.root), "dangling-credential-parent")
+	if err := os.Symlink(filepath.Join(f.spec.Repository, "not-created"), alias); err != nil {
+		t.Fatal(err)
+	}
+	probes := 0
+	deps := factoryStartDependencies{probe: func(ctx context.Context, path string) (storage.DiskUsage, error) {
+		probes++
+		return factoryBudgetProbe(math.MaxInt64)(ctx, path)
+	}, executable: func() (string, error) { return f.oro, nil }, supported: func() error { return nil }, bootstrap: func(context.Context, string) error { t.Fatal("dangling credential reached bootstrap"); return nil }}
+	root := newRootCmd()
+	family, _, err := root.Find([]string{"factory"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, _, err := family.Find([]string{"start"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	family.RemoveCommand(old)
+	family.AddCommand(buildFactoryStartCmd(deps))
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
+	root.SetArgs([]string{"factory", "start", "--spec", f.specPath, "--state-dir", f.root, "--docker", f.docker, "--docker-endpoint", f.endpoint, "--model-credential-file", filepath.Join(alias, "key")})
+	if err := root.ExecuteContext(t.Context()); err == nil {
+		t.Fatal("dangling credential parent accepted")
+	}
+	if probes != 0 {
+		t.Fatalf("dangling credential reached allocation probe %d times", probes)
 	}
 }

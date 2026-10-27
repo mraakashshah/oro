@@ -303,6 +303,13 @@ func canonicalFactoryCredentialParent(path string) (string, error) {
 		if !errors.Is(err, os.ErrNotExist) {
 			return "", fmt.Errorf("resolve credential parent: %w", err)
 		}
+		info, statErr := os.Lstat(path)
+		if statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+			return "", errors.New("model credential parent is a dangling alias")
+		}
+		if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+			return "", fmt.Errorf("inspect credential parent: %w", statErr)
+		}
 		next := filepath.Dir(path)
 		if next == path {
 			return "", errors.New("credential parent has no existing ancestor")
