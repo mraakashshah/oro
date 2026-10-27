@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strings"
@@ -26,7 +27,9 @@ func TestManagedCandidateRetire(t *testing.T) {
 		runCandidateRetirementLeader(t)
 		return
 	}
-	for _, mode := range []string{"success", "lost", "absent", "unretired", "malformed", "missing_ack", "wrong_binding", "wrong_lifetime", "wrong_scope", "wrong_kind", "commit_failure", "other_host", "deadline_cross", "small_source", "revoked", "tamper_fence", "history_deleted", "snapshot_tamper", "permit_tamper", "cleanup_expired", "reserve_after_deadline"} {
+	t.Run("concurrent reservation", testConcurrentRetirementReservation)
+	t.Run("reservation rollback", testRetirementReservationRollback)
+	for _, mode := range []string{"success", "lost", "absent", "unretired", "malformed", "missing_ack", "wrong_binding", "wrong_lifetime", "wrong_scope", "wrong_kind", "commit_failure", "other_host", "deadline_cross", "small_source", "revoked", "epoch_change", "tamper_fence", "history_deleted", "snapshot_tamper", "permit_tamper", "cleanup_expired", "reserve_after_deadline"} {
 		if selected := os.Getenv("ORO_RETIRE_MODE"); selected != "" && selected != mode {
 			continue
 		}
@@ -34,9 +37,88 @@ func TestManagedCandidateRetire(t *testing.T) {
 	}
 }
 
+func readyRetirementFixture(t *testing.T) (*managedControllerOwner, context.Context, managedCandidateIntent, ManagedDockerConfig, HostRetentionLimits) {
+	t.Helper()
+	owner, ctx, workspace := candidateReadyFixture(t)
+	intent, err := reserveManagedCandidate(ctx, owner, workspace.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keeper, err := loadManagedDockerKeeper(ctx, owner.journal, intent.Source.Keeper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	volume, err := loadManagedDockerVolume(ctx, owner.journal, intent.Source.Volume)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := &dockerAdapterRuntime{t: t, journal: owner.journal, intent: volume}
+	source := &sourcePrepareRuntime{base: &sourceKeeperRuntime{base: base, intent: keeper}, t: t, running: true}
+	manifest := owner.manifest
+	root := owner.journal.admission.Reservation.StateRoot
+	id := owner.journal.admission.ObjectiveID
+	config := ManagedDockerConfig{StateRoot: root, ObjectiveID: id, PolicyHash: manifest.PolicyHash, Deadline: manifest.Deadline, HardStop: manifest.HardStop, RuntimeConfigPath: owner.runtime.Path, RuntimeConfigSHA256: owner.runtime.SHA256, OroPath: "/usr/local/bin/oro", OroSHA256: strings.Repeat("d", 64), DockerPath: "/usr/local/bin/docker", DockerSHA256: strings.Repeat("b", 64), DockerConfig: filepath.Join(root, id, "runtime", "docker"), DockerContext: manifest.Spec.Runtime.DockerContext, DockerEndpoint: "unix:///private/tmp/admitted-docker.sock"}
+	host := &candidateExecutionRuntime{base: &managedEngineRuntime{git: &sourceGitRuntime{t: t, j: owner.journal}, docker: source}, journal: owner.journal, t: t, mode: "success", config: config}
+	d, err := newManagedDockerVolumes(ctx, manifest, owner.scope.Generation, owner.journal, host, func(context.Context) (ManagedDockerConfig, error) { return config, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready, err := d.prepareCandidate(ctx, owner, intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return owner, ctx, ready, config, d.limits
+}
+
+func testConcurrentRetirementReservation(t *testing.T) {
+	owner, ctx, ready, config, limits := readyRetirementFixture(t)
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	for n := 0; n < 2; n++ {
+		go func() {
+			<-start
+			_, _, _, err := reserveCandidateRetirement(ctx, owner, ready, config, limits)
+			results <- err
+		}()
+	}
+	close(start)
+	successes := 0
+	for n := 0; n < 2; n++ {
+		if err := <-results; err == nil {
+			successes++
+		}
+	}
+	var count, events int
+	if err := owner.journal.conn.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM managed_reservations WHERE kind='cleanup'),(SELECT count(*) FROM managed_events WHERE kind='candidate-retiring')").Scan(&count, &events); err != nil || successes != 1 || count != 1 || events != 1 {
+		t.Fatalf("successes=%d cleanup=%d events=%d: %v", successes, count, events, err)
+	}
+}
+
+func testRetirementReservationRollback(t *testing.T) {
+	owner, ctx, ready, config, limits := readyRetirementFixture(t)
+	before := candidateCounts(t, owner.journal)
+	if _, err := owner.journal.conn.ExecContext(ctx, `CREATE TRIGGER deny_retirement_event BEFORE INSERT ON managed_events WHEN NEW.kind='candidate-retiring' BEGIN SELECT RAISE(ABORT,'test denial'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := reserveCandidateRetirement(ctx, owner, ready, config, limits); err == nil {
+		t.Fatal("rejected event committed")
+	}
+	if after := candidateCounts(t, owner.journal); after != before {
+		t.Fatalf("failed retirement changed counts %v -> %v", before, after)
+	}
+	var body []byte
+	if err := owner.journal.conn.QueryRowContext(ctx, "SELECT body FROM managed_docker_candidates WHERE workspace_id=?", ready.WorkspaceID).Scan(&body); err != nil {
+		t.Fatal(err)
+	}
+	var actual managedCandidateIntent
+	if err := json.Unmarshal(body, &actual); err != nil || !reflect.DeepEqual(actual, ready) {
+		t.Fatalf("failed retirement changed candidate: %v", err)
+	}
+}
+
 func runCandidateRetirementLeader(t *testing.T) {
 	t.Helper()
-	timeout := 120 * time.Second
+	timeout := 240 * time.Second
 	if deadline, ok := t.Deadline(); ok && time.Until(deadline)-5*time.Second < timeout {
 		timeout = time.Until(deadline) - 5*time.Second
 	}
@@ -185,6 +267,21 @@ func testManagedCandidateRetire(t *testing.T, mode string) {
 	if phase != want || host.calls != wantCalls {
 		t.Fatalf("candidate phase=%s cleanup calls=%d want=%s", phase, host.calls, want)
 	}
+	var cleanupCount, retiringEvents, retiredEvents int
+	if e := j.conn.QueryRowContext(t.Context(), `SELECT (SELECT count(*) FROM managed_reservations WHERE kind='cleanup'),(SELECT count(*) FROM managed_events WHERE kind='candidate-retiring'),(SELECT count(*) FROM managed_events WHERE kind='candidate-retired')`).Scan(&cleanupCount, &retiringEvents, &retiredEvents); e != nil {
+		t.Fatal(e)
+	}
+	wantRetiring := wantCalls
+	if mode == "history_deleted" {
+		wantRetiring = 0
+	}
+	wantRetired := 0
+	if want == "retired" {
+		wantRetired = 1
+	}
+	if cleanupCount != wantCalls || retiringEvents != wantRetiring || retiredEvents != wantRetired {
+		t.Fatalf("cleanup=%d retiring=%d retired=%d", cleanupCount, retiringEvents, retiredEvents)
+	}
 	if want == "retired" {
 		assertCandidateRetired(t, j)
 	}
@@ -321,6 +418,16 @@ func (r *candidateRetirementRuntime) Invoke(ctx context.Context, call HostInvoca
 			return HostResult{}, err
 		}
 	}
+	if r.mode == "epoch_change" {
+		state, err := r.journal.supervision(ctx)
+		if err != nil {
+			return HostResult{}, err
+		}
+		if _, _, err := r.journal.advanceEpoch(ctx, state.SupervisorToken, "retirement-test-epoch", time.Now()); err != nil {
+			return HostResult{}, err
+		}
+	}
+
 	if r.mode == "lost" {
 		return HostResult{}, errors.New("lost cleanup acknowledgment")
 	}
@@ -329,7 +436,7 @@ func (r *candidateRetirementRuntime) Invoke(ctx context.Context, call HostInvoca
 			return HostResult{}, err
 		}
 	}
-	if r.mode != "unretired" && r.mode != "deadline_cross" && r.mode != "reserve_after_deadline" && r.mode != "revoked" {
+	if r.mode != "unretired" && r.mode != "deadline_cross" && r.mode != "reserve_after_deadline" && r.mode != "revoked" && r.mode != "epoch_change" {
 		r.assertRetirementFence(ctx, permit)
 	}
 	if r.mode == "history_deleted" {
