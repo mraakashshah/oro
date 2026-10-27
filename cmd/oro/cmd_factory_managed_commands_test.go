@@ -883,7 +883,7 @@ func TestFactoryManagedDockerProgram(t *testing.T) {
 		os.Exit(0)
 	}
 	if len(args) >= 6 && args[0] == "container" && args[1] == "create" {
-		candidate := slices.Contains(args, "--init=false")
+		candidate := slices.Contains(args, "--tmpfs")
 		if err := managedFakeCreate(&state, args, candidate); err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, err)
 			os.Exit(2)
@@ -995,8 +995,8 @@ func managedFakeCreate(s *managedFakeDockerState, args []string, candidate bool)
 		return errors.New("incorrect ownership labels")
 	}
 	expected := map[string]string{"--pull=never": "true", "--read-only": "true", "--network": "none", "--cap-drop": "ALL", "--security-opt": "no-new-privileges", "--ipc": "private", "--cgroupns": "private", "--restart": "no", "--log-driver": "none", "--pids-limit": "16", "--shm-size": "1048576", "--user": "65534:65534", "--entrypoint": "/usr/local/bin/oro-factory-guard", "--mount": "type=volume,source=" + s.Volume + ",target=/source,volume-nocopy"}
+	expected["--init=false"] = "true"
 	if candidate {
-		expected["--init=false"] = "true"
 		expected["--memory"] = "268435456"
 		expected["--memory-swap"] = "268435456"
 		expected["--cpus"] = "1.000000000"
@@ -1047,14 +1047,14 @@ func managedFakeKeeper(s managedFakeDockerState, candidate bool) map[string]any 
 		"HostConfig": map[string]any{"NetworkMode": "none", "PidMode": "", "IpcMode": "private", "CgroupnsMode": "private", "ReadonlyRootfs": true, "Privileged": false, "CapAdd": nil, "CapDrop": []string{"ALL"}, "SecurityOpt": []string{"no-new-privileges"}, "Memory": int64(64 << 20), "MemorySwap": int64(64 << 20), "NanoCpus": int64(250000000), "PidsLimit": int64(16), "ShmSize": int64(1 << 20), "RestartPolicy": map[string]any{"Name": "no", "MaximumRetryCount": 0}, "LogConfig": map[string]any{"Type": "none", "Config": map[string]string{}}, "Binds": nil, "VolumesFrom": nil, "Tmpfs": nil, "Devices": nil, "DeviceRequests": nil, "Mounts": []any{map[string]any{"Type": "volume", "Source": s.Volume, "Target": "/source", "ReadOnly": false, "VolumeOptions": map[string]any{"NoCopy": true}}}},
 		"Mounts":     []any{map[string]any{"Type": "volume", "Name": s.Volume, "Source": "/var/lib/docker/volumes/owned/_data", "Destination": "/source", "Driver": "local", "RW": true, "Propagation": ""}},
 	}
+	host := object["HostConfig"].(map[string]any)
+	host["UTSMode"], host["Init"] = "", false
 	if candidate {
-		host := object["HostConfig"].(map[string]any)
 		host["Memory"], _ = strconv.ParseInt(s.CandidateMemory, 10, 64)
 		host["MemorySwap"] = host["Memory"]
 		host["NanoCpus"], _ = strconv.ParseInt(s.CandidateCPUs, 10, 64)
 		host["PidsLimit"], _ = strconv.ParseInt(s.CandidatePIDs, 10, 64)
 		host["Tmpfs"] = map[string]string{"/scratch": strings.TrimPrefix(s.CandidateScratch, "/scratch:")}
-		host["UTSMode"], host["Init"] = "", false
 	}
 	return object
 }
