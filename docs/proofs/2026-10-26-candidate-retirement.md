@@ -85,10 +85,12 @@ This does not retroactively make the failed gate green. The repaired rerun
 `candidate-retire-repaired-gate` passed at Go `2924a464` in 610.559 seconds:
 twenty-two passes, zero failures, 85.6% merged coverage. The scoped retirement
 and event-fixture tasks are closed against that evidence; parent qualification
-remains incomplete. A fresh shuffled full factory race is running as
-`candidate-retire-integrated-full-race`, tool session `3203`, with a 1500s
-package validation limit and unchanged production/child authority bounds.
-The earlier dependency-boundary failure stays preserved.
+remains incomplete. The fresh shuffled full factory race
+`candidate-retire-integrated-full-race` passed: 1152.917 seconds package /
+1158.115 seconds harness, 86.2% coverage at source Go `2924a464`. Its 1500s
+package validation limit and production/child authority bounds were unchanged.
+No root verification job remains active. The earlier dependency-boundary failure
+stays preserved.
 
 Implementation review maps reservation and deadline rules to
 `reserveCandidateRetirement`/`candidateCleanupContext`, exact parent and snapshot

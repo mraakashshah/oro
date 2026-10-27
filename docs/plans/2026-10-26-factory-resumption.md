@@ -193,19 +193,22 @@ failures, 85.6% merged coverage. Its task-close evidence covers scoped
 `oro-mf-event-cap-fixtures` and `oro-mf-candidate-retire`; both are now closed.
 Native execution, uncertain retirement recovery and delivery remain parent work.
 
-The full shuffled factory race is live: `candidate-retire-integrated-full-race`,
-tool session `3203`, source Go `2924a464` / launch HEAD `fde0d9a4`. Its 1500s
-package validation limit accommodates the measured prior 829.559s full run plus
-new 392.306s scoped cases and real-expiry waits. Production authority and owned
-child bounds are unchanged. Keep heavy lanes sequential and preserve failures.
+The full shuffled factory race is terminal PASS:
+`candidate-retire-integrated-full-race`, 1152.917 seconds package /1158.115
+seconds harness, 86.2% coverage, source Go `2924a464` / launch HEAD `fde0d9a4`.
+The 1500s package validation allowance and original child/production bounds were
+unchanged. No root verification job remains live. Preserve earlier failures.
 
-Fresh Astra helper-spec review returned FAIL on frozen contract SHA256
-`243f7dbb5783ba3bf78b8d591d5f2dee6d08f14beab4c3ce60995b3595dcca9d`:
-entry scope omitted two value-comparison consumers of the proposed optional
-pointer (`managed_docker.go:ready` and cleanup runtime verification). Recording
-process injection and composed plan/feedback bounds also need clarification.
-The author is revising the contract/task criteria for re-review. Its eight
-tracked leaves remain open and undispatched; no model/credential actions ran.
+Fresh Astra helper-spec review initially failed on two optional-config equality
+consumers, recording-process injection and composition bounds; its second
+revision omitted required role context. Both failures were corrected before
+implementation. Final [helper contract](2026-10-26-terra-helper-contract.md)
+SHA256 `390cc7622c11c866187fdde530f9712907e783e015ab23677eea070e35f9dff6`
+passed independent re-review with no remaining findings. The retained
+[review proof](../proofs/2026-10-26-terra-helper-spec-review.md) matches that hash
+and Markdown lint passed. Gate `oro-mf-terra-spec-proof` must close against this
+artifact before `oro-mf-terra-entry` starts. The eight implementation leaves
+remain open; this is approved design, not model execution or delivery proof.
 
 The [restricted Terra adapter research](../proofs/2026-10-26-terra-adapter-research.md)
 proposes an Oro-owned Responses function loop; it is research, not an implemented
