@@ -49,7 +49,7 @@ func newCleanupFixtureState(t *testing.T, kind string, late bool) cleanupFixture
 	t.Helper()
 	root, a, store := journalFixture(t)
 	if late {
-		a.Deadline = time.Now().UTC().Add(-time.Second)
+		a.Deadline = time.Now().UTC().Add(2 * time.Second)
 		a.HardStop = a.Deadline.Add(25 * time.Second)
 	}
 	insertJournalFixture(t, store, a)
@@ -63,10 +63,13 @@ func newCleanupFixtureState(t *testing.T, kind string, late bool) cleanupFixture
 	digest := sha256.Sum256([]byte(root + "\x00" + a.ObjectiveID))
 	objective := hex.EncodeToString(digest[:8])
 	target.Name = "oro-factory-" + objective + "-" + kind + "-" + target.ID + "-" + target.Nonce
-	if _, err := j.reserveScope(t.Context(), target, a.Deadline, a.Deadline.Add(-time.Second)); err != nil {
+	if _, err := j.reserveScope(t.Context(), target, a.Deadline, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if late {
+		timer := time.NewTimer(time.Until(a.Deadline) + 20*time.Millisecond)
+		defer timer.Stop()
+		<-timer.C
 		if err := j.setDesired(t.Context(), generation, "stopping", "test cleanup", time.Time{}); err != nil {
 			t.Fatal(err)
 		}
@@ -151,7 +154,7 @@ func testManagedCleanupSeal(t *testing.T) {
 func testManagedCleanupKeeper(t *testing.T) {
 	t.Helper()
 	root, admission, store := journalFixture(t)
-	admission.Deadline = time.Now().UTC().Add(-time.Second)
+	admission.Deadline = time.Now().UTC().Add(2 * time.Second)
 	admission.HardStop = admission.Deadline.Add(25 * time.Second)
 	insertJournalFixture(t, store, admission)
 	j := openJournalFixture(t, root, admission.ObjectiveID)
@@ -161,11 +164,16 @@ func testManagedCleanupKeeper(t *testing.T) {
 	}
 	keeper := journalScope("a", generation)
 	keeper.Kind, keeper.Backend, keeper.Name = "keeper", "docker", "keeper-a"
-	if _, err := j.reserveScope(t.Context(), keeper, admission.HardStop, time.Now()); err == nil {
-		t.Fatal("keeper lifetime allowance admitted a post-work creation")
-	}
-	if _, err := j.reserveScope(t.Context(), keeper, admission.HardStop, admission.Deadline.Add(-time.Second)); err != nil {
+	if _, err := j.reserveScope(t.Context(), keeper, admission.HardStop, time.Now()); err != nil {
 		t.Fatal(err)
+	}
+	timer := time.NewTimer(time.Until(admission.Deadline) + 20*time.Millisecond)
+	defer timer.Stop()
+	<-timer.C
+	other := journalScope("b", generation)
+	other.Kind, other.Backend, other.Name = "keeper", "docker", "keeper-b"
+	if _, err := j.reserveScope(t.Context(), other, admission.HardStop, time.Now()); err == nil {
+		t.Fatal("keeper lifetime allowance admitted a post-work creation")
 	}
 	if err := j.RecordHello(t.Context(), keeper, 101, 101); err == nil {
 		t.Fatal("keeper lifetime allowance granted a post-work start")
