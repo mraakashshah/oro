@@ -94,6 +94,9 @@ CREATE TABLE IF NOT EXISTS managed_cleanup_permits (
 	if err := initManagedDockerVolumeSchema(ctx, conn); err != nil {
 		return err
 	}
+	if err := initManagedCandidateSchema(ctx, conn); err != nil {
+		return err
+	}
 	return initManagedDockerSchema(ctx, conn, `CREATE TABLE IF NOT EXISTS managed_docker_keepers (
  keeper_scope_id TEXT PRIMARY KEY REFERENCES managed_scopes(id),
  volume_scope_id TEXT NOT NULL UNIQUE REFERENCES managed_scopes(id),

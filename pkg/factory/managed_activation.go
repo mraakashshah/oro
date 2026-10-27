@@ -160,7 +160,7 @@ func verifyActivationHistory(ctx context.Context, tx *sql.Tx, manifest managedMa
 			return errors.New("managed activation requires original delivery history")
 		}
 	}
-	for _, table := range []string{"managed_reservations", "managed_scopes", "managed_events", "managed_cleanup_permits", "managed_docker_intents", "managed_docker_keepers", "managed_docker_sources", "managed_workspaces"} {
+	for _, table := range []string{"managed_reservations", "managed_scopes", "managed_events", "managed_cleanup_permits", "managed_docker_intents", "managed_docker_keepers", "managed_docker_sources", "managed_workspaces", "managed_docker_candidates"} {
 		var n int
 		if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM "+table).Scan(&n); err != nil {
 			return fmt.Errorf("count %s: %w", table, err)
@@ -169,7 +169,7 @@ func verifyActivationHistory(ctx context.Context, tx *sql.Tx, manifest managedMa
 			return errors.New("managed activation requires empty execution history")
 		}
 	}
-	return nil
+	return validateCandidateHistory(ctx, tx)
 }
 
 func activateManagedTransaction(ctx context.Context, tx *sql.Tx, j *managedJournal, manifest managedManifest, state *managedSupervision, ref ManagedRuntimeReference) (bool, error) {
