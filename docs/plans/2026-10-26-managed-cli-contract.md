@@ -249,3 +249,9 @@ Finally, commit must follow positive candidate retirement, keeper continuity,
 bounded stopped export and existing managed Git exact commit/CAS. Independent
 acceptance and review remain separate protected stages. Namespace startup is not
 worker execution, delivery or autonomous recovery qualification.
+
+The [Terra adapter capability research](../proofs/2026-10-26-terra-adapter-research.md)
+records why the existing unrestricted Codex launcher is not qualified for this
+boundary, and a proposed application-controlled Responses function loop. It is
+not an implemented adapter or evidence of provider access, hard cost enforcement
+or immutable model weights.
