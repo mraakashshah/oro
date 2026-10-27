@@ -7,16 +7,17 @@ design and task coverage, not an implementation, live API or factory delivery.
 ```json
 {
   "verdict": "PASS",
-  "review_scope": "design_and_task_coverage",
+  "review_scope": "design_and_task_coverage_with_targeted_codec_amendment",
   "spec": "docs/plans/2026-10-26-terra-helper-contract.md",
-  "verified_sha256": "390cc7622c11c866187fdde530f9712907e783e015ab23677eea070e35f9dff6",
+  "verified_sha256": "1ae5a99aff3dcf2bf9863f9365327ec5d85810e7a834249c80ebbb4c582da53d",
   "reviewer": "/root/astra_helper_spec_review",
   "model": "gpt-6-astra",
   "reasoning_effort": "max",
-  "fresh_context": true,
   "remaining_findings": [],
   "implementation_qualified": false,
-  "live_effects_qualified": false
+  "live_effects_qualified": false,
+  "prior_structural_review_sha256": "390cc7622c11c866187fdde530f9712907e783e015ab23677eea070e35f9dff6",
+  "fresh_context_initial_review": true
 }
 ```
 
@@ -38,8 +39,12 @@ plan or feedback and before reserving another invocation.
 
 The reviewer reported no remaining structural gaps in producer/consumer schema,
 workspace/receipt semantics, composition failure routing, the private recording
-build seam, or task ownership/dependencies. The final verdict is conditional on
-this exact document hash; later changes require another review.
+build seam, or task ownership/dependencies. A subsequent targeted review accepted amendment `1ae5a99a…`: result codecs stay
+private until a genuine cross-package caller exists, and bounded temporary
+parsing may precede exact canonical rejection before trusted use. No wire field,
+limit or authority rule changed; the prior structural verdict remains applicable.
+The final verdict is conditional on the full current hash above; later changes
+require another review.
 
 Root independently matched the full SHA-256 above and ran:
 

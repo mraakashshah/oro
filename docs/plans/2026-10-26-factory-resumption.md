@@ -203,12 +203,23 @@ Fresh Astra helper-spec review initially failed on two optional-config equality
 consumers, recording-process injection and composition bounds; its second
 revision omitted required role context. Both failures were corrected before
 implementation. Final [helper contract](2026-10-26-terra-helper-contract.md)
-SHA256 `390cc7622c11c866187fdde530f9712907e783e015ab23677eea070e35f9dff6`
+SHA256 `1ae5a99aff3dcf2bf9863f9365327ec5d85810e7a834249c80ebbb4c582da53d`
 passed independent re-review with no remaining findings. The retained
 [review proof](../proofs/2026-10-26-terra-helper-spec-review.md) matches that hash
-and Markdown lint passed. Gate `oro-mf-terra-spec-proof` must close against this
-artifact before `oro-mf-terra-entry` starts. The eight implementation leaves
-remain open; this is approved design, not model execution or delivery proof.
+and Markdown lint passed. The later visibility amendment keeps result codecs
+private until a real cross-package consumer needs them; no wire/authority rule
+changed. Gate `oro-mf-terra-spec-proof` records the matching artifact.
+
+`oro-mf-terra-entry` is being implemented by Terra in isolated
+`.worktrees/factory-terra-entry`, based on `0e8bfef6`. Public publication/replay,
+genuine configured controller/cleanup and frozen helper identity tests pass in
+scoped predecessor evidence, but the latest filesystem alias follow-up remains
+unqualified. Symlink, case-folding and prospective missing-state containment
+regressions are being corrected without reading credentials or allocating on
+invalid input. Root's independent predecessor race passed in 57.123 seconds;
+do not attribute that result to later source changes. No helper code has been
+integrated or pushed. The remaining seven implementation leaves are open; live
+model/tool effects and delivery are not established.
 
 The [restricted Terra adapter research](../proofs/2026-10-26-terra-adapter-research.md)
 proposes an Oro-owned Responses function loop; it is research, not an implemented
