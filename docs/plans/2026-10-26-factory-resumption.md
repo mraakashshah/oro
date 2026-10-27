@@ -160,6 +160,26 @@ Full inherited labels remain exact; oversized existing 16KiB cleanup permits
 must fail before fence/token/scope mutation. Uncertain retirement never retries
 or renews its fixed deadline.
 
+Retirement remains WIP, not accepted. Preliminary review found omitted immutable
+snapshot checks in typed reload; Terra is restoring validateManagedOwnerSnapshot
+and regressions. A real tiny-source/inherited-label fixture also reproduced a
+permit larger than ArchiveBytes: typed cleanup preflights its existing 16KiB
+permit and complete 64MiB request envelope before committing the fence or token.
+Cleanup permit retention was already included in metadata allowances; no global
+source/archive quota change is permitted. Actual CLI helper validation must match.
+
+Astra resolved initial reservation after objective expiry as recovery authority:
+validate the structural canonical candidate, saved immutable snapshot/source,
+exact granted parent PID/PGID, current running generation and runtime, under a
+fixed cleanup deadline no later than HardStop. Ordinary execution grants remain
+denied after work expiry. Only execute owns a separate bounded cleanup context;
+it may ignore an inherited DeadlineExceeded whose deadline equals the objective
+work deadline exactly. Earlier caller deadlines and explicit cancellation must
+propagate. Direct retireCandidate never detaches its supplied context. Legal
+stop/epoch revocation still disables the live-parent exception. These require
+frozen-source review and tests, not inference from the design.
+
+
 The [restricted Terra adapter research](../proofs/2026-10-26-terra-adapter-research.md)
 proposes an Oro-owned Responses function loop; it is research, not an implemented
 adapter. Model/tool execution, stopped export/import, protected acceptance/review,

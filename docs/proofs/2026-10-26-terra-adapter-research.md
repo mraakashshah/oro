@@ -95,3 +95,20 @@ model completion or exporting source. A missing container is not export evidence
 The guard remains an unprivileged fixed-deadline PID1, with no model control
 channel. The ready-only retirement precursor is tracked as
 `oro-mf-candidate-retire`; it does not yet qualify unknown-exec recovery.
+
+
+The proposed helper entry is `factory _model-terra` in a build explicitly selected
+as ModelExecutable. Freeze those configured bytes in the existing model slot;
+never replace them silently with the controller executable. A versioned helper
+protocol and nonsecret credential reference need runtime publication/digest
+binding. Historical metadata stays readable; absent adapter configuration means
+execution unavailable, without reconstructing artifacts.
+
+The recording design starts with 16,384 input and 4,096 output token ceilings,
+strict single-function calls, no redirects/proxy inheritance and complete bounded
+responses. The official [token-counting endpoint](https://developers.openai.com/api/docs/guides/token-counting)
+can count the complete Responses input before dispatch. The inspected material
+has not qualified that endpoint's fee treatment or every pricing modifier. Live
+transport must not claim a hard dollar cap until those costs are qualified; do
+not invent a free endpoint assumption. These are unresolved live-qualification
+requirements, not implemented API requests or permission to change admission.
