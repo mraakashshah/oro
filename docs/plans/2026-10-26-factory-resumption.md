@@ -128,20 +128,23 @@ Root combined verification at frozen Go revision `2ce97949` is terminal:
   passed; later runtime tiers remain unqualified.
 
 Evidence lives under `/private/tmp/oro-factory-verify-ldhnhnvl/`. Preserve failed
-results. Terra is repairing driver classification through dbutil without changing
-exact typed SQLITE_BUSY-only retry semantics or the architectural guard. No new
-full rerun is active; this narrow dependency repair needs architecture/classifier
-and contention regressions before integration.
+results. The reviewed dependency repair is integrated as `defaff52` (Terra `e620d00e`).
+Factory calls dbutil.IsExactSQLiteBusy, preserving typed exact base-code matching;
+real extended BUSY, LOCKED, wrapped and untyped errors are tested. Root independent
+race passed in 27.466 seconds. No new full rerun is active; the original full
+profile remains failed, not retroactively green.
 
-Keeper init policy (`oro-mf-keeper-init-policy`) is reviewed at `ca7fed55` plus
-CLI fixture `09e4f046`, in `.worktrees/factory-keeper-init-policy`, not yet
-integrated. Creation explicitly sets --init=false; shared strict raw Init/UTS
-checks apply before keeper stopped/running decode. Root focused race passed
-25.137 seconds. Two worker broader candidate runs timed out at their fixed 180s
-child limit under overlapping load; root's independent combined candidate/keeper
-race is now running as `keeper-candidate-reviewed-race`. Do not waive or lengthen
-the child limit to conceal those results. Existing Colima and user checkout
-changes remain untouched.
+Keeper init policy (`oro-mf-keeper-init-policy`) is reviewed and integrated in
+`fdf9e6e3` / `b134fd5e` (Terra `ca7fed55` / `09e4f046`). Creation explicitly
+sets --init=false; shared strict raw Init/UTS checks apply before keeper
+stopped/running decode. Root focused race passed in 25.137 seconds. Two worker
+broader candidate runs timed out at their fixed 180s child limit under overlapping
+load. Root's independent combined candidate/keeper race subsequently passed in
+170.622 seconds (`keeper-candidate-reviewed-race`), with the limit unchanged.
+Root's final narrow integrated race at `b134fd5e` passed in 44.848 seconds
+harness (`keeper-boundary-integrated-race`), covering dbutil exact classification,
+dependency boundary, journal transactions and keeper/raw namespace validation. No native
+qualification is implied. Existing Colima and user checkout changes remain intact.
 
 Ready-only candidate retirement is being implemented by Terra in
 `.worktrees/factory-candidate-retire`, branch `feature/factory-candidate-retire`,
