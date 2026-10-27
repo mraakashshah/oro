@@ -677,3 +677,44 @@ func testDockerAdapterModelHelperReread(t *testing.T) {
 		t.Fatal("configuration check dispatched host work")
 	}
 }
+
+func TestModelResultCodec(t *testing.T) {
+	host := ScopeHandle{ID: strings.Repeat("a", 32), Nonce: strings.Repeat("b", 32), Kind: "host", Backend: "host", Name: "model", Generation: 1}
+	result := ModelResult{Version: 1, Invocation: host, RequestSHA256: strings.Repeat("f", 64), Outcome: "interrupted", Turns: []ModelTurnRecord{}, ErrorCode: "adapter_unavailable"}
+	encoded, err := encodeModelResult(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := decodeModelResult(encoded); err != nil || !reflect.DeepEqual(got, result) {
+		t.Fatalf("result round trip: %+v, %v", got, err)
+	}
+	result.Turns = nil
+	if _, err := encodeModelResult(result); err == nil {
+		t.Fatal("null turns accepted")
+	}
+	result = ModelResult{Version: 1, Invocation: host, RequestSHA256: strings.Repeat("f", 64), Outcome: "completed", TurnsDispatched: 1, LiabilitySpentCents: 1, Turns: []ModelTurnRecord{{Turn: 1, CountDispatched: true, ModelDispatched: true, ResponseID: "response", ObservedModel: "gpt-6.1-terra", Outcome: "completed", InputTokens: 100, OutputTokens: 20, LiabilityCents: 1, ToolCallIDs: []string{}}}, FinalText: "done"}
+	good, err := encodeModelResult(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := decodeModelResult(good); err != nil || !reflect.DeepEqual(got, result) {
+		t.Fatalf("completed result round trip: %+v, %v", got, err)
+	}
+	for _, change := range []func(*ModelResult){
+		func(r *ModelResult) { r.TurnsDispatched++ },
+		func(r *ModelResult) { r.LiabilitySpentCents++ },
+		func(r *ModelResult) { r.Turns[0].Turn++ },
+		func(r *ModelResult) { r.Turns[0].CountDispatched = false },
+		func(r *ModelResult) { r.Turns[0].ToolCallIDs = nil },
+		func(r *ModelResult) { r.Turns[0].Outcome = "other" },
+	} {
+		var changed ModelResult
+		if err := json.Unmarshal(good, &changed); err != nil {
+			t.Fatal(err)
+		}
+		change(&changed)
+		if _, err := encodeModelResult(changed); err == nil {
+			t.Fatal("invalid model result accepted")
+		}
+	}
+}

@@ -163,8 +163,8 @@ func validateModelRequestLimits(r ModelRequest) error {
 	return nil
 }
 
-// EncodeModelResult validates the bounded canonical model protocol.
-func EncodeModelResult(r ModelResult) ([]byte, error) {
+// encodeModelResult validates the bounded canonical model protocol.
+func encodeModelResult(r ModelResult) ([]byte, error) {
 	if err := validateModelResult(r); err != nil {
 		return nil, err
 	}
@@ -175,8 +175,8 @@ func EncodeModelResult(r ModelResult) ([]byte, error) {
 	return data, nil
 }
 
-// DecodeModelResult validates the bounded canonical model protocol.
-func DecodeModelResult(data []byte) (ModelResult, error) {
+// decodeModelResult validates the bounded canonical model protocol.
+func decodeModelResult(data []byte) (ModelResult, error) {
 	var r ModelResult
 	if len(data) > 1<<20 || !utf8.Valid(data) {
 		return r, errors.New("invalid bounded model result")
@@ -184,7 +184,7 @@ func DecodeModelResult(data []byte) (ModelResult, error) {
 	if err := json.Unmarshal(data, &r); err != nil {
 		return r, fmt.Errorf("decode model JSON: %w", err)
 	}
-	canonical, err := EncodeModelResult(r)
+	canonical, err := encodeModelResult(r)
 	if err != nil || !bytes.Equal(data, canonical) {
 		return ModelResult{}, errors.New("model result is not canonical")
 	}
