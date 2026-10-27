@@ -488,11 +488,14 @@ func workspaceAssertCommitFailure(t *testing.T, j *managedJournal, operation fun
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer reader.Rollback()
 	var revision int
 	if err = reader.QueryRowContext(t.Context(), "SELECT revision FROM snapshots WHERE id=1").Scan(&revision); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 150*time.Millisecond)
+	// Allow source and owner validation to finish before the pinned reader
+	// forces the real COMMIT to exhaust SQLite's one-second busy timeout.
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
 	err = operation(ctx)
 	if err == nil || !strings.Contains(err.Error(), "commit managed transition") {
