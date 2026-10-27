@@ -163,6 +163,9 @@ func testManagedCandidateRetire(t *testing.T, mode string) {
 		spec.TimeoutSeconds = 30
 		spec.StepTimeoutSeconds = 25
 	}
+	if mode == "deadline_cross" || mode == "reserve_after_deadline" {
+		spec.Recovery.CleanupTimeoutSeconds = 40
+	}
 	if mode == "small_source" {
 		spec.Runtime.SourceBytes = 64
 		spec.Runtime.MaxFiles = 2
@@ -240,6 +243,9 @@ func testManagedCandidateRetire(t *testing.T, mode string) {
 		if mode == "reserve_after_deadline" && !waited {
 			var phase string
 			if e := j.conn.QueryRowContext(readCtx, "SELECT json_extract(body,'$.phase') FROM managed_docker_candidates LIMIT 1").Scan(&phase); e == nil && phase == "ready" {
+				if bound, ok := readCtx.Deadline(); !ok || !bound.After(manifest.Deadline) {
+					return ManagedDockerConfig{}, errors.New("cleanup context does not span objective expiry")
+				}
 				waited = true
 				timer := time.NewTimer(time.Until(manifest.Deadline) + 20*time.Millisecond)
 				defer timer.Stop()
@@ -646,6 +652,9 @@ func (r *candidateRetirementRuntime) provePermitLabelCapacity(ctx context.Contex
 }
 
 func (r *candidateRetirementRuntime) verifyAfterWorkDeadline(ctx context.Context, call HostInvocation, permit DockerCleanupPermit) error {
+	if !permit.Deadline.After(r.journal.admission.Deadline) {
+		return errors.New("cleanup deadline does not span objective expiry")
+	}
 	timer := time.NewTimer(time.Until(r.journal.admission.Deadline) + 20*time.Millisecond)
 	defer timer.Stop()
 	select {
