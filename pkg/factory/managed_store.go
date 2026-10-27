@@ -270,12 +270,11 @@ func (j *managedJournal) supervision(ctx context.Context) (managedSupervision, e
 // Every ownership mutation uses its own BEGIN IMMEDIATE transaction and revision.
 // The legacy objective snapshot is never read or rewritten by these transitions.
 func (j *managedJournal) mutate(ctx context.Context, kind, ref string, change func(*sql.Tx, *managedSupervision) (bool, error)) error {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	tx, err := j.conn.BeginTx(ctx, nil)
+	tx, release, err := j.beginTransition(ctx)
 	if err != nil {
-		return fmt.Errorf("begin managed transition: %w", err)
+		return err
 	}
+	defer release()
 	defer func() { _ = tx.Rollback() }()
 	var identity []byte
 	if err := tx.QueryRowContext(ctx, "SELECT body FROM managed_admissions WHERE id=1").Scan(&identity); err != nil {
