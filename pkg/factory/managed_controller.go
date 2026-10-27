@@ -78,6 +78,17 @@ func checkManagedControllerAuthority(ctx context.Context, tx *sql.Tx, j *managed
 
 // validateManagedControllerGrant checks typed authority in the handshake transaction.
 func validateManagedControllerGrant(ctx context.Context, tx *sql.Tx, j *managedJournal, state *managedSupervision, record managedScopeRecord) error {
+	if err := validateManagedControllerGrantIdentity(ctx, tx, j, state, record); err != nil {
+		return err
+	}
+	if err := activeManagedGeneration(state, record.Generation, time.Now(), j.admission.Deadline); err != nil {
+		return err
+	}
+	return requireNoManagedCleanup(ctx, tx)
+}
+
+// validateManagedControllerGrantIdentity does not grant work or waive cleanup gates.
+func validateManagedControllerGrantIdentity(ctx context.Context, tx *sql.Tx, j *managedJournal, state *managedSupervision, record managedScopeRecord) error {
 	scope := record.ScopeHandle
 	expected := "dev.getoro.factory." + cleanupObjectiveHash(j.admission) + ".controller." + scope.ID + "." + scope.Nonce
 	if scope.Kind != "controller" || scope.Backend != "launchd" || scope.Name != expected || !record.Deadline.Equal(j.admission.Deadline) {
@@ -87,9 +98,6 @@ func validateManagedControllerGrant(ctx context.Context, tx *sql.Tx, j *managedJ
 		return errors.New("controller grant requires its authenticated process leader")
 	}
 	if err := validateManagedControllerActivation(ctx, tx, j); err != nil {
-		return err
-	}
-	if err := activeManagedGeneration(state, scope.Generation, time.Now(), j.admission.Deadline); err != nil {
 		return err
 	}
 	if !managedIdentifier(state.SupervisorToken) {
@@ -102,7 +110,7 @@ func validateManagedControllerGrant(ctx context.Context, tx *sql.Tx, j *managedJ
 	if err := tx.QueryRowContext(ctx, "SELECT generation FROM managed_reservations WHERE kind='controller' AND token=?", scope.ID).Scan(&reserved); err != nil || reserved != scope.Generation {
 		return errors.Join(errors.New("controller requires exact counted reservation"), err)
 	}
-	return requireNoManagedCleanup(ctx, tx)
+	return nil
 }
 
 func validateManagedControllerActivation(ctx context.Context, tx *sql.Tx, j *managedJournal) error {
