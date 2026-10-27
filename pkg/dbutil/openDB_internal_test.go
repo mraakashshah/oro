@@ -11,6 +11,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 type sqliteCodeError int
@@ -104,6 +107,81 @@ func TestIsSQLiteBusyClassifiesOnlyBusyCodeFamily(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := isSQLiteBusy(tt.err); got != tt.want {
 				t.Fatalf("isSQLiteBusy(%v) = %t, want %t", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsExactSQLiteBusy(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "busy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec("PRAGMA journal_mode=WAL; CREATE TABLE t (id INTEGER); INSERT INTO t VALUES (1)"); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Rollback()
+	var n int
+	if err := reader.QueryRow("SELECT id FROM t").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("UPDATE t SET id=2"); err != nil {
+		t.Fatal(err)
+	}
+	_, extended := reader.Exec("UPDATE t SET id=3")
+	writer, err := db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Rollback()
+	if _, err := writer.Exec("UPDATE t SET id=4"); err != nil {
+		t.Fatal(err)
+	}
+	_, busy := db.Exec("UPDATE t SET id=5")
+	lockedDB, err := sql.Open("sqlite", "file:locked-test?mode=memory&cache=shared&_txlock=immediate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lockedDB.Close()
+	lock, err := lockedDB.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Rollback()
+	_, locked := lockedDB.BeginTx(t.Context(), nil)
+	for _, tc := range []struct {
+		err  error
+		code int
+	}{{busy, sqlite3.SQLITE_BUSY}, {extended, sqlite3.SQLITE_BUSY_SNAPSHOT}, {locked, sqlite3.SQLITE_LOCKED_SHAREDCACHE}} {
+		var actual *sqlite.Error
+		if !errors.As(tc.err, &actual) || actual.Code() != tc.code {
+			t.Fatalf("expected SQLite code %d, got %v", tc.code, tc.err)
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"busy", busy, true},
+		{"wrapped busy", fmt.Errorf("wrapped: %w", busy), true},
+		{"extended busy", extended, false},
+		{"wrapped extended", fmt.Errorf("wrapped: %w", extended), false},
+		{"locked", locked, false},
+		{"wrapped locked", fmt.Errorf("wrapped: %w", locked), false},
+		{"untyped code", sqliteCodeError(5), false},
+		{"plain", errors.New("busy"), false},
+		{"unset target", unsetSQLiteTargetError{}, false},
+		{"nil", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsExactSQLiteBusy(tc.err); got != tc.want {
+				t.Fatalf("IsExactSQLiteBusy(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
 	}

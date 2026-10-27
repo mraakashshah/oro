@@ -3,12 +3,10 @@ package factory
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"time"
 
-	"modernc.org/sqlite"
-	sqlite3 "modernc.org/sqlite/lib"
+	"oro/pkg/dbutil"
 )
 
 // beginTransition retries only a failed BEGIN, before any journal callback runs.
@@ -46,8 +44,7 @@ func (j *managedJournal) beginTransition(parent context.Context) (*sql.Tx, func(
 			cancel()
 			return nil, nil, fmt.Errorf("managed transition canceled: %w", ctx.Err())
 		}
-		var sqliteErr *sqlite.Error
-		if !errors.As(err, &sqliteErr) || sqliteErr.Code() != sqlite3.SQLITE_BUSY {
+		if !dbutil.IsExactSQLiteBusy(err) {
 			cancel()
 			return nil, nil, fmt.Errorf("begin managed transition: %w", err)
 		}

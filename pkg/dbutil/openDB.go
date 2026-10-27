@@ -12,7 +12,8 @@ import (
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite" // registers the sqlite driver
+	"modernc.org/sqlite" // also registers the sqlite driver
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 const (
@@ -105,6 +106,12 @@ func retrySQLiteBusy(ctx context.Context, operation func() error) error {
 func isSQLiteBusy(err error) bool {
 	var sqliteErr interface{ Code() int }
 	return errors.As(err, &sqliteErr) && sqliteErr != nil && sqliteErr.Code()&0xff == sqliteBusyCode
+}
+
+// IsExactSQLiteBusy reports only the driver's base SQLITE_BUSY code, excluding extended codes.
+func IsExactSQLiteBusy(err error) bool {
+	var sqliteErr *sqlite.Error
+	return errors.As(err, &sqliteErr) && sqliteErr != nil && sqliteErr.Code() == sqlite3.SQLITE_BUSY
 }
 
 // withBusyTimeout configures modernc SQLite's per-connection busy handler.
