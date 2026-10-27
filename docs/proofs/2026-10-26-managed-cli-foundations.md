@@ -155,9 +155,12 @@ clean (worker evidence). Root independent scoped race with coverage passed in
 2.189 seconds factory/11.561 seconds CLI, 30.782 seconds harness, profiles
 18.6%/12.7% (scope only), prefix `start-identity-reviewed-race`.
 
-Fresh integrated CLI coverage/race and gate are running at `3bcff84f`, prefixes
-`start-integrated-race` and `start-integrated-gate`, sessions `27837` / `60716`.
-Recover terminal results before repeating; no native qualification follows.
+Integrated CLI coverage/race at `3bcff84f` passed in 132.109 seconds package /
+147.442 seconds harness, 25.9% CLI statements. The gate passed fifteen checks
+and failed only unused DecodeDockerCleanupResult in 176.876 seconds. Formatting,
+lint and NilAway passed; later runtime/security/build tiers remain unqualified.
+Both jobs are terminal, prefixes `start-integrated-race` / `start-integrated-gate`.
+No native qualification follows.
 
 Uncertain-bootstrap ownership reconciliation,
 candidate execution, independent acceptance, native qualification and sustained

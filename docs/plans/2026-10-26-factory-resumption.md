@@ -42,12 +42,13 @@ scoped profiles, not full-package coverage. Evidence prefix is
 `start-identity-reviewed-race` in `/private/tmp/oro-factory-verify-ldhnhnvl/`.
 Worker full-race log is `/tmp/oro-reservation-factory-final-race.log`.
 
-Fresh integrated jobs at `3bcff84f` are live: `start-integrated-race` session
-`27837` and `start-integrated-gate` session `60716`. Recover their exact terminal
-results before repeating. Only documentation edits during these checks. Earlier
-root and worker jobs are terminal. Before this increment, the gate passed fifteen
-checks and failed only AdmitManaged, ActivateManaged and DecodeDockerCleanupResult;
-start now consumes the first two, but inspect the fresh gate rather than assume.
+Integrated jobs at `3bcff84f` are terminal: `start-integrated-race` passed in
+132.109 seconds package /147.442 seconds harness, 25.9% CLI statements. The gate
+passed fifteen checks and failed only DecodeDockerCleanupResult (176.876 seconds).
+Formatting, lint and NilAway pass. Start consumes AdmitManaged and ActivateManaged.
+Later repository runtime/security/build tiers remain unqualified by this early
+gate. Evidence prefixes are `start-integrated-race` / `start-integrated-gate`.
+No root verification handle remains live; earlier jobs are terminal too.
 
 The [runbook](../runbooks/factory-core.md) distinguishes legacy trusted-adapter
 run from managed startup. Success acknowledges registration, not service health,
@@ -57,9 +58,12 @@ Capacity remains charged on uncertain outcomes. Preserve the external service
 lock at root/.managed/locks/id/service.lock, released budget allocation lock first,
 and active replay without reacquiring supervisor lifetime ownership.
 
-Next use the [CLI continuation contract](2026-10-26-managed-cli-contract.md)'s
-resolved candidate-stage design: first a durable once-only worker execution intent,
-then its actual execute/READY/inspection consumer. Checkout OperationDeadline is
+Terra is now implementing `oro-mf-candidate-intent` in
+`.worktrees/factory-candidate-intent`, branch `feature/factory-candidate-intent`,
+base `4dabb2c0`. Its next dependent task is `oro-mf-candidate-execute`. Follow the
+[CLI continuation contract](2026-10-26-managed-cli-contract.md)'s resolved design:
+first a durable once-only worker execution intent, then its actual
+execute/READY/inspection consumer. Checkout OperationDeadline is
 not the worker deadline. Persist the worker-stage bound once and never refresh it
 on replay. Astra is architect and Terra/Codex is engineer; historical Claude-only
 adapter filenames are not a provider decision. Model/tool execution, stopped
