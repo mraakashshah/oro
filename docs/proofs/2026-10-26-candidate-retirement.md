@@ -71,10 +71,20 @@ Package/CLI lint and standalone gofumpt were clean in the scoped worker checks.
 Root evidence is under `/private/tmp/oro-factory-verify-ldhnhnvl/`, prefixes
 `candidate-retire-critical-reviewed`, `candidate-retire-fixture-cli-reviewed`,
 and `candidate-retire-merged-smoke`. These profiles are scoped, not full-suite
-coverage. The integrated repository gate is running as
-`candidate-retire-integrated-gate`; inspect its terminal result before repeating.
-The earlier full factory profile remains failed on its subsequently repaired
-dependency boundary. A fresh full race and later gate tiers remain outstanding.
+coverage. The integrated repository gate `candidate-retire-integrated-gate`
+finished FAIL in 618.626 seconds: twenty passes, with Go test and Markdown lint
+failures. All static checks, build, vet, CGO-free build and govulncheck passed;
+no vulnerabilities were reported. Merged coverage was 85.7%. The factory package
+completed in 437.740 seconds, 86.2%, failing only event-quota fixtures whose
+synthetic history no longer satisfies the retirement fence's contiguity checks.
+Reviewed fixture repair `2924a464` (Terra `28294945`) preserves actual quota
+assertions and production validation; its final worker race passed in 41.485
+seconds, and root independent affected race passed in 47.805 seconds harness.
+Two extra Markdown blank lines were removed and complete Markdown lint passed.
+This does not make the failed gate green. The rerun is live as
+`candidate-retire-repaired-gate` at Go `2924a464`, tool session `92754`.
+A fresh full race remains outstanding. The earlier dependency-boundary failure
+stays preserved.
 
 ## Remaining operational proof
 

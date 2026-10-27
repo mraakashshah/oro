@@ -96,7 +96,6 @@ The guard remains an unprivileged fixed-deadline PID1, with no model control
 channel. The ready-only retirement precursor is tracked as
 `oro-mf-candidate-retire`; it does not yet qualify unknown-exec recovery.
 
-
 The proposed helper entry is `factory _model-terra` in a build explicitly selected
 as ModelExecutable. Freeze those configured bytes in the existing model slot;
 never replace them silently with the controller executable. A versioned helper

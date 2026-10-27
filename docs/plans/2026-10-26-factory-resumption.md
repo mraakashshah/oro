@@ -170,14 +170,29 @@ HardStop preserved. Direct retireCandidate never detaches its caller. Legal
 stop/epoch revocation disables the live-parent exception. Uncertainty and failed
 final commits remain fenced; automatic reconciliation is still unfinished.
 
-Root's integrated repository gate is running at frozen Go `8cb36db8`, mode
-`candidate-retire-integrated-gate`, tool session `87302`. Do not restart while
-live. Run the full factory race after its static checks and terminal result;
-keep heavy lanes sequential after previous concurrent child timeouts. New
-retirement tests add real-expiry waits; use a measured sufficient package-level
-validation timeout without changing production authority or per-child bounds.
-Earlier full-suite/dependency and gate failures remain preserved above.
+Root's integrated repository gate at frozen Go `8cb36db8` is terminal FAIL:
+`candidate-retire-integrated-gate`, 618.626 seconds, twenty checks passed and two
+failed. Formatting, lint, NilAway, dead exports, architecture, build, vet,
+CGO-free build and govulncheck passed; no vulnerabilities were reported. The
+merged main/serial coverage was 85.7%, above the existing threshold.
 
+The two failures are full Go tests and Markdown spacing. Factory tests finished
+in 437.740 seconds with 86.2% coverage, failing only legacy event-cap fixtures in
+volume intent, workspace and controller reservation. Their synthetic padding
+produces noncontiguous history and now fails before the intended event quota.
+The reviewed fixture repair is integrated as `2924a464` (Terra `28294945`):
+padding and restoration preserve contiguous history and the supervision anchor,
+while exact quota/rollback assertions and production checks remain unchanged.
+Worker final affected race passed in 41.485 seconds, 23.9%; root independent
+affected race passed in 47.805 seconds harness. Two extra Markdown blank lines
+were removed; complete Markdown lint reports zero errors.
+
+The gate remains failed until its rerun finishes. The rerun is live at Go
+`2924a464`, mode `candidate-retire-repaired-gate`, tool session `92754`.
+No full factory race is currently active. Keep heavy lanes sequential and
+preserve prior failed evidence. The frozen helper contract is undergoing
+fresh-context Astra adversarial review before implementation; its eight tracked
+leaves are still open, and no model/credential actions have run.
 
 The [restricted Terra adapter research](../proofs/2026-10-26-terra-adapter-research.md)
 proposes an Oro-owned Responses function loop; it is research, not an implemented
