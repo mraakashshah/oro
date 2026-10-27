@@ -1,15 +1,52 @@
 # Experimental autonomous factory core
 
-`oro factory` runs an objective through implementation, independent acceptance,
+`oro factory run` runs an objective through implementation, independent acceptance,
 independent review, and promotion of the exact verified commit. Rejected attempts
 feed diagnostics into the next worker automatically. There is no human approval
 step. Attempts and the absolute deadline persist across restarts.
 
-This is the first replacement-core increment. Use trusted command adapters in a
-disposable or externally isolated repository. It does not provide a sandbox,
+The `run` path uses trusted command adapters in a disposable or externally
+isolated repository. It does not provide a sandbox,
 restart a killed controller, deploy services, or replace the existing dispatcher.
 The [design](../plans/2026-10-23-factory-core-design.md) describes the remaining
 requirements for a fully autonomous production factory.
+
+## Managed startup
+
+On Darwin, experimental `factory start` admits a strict `ManagedSpec`, freezes
+its runtime and registers a managed supervisor. This is a separate specification
+from the trusted-adapter example below. The current managed execution path stops
+after source preparation; real engineer execution, independent acceptance and
+complete delivery remain unimplemented. Recording tests qualify startup wiring,
+not native launchd/Docker operation or autonomous recovery.
+
+```sh
+./oro factory start --spec /absolute/path/to/managed-spec.json \
+  --state-dir /absolute/factory-state \
+  --docker /canonical/path/to/docker \
+  --docker-endpoint unix:///canonical/path/to/docker.sock
+```
+
+Use an absolute state directory outside the repository, a canonical Docker
+executable and an explicit local Unix endpoint. The specification must provide
+the admitted resource, recovery, model, verification and cost policies; see
+`ManagedSpec` in `pkg/factory/managed_contract.go` and the
+[managed startup contract](../plans/2026-10-26-managed-cli-contract.md).
+
+Success prints `registration: registered` with durable objective status. This
+acknowledges registration, not service health or delivery. Identical replay uses
+the committed runtime and original deadlines. Docker/endpoint flags are initial
+publication inputs; active replay uses the frozen reference and verifies its
+admitted external Docker executable and socket. Original Oro/model/Git inputs
+may be absent after successful freezing; keep the original specification for
+this public interface.
+
+Capacity is reserved before admission and remains charged on publication or
+registration uncertainty. A lost bootstrap acknowledgement is not redispatched
+under a new identity. Automatic resolution of that uncertainty remains unfinished.
+Changed specs cannot reuse a reservation: admission binds its original-input
+digest before canonicalizing executable paths. Historical admissions missing that
+binding fail closed without reconstruction.
 
 ## Run an objective
 

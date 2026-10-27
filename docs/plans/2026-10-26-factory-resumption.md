@@ -5,127 +5,67 @@ guide. Implementation is authorized to continue; this is a context handoff, not
 a new user-requested pause. Preserve the full unattended factory goal and the
 Astra architect / Terra engineer role agreement.
 
-## Latest CLI continuation
+## Latest public-start checkpoint
 
-This section supersedes historical checkpoints below. `d3ea8d2d` implements core
-source execution; full shuffled race passed in 477.308 seconds with 82.3% coverage.
-Formatting was repaired in `8ace9029`; `e208d2ba` adds verified pending identity
-classification. `9e1e6877` implements authenticated controller launch;
-`0e5d7fc6` implements immutable runtime publication; `fb2fd519` fixes recording
-peer cleanup. `0e38106b` now registers actual hidden `_supervise` / `_controller`
-callers. All component source and evidence followups received review and root
-verification; do not reimplement accepted leaves because tracker status remains
-in progress under broader qualification constraints.
+Public managed start is reviewed and integrated at `3bcff84f`. Its production
+source exactly matches Terra `a09a7e63`; root verified an empty cmd/oro/pkg/factory
+diff between those revisions. The accepted sequence includes verified pending
+identity, frozen runtime publication, authenticated hidden supervisor/controller,
+bounded host retirement, durable prepared service and registration, then real
+Cobra `factory start`. Do not reimplement accepted leaves because tracker status
+remains in progress under broader qualification constraints.
 
 The [CLI foundations proof](../proofs/2026-10-26-managed-cli-foundations.md)
-records scope and evidence. At `0e5d7fc6`, factory-related CLI race passed in
-78.565 seconds / 89.672 seconds harness; the gate passed fifteen checks and
-failed only five dead exports. Lint/NilAway and formatting passed. Integrated
-command checks at `0e38106b` are terminal: the coverage-enabled CLI race failed
-the exact Docker-create acknowledgment check (101.439 seconds harness); the gate
-passed fifteen checks and failed only three dead exports (163.681 seconds).
-Remaining exports are AdmitManaged, ActivateManaged and DecodeDockerCleanupResult.
-Evidence is under `/private/tmp/oro-factory-verify-ldhnhnvl/`, prefixes
-`managed-commands-integrated-race` and `managed-commands-integrated-gate`.
-Task `oro-mf-command-coverage-protocol` investigates the instrumented helper;
-Terra reproduced the cause directly: the instrumented test helper emits a
-GOCOVERDIR warning on stderr. The isolated fix `cedfc534` passed Astra review;
-root's fresh integrated shuffled CLI race with coverage passed in 103.080 seconds
-package / 115.132 seconds harness, 23.8% statement coverage, evidence prefix
-`command-coverage-repaired-race`. Production exact acknowledgment is unchanged.
-All older jobs are terminal.
+records component commits, reviews, failures and evidence. Public start commits
+are `c02d6c20`, `2c3b8a55`, `03930252`, `3bcff84f` (Terra sources `f6cddc34`,
+`8ccc7ee3`, `cb73ffc9`, `a09a7e63`). Source worker worktrees are preserved for
+provenance, not unfinished implementation. No implementation agent is active for
+this accepted slice.
 
-The accepted hidden-command source is
-exactly Terra `7c2a5136`; root final race passed in 23.149 seconds. Preserve worker
-worktrees for provenance, not as unfinished implementation. Recording helpers
-exercise real kernel peers and host wrappers but fake Docker; no native runtime
-or complete delivery qualification follows.
+Review found a real API-level gap: reserve spec A, admit spec B with the same
+reservation tuple, then start A could register B. The accepted repair carries
+existing issuer SpecSHA256 in HostReservation and compares the submitted input
+before executable canonicalization or admission effects. Shared
+PrepareManagedSpecIdentity validates/canonicalizes Repository only/hashes the
+whole spec; it does not touch original model/Git paths. The CLI retains its
+existing allocation retention/minimum policy. Valid digest-bound historical B32
+metadata remains readable/resumable, but execution and new allocation remain
+denied below current bounds. Historical state missing the digest fails closed
+without backfill. Preserve all these regression assertions.
 
-Next: implement durable service registration, then public start consuming the
-existing strict managed-spec decoder. Use
-`<root>/.managed/locks/<id>/service.lock`, outside the objective and distinct from
-core's `objective.lock`. Release the budget allocation lock first; then service
-lock covers existing-read/admit-if-needed, publication/activation and locked
-registration. Active replay must not reacquire the supervisor's lifetime lock.
-The [CLI contract](2026-10-26-managed-cli-contract.md) records the resolved order.
+Astra accepted the final source with no Critical/Important findings. At frozen
+Terra `a09a7e63`, full factory race passed in 475.999 seconds and affected CLI race
+passed in 59.554 seconds; package lint reported zero issues and standalone gofumpt
+was clean. Root independently ran scoped race with coverage: factory 2.189 seconds
+/18.6% statements and CLI 11.561 seconds/12.7%, 30.782 seconds harness. These are
+scoped profiles, not full-package coverage. Evidence prefix is
+`start-identity-reviewed-race` in `/private/tmp/oro-factory-verify-ldhnhnvl/`.
+Worker full-race log is `/tmp/oro-reservation-factory-final-race.log`.
 
-The accepted coverage worker is complete in `.worktrees/factory-command-coverage`.
-Ordinary host retirement is reviewed and integrated in `77497aeb` / `6e5c79f6`,
-task `oro-mf-host-retirement-bound`; root's independent repeated race passed,
-including ordinary GO/PUBLISHED. Integrated race prefix
-`host-retirement-integrated-race` passed in 41.858 seconds harness and is terminal.
-Prepared service state is accepted and integrated in `de946982` / `51af5307`.
-Initial review found a missing factory argv component, deadline-crossing
-publication, and missing recovered-publication durability barriers. All three
-were corrected, independently reviewed and verified by root's scoped race with
-coverage (6.241 seconds package / 18.442 seconds harness, 9.9% CLI statements).
-Independent plist/Cobra, alias, hardlink, private-mode and corrupt-stage checks
-are present. Injected fsync failure and power-loss durability remain unproven.
-Terra is now implementing `oro-mf-service-register` in
-`.worktrees/factory-service-register`, branch `feature/factory-service-register`,
-base `51af5307`. The next actual consumer is `oro-mf-start-command`. Preserve the
-accepted service-state worker worktree for provenance. Astra's decomposition is
-recorded in the CLI contract and tracker. No native services are being run.
+Fresh integrated jobs at `3bcff84f` are live: `start-integrated-race` session
+`27837` and `start-integrated-gate` session `60716`. Recover their exact terminal
+results before repeating. Only documentation edits during these checks. Earlier
+root and worker jobs are terminal. Before this increment, the gate passed fifteen
+checks and failed only AdmitManaged, ActivateManaged and DecodeDockerCleanupResult;
+start now consumes the first two, but inspect the fresh gate rather than assume.
 
-Integrated jobs at `51af5307` are terminal: `service-state-integrated-race`
-passed in 117.967 seconds package / 130.401 seconds harness, 25.1% CLI statements.
-`service-state-integrated-gate` failed in 190.617 seconds, fifteen checks passed
-and only three dead exports failed (AdmitManaged, ActivateManaged and
-DecodeDockerCleanupResult). Formatting, lint and NilAway passed; later runtime
-qualification does not follow. Evidence is in the same private directory.
+The [runbook](../runbooks/factory-core.md) distinguishes legacy trusted-adapter
+run from managed startup. Success acknowledges registration, not service health,
+autonomous uncertain-bootstrap recovery or delivery. No native launchctl, Docker,
+VM or model call ran for these increments; existing Colima remains untouched.
+Capacity remains charged on uncertain outcomes. Preserve the external service
+lock at root/.managed/locks/id/service.lock, released budget allocation lock first,
+and active replay without reacquiring supervisor lifetime ownership.
 
-Registration is now accepted and integrated in `7cf9ff75` / `bacf6937`. Review
-found held lock validation followed intermediate aliases and did not recheck
-private modes. The correction validates the complete private canonical chain and
-held lock inode before dispatch and acknowledgement. Symlink, mode, missing-path
-and post-bootstrap mutation regressions pass. Astra accepted final Terra
-`f59f5706`; root's final protected race with coverage passed in 24.036 seconds
-harness, prefix `service-register-final-race`. Real ledger/admission/publication/
-activation fixtures prove unchanged reservations across uncertainty, exactly one
-bootstrap, durable dispatch-before-transport and no uncertain replay. Native
-service health and uncertainty recovery remain unqualified.
-
-Terra is implementing `oro-mf-start-command` in `.worktrees/factory-start-command`,
-branch `feature/factory-start-command`, base `bacf6937`. It must register the real
-Cobra consumer of strict decoding, budget, admission, publication/activation and
-service registration. Do not run native services as part of this unit task. All
-integrated verification jobs listed above are terminal; there are no active root
-verification handles at this checkpoint.
-
-Public start Terra `f6cddc34` passed scoped root race with coverage (21.646 seconds
-package / 35.849 seconds harness, 13.1% CLI statements) and Linux amd64 test-binary
-compilation (22.518 seconds harness), but is **not accepted or integrated**.
-Astra found a real API-level identity gap: reserve spec A, admit spec B with the
-same reservation tuple, then start A can activate/register B. No SQL tampering
-is needed. The earlier reservation-only verifier design authenticated disjoint
-contracts. The RED regression is committed in `8ccc7ee3`; help copy follows in
-`cb73ffc9`, current public-start worker branch tip. That one regression is
-intentionally failing until the identity fix; do not report the branch as green.
-
-The architect's correction is to carry the ledger's existing complete-input
-SpecSHA256 in HostReservation, verify it against submitted spec before executable
-path canonicalization, and persist it in manifest/journal identity. Repository
-normalization must match the ledger; original program aliases may disappear on
-active replay. Historical missing digest fails closed, never backfilled from
-mutable inputs or normalized manifest. Terra is implementing the correction as
-`oro-mf-reservation-spec-identity` in the same public-start worktree/branch.
-Shared `PrepareManagedSpecIdentity` performs spec validation, repository-only
-normalization, revalidation and whole JSON digest. Allocation policy stays in the
-CLI issuer: its existing retention/minimum checks remain before identity
-preparation and after normalization. This preserves valid digest-bound historical
-B32 metadata reads/resume while existing execution and CLI allocation minima
-still deny underallocated work. The initial proposal incorrectly moved allocation
-policy into metadata admission; preserve the existing compatibility assertions.
-Admission checks digest equality before executable normalization or
-effects; journal partial-spec callers validate digest shape only. The issuer
-returns its existing stored digest without changing ledger format. Four source
-files and legitimate fixture updates are owned by this one correction. Full
-affected CLI and factory race checks are required after this contract change.
-No production identity fix has yet been accepted. Do not waive the cross-API case.
-Service-bootstrap uncertainty still needs a proven ownership/reconciliation
-mechanism. Candidate execution, independent acceptance, native qualification and
-real-model sustained delivery/self-healing trials remain unfinished. The full
-goal is active, not paused or complete.
+Next use the [CLI continuation contract](2026-10-26-managed-cli-contract.md)'s
+resolved candidate-stage design: first a durable once-only worker execution intent,
+then its actual execute/READY/inspection consumer. Checkout OperationDeadline is
+not the worker deadline. Persist the worker-stage bound once and never refresh it
+on replay. Astra is architect and Terra/Codex is engineer; historical Claude-only
+adapter filenames are not a provider decision. Model/tool execution, stopped
+export/import, protected acceptance/review, cleanup and uncertain-service/VM
+reconciliation, native qualification and sustained unattended exact delivery
+remain unfinished. The full goal is active, not paused or complete.
 
 ## Earlier controller-source checkpoint
 

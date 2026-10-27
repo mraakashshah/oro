@@ -136,6 +136,29 @@ root final protected race with coverage passed in 24.036 seconds harness, prefix
 `service-register-final-race`. This is durable registration acknowledgement, not
 native launch/service health or autonomous uncertain-bootstrap recovery.
 
-Public start, uncertain-bootstrap ownership reconciliation,
+Public start is integrated in `c02d6c20` through `3bcff84f`, exactly matching
+Terra `a09a7e63` production source. It consumes strict decoding, real budget
+reservation, guarded admission, pending-only runtime publication/activation and
+durable registration. Active replay uses frozen reference and original deadlines
+without requiring original Oro/model/Git inputs or reacquiring the supervisor
+lifetime lock. External admitted Docker/socket remain required.
+
+Review reproduced a same-reservation/different-spec exploit before acceptance.
+The repair carries the issuer's existing complete-input digest in HostReservation
+and checks it before executable normalization or admission effects. The shared
+hash helper canonicalizes Repository only; allocation minima remain in the issuer,
+preserving historical metadata compatibility while retaining execution denial.
+Missing or corrupt digest fails closed with exact affected bytes unchanged.
+Astra's final source review found no blockers. Full factory race passed in
+475.999 seconds; affected CLI race in 59.554 seconds; lint zero and formatter
+clean (worker evidence). Root independent scoped race with coverage passed in
+2.189 seconds factory/11.561 seconds CLI, 30.782 seconds harness, profiles
+18.6%/12.7% (scope only), prefix `start-identity-reviewed-race`.
+
+Fresh integrated CLI coverage/race and gate are running at `3bcff84f`, prefixes
+`start-integrated-race` and `start-integrated-gate`, sessions `27837` / `60716`.
+Recover terminal results before repeating; no native qualification follows.
+
+Uncertain-bootstrap ownership reconciliation,
 candidate execution, independent acceptance, native qualification and sustained
 real-model unattended delivery/recovery remain outstanding.

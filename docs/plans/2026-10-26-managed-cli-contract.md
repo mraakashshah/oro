@@ -1,8 +1,8 @@
 # Managed CLI continuation contract
 
 Status: core consumer, concrete launch wrapper, runtime publication and hidden
-commands, durable prepared service and registration implemented. Public start
-below remains under implementation. Do not claim native startup, delivery or recovery qualification from
+commands, durable prepared service, registration and public start implemented.
+Do not claim native startup, delivery or recovery qualification from
 this document.
 Keep `oro-mf-cli-start` and the full autonomy objective open through real wiring.
 
@@ -208,12 +208,38 @@ not the keeper. Existing READY supports container scopes, but core must verify
 exact admitted mounts/resources/image/labels/guard lifetime, beyond READY's generic
 finite-limit checks. Unknown dispatch remains charged and non-redispatchable.
 
-Before making executable tasks, resolve the exact deadline semantics from current
-controller/source/workspace code: a checkout operation deadline must not be
-mistaken for a new worker-stage allowance, nor refreshed during recovery. This
-research is not an accepted implementation contract. The next consumer must run
-through actual RunManagedController/attempt and remain explicitly model-unavailable
-until the restricted tool/model boundary exists.
+Astra resolved stage deadlines against the current code: controller.execute passes
+the objective deadline; checkout's workspace OperationDeadline governs export and
+seeding, not worker execution. On the first worker-stage reservation persist one
+UTC execution start and deadline equal to the minimum of now plus StepTimeout,
+objective deadline and caller deadline. Replays never refresh either. Preserve
+the original source operation record. A ready source whose checkout deadline has
+expired may enter its first still-live worker stage; an expired worker stage
+cannot be renewed.
+
+The durable-intent leaf uses new `managed_docker_candidate.go`, existing
+`managed_store.go` and `managed_activation.go`, plus one new test. Private
+`reserveManagedCandidate(ctx, owner, workspaceID)` atomically verifies
+workspaceOwner, readManagedWorkspace (not workspaceCurrent's preparation-expiry
+gate), ready phase, exact snapshot attempt/Worktree/BaseSHA, runtime, seeded
+keeper/volume association and absence of cleanup conflicts. Reserve the container
+and counted create-host handle with the bounded canonical record/event in one
+transaction. Use a unique workspace association and existing retention/scope
+ceilings; add guarded schema/history validation. Missing historical tables fail
+closed. Lost dispatch acknowledgement stays charged and non-redispatchable.
+
+The immediate consumer leaf changes managed_backend.go and adds
+managed_backend_execute.go/execution_docker_candidate.go, plus one new test.
+Actual worker execute reserves once and uses that persisted deadline throughout.
+Do not call resumeSource/inspectSource, which intentionally enforce checkout's
+deadline: perform candidate-stage keeper continuity through existing inspection
+parser and the original binding/StartedAt, under a counted candidate-deadline
+host call. Never reseed or rewrite source authority. Create/READY/inspect a distinct
+hardened container, including exact resources, mounts and bounded scratch. Tests
+must reach actual RunManagedController/attempt/execute. After real preparation,
+return explicit engineer-adapter-unavailable interruption until the restricted
+Terra/Codex model/tool consumer exists; preserve candidate/workspace/attempt
+identity. Container readiness is not a completed worker result.
 
 Real model execution then needs an admitted tool bridge bound to the exact ready
 container, counted tool/host/model calls, fixed UID1000/cwd/endpoint, bounded output
