@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"flag"
 	"io"
 	"os"
 	"os/exec"
@@ -25,13 +26,7 @@ func TestManagedControllerWorkerCheckout(t *testing.T) {
 	if os.Getenv("ORO_MANAGED_ENGINE_LEADER") != "1" {
 		for _, mode := range []string{"success", "prior-attempt", "lost-ack", "changed-reader", "revoked-save"} {
 			t.Run(mode, func(t *testing.T) {
-				cmd := exec.Command(os.Args[0], "-test.run=^TestManagedControllerWorkerCheckout$", "-test.v")
-				cmd.Env = append(os.Environ(), "ORO_MANAGED_ENGINE_LEADER=1", "ORO_MANAGED_ENGINE_MODE="+mode)
-				cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-				out, err := cmd.CombinedOutput()
-				if err != nil {
-					t.Fatalf("leader subprocess: %v\n%s", err, out)
-				}
+				runManagedEngineLeader(t, mode)
 			})
 		}
 		return
@@ -397,6 +392,31 @@ func TestManagedControllerWorkerCheckout(t *testing.T) {
 	after, err := store.load(t.Context())
 	if err != nil || !reflect.DeepEqual(after, state) {
 		t.Fatalf("revoked save changed snapshot: %+v, %v", after, err)
+	}
+}
+
+func runManagedEngineLeader(t *testing.T, mode string) {
+	t.Helper()
+	timeout := 180 * time.Second
+	if deadline, ok := t.Deadline(); ok && time.Until(deadline)-5*time.Second < timeout {
+		timeout = time.Until(deadline) - 5*time.Second
+	}
+	if timeout <= time.Second {
+		t.Fatal("insufficient time for managed engine leader")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), timeout+time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestManagedControllerWorkerCheckout$", "-test.timeout="+timeout.String(), "-test.v")
+	if f := flag.Lookup("test.gocoverdir"); f != nil && f.Value.String() != "" {
+		cmd.Args = append(cmd.Args, "-test.gocoverdir="+f.Value.String())
+	}
+	cmd.Env = append(os.Environ(), "ORO_MANAGED_ENGINE_LEADER=1", "ORO_MANAGED_ENGINE_MODE="+mode)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = 3 * time.Second
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("leader subprocess: %v\n%s", err, out)
 	}
 }
 
