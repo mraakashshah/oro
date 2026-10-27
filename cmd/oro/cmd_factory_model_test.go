@@ -128,7 +128,9 @@ func TestFactoryTerraEntry(t *testing.T) {
 	t.Run("dangling alias rejects before allocation", testFactoryCredentialDanglingAlias)
 	t.Run("case alias rejects before allocation", testFactoryCredentialCaseAlias)
 	t.Run("state case alias rejects before allocation", testFactoryCredentialStateCaseAlias)
+	t.Run("missing state case alias rejects before allocation", testFactoryCredentialMissingStateCaseAlias)
 	t.Run("distinct case directories remain allowed", testFactoryDistinctCaseDirectories)
+	t.Run("prospective name policy", testFactoryProspectiveNamePolicy)
 }
 
 func testFactoryModelWire(t *testing.T, ref factory.ManagedRuntimeReference, helper factory.ModelAdapterConfig, root, id string, deadline time.Time) []byte {
@@ -532,5 +534,89 @@ func testFactoryDistinctCaseDirectories(t *testing.T) {
 	}
 	if err := rejectCredentialPhysicalContainment(second, first); err != nil {
 		t.Fatalf("distinct directories rejected: %v", err)
+	}
+}
+
+func testFactoryCredentialMissingStateCaseAlias(t *testing.T) {
+	f := newFactoryStartFixture(t)
+	alias := filepath.Join(filepath.Dir(f.root), strings.ToUpper(filepath.Base(f.root)))
+	probeName := filepath.Join(filepath.Dir(f.root), "CaseProbe")
+	if err := os.Mkdir(probeName, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	a, err := os.Stat(probeName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.Stat(filepath.Join(filepath.Dir(probeName), "cASEpROBE"))
+	if errors.Is(err, os.ErrNotExist) {
+		t.Skip("filesystem distinguishes case")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(a, b) {
+		t.Skip("case variant names a different directory")
+	}
+	probes := 0
+	deps := factoryStartDependencies{probe: func(ctx context.Context, path string) (storage.DiskUsage, error) {
+		probes++
+		return factoryBudgetProbe(math.MaxInt64)(ctx, path)
+	}, executable: func() (string, error) { return f.oro, nil }, supported: func() error { return nil }, bootstrap: func(context.Context, string) error { return errors.New("unexpected bootstrap") }}
+	root := newRootCmd()
+	family, _, err := root.Find([]string{"factory"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, _, err := family.Find([]string{"start"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	family.RemoveCommand(old)
+	family.AddCommand(buildFactoryStartCmd(deps))
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
+	root.SetArgs([]string{"factory", "start", "--spec", f.specPath, "--state-dir", f.root, "--docker", f.docker, "--docker-endpoint", f.endpoint, "--model-credential-file", filepath.Join(alias, "missing", "credential")})
+	if err := root.ExecuteContext(t.Context()); err == nil {
+		t.Fatal("missing state case alias credential accepted")
+	}
+	if probes != 0 {
+		t.Fatalf("missing state case alias reached allocation probe %d times", probes)
+	}
+}
+
+func testFactoryProspectiveNamePolicy(t *testing.T) {
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := os.OpenRoot(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dir.Close()
+	if err := compareProspectiveCredentialName(dir, "other", "state"); err != nil {
+		t.Fatalf("unrelated ASCII name rejected: %v", err)
+	}
+	if err := compareProspectiveCredentialName(dir, "ſtate", "state"); err == nil {
+		t.Fatal("ambiguous Unicode name accepted")
+	}
+	if err := compareProspectiveCredentialName(dir, "state", "state"); err == nil {
+		t.Fatal("same name accepted")
+	}
+	file, err := dir.Open(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sensitive, known := factoryCredentialCaseSensitive(file)
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	err = compareProspectiveCredentialName(dir, "STATE", "state")
+	if known && sensitive && err != nil {
+		t.Fatalf("distinct names on case-sensitive filesystem rejected: %v", err)
+	}
+	if (!known || !sensitive) && err == nil {
+		t.Fatal("ambiguous case alias accepted")
 	}
 }

@@ -351,7 +351,7 @@ func rejectDanglingCredentialParent(path string) error {
 func rejectCredentialPhysicalContainment(parent, protected string) error {
 	target, err := os.OpenRoot(protected)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return rejectCredentialProspectiveContainment(parent, protected)
 	}
 	if err != nil {
 		return fmt.Errorf("open protected directory: %w", err)
@@ -381,4 +381,87 @@ func rejectCredentialPhysicalContainment(parent, protected string) error {
 		}
 		parent = next
 	}
+}
+
+// A missing state root has no inode yet. Compare only candidate components
+// directly below the same existing physical parent using its filesystem policy.
+func rejectCredentialProspectiveContainment(parent, protected string) error {
+	protectedParent, err := os.OpenRoot(filepath.Dir(protected))
+	if err != nil {
+		return fmt.Errorf("open prospective state parent: %w", err)
+	}
+	defer protectedParent.Close()
+	protectedInfo, err := protectedParent.Stat(".")
+	if err != nil {
+		return fmt.Errorf("stat prospective state parent: %w", err)
+	}
+	for {
+		matched, err := compareProspectiveCredentialParent(parent, protectedInfo, filepath.Base(protected))
+		if err != nil {
+			return err
+		}
+		if matched {
+			return nil
+		}
+
+		next := filepath.Dir(parent)
+		if next == parent {
+			return nil
+		}
+		parent = next
+	}
+}
+
+func compareProspectiveCredentialParent(path string, protectedInfo os.FileInfo, protectedName string) (bool, error) {
+	parent, err := os.OpenRoot(filepath.Dir(path))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("open credential parent: %w", err)
+	}
+	defer parent.Close()
+	info, err := parent.Stat(".")
+	if err != nil {
+		return false, fmt.Errorf("stat credential parent: %w", err)
+	}
+	if !os.SameFile(info, protectedInfo) {
+		return false, nil
+	}
+	return true, compareProspectiveCredentialName(parent, filepath.Base(path), protectedName)
+}
+
+func compareProspectiveCredentialName(parent *os.Root, candidate, protected string) error {
+	if candidate == protected {
+		return errors.New("model credential reference is inside prospective state")
+	}
+	// Unicode filesystem collation differs by volume and cannot be inferred from
+	// case sensitivity alone; do not certify unresolved names in this case.
+	if !isFactoryASCII(candidate) || !isFactoryASCII(protected) {
+		return errors.New("cannot establish prospective Unicode path disjointness")
+	}
+	if !strings.EqualFold(candidate, protected) {
+		return nil
+	}
+	directory, err := parent.Open(".")
+	if err != nil {
+		return fmt.Errorf("open prospective parent: %w", err)
+	}
+	sensitive, known := factoryCredentialCaseSensitive(directory)
+	if err := directory.Close(); err != nil {
+		return fmt.Errorf("close prospective parent: %w", err)
+	}
+	if !known || !sensitive {
+		return errors.New("model credential reference may be inside prospective state")
+	}
+	return nil
+}
+
+func isFactoryASCII(value string) bool {
+	for _, r := range value {
+		if r > 127 {
+			return false
+		}
+	}
+	return true
 }
