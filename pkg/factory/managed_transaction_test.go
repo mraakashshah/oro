@@ -4,11 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 func TestManagedTransactionContention(t *testing.T) {
@@ -226,6 +230,49 @@ func TestManagedTransactionContention(t *testing.T) {
 		j := openJournalFixture(t, root, spec.ID)
 		if _, _, err := j.beginGeneration(t.Context(), "too-late", time.Now()); err == nil {
 			t.Fatal("expired generation admitted")
+		}
+	})
+	t.Run("locked is not retried", func(t *testing.T) {
+		query := url.Values{"cache": {"shared"}, "_txlock": {"immediate"}, "_pragma": {"busy_timeout(1000)"}}
+		dsn := (&url.URL{Scheme: "file", Path: filepath.Join(t.TempDir(), "locked.db"), RawQuery: query.Encode()}).String()
+		db, err := sql.Open("sqlite", dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		db.SetMaxOpenConns(2)
+		writer, err := db.Conn(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer writer.Close()
+		reader, err := db.Conn(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer reader.Close()
+		if _, err := writer.ExecContext(t.Context(), "CREATE TABLE t (id INTEGER)"); err != nil {
+			t.Fatal(err)
+		}
+		tx, err := writer.BeginTx(t.Context(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		j := &managedJournal{db: db, conn: reader}
+		ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+		defer cancel()
+		start := time.Now()
+		got, release, err := j.beginTransition(ctx)
+		if release != nil {
+			defer release()
+		}
+		if got != nil {
+			defer got.Rollback()
+		}
+		var sqliteErr *sqlite.Error
+		if !errors.As(err, &sqliteErr) || sqliteErr.Code()&0xff != sqlite3.SQLITE_LOCKED || time.Since(start) > 500*time.Millisecond {
+			t.Fatalf("locked result=%v elapsed=%s", err, time.Since(start))
 		}
 	})
 }
