@@ -130,7 +130,13 @@ CREATE TABLE managed_supervision(id INTEGER PRIMARY KEY,revision INTEGER NOT NUL
 CREATE TABLE managed_scopes(id TEXT PRIMARY KEY,nonce TEXT NOT NULL UNIQUE,backend TEXT NOT NULL,name TEXT NOT NULL,body BLOB NOT NULL,phase TEXT NOT NULL,pid INTEGER NOT NULL DEFAULT 0,pgid INTEGER NOT NULL DEFAULT 0,cleanup TEXT NOT NULL DEFAULT '',UNIQUE(backend,name));
 CREATE TABLE managed_events(revision INTEGER PRIMARY KEY,kind TEXT NOT NULL,ref TEXT NOT NULL,body BLOB NOT NULL);
 CREATE TABLE managed_reservations(kind TEXT NOT NULL,token TEXT NOT NULL,generation INTEGER NOT NULL,PRIMARY KEY(kind,token));
-CREATE TABLE managed_cleanup_permits(scope_id TEXT PRIMARY KEY,body BLOB NOT NULL);`)
+CREATE TABLE managed_cleanup_permits(scope_id TEXT PRIMARY KEY,body BLOB NOT NULL);
+CREATE TABLE managed_docker_candidates (
+ workspace_id TEXT PRIMARY KEY REFERENCES managed_workspaces(id),
+ container_id TEXT NOT NULL UNIQUE REFERENCES managed_scopes(id),
+ create_host_id TEXT NOT NULL UNIQUE REFERENCES managed_scopes(id),
+ body BLOB NOT NULL CHECK(length(body)<=16384)
+ );`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -617,7 +623,11 @@ func testFactoryDockerCleanupFailures(t *testing.T) {
 }
 
 func testFactoryDockerCleanupCLI(t *testing.T) {
-	binary := filepath.Join(t.TempDir(), "oro")
+	binaryDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(binaryDir, "oro")
 	build := exec.CommandContext(t.Context(), "go", "build", "-o", binary, ".")
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build actual cleanup CLI: %v %s", err, output)
