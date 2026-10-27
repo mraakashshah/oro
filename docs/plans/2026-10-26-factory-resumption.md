@@ -58,18 +58,81 @@ Capacity remains charged on uncertain outcomes. Preserve the external service
 lock at root/.managed/locks/id/service.lock, released budget allocation lock first,
 and active replay without reacquiring supervisor lifetime ownership.
 
-Terra is now implementing `oro-mf-candidate-intent` in
-`.worktrees/factory-candidate-intent`, branch `feature/factory-candidate-intent`,
-base `4dabb2c0`. Its next dependent task is `oro-mf-candidate-execute`. Follow the
-[CLI continuation contract](2026-10-26-managed-cli-contract.md)'s resolved design:
-first a durable once-only worker execution intent, then its actual
-execute/READY/inspection consumer. Checkout OperationDeadline is
-not the worker deadline. Persist the worker-stage bound once and never refresh it
-on replay. Astra is architect and Terra/Codex is engineer; historical Claude-only
-adapter filenames are not a provider decision. Model/tool execution, stopped
-export/import, protected acceptance/review, cleanup and uncertain-service/VM
-reconciliation, native qualification and sustained unattended exact delivery
-remain unfinished. The full goal is active, not paused or complete.
+## Candidate execution checkpoint
+
+Candidate intent is reviewed and integrated in `9e0d037b`, with owned bounded
+leader subprocesses (`1b5c3e18`) and real child coverage (`21956184`). It reserves
+one candidate, container scope and create invocation atomically, checks canonical
+source/keeper/workspace history, and persists the worker deadline once. The
+checkout deadline is not reused for worker execution; replay cannot renew either.
+Root's final intent race passed in 74.714 seconds with 105 of 154 new candidate
+coverage blocks exercised. Integrated CLI race passed in 168.687 seconds.
+
+The full integrated factory race at `21956184` **failed**: a workspace COMMIT
+fault fixture's 150ms context expired before reaching COMMIT under instrumentation;
+the package later reached its 600s test limit while still making progress. This
+is not a passing full profile. `1e20587f` integrates the reviewed test repair:
+allow three seconds to reach the real SQLite one-second COMMIT busy timeout,
+retain exact rollback/state assertions, and defer reader rollback. Root's focused
+repair race passed (44.791 seconds harness). Production deadlines are unchanged.
+The gate at `21956184` passed fifteen checks and failed only the unused
+`DecodeDockerCleanupResult`; later runtime tiers remain unqualified.
+
+Candidate execution is reviewed and integrated through `79b3b87d`
+(`92cd5545`, `82960726`, `50976804`, `79b3b87d`; Terra originals
+`b2789795`, `43b78bef`, `250b8469`, `e251f890`). The actual managed controller
+reserves the candidate, validates keeper continuity under the original worker
+bound, creates and inspects a hardened sandbox, runs authenticated READY, and
+binds its running lifetime. Candidate raw namespace inspection rejects JSON case
+aliases and requires explicit Init=false and private UTS. The command explicitly
+sets --init=false. Expired checkout does not reseed source or renew deadlines.
+Root independently verified the final source race (154.381 seconds harness).
+The integrated candidate/workspace race passed at `79b3b87d` (165.145 seconds
+harness, mode `candidate-execute-integrated-race`).
+
+The consumer deliberately returns `engineer-adapter-unavailable`: no Terra model
+or tool execution exists yet. Reviewed engine fixtures are integrated in
+`91c0357a`, `9f8e111b`, `7b28d29a` (originals `44b3ef14`, `fee60917`,
+`069745f7`); the actual CLI fixture is `e09f2c7d` (original `54b8a52c`).
+Engine child ownership, independent timeout and real coverage forwarding are
+included; worker final engine race passed in 31.068 seconds with 51.4% coverage.
+The CLI preserves authenticated controller/host/READY transport, independent
+hardening assertions, twenty host calls and zero-work revoked mode.
+
+The stricter actual CLI fixture exposed production SQLite writer contention:
+the supervisor could enter stopping on SQLITE_BUSY. Reviewed fixes are integrated
+through `2ce97949`: `9efc53d6`, `e1b4a735`, `6fd30aab`, `2ce97949`
+(Terra originals `5da1d90f`, `c8840e5d`, `5c21da81`, `4c022098`). Retry is
+limited to unsuccessful BEGIN, with cancellable local-lock acquisition, exact
+SQLITE_BUSY classification and no callback/write/COMMIT replay. Review reproduced
+a deadline crossing; four authority callbacks now check max(caller-observed,
+current) time after acquisition. Historical metadata remains readable after
+HardStop. Cleanup fixtures reserve real targets while live then wait for expiry,
+without fabricated past-time authority. Worker final authority race passed in
+23.619 seconds, affected cleanup/contention race in 78.146 seconds, and actual CLI
+covered race count=3 in 61.305 seconds. Lint reports zero issues. The unchanged
+SQLite one-second busy timeout can delay returning a short context error; do not
+claim a hard RPC-return bound.
+
+Root combined verification is running against frozen Go revision `2ce97949`:
+`candidate-journal-integrated-full` (full shuffled factory race/coverage, 900s
+validation timeout) and `candidate-journal-integrated-cli` (actual Factory CLI
+race/coverage). These are pending, not passing evidence; inspect terminal result
+JSON/logs in `/private/tmp/oro-factory-verify-ldhnhnvl/` before repeating. The prior
+600s failure is preserved; production/fixture authority budgets are unchanged.
+Run the integrated gate after these checks. Keeper init policy repair
+(`oro-mf-keeper-init-policy`) is the next isolated leaf: candidate strictness does
+not qualify keeper daemon defaults. Existing Colima and user checkout changes
+remain untouched.
+
+The [restricted Terra adapter research](../proofs/2026-10-26-terra-adapter-research.md)
+proposes an Oro-owned Responses function loop; it is research, not an implemented
+adapter. Model/tool execution, stopped export/import, protected acceptance/review,
+cleanup and uncertain-service/VM reconciliation, native qualification and sustained
+unattended exact delivery remain unfinished. No native Docker/launchctl/VM or
+model calls ran for these increments. Direct Terra engineering and Astra review
+are development coordination, not autonomous factory evidence. The full goal
+remains active and unachieved.
 
 ## Earlier controller-source checkpoint
 

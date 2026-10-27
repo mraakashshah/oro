@@ -199,8 +199,11 @@ replace the unavailable result with the legacy worker or a shell in the keeper.
 The engineer provider must support the user's Terra role; historical Claude-only
 adapter filenames are design history, not a decision to use Claude for engineering.
 
-The proposed next pair of leaves is a durable candidate-container intent and its
-actual worker-stage consumer. Bind the exact granted owner, attempt/workspace/base,
+The durable candidate-container intent and actual worker-stage consumer are now
+reviewed and integrated through `79b3b87d`. Their contract follows; see the
+[resumption checkpoint](2026-10-26-factory-resumption.md) for scoped evidence and
+pending integration fixtures/SQLite contention repair. Bind the exact granted
+owner, attempt/workspace/base,
 runtime reference, original worker deadline, container and host handles, dispatch
 phase, complete ID and lifetime identity. Derive resources/labels from admission.
 Use a separate container namespace with admitted source volume and bounded scratch,
