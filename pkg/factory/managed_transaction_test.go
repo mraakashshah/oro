@@ -276,3 +276,92 @@ func TestManagedTransactionContention(t *testing.T) {
 		}
 	})
 }
+
+func TestManagedTransactionCrossesHardStop(t *testing.T) {
+	root, a, store := journalFixture(t)
+	a.HardStop = time.Now().UTC().Add(1500 * time.Millisecond)
+	a.Deadline = a.HardStop.Add(-time.Duration(a.Recovery.CleanupTimeoutSeconds+a.Recovery.ReconciliationSeconds) * time.Second)
+	insertJournalFixture(t, store, a)
+	j := openJournalFixture(t, root, a.ObjectiveID)
+	tx, err := store.conn.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	now := time.Now()
+	done := make(chan error, 1)
+	go func() { _, _, err := j.beginGeneration(context.Background(), "late-supervisor", now); done <- err }()
+	timer := time.NewTimer(time.Until(a.HardStop) + 100*time.Millisecond)
+	<-timer.C
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err == nil {
+		t.Fatal("supervisor reserved after hard stop using stale time")
+	}
+	var revision, reservations, scopes, events int
+	if err := j.conn.QueryRowContext(t.Context(), "SELECT (SELECT revision FROM managed_supervision), (SELECT count(*) FROM managed_reservations), (SELECT count(*) FROM managed_scopes), (SELECT count(*) FROM managed_events)").Scan(&revision, &reservations, &scopes, &events); err != nil || revision != 1 || reservations != 0 || scopes != 0 || events != 0 {
+		t.Fatalf("late side effects revision=%d reservations=%d scopes=%d events=%d: %v", revision, reservations, scopes, events, err)
+	}
+}
+
+func TestManagedTransactionCrossesAuthorityDeadline(t *testing.T) {
+	for _, kind := range []string{"epoch", "budget", "scope"} {
+		t.Run(kind, func(t *testing.T) {
+			root, a, store := journalFixture(t)
+			if kind == "epoch" {
+				a.HardStop = time.Now().UTC().Add(1500 * time.Millisecond)
+				a.Deadline = a.HardStop.Add(-time.Duration(a.Recovery.CleanupTimeoutSeconds+a.Recovery.ReconciliationSeconds) * time.Second)
+			} else {
+				a.Deadline = time.Now().UTC().Add(1500 * time.Millisecond)
+				a.HardStop = a.Deadline.Add(time.Duration(a.Recovery.CleanupTimeoutSeconds+a.Recovery.ReconciliationSeconds) * time.Second)
+			}
+			insertJournalFixture(t, store, a)
+			j := openJournalFixture(t, root, a.ObjectiveID)
+			gen, _, err := j.beginGeneration(t.Context(), "supervisor", time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			query := `SELECT (SELECT revision FROM managed_supervision), (SELECT count(*) FROM managed_reservations), (SELECT count(*) FROM managed_scopes), (SELECT count(*) FROM managed_events)`
+			var before [4]int
+			if err := j.conn.QueryRowContext(t.Context(), query).Scan(&before[0], &before[1], &before[2], &before[3]); err != nil {
+				t.Fatal(err)
+			}
+			tx, err := store.conn.BeginTx(t.Context(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			now := time.Now()
+			done := make(chan error, 1)
+			go func() {
+				var err error
+				switch kind {
+				case "epoch":
+					_, _, err = j.advanceEpoch(context.Background(), "supervisor", "new-epoch", now)
+				case "budget":
+					_, err = j.reserveBudget(context.Background(), gen, "host", "new-budget", now)
+				case "scope":
+					_, err = j.reserveScope(context.Background(), journalScope("f", gen), a.Deadline, now)
+				}
+				done <- err
+			}()
+			bound := a.Deadline
+			if kind == "epoch" {
+				bound = a.HardStop
+			}
+			timer := time.NewTimer(time.Until(bound) + 100*time.Millisecond)
+			<-timer.C
+			if err := tx.Rollback(); err != nil {
+				t.Fatal(err)
+			}
+			if err := <-done; err == nil {
+				t.Fatalf("%s accepted after deadline", kind)
+			}
+			var after [4]int
+			if err := j.conn.QueryRowContext(t.Context(), query).Scan(&after[0], &after[1], &after[2], &after[3]); err != nil || after != before {
+				t.Fatalf("%s changed durable state %v -> %v: %v", kind, before, after, err)
+			}
+		})
+	}
+}

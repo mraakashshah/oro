@@ -342,6 +342,7 @@ func reserveManagedToken(ctx context.Context, tx *sql.Tx, kind, token string, ge
 
 func (j *managedJournal) beginGeneration(ctx context.Context, token string, now time.Time) (generation uint64, fresh bool, err error) {
 	err = j.mutate(ctx, "supervisor", token, func(tx *sql.Tx, state *managedSupervision) (bool, error) {
+		now := maxManagedAuthorityTime(now)
 		if !managedIdentifier(token) || state.DesiredState == "stopped" || !now.Before(j.admission.HardStop) {
 			return false, errors.New("supervisor incarnation is no longer admitted")
 		}
@@ -377,6 +378,7 @@ func (j *managedJournal) beginGeneration(ctx context.Context, token string, now 
 
 func (j *managedJournal) advanceEpoch(ctx context.Context, supervisorToken, epochToken string, now time.Time) (generation uint64, fresh bool, err error) {
 	err = j.mutate(ctx, "ownership-epoch", epochToken, func(tx *sql.Tx, state *managedSupervision) (bool, error) {
+		now := maxManagedAuthorityTime(now)
 		if state.SupervisorToken != supervisorToken || !managedIdentifier(supervisorToken) {
 			return false, errors.New("ownership epoch requires the current admitted supervisor")
 		}
@@ -434,6 +436,15 @@ func (j *managedJournal) budgetLimit(kind string) int {
 	}
 }
 
+// An earlier caller observation cannot extend authority while BEGIN is blocked.
+func maxManagedAuthorityTime(observed time.Time) time.Time {
+	current := time.Now()
+	if current.After(observed) {
+		return current
+	}
+	return observed
+}
+
 func activeManagedGeneration(state *managedSupervision, generation uint64, now, deadline time.Time) error {
 	if state.DesiredState != "running" {
 		return errors.New("managed work requires running supervision")
@@ -451,6 +462,7 @@ func activeManagedRecovery(state *managedSupervision, generation uint64, now, de
 func (j *managedJournal) reserveBudget(ctx context.Context, generation uint64, kind, token string, now time.Time) (bool, error) {
 	var fresh bool
 	err := j.mutate(ctx, "reserve-"+kind, token, func(tx *sql.Tx, state *managedSupervision) (bool, error) {
+		now := maxManagedAuthorityTime(now)
 		active := activeManagedGeneration(state, generation, now, j.admission.Deadline)
 		if kind == "reconciliation" {
 			active = activeManagedRecovery(state, generation, now, j.admission.HardStop)
@@ -519,6 +531,7 @@ func (j *managedJournal) reserveScope(ctx context.Context, scope ScopeHandle, de
 	}
 	var fresh bool
 	err := j.mutate(ctx, "scope-reserved", scope.ID, func(tx *sql.Tx, state *managedSupervision) (bool, error) {
+		now := maxManagedAuthorityTime(now)
 		if err := j.checkScopeAdmission(ctx, tx, state, scope, deadline, now); err != nil {
 			return false, err
 		}
