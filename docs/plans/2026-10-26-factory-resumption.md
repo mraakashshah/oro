@@ -114,16 +114,48 @@ covered race count=3 in 61.305 seconds. Lint reports zero issues. The unchanged
 SQLite one-second busy timeout can delay returning a short context error; do not
 claim a hard RPC-return bound.
 
-Root combined verification is running against frozen Go revision `2ce97949`:
-`candidate-journal-integrated-full` (full shuffled factory race/coverage, 900s
-validation timeout) and `candidate-journal-integrated-cli` (actual Factory CLI
-race/coverage). These are pending, not passing evidence; inspect terminal result
-JSON/logs in `/private/tmp/oro-factory-verify-ldhnhnvl/` before repeating. The prior
-600s failure is preserved; production/fixture authority budgets are unchanged.
-Run the integrated gate after these checks. Keeper init policy repair
-(`oro-mf-keeper-init-policy`) is the next isolated leaf: candidate strictness does
-not qualify keeper daemon defaults. Existing Colima and user checkout changes
-remain untouched.
+Root combined verification at frozen Go revision `2ce97949` is terminal:
+
+- `candidate-journal-integrated-cli`: PASS, 124.503 seconds package /135.033
+  seconds harness, 26.3% CLI statement coverage.
+- `candidate-journal-integrated-full`: FAIL, 829.559 seconds package /834.080
+  seconds harness, 86.5% statements, shuffle seed `1793064629213050000`.
+  The only reported failure is `TestFactoryDependencyBoundary`: direct modernc
+  driver imports in managed_transaction.go violate factory's stdlib/dbutil-only
+  boundary. No runtime assertion failed, but this is not a passing full suite.
+- `candidate-journal-integrated-gate`: FAIL, 217.690 seconds, fifteen passes and
+  only unused `DecodeDockerCleanupResult` failing. Lint, NilAway and formatting
+  passed; later runtime tiers remain unqualified.
+
+Evidence lives under `/private/tmp/oro-factory-verify-ldhnhnvl/`. Preserve failed
+results. Terra is repairing driver classification through dbutil without changing
+exact typed SQLITE_BUSY-only retry semantics or the architectural guard. No new
+full rerun is active; this narrow dependency repair needs architecture/classifier
+and contention regressions before integration.
+
+Keeper init policy (`oro-mf-keeper-init-policy`) is reviewed at `ca7fed55` plus
+CLI fixture `09e4f046`, in `.worktrees/factory-keeper-init-policy`, not yet
+integrated. Creation explicitly sets --init=false; shared strict raw Init/UTS
+checks apply before keeper stopped/running decode. Root focused race passed
+25.137 seconds. Two worker broader candidate runs timed out at their fixed 180s
+child limit under overlapping load; root's independent combined candidate/keeper
+race is now running as `keeper-candidate-reviewed-race`. Do not waive or lengthen
+the child limit to conceal those results. Existing Colima and user checkout
+changes remain untouched.
+
+Ready-only candidate retirement is being implemented by Terra in
+`.worktrees/factory-candidate-retire`, branch `feature/factory-candidate-retire`,
+task `oro-mf-candidate-retire` under managed delivery. The actual execute path
+must reserve irreversible retirement, invoke authenticated counted cleanup,
+decode a positive exact stopped result, record quiescence, and retain the explicit
+engineer-adapter-unavailable interruption. No removal/export or success receipt.
+A typed exception may retain only the exact durable parent controller while all
+other non-Docker scopes are quiescent. Ordinary execution grants keep original
+work-deadline/no-cleanup gates. Shared identity-only extraction `84b66987` is
+reviewed but not integrated; all retirement authorization needs separate review.
+Full inherited labels remain exact; oversized existing 16KiB cleanup permits
+must fail before fence/token/scope mutation. Uncertain retirement never retries
+or renews its fixed deadline.
 
 The [restricted Terra adapter research](../proofs/2026-10-26-terra-adapter-research.md)
 proposes an Oro-owned Responses function loop; it is research, not an implemented

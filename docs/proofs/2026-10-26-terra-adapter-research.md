@@ -56,3 +56,42 @@ completion must produce zero unauthorized effects. A positive fixture must reach
 response, counted restricted exec, bounded result and next response. Native and
 real-model qualification follow separately; fixtures do not prove autonomous
 engineering or delivery.
+
+## Implementation boundary selected after repository audit
+
+This section is a design decision, not implemented model execution. A frozen,
+Oro-owned `oro-model-terra` helper should occupy the existing ModelExecutable
+slot and run through authenticated HostRuntime under one model reservation and
+one fixed invocation deadline. Its bounded Responses turns remain inside that
+single, non-resumable helper lifetime. Existing retention counts model invocations,
+not a new model scope for every HTTP turn. Reserve the full conservative invocation
+liability once; internal request allocations cannot exceed it. Unknown helper or
+HTTP outcome burns that reservation and prohibits relaunch. The earlier per-request
+reservation proposal above needs this invocation-level accounting interpretation;
+it is not permission to silently multiply retained scopes or change admission.
+
+The trusted helper owns fixed-endpoint HTTP, turn/input/output/transcript limits
+and conservative price arithmetic. It evaluates no native commands. Only the
+single restricted container-exec function may produce effects, through a live
+controller listener authenticated to the helper's actual granted PID and scope.
+Tool and host effects retain separate durable reservations. The listener must
+exist while HostRuntime.Invoke blocks and close/drain before final handling.
+
+Credentials require explicit provisioning. The proposed narrow contract binds a
+nonsecret absolute credential reference into the frozen runtime. The helper reads
+it privately after authenticated GO; no credential value may enter persisted
+invocation Env, stdin, argv, runtime JSON, model input, container, transcript or
+logs. A private regular-file reader needs ownership/mode/link/path checks and
+bounded reads. Do not import existing Codex authentication. This contract and its
+packaging remain to be implemented and reviewed; no additional API broker or
+Keychain service is required for the trusted helper design.
+
+A Docker CLI exit does not prove container-side exec descendants are gone. The
+candidate container is the containment/retirement unit. Successful bounded tool
+results may feed later turns in the same still-live candidate; timeout or unknown
+exec outcome poisons it and prohibits further turns or tool dispatch. Exact
+candidate stop and positive stopped inspection are prerequisites for accepting
+model completion or exporting source. A missing container is not export evidence.
+The guard remains an unprivileged fixed-deadline PID1, with no model control
+channel. The ready-only retirement precursor is tracked as
+`oro-mf-candidate-retire`; it does not yet qualify unknown-exec recovery.
