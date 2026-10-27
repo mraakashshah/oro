@@ -14,7 +14,7 @@ import (
 )
 
 type (
-	factoryRuntimeInputs struct{ OroPath, OroSHA256, DockerPath, DockerSHA256, DockerEndpoint string }
+	factoryRuntimeInputs struct{ OroPath, OroSHA256, DockerPath, DockerSHA256, DockerEndpoint, ModelCredentialPath string }
 	factoryRuntimeIntent struct {
 		Version         int                  `json:"version"`
 		OriginalOroPath string               `json:"original_oro_path"`
@@ -41,6 +41,7 @@ func publishFactoryRuntime(ctx context.Context, view factory.ManagedAdmissionVie
 		return zero, errors.New("factory Oro input path must be canonical")
 	}
 	config := factoryRuntimeConfig{Version: 1, StateRoot: view.StateRoot, ObjectiveID: view.ObjectiveID, PolicyHash: view.PolicyHash, OroPath: filepath.Join(view.StateRoot, view.ObjectiveID, "oro"), OroSHA256: inputs.OroSHA256, GitPath: view.GitPath, GitSHA256: view.GitSHA256, Repository: view.Repository, TargetRef: view.TargetRef, Deadline: view.Deadline, HardStop: view.HardStop, CleanupTimeoutSeconds: view.CleanupTimeoutSeconds, DockerPath: inputs.DockerPath, DockerSHA256: inputs.DockerSHA256, DockerContext: view.DockerContext, DockerEndpoint: inputs.DockerEndpoint}
+	config.ModelHelper = factoryPublicationModelHelper(inputs)
 	data, err := canonicalFactoryRuntimeConfig(config)
 	if err != nil {
 		return zero, fmt.Errorf("publication: %w", err)
@@ -129,4 +130,11 @@ func verifyFactoryPublishedRuntimeLocked(ctx context.Context, view factory.Manag
 		return errors.New("factory runtime differs from admission")
 	}
 	return nil
+}
+
+func factoryPublicationModelHelper(inputs factoryRuntimeInputs) *factory.ModelAdapterConfig {
+	if inputs.ModelCredentialPath == "" {
+		return nil
+	}
+	return &factory.ModelAdapterConfig{Protocol: "oro-terra-responses-v1", CredentialPath: inputs.ModelCredentialPath, HelperSHA256: inputs.OroSHA256}
 }

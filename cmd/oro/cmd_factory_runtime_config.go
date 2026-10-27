@@ -9,6 +9,9 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
+
+	"oro/pkg/factory"
 )
 
 const (
@@ -26,23 +29,24 @@ const (
 // current journal admission: callers must compare the trusted admission view.
 // DockerPath names the original admitted binary, never a fourth executable copy.
 type factoryRuntimeConfig struct {
-	Version               int       `json:"version"`
-	StateRoot             string    `json:"state_root"`
-	ObjectiveID           string    `json:"objective_id"`
-	PolicyHash            string    `json:"policy_hash"`
-	OroPath               string    `json:"oro_path"`
-	OroSHA256             string    `json:"oro_sha256"`
-	GitPath               string    `json:"git_path"`
-	GitSHA256             string    `json:"git_sha256"`
-	Repository            string    `json:"repository"`
-	TargetRef             string    `json:"target_ref"`
-	Deadline              time.Time `json:"deadline"`
-	HardStop              time.Time `json:"hard_stop"`
-	CleanupTimeoutSeconds int       `json:"cleanup_timeout_seconds"`
-	DockerPath            string    `json:"docker_path"`
-	DockerSHA256          string    `json:"docker_sha256"`
-	DockerContext         string    `json:"docker_context"`
-	DockerEndpoint        string    `json:"docker_endpoint"`
+	Version               int                         `json:"version"`
+	StateRoot             string                      `json:"state_root"`
+	ObjectiveID           string                      `json:"objective_id"`
+	PolicyHash            string                      `json:"policy_hash"`
+	OroPath               string                      `json:"oro_path"`
+	OroSHA256             string                      `json:"oro_sha256"`
+	GitPath               string                      `json:"git_path"`
+	GitSHA256             string                      `json:"git_sha256"`
+	Repository            string                      `json:"repository"`
+	TargetRef             string                      `json:"target_ref"`
+	Deadline              time.Time                   `json:"deadline"`
+	HardStop              time.Time                   `json:"hard_stop"`
+	CleanupTimeoutSeconds int                         `json:"cleanup_timeout_seconds"`
+	DockerPath            string                      `json:"docker_path"`
+	DockerSHA256          string                      `json:"docker_sha256"`
+	DockerContext         string                      `json:"docker_context"`
+	DockerEndpoint        string                      `json:"docker_endpoint"`
+	ModelHelper           *factory.ModelAdapterConfig `json:"model_helper,omitempty"`
 }
 
 type factoryDockerCleanupConfig struct {
@@ -80,6 +84,9 @@ func validateFactoryRuntimeConfigFields(config factoryRuntimeConfig) error {
 		if !factoryJobAbsolutePath(path) {
 			return errors.New("factory runtime config requires canonical absolute paths")
 		}
+	}
+	if err := validateFactoryModelConfig(config); err != nil {
+		return err
 	}
 	if err := validateFactoryRuntimeTimes(config); err != nil {
 		return err
@@ -151,4 +158,28 @@ func factoryDockerContextSnapshot(config factoryRuntimeConfig) (configJSON, cont
 
 func factoryRuntimeConfigPath(config factoryRuntimeConfig) string {
 	return filepath.Join(config.StateRoot, config.ObjectiveID, "runtime", "runtime.json")
+}
+
+func validateFactoryModelCredentialPath(path, root, repository string) error {
+	if !utf8.ValidString(path) || len(path) > 4096 || !factoryJobAbsolutePath(path) || strings.ContainsRune(path, 0) {
+		return errors.New("model credential reference must be an absolute canonical path")
+	}
+	for _, parent := range []string{root, repository} {
+		rel, err := filepath.Rel(parent, path)
+		if err != nil || rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))) {
+			return errors.New("model credential reference must be outside state and repository")
+		}
+	}
+	return nil
+}
+
+func validateFactoryModelConfig(config factoryRuntimeConfig) error {
+	h := config.ModelHelper
+	if h == nil {
+		return nil
+	}
+	if h.Protocol != "oro-terra-responses-v1" || h.HelperSHA256 != config.OroSHA256 {
+		return errors.New("invalid model helper identity")
+	}
+	return validateFactoryModelCredentialPath(h.CredentialPath, config.StateRoot, config.Repository)
 }

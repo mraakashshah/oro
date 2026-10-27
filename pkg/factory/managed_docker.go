@@ -79,7 +79,11 @@ func (d *managedDockerVolumes) ready(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("verify managed Docker configuration: %w", err)
 	}
-	if config != d.config {
+	sameHelper := EqualModelAdapterConfig(config.ModelHelper, d.config.ModelHelper)
+	original := d.config
+	original.ModelHelper = nil
+	config.ModelHelper = nil
+	if !sameHelper || config != original {
 		return errors.New("managed Docker frozen runtime configuration changed")
 	}
 	if err := ctx.Err(); err != nil {

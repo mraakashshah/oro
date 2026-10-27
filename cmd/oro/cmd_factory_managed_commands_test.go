@@ -282,8 +282,21 @@ func testFactoryManagedCommandsCountedSupervisor(t *testing.T, mode string) {
 	runGit("add", "source")
 	runGit("commit", "-m", "fixture")
 	runGit("branch", "delivery")
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	helperCoverage := filepath.Join(base, "helper-coverage")
+	if err := os.Mkdir(helperCoverage, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	oroProgram := []byte(fmt.Sprintf("#!/bin/sh\nexport GORACE=atexit_sleep_ms=0\nexport GOCOVERDIR=%s\nexec %s -test.run=^TestFactoryManagedReadyProgram$ -- \"$@\"\n", strconv.Quote(helperCoverage), strconv.Quote(exe)))
 	model := filepath.Join(base, "model")
-	if err := os.WriteFile(model, []byte("#!/bin/sh\nexit 1\n"), 0o500); err != nil {
+	modelProgram := []byte("#!/bin/sh\nexit 1\n")
+	if mode == "core" {
+		modelProgram = oroProgram
+	}
+	if err := os.WriteFile(model, modelProgram, 0o500); err != nil {
 		t.Fatal(err)
 	}
 	spec := factory.ManagedSpec{
@@ -325,16 +338,7 @@ func testFactoryManagedCommandsCountedSupervisor(t *testing.T, mode string) {
 	}
 	oro := filepath.Join(base, "oro")
 	docker := filepath.Join(base, "docker")
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
 	fixtureState := filepath.Join(base, "docker-state.json")
-	helperCoverage := filepath.Join(base, "helper-coverage")
-	if err := os.Mkdir(helperCoverage, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	oroProgram := []byte(fmt.Sprintf("#!/bin/sh\nexport GORACE=atexit_sleep_ms=0\nexport GOCOVERDIR=%s\nexec %s -test.run=^TestFactoryManagedReadyProgram$ -- \"$@\"\n", strconv.Quote(helperCoverage), strconv.Quote(exe)))
 	dockerProgram := []byte(fmt.Sprintf("#!/bin/sh\nexport GORACE=atexit_sleep_ms=0\nexport GOCOVERDIR=%s\nexec %s -test.run=^TestFactoryManagedDockerProgram$ -- %s \"$@\"\n", strconv.Quote(helperCoverage), strconv.Quote(exe), strconv.Quote(fixtureState)))
 	for path, program := range map[string][]byte{oro: oroProgram, docker: dockerProgram} {
 		if err := os.WriteFile(path, program, 0o500); err != nil {
@@ -353,6 +357,9 @@ func testFactoryManagedCommandsCountedSupervisor(t *testing.T, mode string) {
 		}
 	}
 	config := factoryRuntimeConfig{Version: 1, StateRoot: root, ObjectiveID: spec.ID, PolicyHash: view.PolicyHash, OroPath: oro, OroSHA256: factoryHostDigest(oroProgram), GitPath: view.GitPath, GitSHA256: view.GitSHA256, Repository: repo, TargetRef: view.TargetRef, Deadline: view.Deadline, HardStop: view.HardStop, CleanupTimeoutSeconds: view.CleanupTimeoutSeconds, DockerPath: docker, DockerSHA256: factoryHostDigest(dockerProgram), DockerContext: view.DockerContext, DockerEndpoint: "unix://" + endpoint}
+	if mode == "core" {
+		config.ModelHelper = &factory.ModelAdapterConfig{Protocol: "oro-terra-responses-v1", CredentialPath: "/private/tmp/unused-terra-credential", HelperSHA256: config.OroSHA256}
+	}
 	data, err := canonicalFactoryRuntimeConfig(config)
 	if err != nil {
 		t.Fatal(err)
@@ -374,6 +381,19 @@ func testFactoryManagedCommandsCountedSupervisor(t *testing.T, mode string) {
 	ref := factory.ManagedRuntimeReference{Path: path, SHA256: factoryHostDigest(data)}
 	if err := factory.ActivateManaged(t.Context(), root, spec.ID, ref); err != nil {
 		t.Fatal(err)
+	}
+	if mode == "core" {
+		first, err := readFactoryRuntimeConfig(t.Context(), ref.Path, ref.SHA256)
+		if err != nil {
+			t.Fatal(err)
+		}
+		second, err := readFactoryRuntimeConfig(t.Context(), ref.Path, ref.SHA256)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if first.ModelHelper == nil || first.ModelHelper == second.ModelHelper || !factory.EqualModelAdapterConfig(first.ModelHelper, second.ModelHelper) || first.ModelHelper.HelperSHA256 != view.ModelSHA256 {
+			t.Fatal("published helper identity did not survive independent readers")
+		}
 	}
 	var bootstraps int
 	var retired bool

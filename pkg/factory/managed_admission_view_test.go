@@ -50,6 +50,7 @@ func testManagedAdmissionViewIdentity(t *testing.T) {
 			want := ManagedAdmissionView{
 				StateRoot: root, ObjectiveID: spec.ID, PolicyHash: manifest.PolicyHash,
 				GitPath: filepath.Join(root, spec.ID, "git"), GitSHA256: manifest.Programs["git"].Digest,
+				ModelPath: filepath.Join(root, spec.ID, "model"), ModelSHA256: manifest.Programs["model"].Digest,
 				Repository: spec.Repository, TargetRef: "refs/heads/" + branch,
 				Deadline: manifest.Deadline, HardStop: manifest.HardStop,
 				CleanupTimeoutSeconds: spec.Recovery.CleanupTimeoutSeconds,

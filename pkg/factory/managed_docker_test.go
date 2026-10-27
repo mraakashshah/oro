@@ -25,6 +25,7 @@ func TestManagedDockerVolumeCreate(t *testing.T) {
 	t.Run("concurrent prepared consumers dispatch once", testDockerAdapterConcurrentPrepared)
 	t.Run("every call reopens the exact verified configuration", testDockerAdapterConfigReread)
 	t.Run("readiness helper identity cannot drift", testDockerAdapterOroReread)
+	t.Run("model helper identity compares values", testDockerAdapterModelHelperReread)
 	t.Run("inactive dependencies and ownership never invoke", testDockerAdapterInactive)
 	t.Run("local driver options encode exact keys and values", testDockerAdapterDriverOptions)
 }
@@ -639,5 +640,40 @@ func testDockerAdapterInspection(t *testing.T) {
 			}
 			expected = intent.Binding
 		})
+	}
+}
+
+func testDockerAdapterModelHelperReread(t *testing.T) {
+	f := newDockerAdapterFixture(t, nil)
+	helper := ModelAdapterConfig{Protocol: "oro-terra-responses-v1", CredentialPath: "/private/tmp/credential", HelperSHA256: strings.Repeat("a", 64)}
+	f.adapter.config.ModelHelper = &helper
+	f.adapter.readConfig = func(context.Context) (ManagedDockerConfig, error) {
+		c := f.config
+		cloned := helper
+		c.ModelHelper = &cloned
+		return c, nil
+	}
+	if err := f.adapter.ready(t.Context()); err != nil {
+		t.Fatalf("equal independent helper values: %v", err)
+	}
+	for _, change := range []func(*ManagedDockerConfig){
+		func(c *ManagedDockerConfig) { c.ModelHelper = nil },
+		func(c *ManagedDockerConfig) { c.ModelHelper.Protocol += "x" },
+		func(c *ManagedDockerConfig) { c.ModelHelper.CredentialPath += "x" },
+		func(c *ManagedDockerConfig) { c.ModelHelper.HelperSHA256 = strings.Repeat("b", 64) },
+	} {
+		f.adapter.readConfig = func(context.Context) (ManagedDockerConfig, error) {
+			c := f.config
+			cloned := helper
+			c.ModelHelper = &cloned
+			change(&c)
+			return c, nil
+		}
+		if err := f.adapter.ready(t.Context()); err == nil {
+			t.Fatal("changed helper accepted")
+		}
+	}
+	if len(f.runtime.calls) != 0 {
+		t.Fatal("configuration check dispatched host work")
 	}
 }

@@ -184,6 +184,7 @@ func assertManagedHostCompatibilityView(t *testing.T, root string, manifest mana
 	want := ManagedAdmissionView{
 		StateRoot: root, ObjectiveID: manifest.Spec.ID, PolicyHash: manifest.PolicyHash,
 		GitPath: filepath.Join(root, manifest.Spec.ID, "git"), GitSHA256: manifest.Programs["git"].Digest,
+		ModelPath: filepath.Join(root, manifest.Spec.ID, "model"), ModelSHA256: manifest.Programs["model"].Digest,
 		Repository: manifest.Spec.Repository, TargetRef: "refs/heads/" + manifest.Spec.TargetBranch,
 		Deadline: manifest.Deadline, HardStop: manifest.HardStop,
 		CleanupTimeoutSeconds: manifest.Spec.Recovery.CleanupTimeoutSeconds,

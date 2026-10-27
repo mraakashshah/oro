@@ -16,6 +16,7 @@ import (
 type ManagedAdmissionView struct {
 	StateRoot, ObjectiveID, PolicyHash string
 	GitPath, GitSHA256                 string
+	ModelPath, ModelSHA256             string
 	Repository, TargetRef              string
 	Deadline, HardStop                 time.Time
 	CleanupTimeoutSeconds              int
@@ -57,6 +58,7 @@ func ReadManagedAdmission(ctx context.Context, stateDir, id string) (ManagedAdmi
 	return ManagedAdmissionView{
 		StateRoot: root, ObjectiveID: id, PolicyHash: manifest.PolicyHash,
 		GitPath: filepath.Join(root, id, "git"), GitSHA256: manifest.Programs["git"].Digest,
+		ModelPath: filepath.Join(root, id, "model"), ModelSHA256: manifest.Programs["model"].Digest,
 		Repository: manifest.Spec.Repository, TargetRef: "refs/heads/" + manifest.Spec.TargetBranch,
 		Deadline: manifest.Deadline, HardStop: manifest.HardStop,
 		CleanupTimeoutSeconds: manifest.Spec.Recovery.CleanupTimeoutSeconds,

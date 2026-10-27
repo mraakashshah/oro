@@ -19,6 +19,7 @@ type ManagedDockerConfig struct {
 	OroPath, OroSHA256                     string
 	DockerPath, DockerSHA256, DockerConfig string
 	DockerContext, DockerEndpoint          string
+	ModelHelper                            *ModelAdapterConfig
 }
 
 // ManagedDockerConfigReader reopens and verifies the exact frozen artifact,

@@ -33,7 +33,7 @@ func newFactoryStartCmd() *cobra.Command {
 }
 
 func buildFactoryStartCmd(deps factoryStartDependencies) *cobra.Command {
-	var specPath, root, docker, endpoint string
+	var specPath, root, docker, endpoint, credential string
 	cmd := &cobra.Command{Use: "start", Short: "Register a managed factory supervisor", Args: cobra.NoArgs, SilenceUsage: true, RunE: func(cmd *cobra.Command, _ []string) error {
 		if err := deps.supported(); err != nil {
 			return err
@@ -45,7 +45,12 @@ func buildFactoryStartCmd(deps factoryStartDependencies) *cobra.Command {
 		if !factoryJobAbsolutePath(root) || !factoryJobAbsolutePath(docker) || !strings.HasPrefix(endpoint, "unix://") || !factoryJobAbsolutePath(strings.TrimPrefix(endpoint, "unix://")) || strings.ContainsAny(strings.TrimPrefix(endpoint, "unix://"), " ?#%") {
 			return errors.New("start requires absolute state and Docker paths and an explicit Unix endpoint")
 		}
-		status, err := startFactoryManaged(cmd.Context(), root, spec, docker, endpoint, deps)
+		if cmd.Flags().Changed("model-credential-file") {
+			if err := validateFactoryModelCredentialPath(credential, root, spec.Repository); err != nil {
+				return err
+			}
+		}
+		status, err := startFactoryManaged(cmd.Context(), root, spec, docker, endpoint, deps, credential)
 		if err != nil {
 			return err
 		}
@@ -58,13 +63,15 @@ func buildFactoryStartCmd(deps factoryStartDependencies) *cobra.Command {
 	cmd.Flags().StringVar(&root, "state-dir", "", "factory state directory")
 	cmd.Flags().StringVar(&docker, "docker", "", "Docker executable for initial publication")
 	cmd.Flags().StringVar(&endpoint, "docker-endpoint", "", "explicit Docker Unix endpoint for initial publication")
+	cmd.Flags().StringVar(&credential, "model-credential-file", "", "absolute nonsecret credential reference for the frozen model helper")
 	for _, flag := range []string{"spec", "state-dir", "docker", "docker-endpoint"} {
 		_ = cmd.MarkFlagRequired(flag)
 	}
 	return cmd
 }
 
-func startFactoryManaged(ctx context.Context, root string, spec factory.ManagedSpec, docker, endpoint string, deps factoryStartDependencies) (factory.Status, error) {
+func startFactoryManaged(ctx context.Context, root string, spec factory.ManagedSpec, docker, endpoint string, deps factoryStartDependencies, credentials ...string) (factory.Status, error) {
+	credential := factoryCredentialArgument(credentials)
 	reservation, err := admitFactoryHostBudget(ctx, root, spec, deps.probe)
 	if err != nil {
 		return factory.Status{}, fmt.Errorf("factory host admission: %w", err)
@@ -92,7 +99,7 @@ func startFactoryManaged(ctx context.Context, root string, spec factory.ManagedS
 	}
 	ref, err := factory.ReadManagedRuntimeReference(ctx, root, spec.ID)
 	if errors.Is(err, factory.ErrManagedRuntimePending) {
-		ref, err = publishFactoryStartRuntime(ctx, view, docker, endpoint, deps.executable)
+		ref, err = publishFactoryStartRuntime(ctx, view, docker, endpoint, deps.executable, credential)
 		if err != nil {
 			return factory.Status{}, err
 		}
@@ -102,17 +109,14 @@ func startFactoryManaged(ctx context.Context, root string, spec factory.ManagedS
 	} else if err != nil {
 		return factory.Status{}, fmt.Errorf("read active runtime: %w", err)
 	}
+	if err := verifyFactoryStartModelConfig(ctx, ref, credential); err != nil {
+		return factory.Status{}, err
+	}
 	if err := verifyFactoryPublishedRuntime(ctx, view, ref); err != nil {
 		return factory.Status{}, fmt.Errorf("verify active runtime: %w", err)
 	}
-	register := registerFactoryServiceLocked
-	if deps.bootstrap != nil {
-		register = func(ctx context.Context, access *factoryServiceAccess, view factory.ManagedAdmissionView, ref factory.ManagedRuntimeReference) error {
-			return registerFactoryServiceLockedWithBootstrap(ctx, access, view, ref, deps.bootstrap)
-		}
-	}
-	if err := register(ctx, access, view, ref); err != nil {
-		return factory.Status{}, fmt.Errorf("register service: %w", err)
+	if err := registerFactoryStart(ctx, access, view, ref, deps); err != nil {
+		return factory.Status{}, err
 	}
 	status, err := factory.ReadStatus(ctx, root, spec.ID)
 	if err != nil {
@@ -121,7 +125,7 @@ func startFactoryManaged(ctx context.Context, root string, spec factory.ManagedS
 	return status, nil
 }
 
-func publishFactoryStartRuntime(ctx context.Context, view factory.ManagedAdmissionView, docker, endpoint string, executable func() (string, error)) (factory.ManagedRuntimeReference, error) {
+func publishFactoryStartRuntime(ctx context.Context, view factory.ManagedAdmissionView, docker, endpoint string, executable func() (string, error), credentials ...string) (factory.ManagedRuntimeReference, error) {
 	path, err := executable()
 	if err != nil {
 		return factory.ManagedRuntimeReference{}, fmt.Errorf("find Oro executable: %w", err)
@@ -138,7 +142,8 @@ func publishFactoryStartRuntime(ctx context.Context, view factory.ManagedAdmissi
 	if err != nil {
 		return factory.ManagedRuntimeReference{}, err
 	}
-	return publishFactoryRuntime(ctx, view, factoryRuntimeInputs{OroPath: path, OroSHA256: oroHash, DockerPath: docker, DockerSHA256: dockerHash, DockerEndpoint: endpoint})
+	credential := factoryCredentialArgument(credentials)
+	return publishFactoryRuntime(ctx, view, factoryRuntimeInputs{OroPath: path, OroSHA256: oroHash, DockerPath: docker, DockerSHA256: dockerHash, DockerEndpoint: endpoint, ModelCredentialPath: credential})
 }
 
 func factoryStartProgramDigest(ctx context.Context, path string) (string, error) {
@@ -225,4 +230,36 @@ func readFactoryManagedSpec(path string) (factory.ManagedSpec, error) {
 		return factory.ManagedSpec{}, fmt.Errorf("decode specification: %w", err)
 	}
 	return spec, nil
+}
+
+func verifyFactoryStartModelConfig(ctx context.Context, ref factory.ManagedRuntimeReference, credential string) error {
+	artifact, err := readFactoryRuntimeConfig(ctx, ref.Path, ref.SHA256)
+	if err != nil {
+		return err
+	}
+	if (artifact.ModelHelper == nil && credential != "") || (artifact.ModelHelper != nil && artifact.ModelHelper.CredentialPath != credential) {
+		return errors.New("model helper configuration differs from committed runtime")
+	}
+	return nil
+}
+
+func factoryCredentialArgument(values []string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
+}
+
+func registerFactoryStart(ctx context.Context, access *factoryServiceAccess, view factory.ManagedAdmissionView, ref factory.ManagedRuntimeReference, deps factoryStartDependencies) error {
+	register := registerFactoryServiceLocked
+	if deps.bootstrap != nil {
+		register = func(ctx context.Context, access *factoryServiceAccess, view factory.ManagedAdmissionView, ref factory.ManagedRuntimeReference) error {
+			return registerFactoryServiceLockedWithBootstrap(ctx, access, view, ref, deps.bootstrap)
+		}
+	}
+	if err := register(ctx, access, view, ref); err != nil {
+		return fmt.Errorf("register service: %w", err)
+	}
+
+	return nil
 }

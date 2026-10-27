@@ -160,7 +160,10 @@ func verifyFactoryDockerCleanupConfig(ctx context.Context, config factoryDockerC
 		return err
 	}
 	objective := factoryHostDigest([]byte(verified.StateRoot + "\x00" + verified.ObjectiveID))[:16]
-	if verified != config || permit.Binding.Context != verified.DockerContext ||
+	sameHelper := factory.EqualModelAdapterConfig(verified.ModelHelper, config.ModelHelper)
+	verifiedCopy, configCopy := verified, config
+	verifiedCopy.ModelHelper, configCopy.ModelHelper = nil, nil
+	if !sameHelper || verifiedCopy != configCopy || permit.Binding.Context != verified.DockerContext ||
 		permit.Binding.Labels["dev.getoro.factory.objective"] != objective ||
 		permit.Binding.Labels["dev.getoro.factory.policy"] != verified.PolicyHash || permit.Deadline.After(verified.HardStop) {
 		return errors.New("factory cleanup runtime differs from its admitted permit")

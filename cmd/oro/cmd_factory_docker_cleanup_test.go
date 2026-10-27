@@ -30,6 +30,7 @@ func TestFactoryDockerCleanup(t *testing.T) {
 		}
 	})
 	t.Run("owned inspection uses durable authority", testFactoryDockerCleanupInspect)
+	t.Run("model helper value identity", testFactoryCleanupModelHelperIdentity)
 	t.Run("partial pipe is canceled without readers", testFactoryDockerCleanupInputCancel)
 	t.Run("bounded mutation and successful result table", testFactoryDockerCleanupMutations)
 	t.Run("already stopped still acknowledges fixed stop", testFactoryDockerCleanupAlreadyStopped)
@@ -916,4 +917,47 @@ func (f factoryDockerCleanupFixture) removeNativeResource(t *testing.T, kind, id
 		return
 	}
 	f.docker(t, "rm", "--force", identity)
+}
+
+func testFactoryCleanupModelHelperIdentity(t *testing.T) {
+	f := newFactoryDockerCleanupFixture(t, "volume")
+	f.responses(t, []factory.HostResult{factoryDockerCleanupInspectionResult(t, factoryDockerCleanupObject(f.permit))}, "")
+	f.config.config.ModelHelper = &factory.ModelAdapterConfig{Protocol: "oro-terra-responses-v1", CredentialPath: "/private/tmp/credential", HelperSHA256: f.config.config.OroSHA256}
+	f.writeConfig(t)
+	first, err := readFactoryRuntimeConfig(t.Context(), f.config.path, factoryHostDigest(f.config.data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := readFactoryRuntimeConfig(t.Context(), f.config.path, factoryHostDigest(f.config.data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ModelHelper == second.ModelHelper {
+		t.Fatal("reader reused model helper allocation")
+	}
+	if err := verifyFactoryDockerCleanupConfig(t.Context(), first, f.permit); err != nil {
+		t.Fatal(err)
+	}
+	for _, mutate := range []func(*factoryDockerCleanupConfig){
+		func(c *factoryDockerCleanupConfig) { c.ModelHelper = nil },
+		func(c *factoryDockerCleanupConfig) { c.ModelHelper.Protocol += "x" },
+		func(c *factoryDockerCleanupConfig) { c.ModelHelper.CredentialPath += "x" },
+		func(c *factoryDockerCleanupConfig) { c.ModelHelper.HelperSHA256 = strings.Repeat("b", 64) },
+	} {
+		c := first
+		helper := *first.ModelHelper
+		c.ModelHelper = &helper
+		mutate(&c)
+		if err := verifyFactoryDockerCleanupConfig(t.Context(), c, f.permit); err == nil {
+			t.Fatal("changed model helper accepted")
+		}
+	}
+	f.persistPermit(t)
+	var output bytes.Buffer
+	if err := runFactoryDockerCleanup(t.Context(), first, f.permit, &output); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := factory.DecodeDockerCleanupResult(output.Bytes(), f.permit); err != nil {
+		t.Fatal(err)
+	}
 }

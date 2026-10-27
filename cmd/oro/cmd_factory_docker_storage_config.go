@@ -25,7 +25,7 @@ func newFactoryDockerConfigReader(view factory.ManagedAdmissionView, runtimePath
 			StateRoot: verified.StateRoot, ObjectiveID: verified.ObjectiveID, PolicyHash: verified.PolicyHash,
 			Deadline: verified.Deadline, HardStop: verified.HardStop, RuntimeConfigPath: verified.RuntimeConfigPath, RuntimeConfigSHA256: verified.RuntimeConfigSHA256,
 			OroPath: verified.OroPath, OroSHA256: verified.OroSHA256,
-			DockerPath: verified.DockerPath, DockerSHA256: verified.DockerSHA256, DockerConfig: verified.DockerConfig, DockerContext: verified.DockerContext, DockerEndpoint: verified.DockerEndpoint,
+			DockerPath: verified.DockerPath, DockerSHA256: verified.DockerSHA256, DockerConfig: verified.DockerConfig, DockerContext: verified.DockerContext, DockerEndpoint: verified.DockerEndpoint, ModelHelper: verified.ModelHelper,
 		}, nil
 	}
 }
