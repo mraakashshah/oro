@@ -10,7 +10,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
+	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -23,7 +26,7 @@ func TestManagedCandidateExecution(t *testing.T) {
 		return
 	}
 	t.Run("expired checkout", candidateExecutionExpiredCheckout)
-	for _, mode := range []string{"success", "before_stop", "before_epoch", "after_stop", "lost_create", "lost_start", "bad_memory", "bad_mount", "bad_labels", "bad_scratch", "bad_image", "bad_guard", "bad_lifetime", "bad_ready", "bad_running"} {
+	for _, mode := range []string{"success", "before_stop", "before_epoch", "after_stop", "lost_create", "lost_start", "bad_memory", "bad_mount", "bad_labels", "bad_scratch", "bad_image", "bad_guard", "bad_uts", "bad_init", "null_init", "missing_init", "bad_lifetime", "bad_ready", "bad_running"} {
 		t.Run(mode, func(t *testing.T) { runCandidateExecution(t, mode) })
 	}
 }
@@ -51,6 +54,7 @@ func candidateExecutionExpiredCheckout(t *testing.T) {
 	host := &candidateExecutionRuntime{base: &managedEngineRuntime{git: &sourceGitRuntime{t: t, j: owner.journal}, docker: sourceRuntime}, journal: owner.journal, t: t, mode: "success"}
 	manifest := owner.manifest
 	config := ManagedDockerConfig{StateRoot: owner.journal.admission.Reservation.StateRoot, ObjectiveID: owner.journal.admission.ObjectiveID, PolicyHash: manifest.PolicyHash, Deadline: manifest.Deadline, HardStop: manifest.HardStop, RuntimeConfigPath: owner.runtime.Path, RuntimeConfigSHA256: owner.runtime.SHA256, OroPath: "/usr/local/bin/oro", OroSHA256: strings.Repeat("d", 64), DockerPath: "/usr/local/bin/docker", DockerSHA256: strings.Repeat("b", 64), DockerConfig: filepath.Join(owner.journal.admission.Reservation.StateRoot, owner.journal.admission.ObjectiveID, "runtime", "docker"), DockerContext: manifest.Spec.Runtime.DockerContext, DockerEndpoint: "unix:///private/tmp/admitted-docker.sock"}
+	host.config = config
 	adapter, err := newManagedDockerVolumes(ctx, manifest, owner.scope.Generation, owner.journal, host, func(context.Context) (ManagedDockerConfig, error) { return config, nil })
 	if err != nil {
 		t.Fatal(err)
@@ -138,13 +142,13 @@ func runCandidateExecution(t *testing.T, mode string) {
 	docker := &sourcePrepareRuntime{base: keeper, t: t}
 	runtime := &managedEngineRuntime{git: git, docker: docker}
 
-	recording := &candidateExecutionRuntime{base: runtime, journal: j, t: t, mode: mode}
+	recording := &candidateExecutionRuntime{base: runtime, journal: j, t: t, mode: mode, config: config}
 	status, err := RunManagedController(t.Context(), root, spec.ID, gen, scope.ID, recording, func(context.Context) (ManagedDockerConfig, error) { return config, nil })
 	if !isManagedInterruption(err) || status.State != "running" || status.Attempts != 1 {
 		t.Fatalf("controller = %+v, %v", status, err)
 	}
 	var phase string
-	expected := map[string]string{"success": "ready", "before_stop": "create_dispatching", "before_epoch": "create_dispatching", "after_stop": "create_dispatching", "lost_create": "create_dispatching", "lost_start": "start_dispatching", "bad_memory": "created", "bad_mount": "created", "bad_labels": "created", "bad_scratch": "created", "bad_image": "created", "bad_guard": "created", "bad_lifetime": "start_acknowledged", "bad_ready": "start_dispatching", "bad_running": "start_acknowledged"}[mode]
+	expected := map[string]string{"success": "ready", "before_stop": "create_dispatching", "before_epoch": "create_dispatching", "after_stop": "create_dispatching", "lost_create": "create_dispatching", "lost_start": "start_dispatching", "bad_memory": "created", "bad_mount": "created", "bad_labels": "created", "bad_scratch": "created", "bad_image": "created", "bad_guard": "created", "bad_uts": "created", "bad_init": "created", "null_init": "created", "missing_init": "created", "bad_lifetime": "start_acknowledged", "bad_ready": "start_dispatching", "bad_running": "start_acknowledged"}[mode]
 	if err := j.conn.QueryRowContext(t.Context(), "SELECT json_extract(body,'$.phase') FROM managed_docker_candidates").Scan(&phase); err != nil || phase != expected {
 		t.Fatalf("candidate not ready: %s %v", phase, err)
 	}
@@ -164,7 +168,7 @@ func runCandidateExecution(t *testing.T, mode string) {
 		t.Fatalf("candidate scope deadline: %v, %v", observation.Deadline, observeErr)
 	}
 
-	wantCalls := map[string]int{"success": 4, "before_stop": 1, "before_epoch": 1, "after_stop": 1, "lost_create": 1, "lost_start": 3, "bad_memory": 2, "bad_mount": 2, "bad_labels": 2, "bad_scratch": 2, "bad_image": 2, "bad_guard": 2, "bad_lifetime": 4, "bad_ready": 3, "bad_running": 4}[mode]
+	wantCalls := map[string]int{"success": 4, "before_stop": 1, "before_epoch": 1, "after_stop": 1, "lost_create": 1, "lost_start": 3, "bad_memory": 2, "bad_mount": 2, "bad_labels": 2, "bad_scratch": 2, "bad_image": 2, "bad_guard": 2, "bad_uts": 2, "bad_init": 2, "null_init": 2, "missing_init": 2, "bad_lifetime": 4, "bad_ready": 3, "bad_running": 4}[mode]
 	if recording.calls != wantCalls {
 		t.Fatalf("candidate calls = %d, want %d", recording.calls, wantCalls)
 	}
@@ -191,6 +195,7 @@ type candidateExecutionRuntime struct {
 	t       *testing.T
 	running bool
 	mode    string
+	config  ManagedDockerConfig
 	calls   int
 }
 
@@ -211,9 +216,21 @@ func (r *candidateExecutionRuntime) Invoke(ctx context.Context, call HostInvocat
 		return r.base.Invoke(ctx, call)
 	}
 	r.calls++
+	if isCreate || isStart {
+		expected := r.expectedCandidateCall(intent, isCreate)
+		if r.mode == "success" {
+			r.testTransportRejections(expected)
+		}
+		if !candidateTransportMatches(call, expected) {
+			return HostResult{}, fmt.Errorf("candidate transport differs: got %+v, want %+v", call, expected)
+		}
+	}
 	result := HostResult{}
 	switch {
 	case isCreate:
+		if !slices.Contains(call.Args, "--init=false") {
+			r.t.Error("candidate create missing --init=false")
+		}
 		result.Stdout = []byte(strings.Repeat("e", 64) + "\n")
 	case isStart:
 		r.running = true
@@ -241,9 +258,10 @@ func (r *candidateExecutionRuntime) Invoke(ctx context.Context, call HostInvocat
 		}
 		config["Labels"] = labels
 		host := object["HostConfig"].(map[string]any)
+		host["UTSMode"], host["Init"] = "", false
 		policy := r.journal.admission.Runtime
 		host["Memory"], host["MemorySwap"], host["NanoCpus"], host["PidsLimit"] = policy.MemoryBytes, policy.MemoryBytes, int64(policy.CPUs*1e9), int64(policy.PIDs)
-		host["Tmpfs"] = map[string]string{"/scratch": strings.TrimPrefix(candidateScratchOptions(policy), "/scratch:")}
+		host["Tmpfs"] = map[string]string{"/scratch": fmt.Sprintf("rw,size=%d,nr_inodes=%d,uid=1000,gid=1000,mode=0700", policy.ScratchBytes, policy.ScratchInodes)}
 		if r.running {
 			state := object["State"].(map[string]any)
 			state["Status"] = "running"
@@ -263,6 +281,14 @@ func (r *candidateExecutionRuntime) Invoke(ctx context.Context, call HostInvocat
 				host["Tmpfs"] = map[string]string{"/scratch": "rw,size=1"}
 			case "bad_image":
 				object["Image"] = "sha256:" + strings.Repeat("f", 64)
+			case "bad_uts":
+				host["UTSMode"] = "host"
+			case "bad_init":
+				host["Init"] = true
+			case "null_init":
+				host["Init"] = nil
+			case "missing_init":
+				delete(host, "Init")
 			case "bad_guard":
 				config["Cmd"] = []string{"--deadline", "2099-01-01T00:00:00Z"}
 			}
@@ -299,6 +325,67 @@ func (r *candidateExecutionRuntime) Invoke(ctx context.Context, call HostInvocat
 		return HostResult{}, fmt.Errorf("lost transport acknowledgment")
 	}
 	return result, nil
+}
+
+func candidateTransportMatches(actual, expected HostInvocation) bool {
+	return reflect.DeepEqual(actual, expected)
+}
+
+func (r *candidateExecutionRuntime) testTransportRejections(expected HostInvocation) {
+	r.t.Helper()
+	mutations := []struct {
+		name   string
+		change func(*HostInvocation)
+	}{
+		{"missing flag", func(c *HostInvocation) { c.Args = c.Args[1:] }},
+		{"path", func(c *HostInvocation) { c.Path = "/tmp/replacement" }},
+		{"environment", func(c *HostInvocation) { c.Env = []string{"PATH=/tmp"} }},
+		{"deadline", func(c *HostInvocation) { c.Deadline = c.Deadline.Add(time.Second) }},
+		{"scope", func(c *HostInvocation) { c.Scope.Nonce = "replacement" }},
+		{"working directory", func(c *HostInvocation) { c.Dir = "/tmp" }},
+		{"stdin", func(c *HostInvocation) { c.Stdin = []byte("unexpected") }},
+		{"output limit", func(c *HostInvocation) { c.OutputLimit++ }},
+	}
+	for _, flag := range []string{"--init=false", "--read-only", "--mount", "--tmpfs", "--docker", "--guard-deadline"} {
+		index := slices.Index(expected.Args, flag)
+		if index < 0 {
+			continue
+		}
+		changed := expected
+		changed.Args = slices.Clone(expected.Args)
+		changed.Args = append(changed.Args[:index], changed.Args[index+1:]...)
+		if candidateTransportMatches(changed, expected) {
+			r.t.Errorf("transport accepted omitted %s", flag)
+		}
+	}
+	for _, mutation := range mutations {
+		changed := expected
+		changed.Args = slices.Clone(expected.Args)
+		changed.Env = slices.Clone(expected.Env)
+		mutation.change(&changed)
+		if candidateTransportMatches(changed, expected) {
+			r.t.Errorf("transport accepted changed %s", mutation.name)
+		}
+	}
+}
+
+func (r *candidateExecutionRuntime) expectedCandidateCall(i managedCandidateIntent, create bool) HostInvocation {
+	c := r.config
+	p := r.journal.admission.Runtime
+	deadline := i.ExecutionDeadline.Format(time.RFC3339Nano)
+	guard := i.GuardDeadline.Format(time.RFC3339Nano)
+	call := HostInvocation{Scope: i.CreateHost, Path: c.DockerPath, Env: []string{"PATH=/usr/bin:/bin", "LC_ALL=C", "LANG=C"}, Dir: c.StateRoot, Deadline: i.ExecutionDeadline, OutputLimit: 1 << 20}
+	if create {
+		call.Args = []string{"--config", c.DockerConfig, "--context", c.DockerContext, "container", "create", "--name", i.Container.Name, "--pull=never", "--init=false", "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--ipc", "private", "--cgroupns", "private", "--restart", "no", "--log-driver", "none", "--memory", strconv.FormatInt(p.MemoryBytes, 10), "--memory-swap", strconv.FormatInt(p.MemoryBytes, 10), "--cpus", strconv.FormatFloat(p.CPUs, 'f', 9, 64), "--pids-limit", strconv.Itoa(p.PIDs), "--shm-size", "1048576", "--user", "65534:65534", "--entrypoint", "/usr/local/bin/oro-factory-guard", "--mount", "type=volume,source=" + i.Source.Volume.Name + ",target=/source,volume-nocopy", "--tmpfs", fmt.Sprintf("/scratch:rw,size=%d,nr_inodes=%d,uid=1000,gid=1000,mode=0700", p.ScratchBytes, p.ScratchInodes)}
+		for _, key := range slices.Sorted(maps.Keys(i.Binding.Labels)) {
+			call.Args = append(call.Args, "--label", key+"="+i.Binding.Labels[key])
+		}
+		call.Args = append(call.Args, i.Binding.ImageID, "--deadline", guard)
+		return call
+	}
+	call.Scope, call.Path, call.OutputLimit = i.StartHost, c.OroPath, 256
+	call.Args = []string{"factory", "_docker-start-ready", "--docker", c.DockerPath, "--docker-sha256", c.DockerSHA256, "--docker-config", c.DockerConfig, "--context", c.DockerContext, "--container", i.Binding.ContainerID, "--scope-id", i.Container.ID, "--scope-nonce", i.Container.Nonce, "--scope-generation", strconv.FormatUint(i.Container.Generation, 10), "--scope-kind", "container", "--objective-hash", cleanupObjectiveHash(r.journal.admission), "--policy-hash", c.PolicyHash, "--image", i.Binding.ImageID, "--guard-deadline", guard, "--deadline", deadline}
+	return call
 }
 
 func (r *candidateExecutionRuntime) rejectBeforeGrant(ctx context.Context, call HostInvocation) error {

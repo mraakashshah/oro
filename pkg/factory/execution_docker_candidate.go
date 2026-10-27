@@ -159,7 +159,7 @@ func (d *managedDockerVolumes) inspectCandidateKeeper(ctx context.Context, owner
 func (d *managedDockerVolumes) candidateCreateInvocation(i managedCandidateIntent) HostInvocation {
 	r := d.manifest.Spec.Runtime
 	args := make([]string, 0, 48+2*len(i.Binding.Labels))
-	args = append(args, "--config", d.config.DockerConfig, "--context", d.config.DockerContext, "container", "create", "--name", i.Container.Name, "--pull=never", "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--ipc", "private", "--cgroupns", "private", "--restart", "no", "--log-driver", "none", "--memory", strconv.FormatInt(r.MemoryBytes, 10), "--memory-swap", strconv.FormatInt(r.MemoryBytes, 10), "--cpus", strconv.FormatFloat(r.CPUs, 'f', 9, 64), "--pids-limit", strconv.Itoa(r.PIDs), "--shm-size", "1048576", "--user", "65534:65534", "--entrypoint", "/usr/local/bin/oro-factory-guard", "--mount", "type=volume,source="+i.Source.Volume.Name+",target=/source,volume-nocopy", "--tmpfs", candidateScratchOptions(r))
+	args = append(args, "--config", d.config.DockerConfig, "--context", d.config.DockerContext, "container", "create", "--name", i.Container.Name, "--pull=never", "--init=false", "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--ipc", "private", "--cgroupns", "private", "--restart", "no", "--log-driver", "none", "--memory", strconv.FormatInt(r.MemoryBytes, 10), "--memory-swap", strconv.FormatInt(r.MemoryBytes, 10), "--cpus", strconv.FormatFloat(r.CPUs, 'f', 9, 64), "--pids-limit", strconv.Itoa(r.PIDs), "--shm-size", "1048576", "--user", "65534:65534", "--entrypoint", "/usr/local/bin/oro-factory-guard", "--mount", "type=volume,source="+i.Source.Volume.Name+",target=/source,volume-nocopy", "--tmpfs", candidateScratchOptions(r))
 	for _, key := range slices.Sorted(maps.Keys(i.Binding.Labels)) {
 		args = append(args, "--label", key+"="+i.Binding.Labels[key])
 	}
@@ -208,15 +208,12 @@ func (d *managedDockerVolumes) inspectCandidate(ctx context.Context, owner *mana
 }
 
 func parseManagedCandidateInspection(result HostResult, i managedCandidateIntent, keeper managedDockerKeeperIntent, r RuntimePolicy, running bool) (string, error) {
-	if !boundedManagedDockerOutput(result) || result.ExitCode != 0 || len(result.Stderr) != 0 {
-		return "", errors.New("candidate inspect uncertain")
-	}
-	if err := validateDockerVolumeJSON(result.Stdout); err != nil {
+	objects, err := candidateInspectionObjects(result)
+	if err != nil {
 		return "", err
 	}
-	var objects []json.RawMessage
-	if err := json.Unmarshal(result.Stdout, &objects); err != nil || len(objects) != 1 {
-		return "", errors.New("candidate inspect requires one object")
+	if err := validateCandidateNamespaces(objects[0]); err != nil {
+		return "", err
 	}
 	var value managedKeeperInspection
 	if err := decodeManagedKeeperObject(objects[0], reflect.ValueOf(&value).Elem()); err != nil {
@@ -242,6 +239,33 @@ func parseManagedCandidateInspection(result HostResult, i managedCandidateIntent
 		return "", err
 	}
 	return candidateStartedAt(result.Stdout)
+}
+
+func candidateInspectionObjects(result HostResult) ([]json.RawMessage, error) {
+	if !boundedManagedDockerOutput(result) || result.ExitCode != 0 || len(result.Stderr) != 0 {
+		return nil, errors.New("candidate inspect uncertain")
+	}
+	if err := validateDockerVolumeJSON(result.Stdout); err != nil {
+		return nil, err
+	}
+	var objects []json.RawMessage
+	if err := json.Unmarshal(result.Stdout, &objects); err != nil || len(objects) != 1 {
+		return nil, errors.New("candidate inspect requires one object")
+	}
+	return objects, nil
+}
+
+func validateCandidateNamespaces(object json.RawMessage) error {
+	var hostView struct {
+		HostConfig struct {
+			UTSMode *string `json:"UTSMode"`
+			Init    *bool   `json:"Init"`
+		} `json:"HostConfig"`
+	}
+	if err := json.Unmarshal(object, &hostView); err != nil || hostView.HostConfig.UTSMode == nil || *hostView.HostConfig.UTSMode != "" || hostView.HostConfig.Init == nil || *hostView.HostConfig.Init {
+		return errors.New("candidate UTS namespace or init differs")
+	}
+	return nil
 }
 
 func candidateStartedAt(output []byte) (string, error) {
