@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -74,7 +75,9 @@ func TestManagedControllerWorkerCheckout(t *testing.T) {
 	base := &dockerAdapterRuntime{t: t, journal: j}
 	keeper := &sourceKeeperRuntime{base: base}
 	docker := &sourcePrepareRuntime{base: keeper, t: t}
-	runtime := &managedEngineRuntime{git: git, docker: docker}
+	baseRuntime := &managedEngineRuntime{git: git, docker: docker}
+	candidate := &candidateExecutionRuntime{base: baseRuntime, journal: j, t: t, mode: "success"}
+	runtime := &managedCandidateRecordingRuntime{base: candidate}
 	mode := os.Getenv("ORO_MANAGED_ENGINE_MODE")
 	reads := 0
 	reader := func(context.Context) (ManagedDockerConfig, error) {
@@ -126,7 +129,7 @@ func TestManagedControllerWorkerCheckout(t *testing.T) {
 		if _, err := RunManagedController(t.Context(), root, spec.ID, bad.generation, bad.token, runtime, bad.reader); err == nil {
 			t.Fatal("invalid grant or config accepted")
 		}
-		if len(git.calls) != 0 || len(docker.calls) != 0 {
+		if len(git.calls) != 0 || len(docker.calls) != 0 || len(runtime.calls) != 0 {
 			t.Fatal("invalid entry invoked host")
 		}
 	}
@@ -184,7 +187,7 @@ func TestManagedControllerWorkerCheckout(t *testing.T) {
 	}
 	if mode == "success" || mode == "prior-attempt" {
 		var interruption *managedInterruptionError
-		if !errors.As(runErr, &interruption) || interruption.stage != "candidate" {
+		if !errors.As(runErr, &interruption) || interruption.stage != "candidate" || !strings.Contains(runErr.Error(), "engineer-adapter-unavailable") {
 			t.Fatalf("expected candidate interruption: %v", runErr)
 		}
 	}
@@ -211,8 +214,8 @@ func TestManagedControllerWorkerCheckout(t *testing.T) {
 		}
 		return
 	}
-	if len(docker.calls) != 8 {
-		t.Fatalf("Docker calls = %d, want 8: %v", len(docker.calls), runErr)
+	if len(docker.calls) != 10 {
+		t.Fatalf("Docker calls = %d, want 10: %v", len(docker.calls), runErr)
 	}
 	store, _, err := openManagedConnection(t.Context(), filepath.Join(root, spec.ID), false)
 	if err != nil {
@@ -236,6 +239,45 @@ func TestManagedControllerWorkerCheckout(t *testing.T) {
 	})
 	if err != nil || workspace.SourceSHA != state.BaseSHA || workspace.Keeper == (ScopeHandle{}) || workspace.SeedSHA256 == "" {
 		t.Fatalf("workspace = %+v, %v", workspace, err)
+	}
+	var body []byte
+	if err := j.conn.QueryRowContext(t.Context(), "SELECT body FROM managed_docker_candidates").Scan(&body); err != nil {
+		t.Fatal(err)
+	}
+	var intent managedCandidateIntent
+	if err := json.Unmarshal(body, &intent); err != nil {
+		t.Fatal(err)
+	}
+	if intent.Phase != "ready" || intent.WorkspaceID != state.Worktree || intent.Source.Keeper != workspace.Keeper || intent.Container == workspace.Keeper || intent.Binding.ContainerID == "" {
+		t.Fatalf("candidate identity or phase: %+v", intent)
+	}
+	observation, err := j.Observe(t.Context(), intent.Container)
+	if err != nil || !observation.Deadline.Equal(intent.ExecutionDeadline) || !intent.GuardDeadline.Equal(intent.ExecutionDeadline) {
+		t.Fatalf("candidate deadline = %v, intent = %+v, %v", observation.Deadline, intent, err)
+	}
+	keeperIntent, err := loadManagedDockerKeeper(t.Context(), j, workspace.Keeper)
+	if err != nil || keeperIntent.Binding.ContainerID == intent.Binding.ContainerID {
+		t.Fatalf("candidate and keeper container identities: %+v, %v", keeperIntent, err)
+	}
+	if len(runtime.calls) != 4 {
+		t.Fatalf("candidate calls = %d, want 4", len(runtime.calls))
+	}
+	for i, call := range runtime.calls {
+		if !call.Deadline.Equal(intent.ExecutionDeadline) {
+			t.Fatalf("candidate call %d deadline = %v, want %v", i, call.Deadline, intent.ExecutionDeadline)
+		}
+	}
+	if runtime.calls[0].Scope != intent.CreateHost || !slices.Contains(runtime.calls[0].Args, "create") || runtime.calls[2].Scope != intent.StartHost || !slices.Equal(runtime.calls[2].Args[:2], []string{"factory", "_docker-start-ready"}) {
+		t.Fatalf("candidate create/start calls = %+v", runtime.calls)
+	}
+	for _, i := range []int{1, 3} {
+		if len(runtime.calls[i].Args) < 7 || !slices.Equal(runtime.calls[i].Args[4:7], []string{"container", "inspect", intent.Binding.ContainerID}) {
+			t.Fatalf("candidate inspect %d = %+v", i, runtime.calls[i])
+		}
+	}
+	var candidateCount, modelCount int
+	if err := j.conn.QueryRowContext(t.Context(), "SELECT (SELECT count(*) FROM managed_docker_candidates), (SELECT count(*) FROM managed_reservations WHERE kind='model')").Scan(&candidateCount, &modelCount); err != nil || candidateCount != 1 || modelCount != 0 {
+		t.Fatalf("candidate/model count = %d/%d, %v", candidateCount, modelCount, err)
 	}
 	if state.BaseSHA != gitTestRun(t, spec.Repository, "rev-parse", "delivery") {
 		t.Fatal("snapshot did not retain target SHA")
@@ -278,9 +320,24 @@ func TestManagedControllerWorkerCheckout(t *testing.T) {
 	if !reflect.DeepEqual(files, map[string]string{".gitignore": "ignored-output\n", "source.txt": "original\n"}) {
 		t.Fatalf("source archive = %v", files)
 	}
-	for _, call := range docker.calls {
+	for _, call := range docker.calls[:8] {
 		if !call.Deadline.Equal(workspace.OperationDeadline) {
 			t.Fatalf("Docker deadline %v != retained %v", call.Deadline, workspace.OperationDeadline)
+		}
+	}
+	for _, i := range []int{8, 9} {
+		call := docker.calls[i]
+		if !call.Deadline.Equal(intent.ExecutionDeadline) || !slices.Equal(call.Args, []string{"--config", config.DockerConfig, "--context", config.DockerContext, "container", "inspect", keeperIntent.Binding.ContainerID}) {
+			t.Fatalf("candidate keeper verification %d = %+v", i, call)
+		}
+	}
+	for i, words := range [][]string{{"volume", "create"}, {"volume", "inspect"}, {"container", "create"}, {"container", "inspect"}, {"factory", "_docker-start-ready"}, {"container", "inspect"}, {"cp"}, {"container", "inspect"}} {
+		offset := 4
+		if i == 4 {
+			offset = 0
+		}
+		if len(docker.calls[i].Args) < offset+len(words) || !slices.Equal(docker.calls[i].Args[offset:offset+len(words)], words) {
+			t.Fatalf("source call %d = %v, want %v", i, docker.calls[i].Args, words)
 		}
 	}
 	if workspace.OperationDeadline.After(manifest.Deadline) {
@@ -303,7 +360,7 @@ func TestManagedControllerWorkerCheckout(t *testing.T) {
 	if _, err := backend.checkout(t.Context(), "worker", expectedAttempt, state.BaseSHA, state.Deadline); !isManagedInterruption(err) {
 		t.Fatalf("changed continuity accepted: %v", err)
 	}
-	if len(git.calls) <= beforeExport || len(docker.calls) != beforeContinuity {
+	if len(git.calls) != beforeExport+3 || len(docker.calls) != beforeContinuity {
 		t.Fatal("ready continuity did not reexport before denying changed runtime")
 	}
 	backend, err = newManagedDeliveryBackend(t.Context(), owner, runtime, func(context.Context) (ManagedDockerConfig, error) { return config, nil })
@@ -323,9 +380,9 @@ func TestManagedControllerWorkerCheckout(t *testing.T) {
 	if len(git.calls) != beforeExport+3 || len(docker.calls) != beforeContinuity+1 || !docker.calls[len(docker.calls)-1].Deadline.Equal(workspace.OperationDeadline) {
 		t.Fatal("ready replay failed to reexport and inspect under retained deadline")
 	}
-	beforeGit, beforeDocker := len(git.calls), len(docker.calls)
+	beforeGit, beforeDocker, beforeCandidate := len(git.calls), len(docker.calls), len(runtime.calls)
 	status, err = RunManagedController(t.Context(), root, spec.ID, gen, scope.ID, runtime, reader)
-	if !isManagedInterruption(err) || status.State != "running" || status.Attempts != expectedAttempt || len(git.calls) != beforeGit || len(docker.calls) != beforeDocker {
+	if !isManagedInterruption(err) || status.State != "running" || status.Attempts != expectedAttempt || len(git.calls) != beforeGit || len(docker.calls) != beforeDocker || len(runtime.calls) != beforeCandidate {
 		t.Fatalf("reentry = %+v, %v", status, err)
 	}
 	store.owner = owner
@@ -341,6 +398,24 @@ func TestManagedControllerWorkerCheckout(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(after, state) {
 		t.Fatalf("revoked save changed snapshot: %+v, %v", after, err)
 	}
+}
+
+type managedCandidateRecordingRuntime struct {
+	base  *candidateExecutionRuntime
+	calls []HostInvocation
+}
+
+func (r *managedCandidateRecordingRuntime) Invoke(ctx context.Context, call HostInvocation) (HostResult, error) {
+	before := r.base.calls
+	result, err := r.base.Invoke(ctx, call)
+	if r.base.calls != before {
+		r.calls = append(r.calls, call)
+	}
+	return result, err
+}
+
+func (r *managedCandidateRecordingRuntime) Retire(ctx context.Context, scope ScopeHandle) error {
+	return r.base.Retire(ctx, scope)
 }
 
 type managedEngineRuntime struct {
