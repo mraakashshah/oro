@@ -202,6 +202,66 @@ Fixed production HTTPS origin `https://api.openai.com`, exact endpoint paths, ce
 
 Result.stdout is the one canonical ModelResult consumed only after normal HostRuntime quiescence. It is not protected acceptance, proof of source state or permission to promote. An observed model string does not establish immutable weights; record provider response IDs/models and reject identity drift, while retaining that limitation for live qualification.
 
+## Counted invocation schema and producer boundary
+
+The intent leaf owns the narrow admission extension in
+`pkg/factory/managed_admission.go`, in addition to its listed model/store/history
+and registered helper sources. Add `ModelIntentSchemaVersion int` with JSON tag
+`model_intent_schema_version,omitempty` to both `managedManifest` and
+`managedJournalAdmission`; `managedJournalIdentity` copies it exactly. Only values
+0 and 1 are valid. Absent legacy zero preserves canonical bytes. Explicit null,
+aliases, duplicates and noncanonical representations fail existing canonical
+validation. Only fresh `newManagedManifest` construction sets version1; replay
+never upgrades an existing marker or backfills a table.
+
+Version0 admissions remain metadata-readable but model-unavailable, even if a
+stray model table exists. Version1 requires the model-intent table during
+activation, history and metadata reads, including before the first M invocation;
+a missing table is corruption. The frozen manifest/journal identity and existing
+activation admission digest bind this capability. Reads and reservations never
+create or migrate schema. Present version1 tables require bounded canonical
+row/event/M-token/scope association and revision integrity; pristine activation
+requires no model intents. Deleting a table, row or event must never restore work
+or renew authority.
+
+The reservation producer accepts a request template with zero Invocation and
+empty ToolSocket, generates its own invocation scope, fills the exact scope and
+socket before canonical encoding/hash, and rejects supplied invocation authority.
+The model token, host-kind scope, full admitted cents liability and intent/event
+commit atomically; the invocation itself does not consume an extra H token.
+Later actual tool/host effects retain their separate budgets. The helper's
+post-GO verifier authenticates its actual inherited process group against the
+granted wrapper group and revalidates parent controller identity without
+requiring the helper PID to equal the controller PID. Unknown dispatch is never
+replayed, refunded or given a renewed deadline.
+
+Socket derivation is shared privately by producer, verifier and tool consumer.
+Hash the canonical `json.Marshal` bytes of this exact ordered struct, using the
+existing complete ScopeHandle encoding:
+
+```go
+struct {
+    StateRoot string `json:"state_root"`
+    ObjectiveID string `json:"objective_id"`
+    Invocation ScopeHandle `json:"invocation"`
+}
+```
+
+Use lowercase SHA256 hex, first32 characters. The path is
+`/private/tmp/oro-model-<digest>/s` on Darwin and `/tmp/oro-model-<digest>/s` on
+Linux; other platforms are unsupported. Never consult TMPDIR or another
+environment-derived base. The tool consumer exclusively creates the owned0700
+directory and socket0600 only after durable reservation; existing paths fail
+closed without adoption. Intent reservation only derives and binds the path,
+without creating directories or listeners.
+
+Intent tests use genuine internal admission/candidate/reservation/process-group
+producers and label synthetic transport fixtures honestly. Existing entry tests
+must now expect authority denial for their shape-only requests, while preserving
+executable-identity checks. The full public publication through counted producer
+and registered helper positive belongs to the actual CLI consumer/proof leaves;
+never export a private producer or insert a fabricated grant to simulate it.
+
 ## Task graph and verification boundary
 
 `oro-mf-terra-entry` -> `oro-mf-terra-intent` -> (`oro-mf-terra-loop`, `oro-mf-terra-tools`) -> `oro-mf-terra-consumer` -> `oro-mf-terra-cli-proof` -> `oro-mf-astra-plan` -> `oro-mf-model-repair` (also requires `oro-mf-acceptance`). Existing milestone IDs `oro-mf-claude`/`oro-mf-mcp` are retained for tracker continuity, not provider selection.

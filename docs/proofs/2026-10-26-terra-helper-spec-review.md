@@ -7,9 +7,11 @@ design and task coverage, not an implementation, live API or factory delivery.
 ```json
 {
   "verdict": "PASS",
-  "review_scope": "design_and_task_coverage_with_targeted_codec_amendment",
+  "review_scope": "design_and_task_coverage_with_targeted_intent_amendment",
   "spec": "docs/plans/2026-10-26-terra-helper-contract.md",
-  "verified_sha256": "1ae5a99aff3dcf2bf9863f9365327ec5d85810e7a834249c80ebbb4c582da53d",
+  "verified_sha256": "098723d6ae7c6c2e012ae51ee313c0a1e471ff89e69ecc1703875a277ab458bc",
+  "intent_amendment_reviewer": "/root/astra_cleanup_review",
+  "prior_codec_review_sha256": "1ae5a99aff3dcf2bf9863f9365327ec5d85810e7a834249c80ebbb4c582da53d",
   "reviewer": "/root/astra_helper_spec_review",
   "model": "gpt-6-astra",
   "reasoning_effort": "max",
@@ -59,3 +61,14 @@ this artifact path and hash in its closure; only that matching PASS permits
 runtime supply, native effects, recovery and sustained exact-delivery trials
 remain explicit parent gates. No model, credential or native runtime action was
 performed by this design review.
+
+On 2026-10-27, targeted independent Astra review accepted the counted-invocation
+amendment at the current full hash above. It binds an optional immutable
+ModelIntentSchemaVersion in manifest and journal identity: historical zero stays
+readable and model-unavailable, fresh version1 requires its table even before
+first M, and reads never migrate or reconstruct authority. It also fixes atomic
+M versus H accounting, real inherited helper process-group verification, private
+socket derivation with fixed Darwin/Linux bases, and the genuine producer test
+boundary. An intermediate review passed `954a3016…`; the final socket amendment
+passed `098723d6…` with no remaining findings. These are targeted amendments to
+the retained structural review, not new implementation or operational proof.

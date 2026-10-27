@@ -203,12 +203,15 @@ Fresh Astra helper-spec review initially failed on two optional-config equality
 consumers, recording-process injection and composition bounds; its second
 revision omitted required role context. Both failures were corrected before
 implementation. Final [helper contract](2026-10-26-terra-helper-contract.md)
-SHA256 `1ae5a99aff3dcf2bf9863f9365327ec5d85810e7a834249c80ebbb4c582da53d`
+SHA256 `098723d6ae7c6c2e012ae51ee313c0a1e471ff89e69ecc1703875a277ab458bc`
 passed independent re-review with no remaining findings. The retained
 [review proof](../proofs/2026-10-26-terra-helper-spec-review.md) matches that hash
 and Markdown lint passed. The later visibility amendment keeps result codecs
 private until a real cross-package consumer needs them; no wire/authority rule
-changed. Gate `oro-mf-terra-spec-proof` records the matching artifact.
+changed. A later reviewed intent amendment binds the immutable schema capability,
+atomic M accounting, actual helper group and deterministic socket. Historical
+admissions remain readable without model authority or migration. Gate
+`oro-mf-terra-spec-proof` records the matching artifact.
 
 `oro-mf-terra-entry` is reviewed and integrated through `56666d04`, with
 production and test source identical to frozen Terra `9c81b740`. All eleven
