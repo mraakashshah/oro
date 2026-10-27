@@ -23,17 +23,27 @@ import (
 )
 
 func TestManagedCandidateRetire(t *testing.T) {
+	modes := []string{"concurrent_reservation", "reservation_rollback", "success", "lost", "absent", "unretired", "malformed", "missing_ack", "wrong_binding", "wrong_lifetime", "wrong_scope", "wrong_kind", "commit_failure", "other_host", "deadline_cross", "small_source", "revoked", "epoch_change", "tamper_fence", "history_deleted", "snapshot_tamper", "permit_tamper", "cleanup_expired", "reserve_after_deadline"}
+	selected := os.Getenv("ORO_RETIRE_MODE")
 	if os.Getenv("ORO_RETIRE_LEADER") != "1" {
-		runCandidateRetirementLeader(t)
+		for _, mode := range modes {
+			if selected != "" && selected != mode {
+				continue
+			}
+			t.Run(mode, func(t *testing.T) { runCandidateRetirementLeader(t, mode) })
+		}
 		return
 	}
-	t.Run("concurrent reservation", testConcurrentRetirementReservation)
-	t.Run("reservation rollback", testRetirementReservationRollback)
-	for _, mode := range []string{"success", "lost", "absent", "unretired", "malformed", "missing_ack", "wrong_binding", "wrong_lifetime", "wrong_scope", "wrong_kind", "commit_failure", "other_host", "deadline_cross", "small_source", "revoked", "epoch_change", "tamper_fence", "history_deleted", "snapshot_tamper", "permit_tamper", "cleanup_expired", "reserve_after_deadline"} {
-		if selected := os.Getenv("ORO_RETIRE_MODE"); selected != "" && selected != mode {
-			continue
+	switch selected {
+	case "concurrent_reservation":
+		testConcurrentRetirementReservation(t)
+	case "reservation_rollback":
+		testRetirementReservationRollback(t)
+	default:
+		if !slices.Contains(modes, selected) {
+			t.Fatal("invalid retirement leader mode")
 		}
-		t.Run(mode, func(t *testing.T) { testManagedCandidateRetire(t, mode) })
+		testManagedCandidateRetire(t, selected)
 	}
 }
 
@@ -71,6 +81,7 @@ func readyRetirementFixture(t *testing.T) (*managedControllerOwner, context.Cont
 }
 
 func testConcurrentRetirementReservation(t *testing.T) {
+	t.Helper()
 	owner, ctx, ready, config, limits := readyRetirementFixture(t)
 	start := make(chan struct{})
 	results := make(chan error, 2)
@@ -95,13 +106,14 @@ func testConcurrentRetirementReservation(t *testing.T) {
 }
 
 func testRetirementReservationRollback(t *testing.T) {
+	t.Helper()
 	owner, ctx, ready, config, limits := readyRetirementFixture(t)
 	before := candidateCounts(t, owner.journal)
 	if _, err := owner.journal.conn.ExecContext(ctx, `CREATE TRIGGER deny_retirement_event BEFORE INSERT ON managed_events WHEN NEW.kind='candidate-retiring' BEGIN SELECT RAISE(ABORT,'test denial'); END`); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := reserveCandidateRetirement(ctx, owner, ready, config, limits); err == nil {
-		t.Fatal("rejected event committed")
+	if _, _, _, err := reserveCandidateRetirement(ctx, owner, ready, config, limits); err == nil || !strings.Contains(err.Error(), "append managed event") || !strings.Contains(err.Error(), "test denial") {
+		t.Fatalf("retirement did not reach rejected event insertion: %v", err)
 	}
 	if after := candidateCounts(t, owner.journal); after != before {
 		t.Fatalf("failed retirement changed counts %v -> %v", before, after)
@@ -116,9 +128,9 @@ func testRetirementReservationRollback(t *testing.T) {
 	}
 }
 
-func runCandidateRetirementLeader(t *testing.T) {
+func runCandidateRetirementLeader(t *testing.T, mode string) {
 	t.Helper()
-	timeout := 240 * time.Second
+	timeout := 90 * time.Second
 	if deadline, ok := t.Deadline(); ok && time.Until(deadline)-5*time.Second < timeout {
 		timeout = time.Until(deadline) - 5*time.Second
 	}
@@ -131,7 +143,7 @@ func runCandidateRetirementLeader(t *testing.T) {
 	if f := flag.Lookup("test.gocoverdir"); f != nil && f.Value.String() != "" {
 		cmd.Args = append(cmd.Args, "-test.gocoverdir="+f.Value.String())
 	}
-	cmd.Env = append(os.Environ(), "ORO_RETIRE_LEADER=1")
+	cmd.Env = append(os.Environ(), "ORO_RETIRE_LEADER=1", "ORO_RETIRE_MODE="+mode, "GORACE=atexit_sleep_ms=0")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = 3 * time.Second
@@ -148,8 +160,8 @@ func testManagedCandidateRetire(t *testing.T, mode string) {
 	t.Helper()
 	root, spec, reservation := managedAdmissionFixture(t)
 	if mode == "deadline_cross" || mode == "reserve_after_deadline" {
-		spec.TimeoutSeconds = 8
-		spec.StepTimeoutSeconds = 6
+		spec.TimeoutSeconds = 30
+		spec.StepTimeoutSeconds = 25
 	}
 	if mode == "small_source" {
 		spec.Runtime.SourceBytes = 64
@@ -267,6 +279,18 @@ func testManagedCandidateRetire(t *testing.T, mode string) {
 	if phase != want || host.calls != wantCalls {
 		t.Fatalf("candidate phase=%s cleanup calls=%d want=%s", phase, host.calls, want)
 	}
+	if slices.Contains([]string{"permit_tamper", "snapshot_tamper", "history_deleted", "tamper_fence", "revoked", "epoch_change", "cleanup_expired"}, mode) && !host.verified {
+		t.Fatalf("%s fault setup/denial was not verified: %v", mode, err)
+	}
+	if mode != "other_host" && mode != "permit_tamper" && !host.authorized {
+		t.Fatalf("%s did not reach authenticated cleanup helper: %v", mode, err)
+	}
+	if slices.Contains([]string{"success", "absent", "unretired", "malformed", "missing_ack", "wrong_binding", "wrong_lifetime", "wrong_scope", "wrong_kind", "deadline_cross", "small_source", "reserve_after_deadline"}, mode) && !host.receiptWritten {
+		t.Fatalf("%s did not produce cleanup receipt: %v", mode, err)
+	}
+	if mode == "lost" && !strings.Contains(err.Error(), "lost cleanup acknowledgment") {
+		t.Fatalf("lost acknowledgment not reached: %v", err)
+	}
 	var cleanupCount, retiringEvents, retiredEvents int
 	if e := j.conn.QueryRowContext(t.Context(), `SELECT (SELECT count(*) FROM managed_reservations WHERE kind='cleanup'),(SELECT count(*) FROM managed_events WHERE kind='candidate-retiring'),(SELECT count(*) FROM managed_events WHERE kind='candidate-retired')`).Scan(&cleanupCount, &retiringEvents, &retiredEvents); e != nil {
 		t.Fatal(e)
@@ -284,6 +308,9 @@ func testManagedCandidateRetire(t *testing.T, mode string) {
 	}
 	if want == "retired" {
 		assertCandidateRetired(t, j)
+	}
+	if mode == "other_host" && (!host.otherAdded || !strings.Contains(err.Error(), "other host scopes quiescent")) {
+		t.Fatalf("other-host exclusion was not reached: %v", err)
 	}
 	if mode == "commit_failure" && !strings.Contains(err.Error(), "commit managed transition") {
 		t.Fatalf("final commit was not reached: %v", err)
@@ -356,14 +383,17 @@ func assertNoRetirementReplay(t *testing.T, j *managedJournal, manifest managedM
 }
 
 type candidateRetirementRuntime struct {
-	base       *candidateExecutionRuntime
-	journal    *managedJournal
-	config     ManagedDockerConfig
-	otherAdded bool
-	t          *testing.T
-	mode       string
-	calls      int
-	reader     *sql.Tx
+	base           *candidateExecutionRuntime
+	journal        *managedJournal
+	config         ManagedDockerConfig
+	otherAdded     bool
+	t              *testing.T
+	mode           string
+	calls          int
+	reader         *sql.Tx
+	verified       bool
+	authorized     bool
+	receiptWritten bool
 }
 
 func (r *candidateRetirementRuntime) Invoke(ctx context.Context, call HostInvocation) (HostResult, error) {
@@ -387,17 +417,24 @@ func (r *candidateRetirementRuntime) Invoke(ctx context.Context, call HostInvoca
 		return HostResult{}, errors.New("cleanup request identity differs")
 	}
 	if r.mode == "permit_tamper" {
-		if _, err := r.journal.conn.ExecContext(ctx, "UPDATE managed_cleanup_permits SET body=json_set(body,'$.binding.container_id',?) WHERE scope_id=?", strings.Repeat("f", 64), permit.Scope.ID); err != nil {
+		result, err := r.journal.conn.ExecContext(ctx, "UPDATE managed_cleanup_permits SET body=json_set(body,'$.binding.container_id',?) WHERE scope_id=?", strings.Repeat("f", 64), permit.Scope.ID)
+		if err != nil {
 			return HostResult{}, err
 		}
+		if n, err := result.RowsAffected(); err != nil || n != 1 {
+			return HostResult{}, errors.Join(errors.New("permit tamper did not affect one row"), err)
+		}
 		if err := r.journal.RecordHello(ctx, call.Scope, 103, 103); err == nil {
+			r.t.Error("tampered permit granted")
 			return HostResult{}, errors.New("tampered permit granted")
 		}
+		r.verified = true
 		return HostResult{}, errors.New("tampered permit rejected")
 	}
 	if err := r.journal.RecordHello(ctx, call.Scope, 103, 103); err != nil {
 		return HostResult{}, err
 	}
+	r.authorized = true
 	if err := r.verifyRetirementWorkGate(ctx, permit); err != nil {
 		return HostResult{}, err
 	}
@@ -411,12 +448,19 @@ func (r *candidateRetirementRuntime) Invoke(ctx context.Context, call HostInvoca
 	}
 	if r.mode == "cleanup_expired" {
 		<-ctx.Done()
+		if time.Now().Before(permit.Deadline) {
+			r.t.Error("cleanup context expired before permit deadline")
+		} else {
+			r.verified = true
+		}
 		return HostResult{}, ctx.Err()
 	}
 	if r.mode == "revoked" {
 		if err := r.journal.setDesired(ctx, permit.Scope.Generation, "stopping", "test revocation", time.Time{}); err != nil {
+			r.t.Errorf("revocation setup: %v", err)
 			return HostResult{}, err
 		}
+		r.verified = true
 	}
 	if r.mode == "epoch_change" {
 		state, err := r.journal.supervision(ctx)
@@ -424,8 +468,10 @@ func (r *candidateRetirementRuntime) Invoke(ctx context.Context, call HostInvoca
 			return HostResult{}, err
 		}
 		if _, _, err := r.journal.advanceEpoch(ctx, state.SupervisorToken, "retirement-test-epoch", time.Now()); err != nil {
+			r.t.Errorf("epoch change setup: %v", err)
 			return HostResult{}, err
 		}
+		r.verified = true
 	}
 
 	if r.mode == "lost" {
@@ -440,20 +486,32 @@ func (r *candidateRetirementRuntime) Invoke(ctx context.Context, call HostInvoca
 		r.assertRetirementFence(ctx, permit)
 	}
 	if r.mode == "history_deleted" {
-		if _, err := r.journal.conn.ExecContext(ctx, "DELETE FROM managed_events WHERE kind='candidate-retiring'"); err != nil {
+		result, err := r.journal.conn.ExecContext(ctx, "DELETE FROM managed_events WHERE kind='candidate-retiring'")
+		if err != nil {
 			return HostResult{}, err
+		}
+		if n, err := result.RowsAffected(); err != nil || n != 1 {
+			return HostResult{}, errors.Join(errors.New("retirement event deletion did not affect one row"), err)
 		}
 		if fresh, err := r.journal.reserveBudget(ctx, permit.Scope.Generation, "host", "deleted-fence", time.Now()); err == nil || fresh {
+			r.t.Error("deleted retirement event allowed work")
 			return HostResult{}, errors.New("deleted retirement event allowed work")
 		}
+		r.verified = true
 	}
 	if r.mode == "tamper_fence" {
-		if _, err := r.journal.conn.ExecContext(ctx, "UPDATE managed_docker_candidates SET body=json_set(body,'$.phase','ready')"); err != nil {
+		result, err := r.journal.conn.ExecContext(ctx, "UPDATE managed_docker_candidates SET body=json_set(body,'$.phase','ready')")
+		if err != nil {
 			return HostResult{}, err
 		}
+		if n, err := result.RowsAffected(); err != nil || n != 1 {
+			return HostResult{}, errors.Join(errors.New("candidate tamper did not affect one row"), err)
+		}
 		if fresh, err := r.journal.reserveBudget(ctx, permit.Scope.Generation, "host", "corrupt-fence", time.Now()); err == nil || fresh {
+			r.t.Error("corrupt retirement fence allowed work")
 			return HostResult{}, errors.New("corrupt retirement fence allowed work")
 		}
+		r.verified = true
 	}
 	if r.mode == "success" {
 		if err := r.provePermitLabelCapacity(ctx, permit); err != nil {
@@ -493,6 +551,7 @@ func (r *candidateRetirementRuntime) Invoke(ctx context.Context, call HostInvoca
 		result.Binding.Kind = "volume"
 		data, err = json.Marshal(result)
 	}
+	r.receiptWritten = true
 	return HostResult{Stdout: data}, err
 }
 
@@ -510,8 +569,10 @@ func (r *candidateRetirementRuntime) rejectTamperedSnapshot(ctx context.Context,
 		return err
 	}
 	if _, err := r.journal.CleanupPermit(ctx, permit.Scope); err == nil {
+		r.t.Error("tampered snapshot accepted")
 		return errors.New("tampered snapshot accepted")
 	}
+	r.verified = true
 	return errors.New("tampered snapshot rejected")
 }
 
