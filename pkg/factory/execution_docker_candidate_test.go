@@ -22,8 +22,53 @@ func TestManagedCandidateExecution(t *testing.T) {
 		runCandidateExecutionLeader(t)
 		return
 	}
+	t.Run("expired checkout", candidateExecutionExpiredCheckout)
 	for _, mode := range []string{"success", "before_stop", "before_epoch", "after_stop", "lost_create", "lost_start", "bad_memory", "bad_mount", "bad_labels", "bad_scratch", "bad_image", "bad_guard", "bad_lifetime", "bad_ready", "bad_running"} {
 		t.Run(mode, func(t *testing.T) { runCandidateExecution(t, mode) })
+	}
+}
+
+func candidateExecutionExpiredCheckout(t *testing.T) {
+	owner, _, workspace := candidateReadyFixture(t, 8*time.Second)
+	time.Sleep(time.Until(workspace.OperationDeadline) + 20*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	intent, err := reserveManagedCandidate(ctx, owner, workspace.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keeper, err := loadManagedDockerKeeper(ctx, owner.journal, intent.Source.Keeper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	volume, err := loadManagedDockerVolume(ctx, owner.journal, intent.Source.Volume)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := &dockerAdapterRuntime{t: t, journal: owner.journal, intent: volume}
+	keeperRuntime := &sourceKeeperRuntime{base: base, intent: keeper}
+	sourceRuntime := &sourcePrepareRuntime{base: keeperRuntime, t: t, running: true}
+	host := &candidateExecutionRuntime{base: &managedEngineRuntime{git: &sourceGitRuntime{t: t, j: owner.journal}, docker: sourceRuntime}, journal: owner.journal, t: t, mode: "success"}
+	manifest := owner.manifest
+	config := ManagedDockerConfig{StateRoot: owner.journal.admission.Reservation.StateRoot, ObjectiveID: owner.journal.admission.ObjectiveID, PolicyHash: manifest.PolicyHash, Deadline: manifest.Deadline, HardStop: manifest.HardStop, RuntimeConfigPath: owner.runtime.Path, RuntimeConfigSHA256: owner.runtime.SHA256, OroPath: "/usr/local/bin/oro", OroSHA256: strings.Repeat("d", 64), DockerPath: "/usr/local/bin/docker", DockerSHA256: strings.Repeat("b", 64), DockerConfig: filepath.Join(owner.journal.admission.Reservation.StateRoot, owner.journal.admission.ObjectiveID, "runtime", "docker"), DockerContext: manifest.Spec.Runtime.DockerContext, DockerEndpoint: "unix:///private/tmp/admitted-docker.sock"}
+	adapter, err := newManagedDockerVolumes(ctx, manifest, owner.scope.Generation, owner.journal, host, func(context.Context) (ManagedDockerConfig, error) { return config, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready, err := adapter.prepareCandidate(ctx, owner, intent)
+	if err != nil || ready.Phase != "ready" {
+		t.Fatalf("candidate after checkout deadline: %s %v", ready.Phase, err)
+	}
+	if !ready.ExecutionStartedAt.After(workspace.OperationDeadline) || !ready.Source.OperationDeadline.Equal(workspace.OperationDeadline) {
+		t.Fatal("candidate renewed checkout identity")
+	}
+	if len(sourceRuntime.calls) != 2 {
+		t.Fatalf("source continuity calls: %d, want two keeper inspections", len(sourceRuntime.calls))
+	}
+	for _, call := range sourceRuntime.calls {
+		if len(call.Args) < 6 || call.Args[4] != "container" || call.Args[5] != "inspect" {
+			t.Fatalf("source reseeded: %v", call.Args)
+		}
 	}
 }
 
