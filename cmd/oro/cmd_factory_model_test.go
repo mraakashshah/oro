@@ -161,6 +161,31 @@ func testFactoryModelWire(t *testing.T, ref factory.ManagedRuntimeReference, hel
 	if _, err := factory.EncodeModelResult(result); err == nil {
 		t.Fatal("null turns accepted")
 	}
+	result = factory.ModelResult{Version: 1, Invocation: host, RequestSHA256: strings.Repeat("f", 64), Outcome: "completed", TurnsDispatched: 1, LiabilitySpentCents: 1, Turns: []factory.ModelTurnRecord{{Turn: 1, CountDispatched: true, ModelDispatched: true, ResponseID: "response", ObservedModel: "gpt-6.1-terra", Outcome: "completed", InputTokens: 100, OutputTokens: 20, LiabilityCents: 1, ToolCallIDs: []string{}}}, FinalText: "done"}
+	good, err := factory.EncodeModelResult(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := factory.DecodeModelResult(good); err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range []func(*factory.ModelResult){
+		func(r *factory.ModelResult) { r.TurnsDispatched++ },
+		func(r *factory.ModelResult) { r.LiabilitySpentCents++ },
+		func(r *factory.ModelResult) { r.Turns[0].Turn++ },
+		func(r *factory.ModelResult) { r.Turns[0].CountDispatched = false },
+		func(r *factory.ModelResult) { r.Turns[0].ToolCallIDs = nil },
+		func(r *factory.ModelResult) { r.Turns[0].Outcome = "other" },
+	} {
+		var changed factory.ModelResult
+		if err := json.Unmarshal(good, &changed); err != nil {
+			t.Fatal(err)
+		}
+		change(&changed)
+		if _, err := factory.EncodeModelResult(changed); err == nil {
+			t.Fatal("invalid model result accepted")
+		}
+	}
 	return encoded
 }
 
