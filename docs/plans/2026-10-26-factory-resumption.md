@@ -210,16 +210,24 @@ and Markdown lint passed. The later visibility amendment keeps result codecs
 private until a real cross-package consumer needs them; no wire/authority rule
 changed. Gate `oro-mf-terra-spec-proof` records the matching artifact.
 
-`oro-mf-terra-entry` is being implemented by Terra in isolated
-`.worktrees/factory-terra-entry`, based on `0e8bfef6`. Public publication/replay,
-genuine configured controller/cleanup and frozen helper identity tests pass in
-scoped predecessor evidence, but the latest filesystem alias follow-up remains
-unqualified. Symlink, case-folding and prospective missing-state containment
-regressions are being corrected without reading credentials or allocating on
-invalid input. Root's independent predecessor race passed in 57.123 seconds;
-do not attribute that result to later source changes. No helper code has been
-integrated or pushed. The remaining seven implementation leaves are open; live
-model/tool effects and delivery are not established.
+`oro-mf-terra-entry` is reviewed and integrated through `56666d04`, with
+production and test source identical to frozen Terra `9c81b740`. All eleven
+worker commits were preserved. Symlink, physical case-folding and prospective
+missing-state credential containment regressions reject invalid references before
+allocation, without reading credentials. Existing physically disjoint outside
+parents remain accepted. Result codecs remain private pending real consumers.
+
+Astra's final review reported no findings. Worker final affected CLI covered race
+passed in 67.491 seconds and factory covered race in 21.434 seconds. Root's
+independent exact-tip cross-package race passed in 48.575 seconds harness
+(`terra-entry-final-reviewed-race`); CLI package 38.408 seconds and factory
+22.052 seconds. These are scoped results, not full-package coverage. The merged
+repository gate is running as `terra-entry-integrated-gate`, launched at
+`56666d04`, tool session `1133`; inspect its authoritative terminal result before
+closing the entry task or claiming a green merged gate. The preceding full gate
+and full factory race cover `2924a464`, not this new code. The entry remains
+explicitly adapter-unavailable: no model/tool effects or delivery are established.
+Next implementation leaf is `oro-mf-terra-intent`, counted invocation authority.
 
 The [restricted Terra adapter research](../proofs/2026-10-26-terra-adapter-research.md)
 proposes an Oro-owned Responses function loop; it is research, not an implemented
