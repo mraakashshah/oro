@@ -1,15 +1,17 @@
 package factory //nolint:testpackage // Exercises private candidate authority.
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
-	"flag"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -18,14 +20,12 @@ import (
 )
 
 func TestManagedCandidateIntent(t *testing.T) {
+	if os.Getenv("ORO_CANDIDATE_BLOCK") == "1" {
+		time.Sleep(30 * time.Second)
+		return
+	}
 	if os.Getenv("ORO_CANDIDATE_LEADER") != "1" {
-		cmd := exec.Command(os.Args[0], "-test.run="+flag.Lookup("test.run").Value.String(), "-test.v")
-		cmd.Env = append(os.Environ(), "ORO_CANDIDATE_LEADER=1")
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("leader: %v\n%s", err, out)
-		}
+		runCandidateLeader(t)
 		return
 	}
 	t.Run("basic", candidateBasicTest)
@@ -654,5 +654,75 @@ func candidateConcurrentTest(t *testing.T) {
 	after := candidateCounts(t, owner.journal)
 	if after != [4]int{before[0] + 1, before[1] + 2, before[2] + 1, before[3] + 1} {
 		t.Fatalf("concurrent accounting %v -> %v", before, after)
+	}
+}
+
+func TestCandidateLeaderHarness(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cmd := candidateLeaderCommand(ctx, 2*time.Second)
+	cmd.Env = append(cmd.Env, "ORO_CANDIDATE_BLOCK=1")
+	if !slices.Contains(cmd.Args, "-test.run=^TestManagedCandidateIntent$") || !slices.Contains(cmd.Args, "-test.timeout=2s") {
+		t.Fatalf("child arguments: %v", cmd.Args)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("canceled child succeeded")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("canceled child not reaped")
+	}
+	boundedCtx, boundedCancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer boundedCancel()
+	bounded := candidateLeaderCommand(boundedCtx, 200*time.Millisecond)
+	bounded.Env = append(bounded.Env, "ORO_CANDIDATE_BLOCK=1")
+	output, err := bounded.CombinedOutput()
+	if err == nil || !bytes.Contains(output, []byte("test timed out")) {
+		t.Fatalf("child self-timeout missing: %v %s", err, output)
+	}
+}
+
+func candidateLeaderCommand(ctx context.Context, timeout time.Duration) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestManagedCandidateIntent$", "-test.timeout="+timeout.String(), "-test.v")
+	cmd.Env = append(os.Environ(), "ORO_CANDIDATE_LEADER=1")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return os.ErrProcessDone
+		}
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
+		}
+		return err
+	}
+	cmd.WaitDelay = 5 * time.Second
+	return cmd
+}
+
+func runCandidateLeader(t *testing.T) {
+	t.Helper()
+	timeout := 120 * time.Second
+	if deadline, ok := t.Deadline(); ok {
+		remaining := time.Until(deadline) - 5*time.Second
+		if remaining < timeout {
+			timeout = remaining
+		}
+	}
+	if timeout <= time.Second {
+		t.Fatal("insufficient time for candidate leader")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), timeout+time.Second)
+	defer cancel()
+	cmd := candidateLeaderCommand(ctx, timeout)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("leader: %v\n%s", err, out)
 	}
 }
